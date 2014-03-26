@@ -35,6 +35,7 @@
         'dependencies': [
           'webrtc/modules/modules.gyp:audio_device',
           'webrtc/modules/modules.gyp:video_capture_module',
+          'webrtc/modules/modules.gyp:desktop_capture',
 #          'webrtc/modules/modules.gyp:video_render_module',
 #          'webrtc/system_wrappers/source/system_wrappers.gyp:system_wrappers',
           'webrtc/video_engine/video_engine.gyp:video_engine_core',
