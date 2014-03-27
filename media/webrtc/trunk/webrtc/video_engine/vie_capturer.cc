@@ -27,6 +27,7 @@
 #include "webrtc/video_engine/overuse_frame_detector.h"
 #include "webrtc/video_engine/vie_defines.h"
 #include "webrtc/video_engine/vie_encoder.h"
+#include "webrtc/video_engine/desktop_capture_impl.h"
 
 namespace webrtc {
 
@@ -166,7 +167,12 @@ ViECapturer* ViECapturer::CreateViECapture(
 int32_t ViECapturer::Init(const char* device_unique_idUTF8,
                           uint32_t device_unique_idUTF8Length) {
   assert(capture_module_ == NULL);
-  if (device_unique_idUTF8 == NULL) {
+  //vagouzhou@gmail.com>>
+  if(1){
+	  capture_module_ = DesktopCaptureImpl::Create(0,0);//desktop sharing first
+  }
+  //vagouzhou@gmail.com
+  else if (device_unique_idUTF8 == NULL) {
     capture_module_  = VideoCaptureFactory::Create(
         ViEModuleId(engine_id_, capture_id_), external_capture_module_);
   } else {
