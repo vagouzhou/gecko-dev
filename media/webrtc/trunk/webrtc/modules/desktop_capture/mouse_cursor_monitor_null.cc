@@ -8,12 +8,21 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/modules/desktop_capture/screen_capturer.h"
+#include "webrtc/modules/desktop_capture/mouse_cursor_monitor.h"
+
+#include <stddef.h>
 
 namespace webrtc {
 
-// static
-ScreenCapturer* ScreenCapturer::Create(const DesktopCaptureOptions& options) {
+MouseCursorMonitor* MouseCursorMonitor::CreateForWindow(
+    const DesktopCaptureOptions& options,
+    WindowId window) {
+  return NULL;
+}
+
+MouseCursorMonitor* MouseCursorMonitor::CreateForScreen(
+    const DesktopCaptureOptions& options,
+    ScreenId screen) {
   return NULL;
 }
 
