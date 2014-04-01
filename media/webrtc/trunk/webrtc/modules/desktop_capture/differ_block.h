@@ -20,7 +20,7 @@ namespace webrtc {
 const int kBlockSize = 32;
 
 // Format: BGRA 32 bit.
-//const int kBytesPerPixel = 4;
+const int kBytesPerPixel = 4;
 
 // Low level functions to compare 2 blocks of pixels. Zero means the blocks
 // are identical. One - the blocks are different.
