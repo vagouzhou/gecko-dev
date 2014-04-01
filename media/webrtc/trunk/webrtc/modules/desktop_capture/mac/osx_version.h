@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2013 The WebRTC project authors. All Rights Reserved.
+ *  Copyright (c) 2014 The WebRTC project authors. All Rights Reserved.
  *
  *  Use of this source code is governed by a BSD-style license
  *  that can be found in the LICENSE file in the root of the source
@@ -8,13 +8,9 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "webrtc/modules/desktop_capture/screen_capturer.h"
-
 namespace webrtc {
 
-// static
-ScreenCapturer* ScreenCapturer::Create(const DesktopCaptureOptions& options) {
-  return NULL;
-}
+// Returns true if the OS version >= OSX 10.7.
+bool IsOSLionOrLater();
 
 }  // namespace webrtc
