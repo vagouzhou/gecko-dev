@@ -446,6 +446,7 @@ uint32_t DesktopCaptureImpl::CalculateFrameRate(const TickTime& now)
 int32_t DesktopCaptureImpl::StartCapture(const VideoCaptureCapability& capability)
 {
 	_requestedCapability = capability;
+    screen_capturer_->SetMouseShapeObserver(this);
     screen_capturer_->Start(this);
     unsigned int t_id =0;
     screen_capturer_thread_.Start(t_id);
@@ -476,11 +477,22 @@ void DesktopCaptureImpl::OnCaptureCompleted(DesktopFrame* frame)
     frameInfo.height = frame->size().height();
     frameInfo.rawType = kVideoARGB;
     
+    //combine cursor in frame
+    //Latest WebRTC already support it by DesktopFrameWithCursor/DesktopAndCursorComposer.
+    //I will merge latest WebRTC code in future after pipeline ready that is high priority.
+    
+    
     int32_t videoFrameLength =frameInfo.width *frameInfo.height*DesktopFrame::kBytesPerPixel;
     IncomingFrame(videoFrame,videoFrameLength,frameInfo);
     delete frame;//handler it,so we need delete it
 	
 }
+    
+SharedMemory* DesktopCaptureImpl::CreateSharedMemory(size_t size)
+{
+    return NULL;
+}
+    
 void DesktopCaptureImpl::process()
 {
     //
@@ -489,6 +501,11 @@ void DesktopCaptureImpl::process()
     
     screen_capturer_->Capture(DesktopRegion());
 }
-
+    
+void DesktopCaptureImpl::OnCursorShapeChanged(MouseCursorShape* cursor_shape)
+{
+    cursor_shape_.reset(cursor_shape);
+}
+    
 }  // namespace webrtc
 
