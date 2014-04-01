@@ -22,6 +22,7 @@
 #include "webrtc/modules/video_capture/video_capture_config.h"
 #include "webrtc/modules/desktop_capture/shared_memory.h"
 #include "webrtc/system_wrappers/interface/thread_wrapper.h"
+#include "webrtc/modules/desktop_capture/mouse_cursor_shape.h"
 
 using namespace webrtc::videocapturemodule;
 namespace webrtc
@@ -32,7 +33,10 @@ class VideoCaptureEncodeInterface;
 //we reuse video engine pipeline for screen sharing.
 //As video did , DesktopCaptureImpl will be proxy for screen sharing ,aslo follow video pipeline design 
 
-class DesktopCaptureImpl: public VideoCaptureModule, public VideoCaptureExternal,  public ScreenCapturer::Callback
+    class DesktopCaptureImpl: public VideoCaptureModule,
+                            public VideoCaptureExternal,
+                            public ScreenCapturer::Callback ,
+                            public ScreenCapturer::MouseShapeObserver
 {
 public:
 	/* Create a screen capture modules object
@@ -81,10 +85,13 @@ public:
     virtual int32_t CaptureSettings(VideoCaptureCapability& /*settings*/);
     VideoCaptureEncodeInterface* GetEncodeInterface(const VideoCodec& /*codec*/){return NULL;}
 
-	//ScreenCapturer::Callback  
-	virtual SharedMemory* CreateSharedMemory(size_t size){return NULL;}
+	//ScreenCapturer::Callback
+	virtual SharedMemory* CreateSharedMemory(size_t size);
 	virtual void OnCaptureCompleted(DesktopFrame* frame);
 
+    //ScreenCapturer::MouseShapeObserver
+    virtual void OnCursorShapeChanged(MouseCursorShape* cursor_shape);
+    
 protected:
     DesktopCaptureImpl(const int32_t id);
     virtual ~DesktopCaptureImpl();
@@ -137,6 +144,7 @@ private:
 	//
 	scoped_ptr<ScreenCapturer> screen_capturer_;
     ThreadWrapper&  screen_capturer_thread_;
+    scoped_ptr<MouseCursorShape> cursor_shape_;
 };
 
 }  // namespace webrtc
