@@ -449,7 +449,8 @@ private:
   nsString mType;
   nsString mID;
   bool mHasFacingMode;
-  dom::VideoFacingModeEnum mFacingMode;
+    dom::VideoFacingModeEnum mFacingMode;
+    dom::MozMediaSourceEnum mMozMediaSource;
   nsRefPtr<MediaEngineSource> mSource;
 };
 
