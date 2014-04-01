@@ -385,7 +385,17 @@ MediaDevice::GetFacingMode(nsAString& aFacingMode)
   }
   return NS_OK;
 }
-
+    
+NS_IMETHODIMP
+MediaDevice::GetMozMediaSource(nsAString& aMozMediaSource)
+{
+        
+    aMozMediaSource.Assign(NS_ConvertUTF8toUTF16(
+        dom::MozMediaSourceEnumValues::strings[uint32_t(mMozMediaSource)].value));
+        
+    return NS_OK;
+}
+    
 MediaEngineSource*
 MediaDevice::GetSource()
 {
@@ -663,7 +673,7 @@ static bool SatisfyConstraint(const MediaEngineVideoSource *,
       return false;
     }
   }
-  // TODO: Add more video-specific constraints
+    // TODO: Add more video-specific constraints
   return true;
 }
 

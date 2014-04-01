@@ -20,8 +20,15 @@ enum VideoFacingModeEnum {
     "right"
 };
 
+enum MozMediaSourceEnum {
+    "camera",
+    "screen",
+    "application"
+};
+
 dictionary MediaTrackConstraintSet {
     VideoFacingModeEnum facingMode;
+    MozMediaSourceEnum mozMediaSource;
 };
 
 // MediaTrackConstraint = single-property-subset of MediaTrackConstraintSet
