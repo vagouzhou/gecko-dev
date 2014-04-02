@@ -30,10 +30,51 @@ namespace webrtc
 class CriticalSectionWrapper;
 class VideoCaptureEncodeInterface;
 //vagouzhou@gmail.com
-//we reuse video engine pipeline for screen sharing.
-//As video did , DesktopCaptureImpl will be proxy for screen sharing ,aslo follow video pipeline design 
+//simulate deviceInfo interface for video engine, bridge screen/applicaiton and real screen/application device info
+    class ScreenDeviceInfoImpl : public VideoCaptureModule::DeviceInfo
+    {
+    public:
+        ScreenDeviceInfoImpl(const int32_t id);
+        virtual ~ScreenDeviceInfoImpl(void);
+        
+        int32_t Init();
+        
+        virtual uint32_t NumberOfDevices();
+        virtual int32_t GetDeviceName(uint32_t deviceNumber,
+                      char* deviceNameUTF8,
+                      uint32_t deviceNameLength,
+                      char* deviceUniqueIdUTF8,
+                      uint32_t deviceUniqueIdUTF8Length,
+                      char* productUniqueIdUTF8,
+                      uint32_t productUniqueIdUTF8Length);
+        
+        virtual int32_t DisplayCaptureSettingsDialogBox(
+                                        const char* deviceUniqueIdUTF8,
+                                        const char* dialogTitleUTF8,
+                                        void* parentWindow,
+                                        uint32_t positionX,
+                                        uint32_t positionY);
+        virtual int32_t NumberOfCapabilities(const char* deviceUniqueIdUTF8);
+        virtual int32_t GetCapability(
+                                      const char* deviceUniqueIdUTF8,
+                                      const uint32_t deviceCapabilityNumber,
+                                      VideoCaptureCapability& capability);
+        
+        virtual int32_t GetBestMatchedCapability(
+                                                 const char* deviceUniqueIdUTF8,
+                                                 const VideoCaptureCapability& requested,
+                                                 VideoCaptureCapability& resulting);
+        virtual int32_t GetOrientation(
+                                       const char* deviceUniqueIdUTF8,
+                                       VideoCaptureRotation& orientation);
+        
 
-    class DesktopCaptureImpl: public VideoCaptureModule,
+    };
+ 
+    //vagouzhou@gmail.com
+    //we reuse video engine pipeline for screen sharing.
+    //As video did , DesktopCaptureImpl will be proxy for screen sharing ,aslo follow video pipeline design
+class DesktopCaptureImpl: public VideoCaptureModule,
                             public VideoCaptureExternal,
                             public ScreenCapturer::Callback ,
                             public ScreenCapturer::MouseShapeObserver
@@ -43,7 +84,7 @@ public:
 	*/
 	static VideoCaptureModule* Create(const int32_t process_id,const int32_t monitor_id);
 
-    static DeviceInfo* CreateDeviceInfo(const int32_t id);
+    static VideoCaptureModule::DeviceInfo* CreateDeviceInfo(const int32_t id);
 
     int32_t Init(const int32_t process_id,const int32_t monitor_id);
     // Implements Module declared functions.
