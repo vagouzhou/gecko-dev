@@ -26,9 +26,98 @@
 
 namespace webrtc
 {
+    ScreenDeviceInfoImpl::ScreenDeviceInfoImpl(const int32_t id){
+        
+    }
     
-VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t process_id,const int32_t monitor_id)
-{
+    ScreenDeviceInfoImpl::~ScreenDeviceInfoImpl(void){
+        
+    }
+    int32_t ScreenDeviceInfoImpl::Init(){
+        return 0;
+    }
+    
+    uint32_t ScreenDeviceInfoImpl::NumberOfDevices(){
+        //vagouzhou>>implment it first , will move to webrtc, and it is OS dependent.
+        
+        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //vagouzhou: fack it for pipeline first
+        return 1;
+        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        
+        return 0;
+    }
+    int32_t ScreenDeviceInfoImpl::GetDeviceName(uint32_t deviceNumber,
+                  char* deviceNameUTF8,
+                  uint32_t deviceNameLength,
+                  char* deviceUniqueIdUTF8,
+                  uint32_t deviceUniqueIdUTF8Length,
+                  char* productUniqueIdUTF8,
+                                        uint32_t productUniqueIdUTF8Length){
+        
+        
+        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        //vagouzhou: fack it for pipeline first
+        if(deviceNameLength>0 && deviceNameUTF8){
+            const char* deviceNameUTF8Test = "1.Mobile PC Display";
+            memset(deviceNameUTF8,0,deviceNameLength);
+            memcpy(deviceNameUTF8,deviceNameUTF8Test,strlen(deviceNameUTF8Test));
+        }
+        
+        
+        if(deviceUniqueIdUTF8Length>0 && deviceUniqueIdUTF8){
+            const char* deviceUniqueIdUTF8Test = "\\screen\\monitor#1";
+            memset(deviceUniqueIdUTF8,0,deviceUniqueIdUTF8Length);
+            memcpy(deviceUniqueIdUTF8,deviceUniqueIdUTF8Test,strlen(deviceUniqueIdUTF8Test));
+        }
+        
+        
+        if(productUniqueIdUTF8Length>0 && productUniqueIdUTF8){
+            const char* productUniqueIdUTF8Test = "\\screen\\monitor#1";
+            memset(productUniqueIdUTF8,0,productUniqueIdUTF8Length);
+            memcpy(productUniqueIdUTF8,productUniqueIdUTF8Test,strlen(productUniqueIdUTF8Test));
+        }
+        
+        return 0;
+        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
+        
+        
+        return 0;
+    }
+   
+    int32_t ScreenDeviceInfoImpl::DisplayCaptureSettingsDialogBox(
+                                    const char* deviceUniqueIdUTF8,
+                                    const char* dialogTitleUTF8,
+                                    void* parentWindow,
+                                    uint32_t positionX,
+                                                          uint32_t positionY){
+        return 0;
+    }
+    int32_t ScreenDeviceInfoImpl::NumberOfCapabilities(const char* deviceUniqueIdUTF8){
+        return 0;
+    }
+    
+    int32_t ScreenDeviceInfoImpl::GetCapability(
+                                  const char* deviceUniqueIdUTF8,
+                                  const uint32_t deviceCapabilityNumber,
+                                                VideoCaptureCapability& capability){
+        return 0;
+    }
+    
+    int32_t ScreenDeviceInfoImpl::GetBestMatchedCapability(
+                                             const char* deviceUniqueIdUTF8,
+                                             const VideoCaptureCapability& requested,
+                                                           VideoCaptureCapability& resulting){
+        return 0;
+    }
+    int32_t ScreenDeviceInfoImpl::GetOrientation(
+                                   const char* deviceUniqueIdUTF8,
+                                                 VideoCaptureRotation& orientation){
+        return 0;
+    }
+    
+    
+VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t process_id,const int32_t monitor_id){
 	// TODO(tommi): Use Media Foundation implementation for Vista and up.
 	RefCountImpl<DesktopCaptureImpl>* capture = new RefCountImpl<DesktopCaptureImpl>(process_id);
 
@@ -39,29 +128,31 @@ VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t process_id,const in
         return capture;
     }
 
-
-	return capture;
+    return capture;
 }
-
-const char* DesktopCaptureImpl::CurrentDeviceName() const
-{
+VideoCaptureModule::DeviceInfo* DesktopCaptureImpl::CreateDeviceInfo(const int32_t id){
+    ScreenDeviceInfoImpl * pScreenDeviceInfoImpl = new ScreenDeviceInfoImpl(id);
+    if(!pScreenDeviceInfoImpl || pScreenDeviceInfoImpl->Init()){
+        delete pScreenDeviceInfoImpl;
+        pScreenDeviceInfoImpl = NULL;
+    }
+    return pScreenDeviceInfoImpl;
+}
+const char* DesktopCaptureImpl::CurrentDeviceName() const{
     return _deviceUniqueId;
 }
 
-int32_t DesktopCaptureImpl::ChangeUniqueId(const int32_t id)
-{
+int32_t DesktopCaptureImpl::ChangeUniqueId(const int32_t id){
     _id = id;
     return 0;
 }
-int32_t DesktopCaptureImpl::Init(const int32_t process_id,const int32_t monitor_id)
-{
+int32_t DesktopCaptureImpl::Init(const int32_t process_id,const int32_t monitor_id){
     screen_capturer_.reset(ScreenCapturer::Create());
     //screen_capturer_->Start(this);
     return 0;
 }
 // returns the number of milliseconds until the module want a worker thread to call Process
-int32_t DesktopCaptureImpl::TimeUntilNextProcess()
-{
+int32_t DesktopCaptureImpl::TimeUntilNextProcess(){
     CriticalSectionScoped cs(&_callBackCs);
 
     int32_t timeToNormalProcess = kProcessInterval
