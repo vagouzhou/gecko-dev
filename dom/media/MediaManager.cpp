@@ -942,7 +942,7 @@ public:
     if (mConstraints.mPicture || mConstraints.mVideo) {
       ScopedDeletePtr<SourceSet> sources (GetSources(backend,
           mConstraints.mVideom, &MediaEngine::EnumerateVideoDevices));
-
+//vagouzhou@gmail.com >> TBD ,what to do for screen sharing ?
       if (!sources->Length()) {
         Fail(NS_LITERAL_STRING("NO_DEVICES_FOUND"));
         return NS_ERROR_FAILURE;
@@ -1093,12 +1093,23 @@ public:
     ScopedDeletePtr<SourceSet> final (GetSources(backend, mConstraints.mVideom,
                                           &MediaEngine::EnumerateVideoDevices,
                                           mLoopbackVideoDevice));
+      {
+          ScopedDeletePtr<SourceSet> s (GetSources(backend, mConstraints.mVideom,
+                                                   &MediaEngine::EnumerateScreenDevices));
+          final->MoveElementsFrom(*s);
+      }
+      {
+          ScopedDeletePtr<SourceSet> s (GetSources(backend, mConstraints.mVideom,
+                                                   &MediaEngine::EnumerateApplicationDevices));
+          final->MoveElementsFrom(*s);
+      }
     {
       ScopedDeletePtr<SourceSet> s (GetSources(backend, mConstraints.mAudiom,
                                         &MediaEngine::EnumerateAudioDevices,
                                         mLoopbackAudioDevice));
       final->MoveElementsFrom(*s);
     }
+      
     NS_DispatchToMainThread(new DeviceSuccessCallbackRunnable(mWindowId,
                                                               mSuccess, mError,
                                                               final.forget()));
