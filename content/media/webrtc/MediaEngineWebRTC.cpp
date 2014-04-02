@@ -44,11 +44,13 @@ GetUserMediaLog()
 namespace mozilla {
 
 MediaEngineWebRTC::MediaEngineWebRTC(MediaEnginePrefs &aPrefs)
-  : mMutex("mozilla::MediaEngineWebRTC")
+    : mMutex("mozilla::MediaEngineWebRTC")
+    , mScreenEngine(nullptr)
   , mVideoEngine(nullptr)
-  , mVoiceEngine(nullptr)
-  , mVideoEngineInit(false)
-  , mAudioEngineInit(false)
+    , mVoiceEngine(nullptr)
+    , mVideoEngineInit(false)
+    , mAudioEngineInit(false)
+    , mScreenEngineInit(false)
   , mHasTabVideoSource(false)
 {
 #ifndef MOZ_B2G_CAMERA
@@ -61,10 +63,60 @@ MediaEngineWebRTC::MediaEngineWebRTC(MediaEnginePrefs &aPrefs)
   AsyncLatencyLogger::Get()->AddRef();
 #endif
 }
-
+    
 void
-MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >* aVSources)
-{
+MediaEngineWebRTC::EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources){
+#ifdef MOZ_B2G_CAMERA
+    return;
+#else
+    mConfig.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,false));
+    if (!mScreenEngine) {
+        if (!(mScreenEngine = webrtc::VideoEngine::Create(mConfig))) {
+            return;
+        }
+    }
+#endif
+    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit);
+}
+    
+void
+MediaEngineWebRTC::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources){
+    //vagouzhou@gmail.com
+    //TBD ,implement it in future
+    return ;
+    
+#ifdef MOZ_B2G_CAMERA
+    return;
+#else
+    
+    mConfig.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,true));
+    if (!mScreenEngine) {
+        if (!(mScreenEngine = webrtc::VideoEngine::Create(mConfig))) {
+            return;
+        }
+    }
+#endif
+    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit);
+}
+    
+void
+MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >* aVSources){
+#ifdef MOZ_B2G_CAMERA
+    
+#else
+    if (!mVideoEngine) {
+        if (!(mVideoEngine = webrtc::VideoEngine::Create())) {
+            return;
+        }
+    }
+#endif
+    EnumerateCommonVideoDevices(aVSources,mVideoEngine,mVideoEngineInit);
+}
+    
+void
+MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
+                                               webrtc::VideoEngine* videoEngine,
+                                               bool& bEngineInit){
 #ifdef MOZ_B2G_CAMERA
   MutexAutoLock lock(mMutex);
 
@@ -121,11 +173,11 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
     return;
   }
 #endif
-  if (!mVideoEngine) {
-    if (!(mVideoEngine = webrtc::VideoEngine::Create())) {
+  /*if (!videoEngine) {
+    if (!(videoEngine = webrtc::VideoEngine::Create())) {
       return;
     }
-  }
+  }*/
 
   PRLogModuleInfo *logs = GetWebRTCLogInfo();
   if (!gWebrtcTraceLoggingOn && logs && logs->level > 0) {
@@ -139,23 +191,23 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
 
     LOG(("%s Logging webrtc to %s level %d", __FUNCTION__, file, logs->level));
 
-    mVideoEngine->SetTraceFilter(logs->level);
-    mVideoEngine->SetTraceFile(file);
+    videoEngine->SetTraceFilter(logs->level);
+    videoEngine->SetTraceFile(file);
   }
 
-  ptrViEBase = webrtc::ViEBase::GetInterface(mVideoEngine);
+  ptrViEBase = webrtc::ViEBase::GetInterface(videoEngine);
   if (!ptrViEBase) {
     return;
   }
 
-  if (!mVideoEngineInit) {
+  if (!bEngineInit) {
     if (ptrViEBase->Init() < 0) {
       return;
     }
-    mVideoEngineInit = true;
+    bEngineInit = true;
   }
 
-  ptrViECapture = webrtc::ViECapture::GetInterface(mVideoEngine);
+  ptrViECapture = webrtc::ViECapture::GetInterface(videoEngine);
   if (!ptrViECapture) {
     return;
   }
@@ -219,7 +271,7 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
       // We've already seen this device, just append.
       aVSources->AppendElement(vSource.get());
     } else {
-      vSource = new MediaEngineWebRTCVideoSource(mVideoEngine, i);
+      vSource = new MediaEngineWebRTCVideoSource(videoEngine, i);
       mVideoSources.Put(uuid, vSource); // Hashtable takes ownership.
       aVSources->AppendElement(vSource);
     }
@@ -341,6 +393,11 @@ MediaEngineWebRTC::Shutdown()
     mVideoSources.Clear();
     webrtc::VideoEngine::Delete(mVideoEngine);
   }
+    
+    if (mScreenEngine) {
+        mScreenSources.Clear();
+        webrtc::VideoEngine::Delete(mScreenEngine);
+    }
 
   if (mVoiceEngine) {
     mAudioSources.Clear();
@@ -348,7 +405,8 @@ MediaEngineWebRTC::Shutdown()
   }
 
   mVideoEngine = nullptr;
-  mVoiceEngine = nullptr;
+    mVoiceEngine = nullptr;
+    mScreenEngine = nullptr;
 }
 
 }
