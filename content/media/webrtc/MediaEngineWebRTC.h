@@ -30,7 +30,7 @@
 #include "MediaEngineWrapper.h"
 
 // WebRTC library includes follow
-
+#include "webrtc/common.h"
 // Audio Engine
 #include "webrtc/voice_engine/include/voe_base.h"
 #include "webrtc/voice_engine/include/voe_codec.h"
@@ -352,23 +352,37 @@ public:
 
   virtual void EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
   virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
-
+    virtual void EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
+    virtual void EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
+protected:
+    void EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
+                                    webrtc::VideoEngine* videoEngine,
+                                     bool& bEngineInit);
 private:
   Mutex mMutex;
+    webrtc::Config mConfig;
+    //vagouzhou@gmail.com
+    //TBD ,implement application sharing in future
+    //vagouzhou>>engine is cache, had to seperate video/screen/application
+    //webrtc::Config mConfigScreen;
+    //webrtc::Config mConfigApplication;
+    
   // protected with mMutex:
-
+webrtc::VideoEngine* mScreenEngine;
   webrtc::VideoEngine* mVideoEngine;
   webrtc::VoiceEngine* mVoiceEngine;
 
   // Need this to avoid unneccesary WebRTC calls while enumerating.
   bool mVideoEngineInit;
   bool mAudioEngineInit;
+    bool mScreenEngineInit;
   bool mHasTabVideoSource;
 
   // Store devices we've already seen in a hashtable for quick return.
   // Maps UUID to MediaEngineSource (one set for audio, one for video).
   nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mVideoSources;
-  nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCAudioSource > mAudioSources;
+    nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCAudioSource > mAudioSources;
+    nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mScreenSources;
 };
 
 }

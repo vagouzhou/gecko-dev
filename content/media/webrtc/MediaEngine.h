@@ -54,7 +54,9 @@ public:
 
   /* Populate an array of audio sources in the nsTArray. Also include devices
    * that are currently unavailable. */
-  virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*) = 0;
+    virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*) = 0;
+    virtual void EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*) = 0;
+    virtual void EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*) = 0;
 };
 
 /**
