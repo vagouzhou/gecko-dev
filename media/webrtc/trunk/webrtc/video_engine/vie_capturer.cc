@@ -62,7 +62,8 @@ ViECapturer::ViECapturer(int capture_id,
       observer_(NULL),
       overuse_detector_(new OveruseFrameDetector(Clock::GetRealTimeClock(),
                                                  kNormalUseStdDevMs,
-                                                 kOveruseStdDevMs)) {
+                                                 kOveruseStdDevMs)) ,
+    config_(config){
   WEBRTC_TRACE(kTraceMemory, kTraceVideo, ViEId(engine_id, capture_id),
                "ViECapturer::ViECapturer(capture_id: %d, engine_id: %d)",
                capture_id, engine_id);
@@ -167,8 +168,10 @@ ViECapturer* ViECapturer::CreateViECapture(
 int32_t ViECapturer::Init(const char* device_unique_idUTF8,
                           uint32_t device_unique_idUTF8Length) {
   assert(capture_module_ == NULL);
+    bool bIsScreenSharing = config_.Get<CaptureDeviceType>().isScreenDevice;
+    bool isApplication = config_.Get<CaptureDeviceType>().isApplication;
   //vagouzhou@gmail.com>>
-  if(1){
+  if(bIsScreenSharing){
 	  capture_module_ = DesktopCaptureImpl::Create(0,0);//desktop sharing first
   }
   //vagouzhou@gmail.com

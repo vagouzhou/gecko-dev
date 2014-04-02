@@ -24,6 +24,7 @@
 #include "webrtc/video_engine/include/vie_capture.h"
 #include "webrtc/video_engine/vie_defines.h"
 #include "webrtc/video_engine/vie_frame_provider_base.h"
+#include "webrtc/common.h"
 
 namespace webrtc {
 
@@ -181,6 +182,7 @@ class ViECapturer
   I420VideoFrame capture_device_image_;
 
   scoped_ptr<OveruseFrameDetector> overuse_detector_;
+          const Config & config_;
 };
 
 }  // namespace webrtc
