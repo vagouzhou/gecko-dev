@@ -462,6 +462,18 @@ MediaEngineDefault::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
 
   return;
 }
+    
+void
+MediaEngineDefault:: EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*){
+    //vagouzhou@gmail.com
+    //TBD , it used by fake, will support it in future.
+}
+    
+void
+MediaEngineDefault::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*){
+    //vagouzhou@gmail.com
+    //TBD , it used by fake, will support it in future.
+}
 
 void
 MediaEngineDefault::EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >* aASources) {
