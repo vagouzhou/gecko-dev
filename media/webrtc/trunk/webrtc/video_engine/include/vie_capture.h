@@ -45,7 +45,17 @@ struct CaptureCapability {
     interlaced = false;
   }
 };
-
+    struct CaptureDeviceType{
+        bool isScreenDevice;
+        bool isApplication;
+        CaptureDeviceType()
+        : isScreenDevice(false),isApplication(false){
+            
+        }
+        CaptureDeviceType(bool isScreenDevice,bool isApplication)
+        : isScreenDevice(isScreenDevice),isApplication(isApplication){
+        }
+    };
 // This enumerator tells the current brightness alarm mode.
 enum Brightness {
   Normal = 0,
