@@ -132,7 +132,9 @@ public:
   ~MediaEngineDefault() {}
 
   virtual void EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
-  virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
+    virtual void EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >*);
+    virtual void EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
+    virtual void EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*);
 
 private:
   Mutex mMutex;
