@@ -72,7 +72,7 @@ function handleRequest(aSubject, aTopic, aData) {
     constraints,
     function (devices) {
       prompt(contentWindow, aSubject.callID, constraints.audio,
-             constraints.video || constraints.picture, devices);
+             constraints.video || constraints.picture, devices,constraints.videom,constraints.audiom);
     },
     function (error) {
       // bug 827146 -- In the future, the UI should catch NO_DEVICES_FOUND
@@ -91,9 +91,12 @@ function denyRequest(aCallID, aError) {
   Services.obs.notifyObservers(msg, "getUserMedia:response:deny", aCallID);
 }
 
-function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevices) {
+function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevices,videom,audiom) {
   let audioDevices = [];
   let videoDevices = [];
+  let screenDevices = [];
+  let applicationDevices = [];
+
   for (let device of aDevices) {
     device = device.QueryInterface(Ci.nsIMediaDevice);
     switch (device.type) {
@@ -102,19 +105,65 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
           audioDevices.push(device);
         break;
       case "video":
-        if (aVideoRequested)
-          videoDevices.push(device);
+        if (aVideoRequested){
+            if(device.mozMediaSource=="screen"){
+                screenDevices.push(device);
+            }
+            else if(device.mozMediaSource=="application"){
+                applicationDevices.push(device);
+            }
+            else
+                videoDevices.push(device);
+          }
         break;
     }
   }
 
+    let mozMediaSourceMandatory = videom.mandatory.mozMediaSource;
+
   let requestType;
-  if (audioDevices.length && videoDevices.length)
-    requestType = "CameraAndMicrophone";
+
+  if (audioDevices.length
+    && (screenDevices.length) && mozMediaSourceMandatory=="screen"){
+        requestType = "ScreenAndMicrophone";
+        videoDevices = [];
+        //screenDevices = [];
+        applicationDevices = [];
+    }
+  else if (audioDevices.length
+    && (applicationDevices.length) && mozMediaSourceMandatory=="application"){
+        requestType = "ApplicationAndMicrophone";
+        videoDevices = [];
+        screenDevices = [];
+        //applicationDevices = [];
+    }
+  else if (audioDevices.length
+    && (videoDevices.length)){
+        requestType = "CameraAndMicrophone";
+        //videoDevices = [];
+        screenDevices = [];
+        applicationDevices = [];
+    }
   else if (audioDevices.length)
     requestType = "Microphone";
-  else if (videoDevices.length)
-    requestType = "Camera";
+  else if (screenDevices.length && mozMediaSourceMandatory=="screen"){
+        requestType = "Screen";
+        videoDevices = [];
+        //screenDevices = [];
+        applicationDevices = [];
+    }
+  else if (applicationDevices.length && mozMediaSourceMandatory=="application"){
+        requestType = "Application";
+        videoDevices = [];
+        screenDevices = [];
+        //applicationDevices = [];
+    }
+  else if (videoDevices.length){
+        requestType = "Camera";
+        //videoDevices = [];
+        screenDevices = [];
+        applicationDevices = [];
+    }
   else {
     denyRequest(aCallID, "NO_DEVICES_FOUND");
     return;
@@ -127,10 +176,12 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
   let stringBundle = chromeWin.gNavigatorBundle;
   let message = stringBundle.getFormattedString("getUserMedia.share" + requestType + ".message",
                                                 [ uri.host ]);
-
   let mainAction = {
-    label: PluralForm.get(requestType == "CameraAndMicrophone" ? 2 : 1,
+    label: PluralForm.get((requestType == "CameraAndMicrophone" 
+                    || requestType == "ScreenAndMicrophone"
+                    || requestType == "ApplicationAndMicrophone")? 2 : 1,
                           stringBundle.getString("getUserMedia.shareSelectedDevices.label")),
+
     accessKey: stringBundle.getString("getUserMedia.shareSelectedDevices.accesskey"),
     // The real callback will be set during the "showing" event. The
     // empty function here is so that PopupNotifications.show doesn't
@@ -203,15 +254,28 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
       }
 
       chromeDoc.getElementById("webRTC-selectCamera").hidden = !videoDevices.length;
+      chromeDoc.getElementById("webRTC-selectScreen").hidden = !screenDevices.length;
+      chromeDoc.getElementById("webRTC-selectApplication").hidden = !applicationDevices.length;
       chromeDoc.getElementById("webRTC-selectMicrophone").hidden = !audioDevices.length;
 
       let camMenupopup = chromeDoc.getElementById("webRTC-selectCamera-menupopup");
+      let screenMenupopup = chromeDoc.getElementById("webRTC-selectScreen-menupopup");
+      let applicationMenupopup = chromeDoc.getElementById("webRTC-selectApplication-menupopup");
       let micMenupopup = chromeDoc.getElementById("webRTC-selectMicrophone-menupopup");
       listDevices(camMenupopup, videoDevices);
+      listDevices(screenMenupopup, screenDevices);
+      listDevices(applicationMenupopup, applicationDevices);
       listDevices(micMenupopup, audioDevices);
-      if (requestType == "CameraAndMicrophone") {
+      if (requestType == "CameraAndMicrophone"
+                    || requestType == "ScreenAndMicrophone"
+                    || requestType == "ApplicationAndMicrophone") {
         let stringBundle = chromeDoc.defaultView.gNavigatorBundle;
-        addDeviceToList(camMenupopup, stringBundle.getString("getUserMedia.noVideo.label"), "-1");
+        if(requestType == "CameraAndMicrophone")
+            addDeviceToList(camMenupopup, stringBundle.getString("getUserMedia.noVideo.label"), "-1");
+        else if(requestType == "ScreenAndMicrophone")
+            addDeviceToList(screenMenupopup, stringBundle.getString("getUserMedia.noScreen.label"), "-1");
+        else if(requestType == "ApplicationAndMicrophone")
+            addDeviceToList(applicationMenupopup, stringBundle.getString("getUserMedia.noApplication.label"), "-1");
         addDeviceToList(micMenupopup, stringBundle.getString("getUserMedia.noAudio.label"), "-1");
       }
 
@@ -219,14 +283,35 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
         let allowedDevices = Cc["@mozilla.org/supports-array;1"]
                                .createInstance(Ci.nsISupportsArray);
         let perms = Services.perms;
-        if (videoDevices.length) {
-          let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectCamera-menulist").value;
-          let allowCamera = videoDeviceIndex != "-1";
-          if (allowCamera)
-            allowedDevices.AppendElement(videoDevices[videoDeviceIndex]);
+        if (videoDevices.length || screenDevices.length || applicationDevices.length) {
+            let allowCamera = false ;
+            {
+                let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectCamera-menulist").value;
+                allowCamera = videoDeviceIndex != "-1";
+                if (allowCamera){
+                    allowedDevices.AppendElement(videoDevices[videoDeviceIndex]);
+                }
+            }
+
+            {
+                let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectScreen-menulist").value;
+                allowCamera = videoDeviceIndex != "-1";
+                if (allowCamera){
+                    allowedDevices.AppendElement(screenDevices[videoDeviceIndex]);
+                }
+            }
+            
+            {
+                let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectApplication-menulist").value;
+                allowCamera = videoDeviceIndex != "-1";
+                if (allowCamera){
+                    allowedDevices.AppendElement(applicationDevices[videoDeviceIndex]);
+                }
+            }
+
           if (aRemember) {
             perms.add(uri, "camera",
-                      allowCamera ? perms.ALLOW_ACTION : perms.DENY_ACTION);
+                      allowCamera ? perms.ALLOW_ACTION : perms.DENY_ACTION);//vagouzhou>>will enhance it to add others "screen" in future , for screen sharing pipeline first.
           }
         }
         if (audioDevices.length) {

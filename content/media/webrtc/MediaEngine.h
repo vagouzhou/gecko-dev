@@ -9,6 +9,7 @@
 #include "nsIDOMFile.h"
 #include "DOMMediaStream.h"
 #include "MediaStreamGraph.h"
+#include "mozilla/dom/MediaStreamTrackBinding.h"
 
 namespace mozilla {
 
@@ -140,6 +141,7 @@ class MediaEngineVideoSource : public MediaEngineSource
 {
 public:
   virtual ~MediaEngineVideoSource() {}
+    virtual dom::MozMediaSourceEnum GetMozMediaSource(){ return dom::MozMediaSourceEnum::Camera; }
 };
 
 /**

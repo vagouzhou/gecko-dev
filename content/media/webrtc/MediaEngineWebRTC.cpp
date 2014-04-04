@@ -76,7 +76,7 @@ MediaEngineWebRTC::EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit);
+    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit,dom::MozMediaSourceEnum::Screen);
 }
     
 void
@@ -96,7 +96,7 @@ MediaEngineWebRTC::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVide
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit);
+    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit,dom::MozMediaSourceEnum::Application);
 }
     
 void
@@ -110,13 +110,14 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mVideoEngine,mVideoEngineInit);
+    EnumerateCommonVideoDevices(aVSources,mVideoEngine,mVideoEngineInit,dom::MozMediaSourceEnum::Camera);
 }
     
 void
 MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
                                                webrtc::VideoEngine* videoEngine,
-                                               bool& bEngineInit){
+                                               bool& bEngineInit,
+                                               dom::MozMediaSourceEnum mozMediaSourceType){
 #ifdef MOZ_B2G_CAMERA
   MutexAutoLock lock(mMutex);
 
@@ -148,7 +149,14 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
       // We've already seen this device, just append.
       aVSources->AppendElement(vSource.get());
     } else {
-      vSource = new MediaEngineWebRTCVideoSource(i);
+        if(mozMediaSourceType==dom::MozMediaSourceEnum::Screen){
+            vSource = new MediaEngineWebRTCScreenSource(i);
+        }
+        else if(mozMediaSourceType==dom::MozMediaSourceEnum::Application){
+            vSource = new MediaEngineWebRTCApplicationSource(i);
+        }
+        else
+           vSource = new MediaEngineWebRTCVideoSource(i);
       mVideoSources.Put(uuid, vSource); // Hashtable takes ownership.
       aVSources->AppendElement(vSource);
     }
@@ -271,7 +279,14 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
       // We've already seen this device, just append.
       aVSources->AppendElement(vSource.get());
     } else {
-      vSource = new MediaEngineWebRTCVideoSource(videoEngine, i);
+        if(mozMediaSourceType==dom::MozMediaSourceEnum::Screen){
+            vSource = new MediaEngineWebRTCScreenSource(videoEngine,i);
+        }
+        else if(mozMediaSourceType==dom::MozMediaSourceEnum::Application){
+            vSource = new MediaEngineWebRTCApplicationSource(videoEngine,i);
+        }
+        else
+            vSource = new MediaEngineWebRTCVideoSource(videoEngine,i);
       mVideoSources.Put(uuid, vSource); // Hashtable takes ownership.
       aVSources->AppendElement(vSource);
     }
