@@ -28,7 +28,7 @@
 #include "MediaStreamGraph.h"
 
 #include "MediaEngineWrapper.h"
-
+#include "mozilla/dom/MediaStreamTrackBinding.h"
 // WebRTC library includes follow
 #include "webrtc/common.h"
 // Audio Engine
@@ -158,6 +158,10 @@ public:
     return false;
   }
 
+    virtual dom::MozMediaSourceEnum GetMozMediaSource(){
+        return dom::MozMediaSourceEnum::Camera;
+    };
+
 #ifndef MOZ_B2G_CAMERA
   NS_DECL_THREADSAFE_ISUPPORTS
 #else
@@ -246,7 +250,36 @@ private:
 
   void ChooseCapability(const MediaEnginePrefs &aPrefs);
 };
-
+    class MediaEngineWebRTCScreenSource : public MediaEngineWebRTCVideoSource{
+    public:
+#ifdef MOZ_B2G_CAMERA
+        MediaEngineWebRTCScreenSource(int aIndex):MediaEngineWebRTCVideoSource(aIndex){
+        }
+#else
+        MediaEngineWebRTCScreenSource(webrtc::VideoEngine* aVideoEnginePtr, int aIndex):MediaEngineWebRTCVideoSource(aVideoEnginePtr,aIndex){
+        }
+#endif
+        
+        virtual dom::MozMediaSourceEnum GetMozMediaSource(){
+            return dom::MozMediaSourceEnum::Screen;
+        };
+    };
+    class MediaEngineWebRTCApplicationSource : public MediaEngineWebRTCVideoSource{
+    public:
+#ifdef MOZ_B2G_CAMERA
+        MediaEngineWebRTCApplicationSource(int aIndex)
+                                :MediaEngineWebRTCVideoSource(aIndex){
+        }
+#else
+        MediaEngineWebRTCApplicationSource(webrtc::VideoEngine* aVideoEnginePtr, int aIndex)
+                                :MediaEngineWebRTCVideoSource(aVideoEnginePtr,aIndex){
+        }
+#endif
+        
+        virtual dom::MozMediaSourceEnum GetMozMediaSource(){
+            return dom::MozMediaSourceEnum::Application;
+        };
+    };
 class MediaEngineWebRTCAudioSource : public MediaEngineAudioSource,
                                      public webrtc::VoEMediaProcess
 {
@@ -357,7 +390,8 @@ public:
 protected:
     void EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
                                     webrtc::VideoEngine* videoEngine,
-                                     bool& bEngineInit);
+                                     bool& bEngineInit,
+                                     dom::MozMediaSourceEnum);
 private:
   Mutex mMutex;
     webrtc::Config mConfig;
