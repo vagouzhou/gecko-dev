@@ -18,6 +18,27 @@
           <menupopup id="webRTC-selectCamera-menupopup"/>
         </menulist>
       </popupnotificationcontent>
+
+      <popupnotificationcontent id="webRTC-selectScreen" orient="vertical">
+        <separator class="thin"/>
+        <label value="&getUserMedia.selectScreen.label;"
+               accesskey="&getUserMedia.selectScreen.accesskey;"
+               control="webRTC-selectScreen-menulist"/>
+        <menulist id="webRTC-selectScreen-menulist">
+          <menupopup id="webRTC-selectScreen-menupopup"/>
+        </menulist>
+      </popupnotificationcontent>
+
+      <popupnotificationcontent id="webRTC-selectApplication" orient="vertical">
+        <separator class="thin"/>
+        <label value="&getUserMedia.selectApplication.label;"
+               accesskey="&getUserMedia.selectApplication.accesskey;"
+               control="webRTC-selectApplication-menulist"/>
+        <menulist id="webRTC-selectApplication-menulist">
+          <menupopup id="webRTC-selectApplication-menupopup"/>
+        </menulist>
+      </popupnotificationcontent>
+
       <popupnotificationcontent id="webRTC-selectMicrophone" orient="vertical">
         <separator class="thin"/>
         <label value="&getUserMedia.selectMicrophone.label;"

@@ -343,6 +343,8 @@ MediaDevice::MediaDevice(MediaEngineVideoSource* aSource)
     mHasFacingMode = true;
     mFacingMode = dom::VideoFacingModeEnum::User;
   }
+      
+      mMozMediaSource = aSource->GetMozMediaSource();//dom::MozMediaSourceEnum::Camera;
 }
 
 MediaDevice::MediaDevice(MediaEngineAudioSource* aSource)

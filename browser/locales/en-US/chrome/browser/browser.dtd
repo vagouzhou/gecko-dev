@@ -704,6 +704,10 @@ just addresses the organization to follow, e.g. "This site is run by " -->
 
 <!ENTITY getUserMedia.selectCamera.label "Camera to share:">
 <!ENTITY getUserMedia.selectCamera.accesskey "C">
+<!ENTITY getUserMedia.selectScreen.label "Screen to share:">
+<!ENTITY getUserMedia.selectScreen.accesskey "S">
+<!ENTITY getUserMedia.selectApplication.label "Application to share:">
+<!ENTITY getUserMedia.selectApplication.accesskey "A">
 <!ENTITY getUserMedia.selectMicrophone.label "Microphone to share:">
 <!ENTITY getUserMedia.selectMicrophone.accesskey "M">
 
