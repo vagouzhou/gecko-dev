@@ -285,14 +285,8 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
         let perms = Services.perms;
         if (videoDevices.length || screenDevices.length || applicationDevices.length) {
             let allowCamera = false ;
-            {
-                let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectCamera-menulist").value;
-                allowCamera = videoDeviceIndex != "-1";
-                if (allowCamera){
-                    allowedDevices.AppendElement(videoDevices[videoDeviceIndex]);
-                }
-            }
 
+            if(mozMediaSourceMandatory=="screen")
             {
                 let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectScreen-menulist").value;
                 allowCamera = videoDeviceIndex != "-1";
@@ -300,12 +294,20 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
                     allowedDevices.AppendElement(screenDevices[videoDeviceIndex]);
                 }
             }
-            
+            else if(mozMediaSourceMandatory=="Application")
             {
                 let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectApplication-menulist").value;
                 allowCamera = videoDeviceIndex != "-1";
                 if (allowCamera){
                     allowedDevices.AppendElement(applicationDevices[videoDeviceIndex]);
+                }
+            }
+            else
+            {
+                let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectCamera-menulist").value;
+                allowCamera = videoDeviceIndex != "-1";
+                if (allowCamera){
+                    allowedDevices.AppendElement(videoDevices[videoDeviceIndex]);
                 }
             }
 
