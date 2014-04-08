@@ -48,6 +48,8 @@
         "shared_memory.h",
         "window_capturer.cc",
         "window_capturer.h",
+	"desktop_device_info.h",
+	"desktop_device_info.cc",
       ],
       'conditions': [
         ['OS!="ios" and (target_arch=="ia32" or target_arch=="x64")', {
@@ -66,6 +68,8 @@
         "x11/x_error_trap.h",
         "x11/x_server_pixel_buffer.cc",
         "x11/x_server_pixel_buffer.h",
+	"x11/desktop_device_info_x11.h",
+	"x11/desktop_device_info_x11.cc",
           ],
           'link_settings': {
             'libraries': [
@@ -94,7 +98,9 @@
         "mac/osx_version.h",
         "mac/osx_version.cc",
         "mac/scoped_pixel_buffer_object.cc",
-        "mac/scoped_pixel_buffer_object.h",        
+        "mac/scoped_pixel_buffer_object.h", 
+        "mac/desktop_device_info_mac.h",
+        "mac/desktop_device_info_mac.mm",       
         "mouse_cursor_monitor_mac.mm",
         "screen_capturer_mac.mm",        
         "window_capturer_mac.mm",
@@ -119,7 +125,9 @@
         "win/desktop.h",
         "win/scoped_gdi_object.h",
         "win/scoped_thread_desktop.cc",
-        "win/scoped_thread_desktop.h",        
+        "win/scoped_thread_desktop.h",
+        "win/desktop_device_info_win.h",
+        "win/desktop_device_info_win.cc",
         "window_capturer_win.cc",
         ],
           }],
