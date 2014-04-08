@@ -23,6 +23,8 @@
 #include "webrtc/system_wrappers/interface/trace_event.h"
 #include "webrtc/video_engine/desktop_capture_impl.h"
 #include "webrtc/modules/desktop_capture/desktop_frame.h"
+#include "webrtc/modules/desktop_capture/desktop_device_info.h"
+
 
 namespace webrtc
 {
@@ -33,20 +35,16 @@ namespace webrtc
     ScreenDeviceInfoImpl::~ScreenDeviceInfoImpl(void){
         
     }
+    
     int32_t ScreenDeviceInfoImpl::Init(){
+        desktop_device_info_.reset(DesktopDeviceInfoImpl::Create());
         return 0;
     }
     
-    uint32_t ScreenDeviceInfoImpl::NumberOfDevices(){
-        //vagouzhou>>implment it first , will move to webrtc, and it is OS dependent.
-        
-        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        //vagouzhou: fack it for pipeline first
-        return 1;
-        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        
-        return 0;
+    uint32_t ScreenDeviceInfoImpl::NumberOfDevices(){        
+        return desktop_device_info_->getDisplayDeviceCount();
     }
+    
     int32_t ScreenDeviceInfoImpl::GetDeviceName(uint32_t deviceNumber,
                   char* deviceNameUTF8,
                   uint32_t deviceNameLength,
@@ -54,34 +52,33 @@ namespace webrtc
                   uint32_t deviceUniqueIdUTF8Length,
                   char* productUniqueIdUTF8,
                                         uint32_t productUniqueIdUTF8Length){
-        
-        
-        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        //vagouzhou: fack it for pipeline first
-        if(deviceNameLength>0 && deviceNameUTF8){
-            const char* deviceNameUTF8Test = "1.Mobile PC Display";
-            memset(deviceNameUTF8,0,deviceNameLength);
-            memcpy(deviceNameUTF8,deviceNameUTF8Test,strlen(deviceNameUTF8Test));
+
+        DesktopDisplayDevice desktopDisplayDevice;
+        if(desktop_device_info_->getDesktopDisplayDeviceInfo(deviceNumber,desktopDisplayDevice)==0){
+            
+            const char * deviceName = desktopDisplayDevice.getDeivceName();
+            if(deviceNameLength>0 && deviceNameUTF8 && deviceName){
+                memset(deviceNameUTF8,0,deviceNameLength);
+                memcpy(deviceNameUTF8,
+                       deviceName,
+                       strlen(deviceName));
+            }
+            
+            const char * deviceUniqueId = desktopDisplayDevice.getUniqueIdName();
+            if(deviceUniqueIdUTF8Length>0 && deviceUniqueIdUTF8 && deviceUniqueId){
+                memset(deviceUniqueIdUTF8,0,deviceUniqueIdUTF8Length);
+                memcpy(deviceUniqueIdUTF8,
+                       deviceUniqueId,
+                       strlen(deviceUniqueId));
+            }
+            
+            if(productUniqueIdUTF8Length>0 && productUniqueIdUTF8){
+                memset(productUniqueIdUTF8,0,productUniqueIdUTF8Length);
+                //memcpy(productUniqueIdUTF8,productUniqueIdUTF8Test,strlen(productUniqueIdUTF8Test));
+            }
+            
         }
-        
-        
-        if(deviceUniqueIdUTF8Length>0 && deviceUniqueIdUTF8){
-            const char* deviceUniqueIdUTF8Test = "\\screen\\monitor#1";
-            memset(deviceUniqueIdUTF8,0,deviceUniqueIdUTF8Length);
-            memcpy(deviceUniqueIdUTF8,deviceUniqueIdUTF8Test,strlen(deviceUniqueIdUTF8Test));
-        }
-        
-        
-        if(productUniqueIdUTF8Length>0 && productUniqueIdUTF8){
-            const char* productUniqueIdUTF8Test = "\\screen\\monitor#1";
-            memset(productUniqueIdUTF8,0,productUniqueIdUTF8Length);
-            memcpy(productUniqueIdUTF8,productUniqueIdUTF8Test,strlen(productUniqueIdUTF8Test));
-        }
-        
-        return 0;
-        //>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        
-        
+
         return 0;
     }
    
@@ -116,7 +113,8 @@ namespace webrtc
         return 0;
     }
     
-    
+//===============================================================================================
+//
 VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t process_id,const int32_t monitor_id){
 	// TODO(tommi): Use Media Foundation implementation for Vista and up.
 	RefCountImpl<DesktopCaptureImpl>* capture = new RefCountImpl<DesktopCaptureImpl>(process_id);

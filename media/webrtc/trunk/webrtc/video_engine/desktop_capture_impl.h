@@ -23,6 +23,7 @@
 #include "webrtc/modules/desktop_capture/shared_memory.h"
 #include "webrtc/system_wrappers/interface/thread_wrapper.h"
 #include "webrtc/modules/desktop_capture/mouse_cursor_shape.h"
+#include "webrtc/modules/desktop_capture/desktop_device_info.h"
 
 using namespace webrtc::videocapturemodule;
 namespace webrtc
@@ -67,7 +68,9 @@ class VideoCaptureEncodeInterface;
         virtual int32_t GetOrientation(
                                        const char* deviceUniqueIdUTF8,
                                        VideoCaptureRotation& orientation);
-        
+    protected:
+        int32_t _id;
+        scoped_ptr<DesktopDeviceInfo> desktop_device_info_;
 
     };
  
