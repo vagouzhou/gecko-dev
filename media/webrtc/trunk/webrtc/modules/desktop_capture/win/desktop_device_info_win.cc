@@ -1,4 +1,4 @@
-#include "webrtc/modules/desktop_capture/mac/desktop_device_info_win.h"
+#include "webrtc/modules/desktop_capture/win/desktop_device_info_win.h"
 
 namespace webrtc{
 
@@ -18,7 +18,7 @@ DesktopDeviceInfoWin::DesktopDeviceInfoWin()
 {
     
 }
-DesktopDeviceInfoWin:DesktopDeviceInfoWin()
+DesktopDeviceInfoWin::~DesktopDeviceInfoWin()
 {
     
 }

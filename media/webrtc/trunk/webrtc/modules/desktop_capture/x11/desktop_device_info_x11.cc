@@ -1,4 +1,4 @@
-#include "webrtc/modules/desktop_capture/mac/desktop_device_info_x11.h"
+#include "webrtc/modules/desktop_capture/x11/desktop_device_info_x11.h"
 
 namespace webrtc{
 #define MULTI_MONITOR_NO_SUPPORT 1
@@ -15,7 +15,7 @@ DesktopDeviceInfoX11::DesktopDeviceInfoX11()
 {
     
 }
-DesktopDeviceInfoX11:DesktopDeviceInfoX11()
+DesktopDeviceInfoX11::~DesktopDeviceInfoX11()
 {
     
 }
