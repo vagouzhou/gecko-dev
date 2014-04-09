@@ -8,7 +8,7 @@ namespace webrtc {
     class DesktopDeviceInfoX11 : public DesktopDeviceInfoImpl{
     public:
         DesktopDeviceInfoX11();
-        DesktopDeviceInfoX11();
+        ~DesktopDeviceInfoX11();
         
         //DesktopDeviceInfo Interfaces
         virtual int32_t Init();
