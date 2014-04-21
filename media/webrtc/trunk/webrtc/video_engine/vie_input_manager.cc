@@ -415,8 +415,11 @@ ViECapturer* ViEInputManager::ViECapturePtr(int capture_id) const {
 VideoCaptureModule::DeviceInfo* ViEInputManager::GetDeviceInfo(){
     //vagouzhou@gmail.com>> to create different DeviceInfo by _config;
     bool bUseVideoDeviceInfo = true;
-    if(config_.Get<CaptureDeviceType>().isScreenDevice)
+    bool bUseAppDeviceInfo = false;
+    if(config_.Get<CaptureDeviceType>().isScreenDevice){
         bUseVideoDeviceInfo = false;
+        bUseAppDeviceInfo = config_.Get<CaptureDeviceType>().isApplication;
+    }
     if (capture_device_info_ == NULL){
         if(bUseVideoDeviceInfo){
             capture_device_info_ = VideoCaptureFactory::CreateDeviceInfo(ViEModuleId(engine_id_));
