@@ -394,15 +394,15 @@ protected:
                                      dom::MozMediaSourceEnum);
 private:
   Mutex mMutex;
-    webrtc::Config mConfig;
     //vagouzhou@gmail.com
     //TBD ,implement application sharing in future
     //vagouzhou>>engine is cache, had to seperate video/screen/application
-    //webrtc::Config mConfigScreen;
-    //webrtc::Config mConfigApplication;
+    webrtc::Config mConfigScreen;
+    webrtc::Config mConfigApplication;
     
   // protected with mMutex:
-webrtc::VideoEngine* mScreenEngine;
+    webrtc::VideoEngine* mScreenEngine;
+    webrtc::VideoEngine* mAppEngine;//vagouzhou>>maybe we can merge it with mScreenEngine
   webrtc::VideoEngine* mVideoEngine;
   webrtc::VoiceEngine* mVoiceEngine;
 
@@ -410,13 +410,15 @@ webrtc::VideoEngine* mScreenEngine;
   bool mVideoEngineInit;
   bool mAudioEngineInit;
     bool mScreenEngineInit;
+    bool mAppEngineInit;
   bool mHasTabVideoSource;
 
   // Store devices we've already seen in a hashtable for quick return.
   // Maps UUID to MediaEngineSource (one set for audio, one for video).
   nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mVideoSources;
     nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCAudioSource > mAudioSources;
-    nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mScreenSources;
+    //nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mScreenSources;
+    //nsRefPtrHashtable<nsStringHashKey, MediaEngineWebRTCVideoSource > mAppSources;
 };
 
 }

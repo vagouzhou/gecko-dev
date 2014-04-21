@@ -46,11 +46,13 @@ namespace mozilla {
 MediaEngineWebRTC::MediaEngineWebRTC(MediaEnginePrefs &aPrefs)
     : mMutex("mozilla::MediaEngineWebRTC")
     , mScreenEngine(nullptr)
+    , mAppEngine(nullptr)
   , mVideoEngine(nullptr)
     , mVoiceEngine(nullptr)
     , mVideoEngineInit(false)
     , mAudioEngineInit(false)
     , mScreenEngineInit(false)
+    , mAppEngineInit(false)
   , mHasTabVideoSource(false)
 {
 #ifndef MOZ_B2G_CAMERA
@@ -69,9 +71,9 @@ MediaEngineWebRTC::EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
 #ifdef MOZ_B2G_CAMERA
     return;
 #else
-    mConfig.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,false));
+    mConfigScreen.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,false));
     if (!mScreenEngine) {
-        if (!(mScreenEngine = webrtc::VideoEngine::Create(mConfig))) {
+        if (!(mScreenEngine = webrtc::VideoEngine::Create(mConfigScreen))) {
             return;
         }
     }
@@ -81,22 +83,19 @@ MediaEngineWebRTC::EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
     
 void
 MediaEngineWebRTC::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources){
-    //vagouzhou@gmail.com
-    //TBD ,implement it in future
-    return ;
     
 #ifdef MOZ_B2G_CAMERA
     return;
 #else
     
-    mConfig.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,true));
-    if (!mScreenEngine) {
-        if (!(mScreenEngine = webrtc::VideoEngine::Create(mConfig))) {
+    mConfigApplication.Set<webrtc::CaptureDeviceType>(new webrtc::CaptureDeviceType(true,true));
+    if (!mAppEngine) {
+        if (!(mAppEngine = webrtc::VideoEngine::Create(mConfigApplication))) {
             return;
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit,dom::MozMediaSourceEnum::Application);
+    EnumerateCommonVideoDevices(aVSources,mAppEngine,mAppEngineInit,dom::MozMediaSourceEnum::Application);
 }
     
 void
@@ -410,8 +409,12 @@ MediaEngineWebRTC::Shutdown()
   }
     
     if (mScreenEngine) {
-        mScreenSources.Clear();
+        //mScreenSources.Clear();
         webrtc::VideoEngine::Delete(mScreenEngine);
+    }
+    if (mAppEngine) {
+        //mAppSources.Clear();
+        webrtc::VideoEngine::Delete(mAppEngine);
     }
 
   if (mVoiceEngine) {
@@ -422,6 +425,7 @@ MediaEngineWebRTC::Shutdown()
   mVideoEngine = nullptr;
     mVoiceEngine = nullptr;
     mScreenEngine = nullptr;
+    mAppEngine = nullptr;
 }
 
 }
