@@ -23,26 +23,6 @@ namespace webrtc {
 
 namespace {
 
-bool CFStringRefToUtf8(const CFStringRef string, std::string* str_utf8) {
-  assert(string);
-  assert(str_utf8);
-  CFIndex length = CFStringGetLength(string);
-  size_t max_length_utf8 =
-      CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8);
-  str_utf8->resize(max_length_utf8);
-  CFIndex used_bytes;
-  int result = CFStringGetBytes(
-      string, CFRangeMake(0, length), kCFStringEncodingUTF8, 0, false,
-      reinterpret_cast<UInt8*>(&*str_utf8->begin()), max_length_utf8,
-      &used_bytes);
-  if (result != length) {
-    str_utf8->clear();
-    return false;
-  }
-  str_utf8->resize(used_bytes);
-  return true;
-}
-
 class AppCapturerMac : public AppCapturer {
  public:
   AppCapturerMac();
@@ -76,10 +56,10 @@ AppCapturerMac::~AppCapturerMac() {
 bool AppCapturerMac::GetAppList(AppList* apps){
 	return true;
 }
-virtual bool SelectApp(ProcessId id){
+bool AppCapturerMac::SelectApp(ProcessId id){
 	return true;
 }
-virtual bool BringAppToFront() {
+ bool AppCapturerMac::BringAppToFront() {
 	return true;
 }
 
