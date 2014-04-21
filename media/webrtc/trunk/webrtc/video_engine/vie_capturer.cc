@@ -169,10 +169,15 @@ int32_t ViECapturer::Init(const char* device_unique_idUTF8,
                           uint32_t device_unique_idUTF8Length) {
   assert(capture_module_ == NULL);
     bool bIsScreenSharing = config_.Get<CaptureDeviceType>().isScreenDevice;
-    bool isApplication = config_.Get<CaptureDeviceType>().isApplication;
+    bool bIsApplication = config_.Get<CaptureDeviceType>().isApplication;
   //vagouzhou@gmail.com>>
   if(bIsScreenSharing){
-	  capture_module_ = DesktopCaptureImpl::Create(0,0);//desktop sharing first
+      if(bIsApplication){
+          capture_module_ = DesktopCaptureImpl::Create(ViEModuleId(engine_id_, capture_id_),device_unique_idUTF8,false);//desktop sharing, ScreenId
+      }
+      else{
+          capture_module_ = DesktopCaptureImpl::Create(ViEModuleId(engine_id_, capture_id_),device_unique_idUTF8,true);//app sharing, ProcessId
+      }
   }
   //vagouzhou@gmail.com
   else if (device_unique_idUTF8 == NULL) {

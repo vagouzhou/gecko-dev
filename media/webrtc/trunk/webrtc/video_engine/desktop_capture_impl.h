@@ -85,11 +85,11 @@ class DesktopCaptureImpl: public VideoCaptureModule,
 public:
 	/* Create a screen capture modules object
 	*/
-	static VideoCaptureModule* Create(const int32_t process_id,const int32_t monitor_id);
-
+	static VideoCaptureModule* Create(const int32_t id,const char* uniqueId,const bool bIsApp);
+    
     static VideoCaptureModule::DeviceInfo* CreateDeviceInfo(const int32_t id);
 
-    int32_t Init(const int32_t process_id,const int32_t monitor_id);
+    int32_t Init(const char* uniqueId,const bool bIsApp);
     // Implements Module declared functions.
     virtual int32_t ChangeUniqueId(const int32_t id);
 
@@ -186,8 +186,8 @@ protected:
     
 private:
 	//
-	scoped_ptr<ScreenCapturer> screen_capturer_;
-    ThreadWrapper&  screen_capturer_thread_;
+	scoped_ptr<DesktopCapturer> desktop_capturer_;
+    ThreadWrapper&  capturer_thread_;
     scoped_ptr<MouseCursorShape> cursor_shape_;
 };
 

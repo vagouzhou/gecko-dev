@@ -24,6 +24,7 @@
 #include "webrtc/video_engine/desktop_capture_impl.h"
 #include "webrtc/modules/desktop_capture/desktop_frame.h"
 #include "webrtc/modules/desktop_capture/desktop_device_info.h"
+#include "webrtc/modules/desktop_capture/app_capturer.h"
 
 
 namespace webrtc
@@ -115,12 +116,12 @@ namespace webrtc
     
 //===============================================================================================
 //
-VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t process_id,const int32_t monitor_id){
+VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t id,const char* uniqueId,const bool bIsApp){
 	// TODO(tommi): Use Media Foundation implementation for Vista and up.
-	RefCountImpl<DesktopCaptureImpl>* capture = new RefCountImpl<DesktopCaptureImpl>(process_id);
+	RefCountImpl<DesktopCaptureImpl>* capture = new RefCountImpl<DesktopCaptureImpl>(id);
 
     //create real screen capturer.
-	if(capture->Init(process_id,monitor_id)!=0)
+	if(capture->Init(uniqueId,bIsApp)!=0)
     {
         delete capture;
         return capture;
@@ -144,9 +145,27 @@ int32_t DesktopCaptureImpl::ChangeUniqueId(const int32_t id){
     _id = id;
     return 0;
 }
-int32_t DesktopCaptureImpl::Init(const int32_t process_id,const int32_t monitor_id){
-    screen_capturer_.reset(ScreenCapturer::Create());
-    //screen_capturer_->Start(this);
+int32_t DesktopCaptureImpl::Init(const char* uniqueId,const bool bIsApp){
+    if(bIsApp){
+        AppCapturer *pAppCapturer =AppCapturer::Create();
+        if(pAppCapturer==nullptr) return -1;
+        
+        ProcessId processid = 0;//uniqueId
+        pAppCapturer->SelectApp(processid);
+        
+        desktop_capturer_.reset(pAppCapturer);
+    }
+    else{
+        ScreenCapturer *pScreenCapturer = ScreenCapturer::Create();
+        if(pScreenCapturer==nullptr) return -1;
+        
+        ScreenId screenid = 0;//uniqueId
+        pScreenCapturer->SelectScreen(screenid);        
+        pScreenCapturer->SetMouseShapeObserver(this);
+        
+        desktop_capturer_.reset(pScreenCapturer);
+    }
+    //desktop_capturer_->Start(this);
     return 0;
 }
 // returns the number of milliseconds until the module want a worker thread to call Process
@@ -228,7 +247,7 @@ DesktopCaptureImpl::DesktopCaptureImpl(const int32_t id)
       delta_ntp_internal_ms_(
           Clock::GetRealTimeClock()->CurrentNtpInMilliseconds() -
           TickTime::MillisecondTimestamp()),
-    screen_capturer_thread_(*ThreadWrapper::CreateThread(Run,this,kHighPriority,"ScreenCaptureThread")){
+    capturer_thread_(*ThreadWrapper::CreateThread(Run,this,kHighPriority,"ScreenCaptureThread")){
     _requestedCapability.width = kDefaultWidth;
     _requestedCapability.height = kDefaultHeight;
     _requestedCapability.maxFPS = 30;
@@ -239,8 +258,8 @@ DesktopCaptureImpl::DesktopCaptureImpl(const int32_t id)
 
 DesktopCaptureImpl::~DesktopCaptureImpl()
 {
-    screen_capturer_thread_.Stop();
-    delete &screen_capturer_thread_;
+    capturer_thread_.Stop();
+    delete &capturer_thread_;
     
     DeRegisterCaptureDataCallback();
     DeRegisterCaptureCallback();
@@ -535,15 +554,14 @@ uint32_t DesktopCaptureImpl::CalculateFrameRate(const TickTime& now)
 int32_t DesktopCaptureImpl::StartCapture(const VideoCaptureCapability& capability)
 {
 	_requestedCapability = capability;
-    screen_capturer_->SetMouseShapeObserver(this);
-    screen_capturer_->Start(this);
+    desktop_capturer_->Start(this);
     unsigned int t_id =0;
-    screen_capturer_thread_.Start(t_id);
+    capturer_thread_.Start(t_id);
 	return 0;
 }
 int32_t DesktopCaptureImpl::StopCapture()   
 {
-    //screen_capturer_thread_->Stop();
+    //capturer_thread_->Stop();
 	return -1; 
 }
 bool DesktopCaptureImpl::CaptureStarted() 
@@ -588,7 +606,7 @@ void DesktopCaptureImpl::process()
     DesktopRect desktop_rect;
     DesktopRegion desktop_region;
     
-    screen_capturer_->Capture(DesktopRegion());
+    desktop_capturer_->Capture(DesktopRegion());
 }
     
 void DesktopCaptureImpl::OnCursorShapeChanged(MouseCursorShape* cursor_shape)
