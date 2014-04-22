@@ -29,6 +29,7 @@
 
 namespace webrtc
 {
+    //
     ScreenDeviceInfoImpl::ScreenDeviceInfoImpl(const int32_t id){
         
     }
@@ -113,7 +114,91 @@ namespace webrtc
                                                  VideoCaptureRotation& orientation){
         return 0;
     }
+    //
+    AppDeviceInfoImpl::AppDeviceInfoImpl(const int32_t id){
+        
+    }
     
+    AppDeviceInfoImpl::~AppDeviceInfoImpl(void){
+        
+    }
+    
+    int32_t AppDeviceInfoImpl::Init(){
+        desktop_device_info_.reset(DesktopDeviceInfoImpl::Create());
+        return 0;
+    }
+    
+    uint32_t AppDeviceInfoImpl::NumberOfDevices(){
+        return desktop_device_info_->getApplicationCount();
+    }
+    
+    int32_t AppDeviceInfoImpl::GetDeviceName(uint32_t deviceNumber,
+                                                char* deviceNameUTF8,
+                                                uint32_t deviceNameLength,
+                                                char* deviceUniqueIdUTF8,
+                                                uint32_t deviceUniqueIdUTF8Length,
+                                                char* productUniqueIdUTF8,
+                                                uint32_t productUniqueIdUTF8Length){
+        
+        DesktopApplication desktopApplication;
+        if(desktop_device_info_->getApplicationInfo(deviceNumber,desktopApplication)==0){
+            
+            const char * deviceName = desktopApplication.getProcessAppName();
+            if(deviceNameLength>0 && deviceNameUTF8 && deviceName){
+                memset(deviceNameUTF8,0,deviceNameLength);
+                memcpy(deviceNameUTF8,
+                       deviceName,
+                       strlen(deviceName));
+            }
+            
+            const char * deviceUniqueId = desktopApplication.getUniqueIdName();
+            if(deviceUniqueIdUTF8Length>0 && deviceUniqueIdUTF8 && deviceUniqueId){
+                memset(deviceUniqueIdUTF8,0,deviceUniqueIdUTF8Length);
+                memcpy(deviceUniqueIdUTF8,
+                       deviceUniqueId,
+                       strlen(deviceUniqueId));
+            }
+            
+            if(productUniqueIdUTF8Length>0 && productUniqueIdUTF8){
+                memset(productUniqueIdUTF8,0,productUniqueIdUTF8Length);
+                //memcpy(productUniqueIdUTF8,productUniqueIdUTF8Test,strlen(productUniqueIdUTF8Test));
+            }
+            
+        }
+        
+        return 0;
+    }
+    
+    int32_t AppDeviceInfoImpl::DisplayCaptureSettingsDialogBox(
+                                                                  const char* deviceUniqueIdUTF8,
+                                                                  const char* dialogTitleUTF8,
+                                                                  void* parentWindow,
+                                                                  uint32_t positionX,
+                                                                  uint32_t positionY){
+        return 0;
+    }
+    int32_t AppDeviceInfoImpl::NumberOfCapabilities(const char* deviceUniqueIdUTF8){
+        return 0;
+    }
+    
+    int32_t AppDeviceInfoImpl::GetCapability(
+                                                const char* deviceUniqueIdUTF8,
+                                                const uint32_t deviceCapabilityNumber,
+                                                VideoCaptureCapability& capability){
+        return 0;
+    }
+    
+    int32_t AppDeviceInfoImpl::GetBestMatchedCapability(
+                                                           const char* deviceUniqueIdUTF8,
+                                                           const VideoCaptureCapability& requested,
+                                                           VideoCaptureCapability& resulting){
+        return 0;
+    }
+    int32_t AppDeviceInfoImpl::GetOrientation(
+                                                 const char* deviceUniqueIdUTF8,
+                                                 VideoCaptureRotation& orientation){
+        return 0;
+    }
 //===============================================================================================
 //
 VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t id,const char* uniqueId,const bool bIsApp){
@@ -129,13 +214,23 @@ VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t id,const char* uniq
 
     return capture;
 }
-VideoCaptureModule::DeviceInfo* DesktopCaptureImpl::CreateDeviceInfo(const int32_t id){
-    ScreenDeviceInfoImpl * pScreenDeviceInfoImpl = new ScreenDeviceInfoImpl(id);
-    if(!pScreenDeviceInfoImpl || pScreenDeviceInfoImpl->Init()){
-        delete pScreenDeviceInfoImpl;
-        pScreenDeviceInfoImpl = NULL;
+VideoCaptureModule::DeviceInfo* DesktopCaptureImpl::CreateDeviceInfo(const int32_t id,const bool bIsApp){
+    if(bIsApp){
+        AppDeviceInfoImpl * pAppDeviceInfoImpl = new AppDeviceInfoImpl(id);
+        if(!pAppDeviceInfoImpl || pAppDeviceInfoImpl->Init()){
+            delete pAppDeviceInfoImpl;
+            pAppDeviceInfoImpl = NULL;
+        }
+        return pAppDeviceInfoImpl;
     }
-    return pScreenDeviceInfoImpl;
+    else {
+        ScreenDeviceInfoImpl * pScreenDeviceInfoImpl = new ScreenDeviceInfoImpl(id);
+        if(!pScreenDeviceInfoImpl || pScreenDeviceInfoImpl->Init()){
+            delete pScreenDeviceInfoImpl;
+            pScreenDeviceInfoImpl = NULL;
+        }
+        return pScreenDeviceInfoImpl;
+    }
 }
 const char* DesktopCaptureImpl::CurrentDeviceName() const{
     return _deviceUniqueId;

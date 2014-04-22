@@ -74,6 +74,47 @@ class VideoCaptureEncodeInterface;
 
     };
  
+    class AppDeviceInfoImpl : public VideoCaptureModule::DeviceInfo
+    {
+    public:
+        AppDeviceInfoImpl(const int32_t id);
+        virtual ~AppDeviceInfoImpl(void);
+        
+        int32_t Init();
+        
+        virtual uint32_t NumberOfDevices();
+        virtual int32_t GetDeviceName(uint32_t deviceNumber,
+                                      char* deviceNameUTF8,
+                                      uint32_t deviceNameLength,
+                                      char* deviceUniqueIdUTF8,
+                                      uint32_t deviceUniqueIdUTF8Length,
+                                      char* productUniqueIdUTF8,
+                                      uint32_t productUniqueIdUTF8Length);
+        
+        virtual int32_t DisplayCaptureSettingsDialogBox(
+                                                        const char* deviceUniqueIdUTF8,
+                                                        const char* dialogTitleUTF8,
+                                                        void* parentWindow,
+                                                        uint32_t positionX,
+                                                        uint32_t positionY);
+        virtual int32_t NumberOfCapabilities(const char* deviceUniqueIdUTF8);
+        virtual int32_t GetCapability(
+                                      const char* deviceUniqueIdUTF8,
+                                      const uint32_t deviceCapabilityNumber,
+                                      VideoCaptureCapability& capability);
+        
+        virtual int32_t GetBestMatchedCapability(
+                                                 const char* deviceUniqueIdUTF8,
+                                                 const VideoCaptureCapability& requested,
+                                                 VideoCaptureCapability& resulting);
+        virtual int32_t GetOrientation(
+                                       const char* deviceUniqueIdUTF8,
+                                       VideoCaptureRotation& orientation);
+    protected:
+        int32_t _id;
+        scoped_ptr<DesktopDeviceInfo> desktop_device_info_;
+        
+    };
     //vagouzhou@gmail.com
     //we reuse video engine pipeline for screen sharing.
     //As video did , DesktopCaptureImpl will be proxy for screen sharing ,aslo follow video pipeline design
@@ -87,7 +128,7 @@ public:
 	*/
 	static VideoCaptureModule* Create(const int32_t id,const char* uniqueId,const bool bIsApp);
     
-    static VideoCaptureModule::DeviceInfo* CreateDeviceInfo(const int32_t id);
+    static VideoCaptureModule::DeviceInfo* CreateDeviceInfo(const int32_t id,const bool bIsApp);
 
     int32_t Init(const char* uniqueId,const bool bIsApp);
     // Implements Module declared functions.

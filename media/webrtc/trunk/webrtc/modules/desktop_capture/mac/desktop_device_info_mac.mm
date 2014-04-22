@@ -34,7 +34,15 @@ int32_t DesktopDeviceInfoMac::Init()
     }
 #endif
     //
-    
+    DesktopApplication *pDesktopApplication = new DesktopApplication;
+    if(pDesktopApplication){
+        pDesktopApplication->setProcessId(9999);
+        pDesktopApplication->setProcessAppName("WebEx Meeting Center");
+        pDesktopApplication->setProcessPathName("\\screen\\monitor#1");
+        pDesktopApplication->setUniqueIdName("\\app\\9999");
+        
+        desktop_application_list_[pDesktopApplication->getProcessId()] = pDesktopApplication;
+    }
     return 0;
 }
     

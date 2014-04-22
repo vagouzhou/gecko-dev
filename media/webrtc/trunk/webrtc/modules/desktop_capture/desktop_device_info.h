@@ -32,10 +32,24 @@ namespace webrtc {
         public:
             DesktopApplication();
             ~DesktopApplication();
+        
+            void setProcessId(const ProcessId processId);
+            void setProcessPathName(char* appPathNameUTF8);
+            void setUniqueIdName(char* appUniqueIdUTF8);
+            void setProcessAppName(char* appNameUTF8);
+        
+            ProcessId getProcessId();
+            char*  getProcessPathName();
+            char*  getUniqueIdName();
+            char*  getProcessAppName();
+        
+            DesktopApplication& operator= (DesktopApplication& other);
+        
         protected:
             ProcessId processId_;
             char* processPathNameUTF8_;
             char* applicationNameUTF8_;
+            char* processUniqueIdUTF8_;
     };
     typedef std::map<intptr_t,DesktopApplication*> DesktopApplicationList;
     //================================================
