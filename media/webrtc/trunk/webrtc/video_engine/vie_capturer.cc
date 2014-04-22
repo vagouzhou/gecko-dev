@@ -172,12 +172,7 @@ int32_t ViECapturer::Init(const char* device_unique_idUTF8,
     bool bIsApplication = config_.Get<CaptureDeviceType>().isApplication;
   //vagouzhou@gmail.com>>
   if(bIsScreenSharing){
-      if(bIsApplication){
-          capture_module_ = DesktopCaptureImpl::Create(ViEModuleId(engine_id_, capture_id_),device_unique_idUTF8,false);//desktop sharing, ScreenId
-      }
-      else{
-          capture_module_ = DesktopCaptureImpl::Create(ViEModuleId(engine_id_, capture_id_),device_unique_idUTF8,true);//app sharing, ProcessId
-      }
+      capture_module_ = DesktopCaptureImpl::Create(ViEModuleId(engine_id_, capture_id_),device_unique_idUTF8,bIsApplication);      
   }
   //vagouzhou@gmail.com
   else if (device_unique_idUTF8 == NULL) {
