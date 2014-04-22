@@ -80,14 +80,83 @@ namespace webrtc{
     //
     DesktopApplication::DesktopApplication()
     {
-        
+        processId_ =0;
+        processPathNameUTF8_= NULL;
+        applicationNameUTF8_= NULL;
+        processUniqueIdUTF8_= NULL;
     }
     DesktopApplication::~DesktopApplication()
     {
         
     }
+    void DesktopApplication::setProcessId(const ProcessId processId){
+        processId_ = processId;
+    }
+    void DesktopApplication::setProcessPathName(char* appPathNameUTF8){
+        if(appPathNameUTF8==NULL) return;
+        
+        if(processPathNameUTF8_){
+            delete []processPathNameUTF8_;
+            processPathNameUTF8_ = NULL;
+        }
+        int nBufLen = strlen(appPathNameUTF8)+1;
+        processPathNameUTF8_ = new char[nBufLen];
+        memset(processPathNameUTF8_,0,nBufLen);
+        
+        memcpy(processPathNameUTF8_,appPathNameUTF8,strlen(appPathNameUTF8));
+    }
+
+    void DesktopApplication::setUniqueIdName(char* appUniqueIdUTF8){
+        if(appUniqueIdUTF8==NULL) return;
+        
+        if(processPathNameUTF8_){
+            delete []processPathNameUTF8_;
+            processPathNameUTF8_ = NULL;
+        }
+        int nBufLen = strlen(appUniqueIdUTF8)+1;
+        processPathNameUTF8_ = new char[nBufLen];
+        memset(processPathNameUTF8_,0,nBufLen);
+        
+        memcpy(processPathNameUTF8_,appUniqueIdUTF8,strlen(appUniqueIdUTF8));
+    }
+
+    void DesktopApplication::setProcessAppName(char* appNameUTF8){
+        if(appNameUTF8==NULL) return;
+        
+        if(applicationNameUTF8_){
+            delete []applicationNameUTF8_;
+            applicationNameUTF8_ = NULL;
+        }
+        int nBufLen = strlen(appNameUTF8)+1;
+        applicationNameUTF8_ = new char[nBufLen];
+        memset(applicationNameUTF8_,0,nBufLen);
+        
+        memcpy(applicationNameUTF8_,appNameUTF8,strlen(appNameUTF8));
+    }
 
     
+    ProcessId DesktopApplication::getProcessId(){
+        return processId_;
+    }
+
+    char*  DesktopApplication::getProcessPathName(){
+        return processPathNameUTF8_;
+    }
+    char*  DesktopApplication::getUniqueIdName(){
+        return applicationNameUTF8_;
+    }
+    char*  DesktopApplication::getProcessAppName(){
+        return applicationNameUTF8_;
+    }
+    DesktopApplication& DesktopApplication::operator= (DesktopApplication& other)
+    {
+        processId_ = other.getProcessId();
+        setProcessPathName(other.getProcessPathName());
+        setUniqueIdName(other.getUniqueIdName());
+        setProcessAppName(other.getProcessAppName());
+        
+        return *this;
+    }
     //================================================
     //
     DesktopDeviceInfoImpl::DesktopDeviceInfoImpl()
@@ -146,6 +215,15 @@ namespace webrtc{
 
     int32_t DesktopDeviceInfoImpl::getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication)
     {
+        if(nIndex<0 || nIndex>=desktop_application_list_.size())
+            return -1;
+        
+        std::map<intptr_t,DesktopApplication*>::iterator iter = desktop_application_list_.begin();
+        std::advance (iter,nIndex);
+        DesktopApplication * pDesktopApplication = iter->second;
+        if(pDesktopApplication)
+            desktopApplication = (*pDesktopApplication);        
+
         return 0;
     }
 

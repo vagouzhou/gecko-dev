@@ -425,7 +425,7 @@ VideoCaptureModule::DeviceInfo* ViEInputManager::GetDeviceInfo(){
             capture_device_info_ = VideoCaptureFactory::CreateDeviceInfo(ViEModuleId(engine_id_));
         }
         else {
-            capture_device_info_ = DesktopCaptureImpl::CreateDeviceInfo(ViEModuleId(engine_id_));
+            capture_device_info_ = DesktopCaptureImpl::CreateDeviceInfo(ViEModuleId(engine_id_),bUseAppDeviceInfo);
         }
     }
     return capture_device_info_;
