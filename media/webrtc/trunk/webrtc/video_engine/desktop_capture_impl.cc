@@ -25,7 +25,7 @@
 #include "webrtc/modules/desktop_capture/desktop_frame.h"
 #include "webrtc/modules/desktop_capture/desktop_device_info.h"
 #include "webrtc/modules/desktop_capture/app_capturer.h"
-
+#include "webrtc/modules/desktop_capture/desktop_capture_options.h"
 
 namespace webrtc
 {
@@ -248,17 +248,22 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,const bool bIsApp){
         ProcessId processid = 0;//uniqueId
         pAppCapturer->SelectApp(processid);
         
-        desktop_capturer_.reset(pAppCapturer);
+        //desktop_capturer_.reset(pAppCapturer);
+        //mouse_cursor_monitor_.reset(MouseCursorMonitor::create);
+        MouseCursorMonitor * pMouseCursorMonitor =MouseCursorMonitor::CreateForScreen(webrtc::DesktopCaptureOptions::CreateDefault(), webrtc::kFullDesktopScreenId);
+        desktop_capturer_cursor_composer_.reset(new DesktopAndCursorComposer(pAppCapturer,pMouseCursorMonitor));
     }
     else{
         ScreenCapturer *pScreenCapturer = ScreenCapturer::Create();
         if(pScreenCapturer==nullptr) return -1;
         
-        ScreenId screenid = 0;//uniqueId
+        ScreenId screenid = webrtc::kFullDesktopScreenId;//uniqueId
         pScreenCapturer->SelectScreen(screenid);        
         pScreenCapturer->SetMouseShapeObserver(this);
         
-        desktop_capturer_.reset(pScreenCapturer);
+        //desktop_capturer_.reset(pScreenCapturer);
+        MouseCursorMonitor * pMouseCursorMonitor =MouseCursorMonitor::CreateForScreen(webrtc::DesktopCaptureOptions::CreateDefault(), screenid);
+        desktop_capturer_cursor_composer_.reset(new DesktopAndCursorComposer(pScreenCapturer,pMouseCursorMonitor));
     }
     //desktop_capturer_->Start(this);
     return 0;
@@ -649,7 +654,8 @@ uint32_t DesktopCaptureImpl::CalculateFrameRate(const TickTime& now)
 int32_t DesktopCaptureImpl::StartCapture(const VideoCaptureCapability& capability)
 {
 	_requestedCapability = capability;
-    desktop_capturer_->Start(this);
+    //desktop_capturer_->Start(this);
+    desktop_capturer_cursor_composer_->Start(this);
     unsigned int t_id =0;
     capturer_thread_.Start(t_id);
 	return 0;
@@ -701,12 +707,14 @@ void DesktopCaptureImpl::process()
     DesktopRect desktop_rect;
     DesktopRegion desktop_region;
     
-    desktop_capturer_->Capture(DesktopRegion());
+    //desktop_capturer_->Capture(DesktopRegion());
+    desktop_capturer_cursor_composer_->Capture(DesktopRegion());
 }
     
 void DesktopCaptureImpl::OnCursorShapeChanged(MouseCursorShape* cursor_shape)
 {
-    cursor_shape_.reset(cursor_shape);
+    //do nothing, DesktopAndCursorComposer do all
+    //cursor_shape_.reset(cursor_shape);
 }
     
 }  // namespace webrtc

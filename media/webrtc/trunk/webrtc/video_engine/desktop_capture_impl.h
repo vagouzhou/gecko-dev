@@ -24,6 +24,7 @@
 #include "webrtc/system_wrappers/interface/thread_wrapper.h"
 #include "webrtc/modules/desktop_capture/mouse_cursor_shape.h"
 #include "webrtc/modules/desktop_capture/desktop_device_info.h"
+#include "webrtc/modules/desktop_capture/desktop_and_cursor_composer.h"
 
 using namespace webrtc::videocapturemodule;
 namespace webrtc
@@ -226,10 +227,12 @@ public:
 protected:
     
 private:
-	//
-	scoped_ptr<DesktopCapturer> desktop_capturer_;
+	//scoped_ptr<DesktopCapturer> desktop_capturer_;
+    //scoped_ptr<MouseCursorMonitor> mouse_cursor_monitor_;
+    //scoped_ptr<MouseCursorShape> cursor_shape_;
+    scoped_ptr<DesktopAndCursorComposer> desktop_capturer_cursor_composer_;
     ThreadWrapper&  capturer_thread_;
-    scoped_ptr<MouseCursorShape> cursor_shape_;
+    
 };
 
 }  // namespace webrtc
