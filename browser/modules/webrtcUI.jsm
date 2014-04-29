@@ -294,7 +294,7 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
                     allowedDevices.AppendElement(screenDevices[videoDeviceIndex]);
                 }
             }
-            else if(mozMediaSourceMandatory=="Application")
+            else if(mozMediaSourceMandatory=="application")
             {
                 let videoDeviceIndex = chromeDoc.getElementById("webRTC-selectApplication-menulist").value;
                 allowCamera = videoDeviceIndex != "-1";
