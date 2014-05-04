@@ -60,6 +60,9 @@
           ],
         }],
         ['use_x11 == 1', {
+		'defines':[
+			'USE_X11',
+			],
 		 'sources': [				
         "mouse_cursor_monitor_x11.cc",
         "screen_capturer_x11.cc",
