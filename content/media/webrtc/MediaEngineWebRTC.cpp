@@ -78,7 +78,8 @@ MediaEngineWebRTC::EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mScreenEngine,mScreenEngineInit,dom::MozMediaSourceEnum::Screen);
+    EnumerateCommonVideoDevices(aVSources, mScreenEngine, mScreenEngineInit,
+                                dom::MozMediaSourceEnum::Screen);
 }
     
 void
@@ -95,7 +96,8 @@ MediaEngineWebRTC::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVide
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mAppEngine,mAppEngineInit,dom::MozMediaSourceEnum::Application);
+    EnumerateCommonVideoDevices(aVSources, mAppEngine, mAppEngineInit,
+                                dom::MozMediaSourceEnum::Application);
 }
     
 void
@@ -109,13 +111,14 @@ MediaEngineWebRTC::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSourc
         }
     }
 #endif
-    EnumerateCommonVideoDevices(aVSources,mVideoEngine,mVideoEngineInit,dom::MozMediaSourceEnum::Camera);
+    EnumerateCommonVideoDevices(aVSources, mVideoEngine,
+                                mVideoEngineInit,dom::MozMediaSourceEnum::Camera);
 }
     
 void
 MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
                                                webrtc::VideoEngine* videoEngine,
-                                               bool& bEngineInit,
+                                               bool& aEngineInit,
                                                dom::MozMediaSourceEnum mozMediaSourceType){
 #ifdef MOZ_B2G_CAMERA
   MutexAutoLock lock(mMutex);
@@ -207,11 +210,11 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
     return;
   }
 
-  if (!bEngineInit) {
+  if (!aEngineInit) {
     if (ptrViEBase->Init() < 0) {
       return;
     }
-    bEngineInit = true;
+    aEngineInit = true;
   }
 
   ptrViECapture = webrtc::ViECapture::GetInterface(videoEngine);

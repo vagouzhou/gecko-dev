@@ -390,19 +390,16 @@ public:
 protected:
     void EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*aVSources,
                                     webrtc::VideoEngine* videoEngine,
-                                     bool& bEngineInit,
+                                     bool& aEngineInit,
                                      dom::MozMediaSourceEnum);
 private:
   Mutex mMutex;
-    //vagouzhou@gmail.com
-    //TBD ,implement application sharing in future
-    //vagouzhou>>engine is cache, had to seperate video/screen/application
     webrtc::Config mConfigScreen;
     webrtc::Config mConfigApplication;
     
   // protected with mMutex:
     webrtc::VideoEngine* mScreenEngine;
-    webrtc::VideoEngine* mAppEngine;//vagouzhou>>maybe we can merge it with mScreenEngine
+    webrtc::VideoEngine* mAppEngine;
   webrtc::VideoEngine* mVideoEngine;
   webrtc::VoiceEngine* mVoiceEngine;
 

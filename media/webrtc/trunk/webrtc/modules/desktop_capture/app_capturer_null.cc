@@ -46,7 +46,7 @@ namespace webrtc {
 		AppCapturerNull::~AppCapturerNull() {
 		}
 
-		bool AppCapturerNull::GetAppList(AppList* apps){
+		bool AppCapturerNull::GetAppList(AppList* apps) {
 			// Not implemented yet.
 			return false;
 		}
