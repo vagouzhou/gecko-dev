@@ -944,7 +944,7 @@ public:
     if (mConstraints.mPicture || mConstraints.mVideo) {
       ScopedDeletePtr<SourceSet> sources (GetSources(backend,
           mConstraints.mVideom, &MediaEngine::EnumerateVideoDevices));
-//vagouzhou@gmail.com >> TBD ,what to do for screen sharing ?
+        // XXX  What should we do for screen sharing here?  (Bug NNNNNN)
       if (!sources->Length()) {
         Fail(NS_LITERAL_STRING("NO_DEVICES_FOUND"));
         return NS_ERROR_FAILURE;
