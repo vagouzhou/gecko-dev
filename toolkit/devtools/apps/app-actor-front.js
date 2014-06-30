@@ -2,8 +2,10 @@ const {Ci, Cc, Cu, Cr} = require("chrome");
 Cu.import("resource://gre/modules/osfile.jsm");
 const {Services} = Cu.import("resource://gre/modules/Services.jsm");
 const {FileUtils} = Cu.import("resource://gre/modules/FileUtils.jsm");
+const {NetUtil} = Cu.import("resource://gre/modules/NetUtil.jsm");
 const {devtools} = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
-const promise = require("sdk/core/promise");
+const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
+const EventEmitter = require("devtools/toolkit/event-emitter");
 
 // XXX: bug 912476 make this module a real protocol.js front
 // by converting webapps actor to protocol.js
@@ -17,6 +19,9 @@ const CHUNK_SIZE = 10000;
 
 const appTargets = new Map();
 
+const AppActorFront = exports;
+EventEmitter.decorate(AppActorFront);
+
 function addDirToZip(writer, dir, basePath) {
   let files = dir.directoryEntries;
 
@@ -24,7 +29,6 @@ function addDirToZip(writer, dir, basePath) {
     let file = files.getNext().QueryInterface(Ci.nsIFile);
 
     if (file.isHidden() ||
-        file.isSymlink() ||
         file.isSpecial() ||
         file.equals(writer.file))
     {
@@ -84,6 +88,14 @@ function zipDirectory(zipFile, dirToArchive) {
 }
 
 function uploadPackage(client, webappsActor, packageFile) {
+  if (client.traits.bulk) {
+    return uploadPackageBulk(client, webappsActor, packageFile);
+  } else {
+    return uploadPackageJSON(client, webappsActor, packageFile);
+  }
+}
+
+function uploadPackageJSON(client, webappsActor, packageFile) {
   let deferred = promise.defer();
 
   let request = {
@@ -94,15 +106,34 @@ function uploadPackage(client, webappsActor, packageFile) {
     openFile(res.actor);
   });
 
+  let fileSize;
+  let bytesRead = 0;
+
+  function emitProgress() {
+    emitInstallProgress({
+      bytesSent: bytesRead,
+      totalBytes: fileSize
+    });
+  }
+
   function openFile(actor) {
+    let openedFile;
     OS.File.open(packageFile.path)
-      .then(function (file) {
-        uploadChunk(actor, file);
+      .then(file => {
+        openedFile = file;
+        return openedFile.stat();
+      })
+      .then(fileInfo => {
+        fileSize = fileInfo.size;
+        emitProgress();
+        uploadChunk(actor, openedFile);
       });
   }
   function uploadChunk(actor, file) {
     file.read(CHUNK_SIZE)
         .then(function (bytes) {
+          bytesRead += bytes.length;
+          emitProgress();
           // To work around the fact that JSON.stringify translates the typed
           // array to object, we are encoding the typed array here into a string
           let chunk = String.fromCharCode.apply(null, bytes);
@@ -135,14 +166,53 @@ function uploadPackage(client, webappsActor, packageFile) {
   return deferred.promise;
 }
 
+function uploadPackageBulk(client, webappsActor, packageFile) {
+  let deferred = promise.defer();
+
+  let request = {
+    to: webappsActor,
+    type: "uploadPackage",
+    bulk: true
+  };
+  client.request(request, (res) => {
+    startBulkUpload(res.actor);
+  });
+
+  function startBulkUpload(actor) {
+    console.log("Starting bulk upload");
+    let fileSize = packageFile.fileSize;
+    console.log("File size: " + fileSize);
+
+    let request = client.startBulkRequest({
+      actor: actor,
+      type: "stream",
+      length: fileSize
+    });
+
+    request.on("bulk-send-ready", ({copyFrom}) => {
+      NetUtil.asyncFetch(packageFile, function(inputStream) {
+        let copying = copyFrom(inputStream);
+        copying.on("progress", (e, progress) => {
+          emitInstallProgress(progress);
+        });
+        copying.then(() => {
+          console.log("Bulk upload done");
+          inputStream.close();
+          deferred.resolve(actor);
+        });
+      });
+    });
+  }
+
+  return deferred.promise;
+}
+
 function removeServerTemporaryFile(client, fileActor) {
   let request = {
     to: fileActor,
     type: "remove"
   };
-  client.request(request, function (aResponse) {
-    console.error("Failed removing server side temporary package file", aResponse);
-  });
+  client.request(request);
 }
 
 function installPackaged(client, webappsActor, packagePath, appId) {
@@ -184,12 +254,24 @@ function installPackaged(client, webappsActor, packagePath, appId) {
             zipFile.remove(false);
           // In case of success or error, ensure deleting the temporary package file
           // also created on the device, but only once install request is done
-          deferred.promise.then(removeServerTemporaryFile, removeServerTemporaryFile);
+          deferred.promise.then(
+            () => removeServerTemporaryFile(client, fileActor),
+            () => removeServerTemporaryFile(client, fileActor));
         });
   });
   return deferred.promise;
 }
 exports.installPackaged = installPackaged;
+
+/**
+ * Emits numerous events as packaged app installation proceeds.
+ * The progress object contains:
+ *  * bytesSent:  The number of bytes sent so far
+ *  * totalBytes: The total number of bytes to send
+ */
+function emitInstallProgress(progress) {
+  AppActorFront.emit("install-progress", progress);
+}
 
 function installHosted(client, webappsActor, appId, metadata, manifest) {
   let deferred = promise.defer();

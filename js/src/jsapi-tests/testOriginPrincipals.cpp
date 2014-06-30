@@ -2,6 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include "jsfriendapi.h"
 #include "js/OldDebugAPI.h"
 #include "jsapi-tests/tests.h"
 
@@ -69,7 +70,7 @@ eval(const char *asciiChars, JSPrincipals *principals, JSPrincipals *originPrinc
     options.setOriginPrincipals(originPrincipals)
            .setFileAndLine("", 0);
 
-    bool ok = JS::Evaluate(cx, global, options, chars, len, rval.address());
+    bool ok = JS::Evaluate(cx, global, options, chars, len, rval);
 
     delete[] chars;
     return ok;

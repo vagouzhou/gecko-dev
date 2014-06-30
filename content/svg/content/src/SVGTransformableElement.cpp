@@ -5,6 +5,7 @@
 
 #include "gfx2DGlue.h"
 #include "mozilla/dom/SVGAnimatedTransformList.h"
+#include "mozilla/dom/SVGGraphicsElementBinding.h"
 #include "mozilla/dom/SVGTransformableElement.h"
 #include "mozilla/dom/SVGMatrix.h"
 #include "mozilla/dom/SVGSVGElement.h"
@@ -72,7 +73,7 @@ SVGTransformableElement::GetAttributeChangeHint(const nsIAtom* aAttribute,
       NS_ABORT_IF_FALSE(aModType == nsIDOMMutationEvent::MODIFICATION,
                         "Unknown modification type.");
       // We just assume the old and new transforms are different.
-      NS_UpdateHint(retval, NS_CombineHint(nsChangeHint_UpdateOverflow,
+      NS_UpdateHint(retval, NS_CombineHint(nsChangeHint_UpdatePostTransformOverflow,
                                            nsChangeHint_UpdateTransformLayer));
     }
   }
@@ -135,8 +136,19 @@ SVGTransformableElement::SetAnimateMotionTransform(const gfx::Matrix* aMatrix)
       (aMatrix && mAnimateMotionTransform && *aMatrix == *mAnimateMotionTransform)) {
     return;
   }
+  bool transformSet = mTransforms && mTransforms->IsExplicitlySet();
+  bool prevSet = mAnimateMotionTransform || transformSet;
   mAnimateMotionTransform = aMatrix ? new gfx::Matrix(*aMatrix) : nullptr;
-  DidAnimateTransformList();
+  bool nowSet = mAnimateMotionTransform || transformSet;
+  int32_t modType;
+  if (prevSet && !nowSet) {
+    modType = nsIDOMMutationEvent::REMOVAL;
+  } else if(!prevSet && nowSet) {
+    modType = nsIDOMMutationEvent::ADDITION;
+  } else {
+    modType = nsIDOMMutationEvent::MODIFICATION;
+  }
+  DidAnimateTransformList(modType);
   nsIFrame* frame = GetPrimaryFrame();
   if (frame) {
     // If the result of this transform and any other transforms on this frame
@@ -171,7 +183,8 @@ SVGTransformableElement::GetFarthestViewportElement()
 }
 
 already_AddRefed<SVGIRect>
-SVGTransformableElement::GetBBox(ErrorResult& rv)
+SVGTransformableElement::GetBBox(const SVGBoundingBoxOptions& aOptions, 
+                                 ErrorResult& rv)
 {
   nsIFrame* frame = GetPrimaryFrame(Flush_Layout);
 
@@ -179,14 +192,37 @@ SVGTransformableElement::GetBBox(ErrorResult& rv)
     rv.Throw(NS_ERROR_FAILURE);
     return nullptr;
   }
-
   nsISVGChildFrame* svgframe = do_QueryFrame(frame);
   if (!svgframe) {
     rv.Throw(NS_ERROR_NOT_IMPLEMENTED); // XXX: outer svg
     return nullptr;
   }
 
-  return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame)));
+  if (!NS_SVGNewGetBBoxEnabled()) {
+    return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame)));
+  } else {
+    uint32_t aFlags = 0;
+    if (aOptions.mFill) {
+      aFlags |= nsSVGUtils::eBBoxIncludeFill;
+    }
+    if (aOptions.mStroke) {
+      aFlags |= nsSVGUtils::eBBoxIncludeStroke;
+    }
+    if (aOptions.mMarkers) {
+      aFlags |= nsSVGUtils::eBBoxIncludeMarkers;
+    }
+    if (aOptions.mClipped) {
+      aFlags |= nsSVGUtils::eBBoxIncludeClipped;
+    }
+    if (aFlags == 0) {
+      return NS_NewSVGRect(this,0,0,0,0);
+    }
+    if (aFlags == nsSVGUtils::eBBoxIncludeMarkers || 
+        aFlags == nsSVGUtils::eBBoxIncludeClipped) {
+      aFlags |= nsSVGUtils::eBBoxIncludeFill;
+    }
+    return NS_NewSVGRect(this, ToRect(nsSVGUtils::GetBBox(frame, aFlags)));
+  }
 }
 
 already_AddRefed<SVGMatrix>

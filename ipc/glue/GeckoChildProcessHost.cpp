@@ -21,6 +21,7 @@
 #include "nsILocalFileMac.h"
 #endif
 
+#include "MainThreadUtils.h"
 #include "prprf.h"
 #include "prenv.h"
 
@@ -29,6 +30,7 @@
 #include "nsDirectoryServiceDefs.h"
 #include "nsIFile.h"
 
+#include "mozilla/ClearOnShutdown.h"
 #include "mozilla/ipc/BrowserProcessSubThread.h"
 #include "mozilla/Omnijar.h"
 #include <sys/stat.h>
@@ -61,6 +63,8 @@ static const bool kLowRightsSubprocesses =
   false
 #endif
   ;
+
+mozilla::StaticRefPtr<nsIFile> GeckoChildProcessHost::sGreDir;
 
 static bool
 ShouldHaveDirectoryService()
@@ -120,29 +124,26 @@ GeckoChildProcessHost::~GeckoChildProcessHost()
 #endif
 }
 
-void GetPathToBinary(FilePath& exePath)
+//static
+void
+GeckoChildProcessHost::GetPathToBinary(FilePath& exePath)
 {
   if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIProperties> directoryService(do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
-    NS_ASSERTION(directoryService, "Expected XPCOM to be available");
-    if (directoryService) {
-      nsCOMPtr<nsIFile> greDir;
-      nsresult rv = directoryService->Get(NS_GRE_DIR, NS_GET_IID(nsIFile), getter_AddRefs(greDir));
-      if (NS_SUCCEEDED(rv)) {
+    MOZ_ASSERT(sGreDir);
+    if (sGreDir) {
 #ifdef OS_WIN
-        nsString path;
-        greDir->GetPath(path);
+      nsString path;
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(sGreDir->GetPath(path)));
 #else
-        nsCString path;
-        greDir->GetNativePath(path);
+      nsCString path;
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(sGreDir->GetNativePath(path)));
 #endif
-        exePath = FilePath(path.get());
+      exePath = FilePath(path.get());
 #ifdef MOZ_WIDGET_COCOA
-        // We need to use an App Bundle on OS X so that we can hide
-        // the dock icon. See Bug 557225.
-        exePath = exePath.AppendASCII(MOZ_CHILD_PROCESS_BUNDLE);
+      // We need to use an App Bundle on OS X so that we can hide
+      // the dock icon. See Bug 557225.
+      exePath = exePath.AppendASCII(MOZ_CHILD_PROCESS_BUNDLE);
 #endif
-      }
     }
   }
 
@@ -226,9 +227,11 @@ uint32_t GeckoChildProcessHost::GetSupportedArchitecturesForProcessType(GeckoPro
 {
 #ifdef MOZ_WIDGET_COCOA
   if (type == GeckoProcessType_Plugin) {
+
     // Cache this, it shouldn't ever change.
     static uint32_t pluginContainerArchs = 0;
     if (pluginContainerArchs == 0) {
+      CacheGreDir();
       FilePath exePath;
       GetPathToBinary(exePath);
       nsresult rv = GetArchitecturesForBinary(exePath.value().c_str(), &pluginContainerArchs);
@@ -256,6 +259,40 @@ GeckoChildProcessHost::PrepareLaunch()
 #ifdef XP_WIN
   InitWindowsGroupID();
 #endif
+  CacheGreDir();
+}
+
+//static
+void
+GeckoChildProcessHost::CacheGreDir()
+{
+  if (sGreDir) {
+    return;
+  }
+
+#ifdef MOZ_WIDGET_GONK
+  // Apparently, this ASSERT should be present on all platforms. Currently,
+  // this assert causes mochitest failures on the Mac platform if its left in.
+
+  // B2G overrides the directory service in JS, so this needs to be called
+  // on the main thread.
+  MOZ_ASSERT(NS_IsMainThread());
+#endif
+
+  if (ShouldHaveDirectoryService()) {
+    nsCOMPtr<nsIProperties> directoryService(do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
+    MOZ_ASSERT(directoryService, "Expected XPCOM to be available");
+    if (directoryService) {
+      // getter_AddRefs doesn't work with StaticRefPtr, so we need to store the
+      // result in an nsCOMPtr and copy it over.
+      nsCOMPtr<nsIFile> greDir;
+      nsresult rv = directoryService->Get(NS_GRE_DIR, NS_GET_IID(nsIFile), getter_AddRefs(greDir));
+      if (NS_SUCCEEDED(rv)) {
+        sGreDir = greDir;
+        mozilla::ClearOnShutdown(&sGreDir);
+      }
+    }
+  }
 }
 
 #ifdef XP_WIN
@@ -273,7 +310,7 @@ void GeckoChildProcessHost::InitWindowsGroupID()
     if (isSupported && NS_SUCCEEDED(taskbarInfo->GetDefaultGroupId(appId))) {
       mGroupId.Append(appId);
     } else {
-      mGroupId.AssignLiteral("-");
+      mGroupId.Assign('-');
     }
   }
 }
@@ -467,7 +504,7 @@ AddAppDirToCommandLine(std::vector<std::string>& aCmdLine)
                                           getter_AddRefs(appDir));
       if (NS_SUCCEEDED(rv)) {
         nsAutoCString path;
-        appDir->GetNativePath(path);
+        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(appDir->GetNativePath(path)));
 #if defined(XP_WIN)
         aCmdLine.AppendLooseValue(UTF8ToWide("-appdir"));
         aCmdLine.AppendLooseValue(UTF8ToWide(path.get()));
@@ -519,51 +556,64 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
   // since LD_LIBRARY_PATH is already set correctly in subprocesses
   // (meaning that we don't need to set that up in the environment).
   if (ShouldHaveDirectoryService()) {
-    nsCOMPtr<nsIProperties> directoryService(do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID));
-    NS_ASSERTION(directoryService, "Expected XPCOM to be available");
-    if (directoryService) {
-      nsCOMPtr<nsIFile> greDir;
-      nsresult rv = directoryService->Get(NS_GRE_DIR, NS_GET_IID(nsIFile), getter_AddRefs(greDir));
-      if (NS_SUCCEEDED(rv)) {
-        nsCString path;
-        greDir->GetNativePath(path);
+    MOZ_ASSERT(sGreDir);
+    if (sGreDir) {
+      nsCString path;
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(sGreDir->GetNativePath(path)));
 # if defined(OS_LINUX) || defined(OS_BSD)
 #  if defined(MOZ_WIDGET_ANDROID)
-        path += "/lib";
+      path += "/lib";
 #  endif  // MOZ_WIDGET_ANDROID
-        const char *ld_library_path = PR_GetEnv("LD_LIBRARY_PATH");
-        nsCString new_ld_lib_path;
-        if (ld_library_path && *ld_library_path) {
-            new_ld_lib_path.Assign(path.get());
-            new_ld_lib_path.AppendLiteral(":");
-            new_ld_lib_path.Append(ld_library_path);
-            newEnvVars["LD_LIBRARY_PATH"] = new_ld_lib_path.get();
-        } else {
-            newEnvVars["LD_LIBRARY_PATH"] = path.get();
-        }
-# elif OS_MACOSX
-        newEnvVars["DYLD_LIBRARY_PATH"] = path.get();
-        // XXX DYLD_INSERT_LIBRARIES should only be set when launching a plugin
-        //     process, and has no effect on other subprocesses (the hooks in
-        //     libplugin_child_interpose.dylib become noops).  But currently it
-        //     gets set when launching any kind of subprocess.
-        //
-        // Trigger "dyld interposing" for the dylib that contains
-        // plugin_child_interpose.mm.  This allows us to hook OS calls in the
-        // plugin process (ones that don't work correctly in a background
-        // process).  Don't break any other "dyld interposing" that has already
-        // been set up by whatever may have launched the browser.
-        const char* prevInterpose = PR_GetEnv("DYLD_INSERT_LIBRARIES");
-        nsCString interpose;
-        if (prevInterpose) {
-          interpose.Assign(prevInterpose);
-          interpose.AppendLiteral(":");
-        }
-        interpose.Append(path.get());
-        interpose.AppendLiteral("/libplugin_child_interpose.dylib");
-        newEnvVars["DYLD_INSERT_LIBRARIES"] = interpose.get();
-# endif  // OS_LINUX
+      const char *ld_library_path = PR_GetEnv("LD_LIBRARY_PATH");
+      nsCString new_ld_lib_path;
+      if (ld_library_path && *ld_library_path) {
+          new_ld_lib_path.Assign(path.get());
+          new_ld_lib_path.Append(':');
+          new_ld_lib_path.Append(ld_library_path);
+          newEnvVars["LD_LIBRARY_PATH"] = new_ld_lib_path.get();
+      } else {
+          newEnvVars["LD_LIBRARY_PATH"] = path.get();
       }
+
+#  if (MOZ_WIDGET_GTK == 3)
+      if (mProcessType == GeckoProcessType_Plugin) {
+          const char *ld_preload = PR_GetEnv("LD_PRELOAD");
+          nsCString new_ld_preload;
+
+          new_ld_preload.Assign(path.get());
+          new_ld_preload.AppendLiteral("/" DLL_PREFIX "mozgtk2" DLL_SUFFIX);
+
+          if (ld_preload && *ld_preload) {
+              new_ld_preload.AppendLiteral(":");
+              new_ld_preload.Append(ld_preload);
+          }
+          newEnvVars["LD_PRELOAD"] = new_ld_preload.get();
+      }
+#  endif // MOZ_WIDGET_GTK
+
+
+# elif OS_MACOSX
+      newEnvVars["DYLD_LIBRARY_PATH"] = path.get();
+      // XXX DYLD_INSERT_LIBRARIES should only be set when launching a plugin
+      //     process, and has no effect on other subprocesses (the hooks in
+      //     libplugin_child_interpose.dylib become noops).  But currently it
+      //     gets set when launching any kind of subprocess.
+      //
+      // Trigger "dyld interposing" for the dylib that contains
+      // plugin_child_interpose.mm.  This allows us to hook OS calls in the
+      // plugin process (ones that don't work correctly in a background
+      // process).  Don't break any other "dyld interposing" that has already
+      // been set up by whatever may have launched the browser.
+      const char* prevInterpose = PR_GetEnv("DYLD_INSERT_LIBRARIES");
+      nsCString interpose;
+      if (prevInterpose) {
+        interpose.Assign(prevInterpose);
+        interpose.Append(':');
+      }
+      interpose.Append(path.get());
+      interpose.AppendLiteral("/libplugin_child_interpose.dylib");
+      newEnvVars["DYLD_INSERT_LIBRARIES"] = interpose.get();
+# endif  // OS_LINUX
     }
   }
 #endif  // OS_LINUX || OS_MACOSX

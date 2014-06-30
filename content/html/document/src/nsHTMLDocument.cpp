@@ -9,6 +9,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/dom/HTMLAllCollection.h"
 #include "nsCOMPtr.h"
+#include "nsGlobalWindow.h"
 #include "nsXPIDLString.h"
 #include "nsPrintfCString.h"
 #include "nsReadableUtils.h"
@@ -189,7 +190,7 @@ nsHTMLDocument::nsHTMLDocument()
   // NOTE! nsDocument::operator new() zeroes out all members, so don't
   // bother initializing members to 0.
 
-  mIsRegularHTML = true;
+  mType = eHTML;
   mDefaultElementType = kNameSpaceID_XHTML;
   mCompatMode = eCompatibility_NavQuirks;
 }
@@ -198,32 +199,32 @@ nsHTMLDocument::~nsHTMLDocument()
 {
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_11(nsHTMLDocument, nsDocument,
-                                      mAll,
-                                      mImages,
-                                      mApplets,
-                                      mEmbeds,
-                                      mLinks,
-                                      mAnchors,
-                                      mScripts,
-                                      mForms,
-                                      mFormControls,
-                                      mWyciwygChannel,
-                                      mMidasCommandManager)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(nsHTMLDocument, nsDocument,
+                                   mAll,
+                                   mImages,
+                                   mApplets,
+                                   mEmbeds,
+                                   mLinks,
+                                   mAnchors,
+                                   mScripts,
+                                   mForms,
+                                   mFormControls,
+                                   mWyciwygChannel,
+                                   mMidasCommandManager)
 
 NS_IMPL_ADDREF_INHERITED(nsHTMLDocument, nsDocument)
 NS_IMPL_RELEASE_INHERITED(nsHTMLDocument, nsDocument)
 
 // QueryInterface implementation for nsHTMLDocument
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(nsHTMLDocument)
-  NS_INTERFACE_TABLE_INHERITED2(nsHTMLDocument, nsIHTMLDocument,
-                                nsIDOMHTMLDocument)
+  NS_INTERFACE_TABLE_INHERITED(nsHTMLDocument, nsIHTMLDocument,
+                               nsIDOMHTMLDocument)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsDocument)
 
 JSObject*
-nsHTMLDocument::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+nsHTMLDocument::WrapNode(JSContext* aCx)
 {
-  return HTMLDocumentBinding::Wrap(aCx, aScope, this);
+  return HTMLDocumentBinding::Wrap(aCx, this);
 }
 
 nsresult
@@ -534,7 +535,8 @@ nsHTMLDocument::StartDocumentLoad(const char* aCommand,
     MOZ_ASSERT(false, "Got a sink override. Should not happen for HTML doc.");
     return NS_ERROR_INVALID_ARG;
   }
-  if (!mIsRegularHTML) {
+  if (mType != eHTML) {
+    MOZ_ASSERT(mType == eXHTML);
     MOZ_ASSERT(false, "Must not set HTML doc to XHTML mode before load start.");
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
@@ -546,7 +548,8 @@ nsHTMLDocument::StartDocumentLoad(const char* aCommand,
               !strcmp(aCommand, "external-resource");
   bool viewSource = !strcmp(aCommand, "view-source");
   bool asData = !strcmp(aCommand, kLoadAsData);
-  if(!(view || viewSource || asData)) {
+  bool import = !strcmp(aCommand, "import");
+  if (!(view || viewSource || asData || import)) {
     MOZ_ASSERT(false, "Bad parser command");
     return NS_ERROR_INVALID_ARG;
   }
@@ -563,7 +566,7 @@ nsHTMLDocument::StartDocumentLoad(const char* aCommand,
 
   if (!viewSource && xhtml) {
       // We're parsing XHTML as XML, remember that.
-      mIsRegularHTML = false;
+      mType = eXHTML;
       mCompatMode = eCompatibility_FullStandards;
       loadAsHtml5 = false;
   }
@@ -1134,7 +1137,7 @@ nsHTMLDocument::MatchLinks(nsIContent *aContent, int32_t aNamespaceID,
     }
 #endif
 
-    nsINodeInfo *ni = aContent->NodeInfo();
+    mozilla::dom::NodeInfo *ni = aContent->NodeInfo();
 
     nsIAtom *localName = ni->NameAtom();
     if (ni->NamespaceID() == kNameSpaceID_XHTML &&
@@ -1369,7 +1372,7 @@ nsHTMLDocument::Open(JSContext* cx,
 {
   NS_ASSERTION(nsContentUtils::CanCallerAccess(static_cast<nsIDOMHTMLDocument*>(this)),
                "XOW should have caught this!");
-  if (!IsHTML() || mDisableDocWrite) {
+  if (!IsHTML() || mDisableDocWrite || !IsMasterDocument()) {
     // No calling document.open() on XHTML
     rv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return nullptr;
@@ -1573,6 +1576,13 @@ nsHTMLDocument::Open(JSContext* cx,
 #ifdef DEBUG
     bool willReparent = mWillReparent;
     mWillReparent = true;
+
+    nsDocument* templateContentsOwner =
+      static_cast<nsDocument*>(mTemplateContentsOwner.get());
+
+    if (templateContentsOwner) {
+      templateContentsOwner->mWillReparent = true;
+    }
 #endif
 
     // Should this pass true for aForceReuseInnerWindow?
@@ -1582,6 +1592,10 @@ nsHTMLDocument::Open(JSContext* cx,
     }
 
 #ifdef DEBUG
+    if (templateContentsOwner) {
+      templateContentsOwner->mWillReparent = willReparent;
+    }
+
     mWillReparent = willReparent;
 #endif
 
@@ -1593,10 +1607,25 @@ nsHTMLDocument::Open(JSContext* cx,
     nsCOMPtr<nsIScriptGlobalObject> newScope(do_QueryReferent(mScopeObject));
     JS::Rooted<JSObject*> wrapper(cx, GetWrapper());
     if (oldScope && newScope != oldScope && wrapper) {
+      JSAutoCompartment ac(cx, wrapper);
       rv = mozilla::dom::ReparentWrapper(cx, wrapper);
       if (rv.Failed()) {
         return nullptr;
       }
+
+      // Also reparent the template contents owner document
+      // because its global is set to the same as this document.
+      if (mTemplateContentsOwner) {
+        JS::Rooted<JSObject*> contentsOwnerWrapper(cx,
+          mTemplateContentsOwner->GetWrapper());
+        if (contentsOwnerWrapper) {
+          rv = mozilla::dom::ReparentWrapper(cx, contentsOwnerWrapper);
+          if (rv.Failed()) {
+            return nullptr;
+          }
+        }
+      }
+
       nsIXPConnect *xpc = nsContentUtils::XPConnect();
       rv = xpc->RescueOrphansInScope(cx, oldScope->GetGlobalJSObject());
       if (rv.Failed()) {
@@ -1770,7 +1799,7 @@ nsHTMLDocument::WriteCommon(JSContext *cx,
     (mWriteLevel > NS_MAX_DOCUMENT_WRITE_DEPTH || mTooDeepWriteRecursion);
   NS_ENSURE_STATE(!mTooDeepWriteRecursion);
 
-  if (!IsHTML() || mDisableDocWrite) {
+  if (!IsHTML() || mDisableDocWrite || !IsMasterDocument()) {
     // No calling document.write*() on XHTML!
 
     return NS_ERROR_DOM_INVALID_STATE_ERR;
@@ -2153,28 +2182,24 @@ NS_IMETHODIMP
 nsHTMLDocument::GetSelection(nsISelection** aReturn)
 {
   ErrorResult rv;
-  *aReturn = GetSelection(rv).take();
+  NS_IF_ADDREF(*aReturn = GetSelection(rv));
   return rv.ErrorCode();
 }
 
-already_AddRefed<Selection>
-nsHTMLDocument::GetSelection(ErrorResult& rv)
+Selection*
+nsHTMLDocument::GetSelection(ErrorResult& aRv)
 {
-  nsCOMPtr<nsIDOMWindow> window = do_QueryInterface(GetScopeObject());
-  nsCOMPtr<nsPIDOMWindow> pwin = do_QueryInterface(window);
-  if (!pwin) {
-    return nullptr;
-  }
-  NS_ASSERTION(pwin->IsInnerWindow(), "Should have inner window here!");
-  if (!pwin->GetOuterWindow() ||
-      pwin->GetOuterWindow()->GetCurrentInnerWindow() != pwin) {
+  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(GetScopeObject());
+  if (!window) {
     return nullptr;
   }
 
-  nsCOMPtr<nsISelection> sel;
-  rv = window->GetSelection(getter_AddRefs(sel));
-  nsRefPtr<Selection> selection = static_cast<Selection*>(sel.get());
-  return selection.forget();
+  NS_ASSERTION(window->IsInnerWindow(), "Should have inner window here!");
+  if (!window->IsCurrentInnerWindow()) {
+    return nullptr;
+  }
+
+  return static_cast<nsGlobalWindow*>(window.get())->GetSelection(aRv);
 }
 
 NS_IMETHODIMP
@@ -2244,30 +2269,34 @@ nsHTMLDocument::ResolveName(const nsAString& aName, nsWrapperCache **aCache)
   return nullptr;
 }
 
-JSObject*
+void
 nsHTMLDocument::NamedGetter(JSContext* cx, const nsAString& aName, bool& aFound,
+                            JS::MutableHandle<JSObject*> aRetval,
                             ErrorResult& rv)
 {
   nsWrapperCache* cache;
   nsISupports* supp = ResolveName(aName, &cache);
   if (!supp) {
     aFound = false;
-    return nullptr;
+    aRetval.set(nullptr);
+    return;
   }
 
   JS::Rooted<JS::Value> val(cx);
-  { // Scope for auto-compartment
-    JS::Rooted<JSObject*> wrapper(cx, GetWrapper());
-    JSAutoCompartment ac(cx, wrapper);
-    // XXXbz Should we call the (slightly misnamed, really) WrapNativeParent
-    // here?
-    if (!dom::WrapObject(cx, wrapper, supp, cache, nullptr, &val)) {
-      rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return nullptr;
-    }
+  // XXXbz Should we call the (slightly misnamed, really) WrapNativeParent
+  // here?
+  if (!dom::WrapObject(cx, supp, cache, nullptr, &val)) {
+    rv.Throw(NS_ERROR_OUT_OF_MEMORY);
+    return;
   }
   aFound = true;
-  return &val.toObject();
+  aRetval.set(&val.toObject());
+}
+
+bool
+nsHTMLDocument::NameIsEnumerable(const nsAString& aName)
+{
+  return true;
 }
 
 static PLDHashOperator
@@ -2282,7 +2311,7 @@ IdentifierMapEntryAddNames(nsIdentifierMapEntry* aEntry, void* aArg)
 }
 
 void
-nsHTMLDocument::GetSupportedNames(nsTArray<nsString>& aNames)
+nsHTMLDocument::GetSupportedNames(unsigned, nsTArray<nsString>& aNames)
 {
   mIdentifierMap.EnumerateEntries(IdentifierMapEntryAddNames, &aNames);
 }
@@ -2564,12 +2593,6 @@ nsHTMLDocument::All()
   return mAll;
 }
 
-JSObject*
-nsHTMLDocument::GetAll(JSContext* aCx, ErrorResult& aRv)
-{
-  return All()->GetObject(aCx, aRv);
-}
-
 static void
 NotifyEditableStateChange(nsINode *aNode, nsIDocument *aDocument)
 {
@@ -2758,7 +2781,7 @@ nsHTMLDocument::EditingStateChanged()
     rv = NS_NewURI(getter_AddRefs(uri), NS_LITERAL_STRING("resource://gre/res/contenteditable.css"));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    nsRefPtr<nsCSSStyleSheet> sheet;
+    nsRefPtr<CSSStyleSheet> sheet;
     rv = LoadChromeSheetSync(uri, true, getter_AddRefs(sheet));
     NS_ENSURE_TRUE(sheet, rv);
 
@@ -2849,27 +2872,10 @@ nsHTMLDocument::SetDesignMode(const nsAString & aDesignMode)
 void
 nsHTMLDocument::SetDesignMode(const nsAString& aDesignMode, ErrorResult& rv)
 {
-  if (!nsContentUtils::IsCallerChrome()) {
-    nsCOMPtr<nsIPrincipal> subject;
-    nsIScriptSecurityManager *secMan = nsContentUtils::GetSecurityManager();
-    rv = secMan->GetSubjectPrincipal(getter_AddRefs(subject));
-    if (rv.Failed()) {
-      return;
-    }
-    if (subject) {
-      bool subsumes;
-      rv = subject->Subsumes(NodePrincipal(), &subsumes);
-      if (rv.Failed()) {
-        return;
-      }
-
-      if (!subsumes) {
-        rv.Throw(NS_ERROR_DOM_PROP_ACCESS_DENIED);
-        return;
-      }
-    }
+  if (!nsContentUtils::SubjectPrincipal()->Subsumes(NodePrincipal())) {
+    rv.Throw(NS_ERROR_DOM_PROP_ACCESS_DENIED);
+    return;
   }
-
   bool editableMode = HasFlag(NODE_IS_EDITABLE);
   if (aDesignMode.LowerCaseEqualsASCII(editableMode ? "off" : "on")) {
     SetEditableFlag(!editableMode);
@@ -3008,10 +3014,10 @@ ConvertToMidasInternalCommandInner(const nsAString& inCommandID,
   // Hack to support old boolean commands that were backwards (see bug 301490).
   bool invertBool = false;
   if (convertedCommandID.LowerCaseEqualsLiteral("usecss")) {
-    convertedCommandID.Assign("styleWithCSS");
+    convertedCommandID.AssignLiteral("styleWithCSS");
     invertBool = true;
   } else if (convertedCommandID.LowerCaseEqualsLiteral("readonly")) {
-    convertedCommandID.Assign("contentReadOnly");
+    convertedCommandID.AssignLiteral("contentReadOnly");
     invertBool = true;
   }
 
@@ -3540,7 +3546,7 @@ nsHTMLDocument::QueryCommandValue(const nsAString& commandID,
 }
 
 nsresult
-nsHTMLDocument::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+nsHTMLDocument::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   NS_ASSERTION(aNodeInfo->NodeInfoManager() == mNodeInfoManager,
                "Can't import this document into another document!");
@@ -3597,7 +3603,8 @@ nsHTMLDocument::DocAddSizeOfExcludingThis(nsWindowSizes* aWindowSizes) const
 bool
 nsHTMLDocument::WillIgnoreCharsetOverride()
 {
-  if (!mIsRegularHTML) {
+  if (mType != eHTML) {
+    MOZ_ASSERT(mType == eXHTML);
     return true;
   }
   if (mCharacterSetSource == kCharsetFromByteOrderMark) {

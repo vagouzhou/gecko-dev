@@ -48,159 +48,6 @@ struct AnimationEventInfo {
 
 typedef InfallibleTArray<AnimationEventInfo> EventArray;
 
-struct AnimationPropertySegment
-{
-  float mFromKey, mToKey;
-  nsStyleAnimation::Value mFromValue, mToValue;
-  mozilla::css::ComputedTimingFunction mTimingFunction;
-};
-
-struct AnimationProperty
-{
-  nsCSSProperty mProperty;
-  InfallibleTArray<AnimationPropertySegment> mSegments;
-};
-
-/**
- * Data about one animation (i.e., one of the values of
- * 'animation-name') running on an element.
- */
-struct ElementAnimation
-{
-  ElementAnimation()
-    : mIsRunningOnCompositor(false)
-    , mLastNotification(LAST_NOTIFICATION_NONE)
-  {
-  }
-
-  nsString mName; // empty string for 'none'
-  float mIterationCount; // NS_IEEEPositiveInfinity() means infinite
-  uint8_t mDirection;
-  uint8_t mFillMode;
-  uint8_t mPlayState;
-
-  bool FillsForwards() const {
-    return mFillMode == NS_STYLE_ANIMATION_FILL_MODE_BOTH ||
-           mFillMode == NS_STYLE_ANIMATION_FILL_MODE_FORWARDS;
-  }
-  bool FillsBackwards() const {
-    return mFillMode == NS_STYLE_ANIMATION_FILL_MODE_BOTH ||
-           mFillMode == NS_STYLE_ANIMATION_FILL_MODE_BACKWARDS;
-  }
-
-  bool IsPaused() const {
-    return mPlayState == NS_STYLE_ANIMATION_PLAY_STATE_PAUSED;
-  }
-
-  virtual bool HasAnimationOfProperty(nsCSSProperty aProperty) const;
-  bool IsRunningAt(mozilla::TimeStamp aTime) const;
-
-  // Return the duration, at aTime (or, if paused, mPauseStart), since
-  // the *end* of the delay period.  May be negative.
-  mozilla::TimeDuration ElapsedDurationAt(mozilla::TimeStamp aTime) const {
-    NS_ABORT_IF_FALSE(!IsPaused() || aTime >= mPauseStart,
-                      "if paused, aTime must be at least mPauseStart");
-    return (IsPaused() ? mPauseStart : aTime) - mStartTime - mDelay;
-  }
-
-  mozilla::TimeStamp mStartTime; // the beginning of the delay period
-  mozilla::TimeStamp mPauseStart;
-  mozilla::TimeDuration mDelay;
-  mozilla::TimeDuration mIterationDuration;
-  bool mIsRunningOnCompositor;
-
-  enum {
-    LAST_NOTIFICATION_NONE = uint32_t(-1),
-    LAST_NOTIFICATION_END = uint32_t(-2)
-  };
-  // One of the above constants, or an integer for the iteration
-  // whose start we last notified on.
-  uint32_t mLastNotification;
-
-  InfallibleTArray<AnimationProperty> mProperties;
-};
-
-/**
- * Data about all of the animations running on an element.
- */
-struct ElementAnimations MOZ_FINAL
-  : public mozilla::css::CommonElementAnimationData
-{
-  typedef mozilla::TimeStamp TimeStamp;
-  typedef mozilla::TimeDuration TimeDuration;
-
-  ElementAnimations(mozilla::dom::Element *aElement, nsIAtom *aElementProperty,
-                    nsAnimationManager *aAnimationManager, TimeStamp aNow);
-
-  // This function takes as input the start time, duration, and direction of an
-  // animation and returns the position in the current iteration.  Note that
-  // this only works when we know that the animation is currently running.
-  // This way of calling the function can be used from the compositor.  Note
-  // that if the animation has not started yet, has already ended, or is paused,
-  // it should not be run from the compositor.  When this function is called 
-  // from the main thread, we need the actual ElementAnimation* in order to 
-  // get correct animation-fill behavior and to fire animation events.
-  // This function returns -1 for the position if the animation should not be
-  // run (because it is not currently active and has no fill behavior), but
-  // only does so if aAnimation is non-null; with a null aAnimation it is an
-  // error to give aElapsedDuration < 0, and fill-forwards is assumed.
-  // After calling GetPositionInIteration with non-null aAnimation and aEa, be
-  // sure to call CheckNeedsRefresh on the animation manager afterwards.
-  static double GetPositionInIteration(TimeDuration aElapsedDuration,
-                                       TimeDuration aIterationDuration,
-                                       double aIterationCount,
-                                       uint32_t aDirection,
-                                       ElementAnimation* aAnimation = nullptr,
-                                       ElementAnimations* aEa = nullptr,
-                                       EventArray* aEventsToDispatch = nullptr);
-
-  void EnsureStyleRuleFor(TimeStamp aRefreshTime,
-                          EventArray &aEventsToDispatch,
-                          bool aIsThrottled);
-
-  bool IsForElement() const { // rather than for a pseudo-element
-    return mElementProperty == nsGkAtoms::animationsProperty;
-  }
-
-  nsString PseudoElement()
-  {
-    return mElementProperty == nsGkAtoms::animationsProperty ?
-             EmptyString() :
-             mElementProperty == nsGkAtoms::animationsOfBeforeProperty ?
-               NS_LITERAL_STRING("::before") :
-               NS_LITERAL_STRING("::after");
-  }
-
-  void PostRestyleForAnimation(nsPresContext *aPresContext) {
-    nsRestyleHint styleHint = IsForElement() ? eRestyle_Self : eRestyle_Subtree;
-    aPresContext->PresShell()->RestyleForAnimation(mElement, styleHint);
-  }
-
-  // If aFlags contains CanAnimate_AllowPartial, returns whether the
-  // state of this element's animations at the current refresh driver
-  // time contains animation data that can be done on the compositor
-  // thread.  (This is useful for determining whether a layer should be
-  // active, or whether to send data to the layer.)
-  // If aFlags does not contain CanAnimate_AllowPartial, returns whether
-  // the state of this element's animations at the current refresh driver
-  // time can be fully represented by data sent to the compositor.
-  // (This is useful for determining whether throttle the animation
-  // (suppress main-thread style updates).)
-  // Note that when CanPerformOnCompositorThread returns true, it also,
-  // as a side-effect, notifies the ActiveLayerTracker.  FIXME:  This
-  // should probably move to the relevant callers.
-  virtual bool CanPerformOnCompositorThread(CanAnimateFlags aFlags) const MOZ_OVERRIDE;
-
-  virtual bool HasAnimationOfProperty(nsCSSProperty aProperty) const MOZ_OVERRIDE;
-
-  // False when we know that our current style rule is valid
-  // indefinitely into the future (because all of our animations are
-  // either completed or paused).  May be invalidated by a style change.
-  bool mNeedsRefreshes;
-
-  InfallibleTArray<ElementAnimation> mAnimations;
-};
-
 class nsAnimationManager MOZ_FINAL
   : public mozilla::css::CommonAnimationManager
 {
@@ -211,21 +58,11 @@ public:
   {
   }
 
-  static ElementAnimations* GetAnimationsForCompositor(nsIContent* aContent,
-                                                       nsCSSProperty aProperty)
+  static mozilla::ElementAnimationCollection*
+  GetAnimationsForCompositor(nsIContent* aContent, nsCSSProperty aProperty)
   {
-    if (!aContent->MayHaveAnimations())
-      return nullptr;
-    ElementAnimations* animations = static_cast<ElementAnimations*>(
-      aContent->GetProperty(nsGkAtoms::animationsProperty));
-    if (!animations)
-      return nullptr;
-    bool propertyMatches = animations->HasAnimationOfProperty(aProperty);
-    return (propertyMatches &&
-            animations->CanPerformOnCompositorThread(
-              mozilla::css::CommonElementAnimationData::CanAnimate_AllowPartial))
-           ? animations
-           : nullptr;
+    return mozilla::css::CommonAnimationManager::GetAnimationsForCompositor(
+      aContent, nsGkAtoms::animationsProperty, aProperty);
   }
 
   // Returns true if aContent or any of its ancestors has an animation.
@@ -239,7 +76,12 @@ public:
     return false;
   }
 
-  void EnsureStyleRuleFor(ElementAnimations* aET);
+  void UpdateStyleAndEvents(mozilla::ElementAnimationCollection* aEA,
+                            mozilla::TimeStamp aRefreshTime,
+                            mozilla::EnsureStyleRuleFlags aFlags);
+  void GetEventsAt(mozilla::ElementAnimationCollection* aEA,
+                   mozilla::TimeStamp aRefreshTime,
+                   EventArray &aEventsToDispatch);
 
   // nsIStyleRuleProcessor (parts)
   virtual void RulesMatching(ElementRuleProcessorData* aData) MOZ_OVERRIDE;
@@ -286,19 +128,21 @@ public:
     }
   }
 
-  ElementAnimations* GetElementAnimations(mozilla::dom::Element *aElement,
-                                          nsCSSPseudoElements::Type aPseudoType,
-                                          bool aCreateIfNeeded);
+  mozilla::ElementAnimationCollection*
+  GetElementAnimations(mozilla::dom::Element *aElement,
+                       nsCSSPseudoElements::Type aPseudoType,
+                       bool aCreateIfNeeded);
 
   // Updates styles on throttled animations. See note on nsTransitionManager
   void UpdateAllThrottledStyles();
 
 protected:
-  virtual void ElementDataRemoved() MOZ_OVERRIDE
+  virtual void ElementCollectionRemoved() MOZ_OVERRIDE
   {
     CheckNeedsRefresh();
   }
-  virtual void AddElementData(mozilla::css::CommonElementAnimationData* aData) MOZ_OVERRIDE;
+  virtual void
+  AddElementCollection(mozilla::ElementAnimationCollection* aData) MOZ_OVERRIDE;
 
   /**
    * Check to see if we should stop or start observing the refresh driver
@@ -307,9 +151,11 @@ protected:
 
 private:
   void BuildAnimations(nsStyleContext* aStyleContext,
-                       InfallibleTArray<ElementAnimation>& aAnimations);
-  bool BuildSegment(InfallibleTArray<AnimationPropertySegment>& aSegments,
-                    nsCSSProperty aProperty, const nsAnimation& aAnimation,
+                       mozilla::ElementAnimationPtrArray& aAnimations);
+  bool BuildSegment(InfallibleTArray<mozilla::AnimationPropertySegment>&
+                      aSegments,
+                    nsCSSProperty aProperty,
+                    const mozilla::StyleAnimation& aAnimation,
                     float aFromKey, nsStyleContext* aFromContext,
                     mozilla::css::Declaration* aFromDeclaration,
                     float aToKey, nsStyleContext* aToContext);

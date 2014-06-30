@@ -4,7 +4,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ContentHelper.h"
-#include "nsQueryFrame.h"
+
+#include "nsContainerFrame.h"
 #include "nsIContent.h"
 #include "nsIScrollableFrame.h"
 #include "nsLayoutUtils.h"
@@ -17,27 +18,39 @@ namespace widget {
 uint32_t
 ContentHelper::GetTouchActionFromFrame(nsIFrame* aFrame)
 {
-  if (!aFrame || !aFrame->GetContent() || !aFrame->GetContent()->GetPrimaryFrame()) {
-    // If frame is invalid or null then return default value.
+  // If aFrame is null then return default value
+  if (!aFrame) {
     return NS_STYLE_TOUCH_ACTION_AUTO;
   }
 
-  if (!aFrame->IsFrameOfType(nsIFrame::eSVG) && !aFrame->IsFrameOfType(nsIFrame::eBlockFrame)) {
-    // Since touch-action property can be applied to only svg and block-level
-    // elements we ignore frames of other types.
+  // The touch-action CSS property applies to: all elements except:
+  // non-replaced inline elements, table rows, row groups, table columns, and column groups
+  bool isNonReplacedInlineElement = aFrame->IsFrameOfType(nsIFrame::eLineParticipant);
+  if (isNonReplacedInlineElement) {
     return NS_STYLE_TOUCH_ACTION_AUTO;
   }
 
-  return (aFrame->GetContent()->GetPrimaryFrame()->StyleDisplay()->mTouchAction);
+  const nsStyleDisplay* disp = aFrame->StyleDisplay();
+  bool isTableElement = disp->IsInnerTableStyle() &&
+                        disp->mDisplay != NS_STYLE_DISPLAY_TABLE_CELL &&
+                        disp->mDisplay != NS_STYLE_DISPLAY_TABLE_CAPTION;
+  if (isTableElement) {
+    return NS_STYLE_TOUCH_ACTION_AUTO;
+  }
+
+  return disp->mTouchAction;
 }
 
 void
 ContentHelper::UpdateAllowedBehavior(uint32_t aTouchActionValue, bool aConsiderPanning, TouchBehaviorFlags& aOutBehavior)
 {
   if (aTouchActionValue != NS_STYLE_TOUCH_ACTION_AUTO) {
-    // Dropping zoom flag since zooming requires touch-action values of all touches
-    // to be AUTO.
-    aOutBehavior &= ~AllowedTouchBehavior::ZOOM;
+    // Double-tap-zooming need property value AUTO
+    aOutBehavior &= ~AllowedTouchBehavior::DOUBLE_TAP_ZOOM;
+    if (aTouchActionValue != NS_STYLE_TOUCH_ACTION_MANIPULATION) {
+      // Pinch-zooming need value AUTO or MANIPULATION
+      aOutBehavior &= ~AllowedTouchBehavior::PINCH_ZOOM;
+    }
   }
 
   if (aConsiderPanning) {
@@ -86,7 +99,7 @@ ContentHelper::GetAllowedTouchBehavior(nsIWidget* aWidget, const nsIntPoint& aPo
 
   bool considerPanning = true;
   TouchBehaviorFlags behavior = AllowedTouchBehavior::VERTICAL_PAN | AllowedTouchBehavior::HORIZONTAL_PAN |
-                                AllowedTouchBehavior::ZOOM;
+                                AllowedTouchBehavior::PINCH_ZOOM | AllowedTouchBehavior::DOUBLE_TAP_ZOOM;
 
   for (nsIFrame *frame = target; frame && frame->GetContent() && behavior; frame = frame->GetParent()) {
     UpdateAllowedBehavior(GetTouchActionFromFrame(frame), considerPanning, behavior);

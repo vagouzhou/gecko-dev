@@ -7,6 +7,9 @@
 
 function SpecialPowers(window) {
   this.window = Components.utils.getWeakReference(window);
+  this._windowID = window.QueryInterface(Components.interfaces.nsIInterfaceRequestor)
+                         .getInterface(Components.interfaces.nsIDOMWindowUtils)
+                         .currentInnerWindowID;
   this._encounteredCrashDumpFiles = [];
   this._unexpectedCrashDumpFiles = { };
   this._crashDumpDir = null;
@@ -21,6 +24,20 @@ function SpecialPowers(window) {
   this._pongHandlers = [];
   this._messageListener = this._messageReceived.bind(this);
   addMessageListener("SPPingService", this._messageListener);
+  let (self = this) {
+    Services.obs.addObserver(function onInnerWindowDestroyed(subject, topic, data) {
+      var id = subject.QueryInterface(Components.interfaces.nsISupportsPRUint64).data;
+      if (self._windowID === id) {
+        Services.obs.removeObserver(onInnerWindowDestroyed, "inner-window-destroyed");
+        try {
+          removeMessageListener("SPPingService", self._messageListener);
+        } catch (e if e.result == Components.results.NS_ERROR_ILLEGAL_VALUE) {
+          // Ignore the exception which the message manager has been destroyed.
+          ;
+        }
+      }
+    }, "inner-window-destroyed", false);
+  }
 }
 
 SpecialPowers.prototype = new SpecialPowersAPI();
@@ -104,17 +121,7 @@ function attachSpecialPowersToWindow(aWindow) {
     if ((aWindow !== null) &&
         (aWindow !== undefined) &&
         (aWindow.wrappedJSObject) &&
-        (aWindow.parent !== null) &&
-        (aWindow.parent !== undefined) &&
-        (aWindow.parent.wrappedJSObject.SpecialPowers) &&
-        !(aWindow.wrappedJSObject.SpecialPowers) &&
-        aWindow.location.hostname == aWindow.parent.location.hostname) {
-      aWindow.wrappedJSObject.SpecialPowers = aWindow.parent.wrappedJSObject.SpecialPowers;
-    }
-    else if ((aWindow !== null) &&
-             (aWindow !== undefined) &&
-             (aWindow.wrappedJSObject) &&
-             !(aWindow.wrappedJSObject.SpecialPowers)) {
+        !(aWindow.wrappedJSObject.SpecialPowers)) {
       aWindow.wrappedJSObject.SpecialPowers = new SpecialPowers(aWindow);
     }
   } catch(ex) {

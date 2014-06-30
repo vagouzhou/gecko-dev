@@ -109,6 +109,7 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
   PrivateBrowsingObserver(SharedSSLState* aOwner) : mOwner(aOwner) {}
+protected:
   virtual ~PrivateBrowsingObserver() {}
 private:
   SharedSSLState* mOwner;
@@ -118,7 +119,7 @@ SharedSSLState* gPublicState;
 SharedSSLState* gPrivateState;
 } // anonymous namespace
 
-NS_IMPL_ISUPPORTS1(PrivateBrowsingObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(PrivateBrowsingObserver, nsIObserver)
 
 NS_IMETHODIMP
 PrivateBrowsingObserver::Observe(nsISupports     *aSubject,

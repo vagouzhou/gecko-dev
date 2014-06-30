@@ -25,10 +25,6 @@
 
 class nsWrapperCache;
 
-// nsGlobalWindow implements nsWrapperCache, but doesn't always use it. Don't
-// try to use it without fixing that first.
-class nsGlobalWindow;
-
 namespace mozilla {
 namespace dom {
 
@@ -74,7 +70,7 @@ public:
   // The context that this returns is not guaranteed to be in the compartment of
   // the object returned from Get(), in fact it's generally in the caller's
   // compartment.
-  JSContext* GetContext() const
+  JSContext* Context() const
   {
     return mCx;
   }
@@ -115,21 +111,25 @@ public:
     return !mImpl.empty();
   }
 
-  void Construct()
+  // Return InternalType here so we can work with it usefully.
+  InternalType& Construct()
   {
     mImpl.construct();
+    return mImpl.ref();
   }
 
   template <class T1>
-  void Construct(const T1 &t1)
+  InternalType& Construct(const T1 &t1)
   {
     mImpl.construct(t1);
+    return mImpl.ref();
   }
 
   template <class T1, class T2>
-  void Construct(const T1 &t1, const T2 &t2)
+  InternalType& Construct(const T1 &t1, const T2 &t2)
   {
     mImpl.construct(t1, t2);
+    return mImpl.ref();
   }
 
   void Reset()
@@ -232,18 +232,18 @@ public:
   {}
 
   // Don't allow us to have an uninitialized JSObject*
-  void Construct()
+  JSObject*& Construct()
   {
     // The Android compiler sucks and thinks we're trying to construct
     // a JSObject* from an int if we don't cast here.  :(
-    Optional_base<JSObject*, JSObject*>::Construct(
+    return Optional_base<JSObject*, JSObject*>::Construct(
       static_cast<JSObject*>(nullptr));
   }
 
   template <class T1>
-  void Construct(const T1& t1)
+  JSObject*& Construct(const T1& t1)
   {
-    Optional_base<JSObject*, JSObject*>::Construct(t1);
+    return Optional_base<JSObject*, JSObject*>::Construct(t1);
   }
 };
 
@@ -362,19 +362,14 @@ public:
 #endif
   {}
 
-  operator T&() {
+  // This is no worse than get() in terms of const handling.
+  operator T&() const {
     MOZ_ASSERT(inited);
     MOZ_ASSERT(ptr, "NonNull<T> was set to null");
     return *ptr;
   }
 
-  operator const T&() const {
-    MOZ_ASSERT(inited);
-    MOZ_ASSERT(ptr, "NonNull<T> was set to null");
-    return *ptr;
-  }
-
-  operator T*() {
+  operator T*() const {
     MOZ_ASSERT(inited);
     MOZ_ASSERT(ptr, "NonNull<T> was set to null");
     return ptr;
@@ -440,12 +435,6 @@ inline nsWrapperCache*
 GetWrapperCache(nsWrapperCache* cache)
 {
   return cache;
-}
-
-inline nsWrapperCache*
-GetWrapperCache(nsGlobalWindow*)
-{
-  return nullptr;
 }
 
 inline nsWrapperCache*

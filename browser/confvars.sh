@@ -9,9 +9,9 @@ MOZ_UPDATER=1
 MOZ_PHOENIX=1
 
 if test "$OS_ARCH" = "WINNT"; then
-  if ! test "$HAVE_64BIT_OS"; then
+  MOZ_MAINTENANCE_SERVICE=1
+  if ! test "$HAVE_64BIT_BUILD"; then
     MOZ_VERIFY_MAR_SIGNATURE=1
-    MOZ_MAINTENANCE_SERVICE=1
     if test "$MOZ_UPDATE_CHANNEL" = "nightly" -o \
             "$MOZ_UPDATE_CHANNEL" = "aurora" -o \
             "$MOZ_UPDATE_CHANNEL" = "beta" -o \
@@ -66,5 +66,6 @@ MOZ_PAY=1
 MOZ_ACTIVITIES=1
 MOZ_JSDOWNLOADS=1
 MOZ_WEBM_ENCODER=1
-# Enable exact rooting on desktop.
+# Enable exact rooting and generational GC on desktop.
 JSGC_USE_EXACT_ROOTING=1
+JSGC_GENERATIONAL=1

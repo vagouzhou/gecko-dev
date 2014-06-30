@@ -29,9 +29,9 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGAnimatedPreserveAspectRatio)
 NS_INTERFACE_MAP_END
 
 JSObject*
-DOMSVGAnimatedPreserveAspectRatio::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DOMSVGAnimatedPreserveAspectRatio::WrapObject(JSContext* aCx)
 {
-  return SVGAnimatedPreserveAspectRatioBinding::Wrap(aCx, aScope, this);
+  return SVGAnimatedPreserveAspectRatioBinding::Wrap(aCx, this);
 }
 
 /* Implementation */
@@ -224,7 +224,7 @@ SVGAnimatedPreserveAspectRatio::GetBaseValueString(
 
   if (mBaseVal.mAlign != uint8_t(SVG_PRESERVEASPECTRATIO_NONE)) {
 
-    aValueAsString.AppendLiteral(" ");
+    aValueAsString.Append(' ');
     GetMeetOrSliceString(tmpString, mBaseVal.mMeetOrSlice);
     aValueAsString.Append(tmpString);
   }

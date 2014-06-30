@@ -8,6 +8,7 @@
 const TEST_URI = "http://example.com/browser/browser/devtools/webconsole/test/test-console-output-03.html";
 
 let inputTests = [
+
   // 0
   {
     input: "document",
@@ -57,6 +58,7 @@ let inputTests = [
   {
     input: "window.location.href",
     output: '"' + TEST_URI + '"',
+    noClick: true,
   },
 
   // 6
@@ -153,17 +155,11 @@ let inputTests = [
 ];
 
 function test() {
-  addTab(TEST_URI);
-  browser.addEventListener("load", function onLoad() {
-    browser.removeEventListener("load", onLoad, true);
-    openConsole().then((hud) => {
-      return checkOutputForInputs(hud, inputTests);
-    }).then(finishUp);
-  }, true);
-}
-
-function finishUp() {
-  inputTests = null;
-
-  finishTest();
+  requestLongerTimeout(2);
+  Task.spawn(function*() {
+    const {tab} = yield loadTab(TEST_URI);
+    const hud = yield openConsole(tab);
+    yield checkOutputForInputs(hud, inputTests);
+    inputTests = null;
+  }).then(finishTest);
 }

@@ -121,7 +121,7 @@
 //
 // [1]: http://nodejs.org/api/https.html
 // [2]: http://nodejs.org/api/http.html
-// [3]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-09#section-8.1.3.2
+// [3]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-13#section-8.1.3.2
 // [expect-continue]: https://github.com/http2/http2-spec/issues/18
 // [connect]: https://github.com/http2/http2-spec/issues/230
 
@@ -136,12 +136,14 @@ var PassThrough = require('stream').PassThrough;
 var Readable = require('stream').Readable;
 var Writable = require('stream').Writable;
 var Endpoint = require('http2-protocol').Endpoint;
+var implementedVersion = require('http2-protocol').ImplementedVersion;
 var http = require('http');
 var https = require('https');
 
 exports.STATUS_CODES = http.STATUS_CODES;
 exports.IncomingMessage = IncomingMessage;
 exports.OutgoingMessage = OutgoingMessage;
+exports.PROTOCOL_VERSION = implementedVersion;
 
 var deprecatedHeaders = [
   'connection',
@@ -153,12 +155,49 @@ var deprecatedHeaders = [
   'upgrade'
 ];
 
-// The implemented version of the HTTP/2 specification is [draft 09][1].
-// [1]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-09
-var implementedVersion = 'HTTP-draft-09/2.0';
-
 // When doing NPN/ALPN negotiation, HTTP/1.1 is used as fallback
 var supportedProtocols = [implementedVersion, 'http/1.1', 'http/1.0'];
+
+// Ciphersuite list based on the recommendations of http://wiki.mozilla.org/Security/Server_Side_TLS
+// The only modification is that kEDH+AESGCM were placed after DHE and ECDHE suites
+var cipherSuites = [
+  'ECDHE-RSA-AES128-GCM-SHA256',
+  'ECDHE-ECDSA-AES128-GCM-SHA256',
+  'ECDHE-RSA-AES256-GCM-SHA384',
+  'ECDHE-ECDSA-AES256-GCM-SHA384',
+  'DHE-RSA-AES128-GCM-SHA256',
+  'DHE-DSS-AES128-GCM-SHA256',
+  'ECDHE-RSA-AES128-SHA256',
+  'ECDHE-ECDSA-AES128-SHA256',
+  'ECDHE-RSA-AES128-SHA',
+  'ECDHE-ECDSA-AES128-SHA',
+  'ECDHE-RSA-AES256-SHA384',
+  'ECDHE-ECDSA-AES256-SHA384',
+  'ECDHE-RSA-AES256-SHA',
+  'ECDHE-ECDSA-AES256-SHA',
+  'DHE-RSA-AES128-SHA256',
+  'DHE-RSA-AES128-SHA',
+  'DHE-DSS-AES128-SHA256',
+  'DHE-RSA-AES256-SHA256',
+  'DHE-DSS-AES256-SHA',
+  'DHE-RSA-AES256-SHA',
+  'kEDH+AESGCM',
+  'AES128-GCM-SHA256',
+  'AES256-GCM-SHA384',
+  'ECDHE-RSA-RC4-SHA',
+  'ECDHE-ECDSA-RC4-SHA',
+  'AES128',
+  'AES256',
+  'RC4-SHA',
+  'HIGH',
+  '!aNULL',
+  '!eNULL',
+  '!EXPORT',
+  '!DES',
+  '!3DES',
+  '!MD5',
+  '!PSK'
+].join(':');
 
 // Logging
 // -------
@@ -207,23 +246,13 @@ function IncomingMessage(stream) {
 }
 IncomingMessage.prototype = Object.create(PassThrough.prototype, { constructor: { value: IncomingMessage } });
 
-// [Request Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-09#section-8.1.3.1)
+// [Request Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-13#section-8.1.3.1)
 // * `headers` argument: HTTP/2.0 request and response header fields carry information as a series
 //   of key-value pairs. This includes the target URI for the request, the status code for the
 //   response, as well as HTTP header fields.
 IncomingMessage.prototype._onHeaders = function _onHeaders(headers) {
-  // * An HTTP/2.0 request or response MUST NOT include any of the following header fields:
-  //   Connection, Host, Keep-Alive, Proxy-Connection, TE, Transfer-Encoding, and Upgrade. A server
-  //   MUST treat the presence of any of these header fields as a stream error of type
-  //   PROTOCOL_ERROR.
-  for (var i = 0; i < deprecatedHeaders.length; i++) {
-    var key = deprecatedHeaders[i];
-    if (key in headers) {
-      this._log.error({ key: key, value: headers[key] }, 'Deprecated header found');
-      this.stream.emit('error', 'PROTOCOL_ERROR');
-      return;
-    }
-  }
+  // * Detects malformed headers
+  this._validateHeaders(headers);
 
   // * Store the _regular_ headers in `this.headers`
   for (var name in headers) {
@@ -248,12 +277,41 @@ IncomingMessage.prototype.setTimeout = noop;
 IncomingMessage.prototype._checkSpecialHeader = function _checkSpecialHeader(key, value) {
   if ((typeof value !== 'string') || (value.length === 0)) {
     this._log.error({ key: key, value: value }, 'Invalid or missing special header field');
-    this.stream.emit('error', 'PROTOCOL_ERROR');
+    this.stream.reset('PROTOCOL_ERROR');
   }
 
   return value;
-}
-;
+};
+
+IncomingMessage.prototype._validateHeaders = function _validateHeaders(headers) {
+  // * An HTTP/2.0 request or response MUST NOT include any of the following header fields:
+  //   Connection, Host, Keep-Alive, Proxy-Connection, TE, Transfer-Encoding, and Upgrade. A server
+  //   MUST treat the presence of any of these header fields as a stream error of type
+  //   PROTOCOL_ERROR.
+  for (var i = 0; i < deprecatedHeaders.length; i++) {
+    var key = deprecatedHeaders[i];
+    if (key in headers) {
+      this._log.error({ key: key, value: headers[key] }, 'Deprecated header found');
+      this.stream.reset('PROTOCOL_ERROR');
+      return;
+    }
+  }
+
+  for (var headerName in headers) {
+    // * Empty header name field is malformed
+    if (headerName.length <= 1) {
+      this.stream.reset('PROTOCOL_ERROR');
+      return;
+    }
+    // * A request or response containing uppercase header name field names MUST be
+    //   treated as malformed (Section 8.1.3.5). Implementations that detect malformed
+    //   requests or responses need to ensure that the stream ends.
+    if(/[A-Z]/.test(headerName)) {
+      this.stream.reset('PROTOCOL_ERROR');
+      return;
+    }
+  }
+};
 
 // OutgoingMessage class
 // ---------------------
@@ -352,6 +410,8 @@ function Server(options) {
     this._mode = 'tls';
     options.ALPNProtocols = supportedProtocols;
     options.NPNProtocols = supportedProtocols;
+    options.ciphers = options.ciphers || cipherSuites;
+    options.honorCipherOrder = (options.honorCipherOrder != false);
     this._server = https.createServer(options);
     this._originalSocketListeners = this._server.listeners('secureConnection');
     this._server.removeAllListeners('secureConnection');
@@ -500,7 +560,7 @@ function IncomingRequest(stream) {
 }
 IncomingRequest.prototype = Object.create(IncomingMessage.prototype, { constructor: { value: IncomingRequest } });
 
-// [Request Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-09#section-8.1.3.1)
+// [Request Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-13#section-8.1.3.1)
 // * `headers` argument: HTTP/2.0 request and response header fields carry information as a series
 //   of key-value pairs. This includes the target URI for the request, the status code for the
 //   response, as well as HTTP header fields.
@@ -617,6 +677,13 @@ OutgoingResponse.prototype.push = function push(options) {
   return new OutgoingResponse(pushStream);
 };
 
+OutgoingResponse.prototype.altsvc = function altsvc(host, port, protocolID, maxAge, origin) {
+    if (origin === undefined) {
+        origin = "";
+    }
+    this.stream.altsvc(host, port, protocolID, maxAge, origin);
+};
+
 // Overriding `EventEmitter`'s `on(event, listener)` method to forward certain subscriptions to
 // `request`. See `Server.prototype.on` for explanation.
 OutgoingResponse.prototype.on = function on(event, listener) {
@@ -723,12 +790,13 @@ Agent.prototype.request = function request(options, callback) {
     options.NPNProtocols = supportedProtocols;
     options.servername = options.host; // Server Name Indication
     options.agent = this._httpsAgent;
+    options.ciphers = options.ciphers || cipherSuites;
     var httpsRequest = https.request(options);
 
     httpsRequest.on('socket', function(socket) {
       var negotiatedProtocol = socket.alpnProtocol || socket.npnProtocol;
-      if (negotiatedProtocol !== undefined) {
-        negotiated();
+      if (negotiatedProtocol != null) { // null in >=0.11.0, undefined in <0.11.0
+        negotiated()
       } else {
         socket.on('secureConnect', negotiated);
       }
@@ -931,7 +999,7 @@ function IncomingResponse(stream) {
 }
 IncomingResponse.prototype = Object.create(IncomingMessage.prototype, { constructor: { value: IncomingResponse } });
 
-// [Response Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-09#section-8.1.3.2)
+// [Response Header Fields](http://tools.ietf.org/html/draft-ietf-httpbis-http2-13#section-8.1.3.2)
 // * `headers` argument: HTTP/2.0 request and response header fields carry information as a series
 //   of key-value pairs. This includes the target URI for the request, the status code for the
 //   response, as well as HTTP header fields.

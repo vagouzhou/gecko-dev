@@ -16,7 +16,7 @@ namespace mozilla {
 namespace net {
 
 NS_IMPL_ADDREF(CacheFileOutputStream)
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 CacheFileOutputStream::Release()
 {
   NS_PRECONDITION(0 != mRefCnt, "dup release");
@@ -94,10 +94,21 @@ CacheFileOutputStream::Write(const char * aBuf, uint32_t aCount,
     return NS_FAILED(mStatus) ? mStatus : NS_BASE_STREAM_CLOSED;
   }
 
+  if (CacheObserver::EntryIsTooBig(mPos + aCount, !mFile->mMemoryOnly)) {
+    LOG(("CacheFileOutputStream::Write() - Entry is too big, failing and "
+         "dooming the entry. [this=%p]", this));
+
+    mFile->DoomLocked(nullptr);
+    CloseWithStatusLocked(NS_ERROR_FILE_TOO_BIG);
+    return NS_ERROR_FILE_TOO_BIG;
+  }
+
   *_retval = aCount;
 
   while (aCount) {
     EnsureCorrectChunk(false);
+    if (NS_FAILED(mStatus))
+      return mStatus;
 
     FillHole();
 
@@ -158,6 +169,15 @@ CacheFileOutputStream::CloseWithStatus(nsresult aStatus)
   LOG(("CacheFileOutputStream::CloseWithStatus() [this=%p, aStatus=0x%08x]",
        this, aStatus));
 
+  return CloseWithStatusLocked(aStatus);
+}
+
+nsresult
+CacheFileOutputStream::CloseWithStatusLocked(nsresult aStatus)
+{
+  LOG(("CacheFileOutputStream::CloseWithStatusLocked() [this=%p, "
+       "aStatus=0x%08x]", this, aStatus));
+
   if (mClosed) {
     MOZ_ASSERT(!mCallback);
     return NS_OK;
@@ -166,11 +186,13 @@ CacheFileOutputStream::CloseWithStatus(nsresult aStatus)
   mClosed = true;
   mStatus = NS_FAILED(aStatus) ? aStatus : NS_BASE_STREAM_CLOSED;
 
-  if (mChunk)
+  if (mChunk) {
     ReleaseChunk();
+  }
 
-  if (mCallback)
+  if (mCallback) {
     NotifyListener();
+  }
 
   mFile->RemoveOutput(this);
 
@@ -191,6 +213,7 @@ CacheFileOutputStream::AsyncWait(nsIOutputStreamCallback *aCallback,
 
   mCallback = aCallback;
   mCallbackFlags = aFlags;
+  mCallbackTarget = aEventTarget;
 
   if (!mCallback)
     return NS_OK;
@@ -342,10 +365,14 @@ CacheFileOutputStream::EnsureCorrectChunk(bool aReleaseOnly)
   if (aReleaseOnly)
     return;
 
-  DebugOnly<nsresult> rv;
-  rv = mFile->GetChunkLocked(chunkIdx, true, nullptr, getter_AddRefs(mChunk));
-  MOZ_ASSERT(NS_SUCCEEDED(rv),
-             "CacheFile::GetChunkLocked() should always succeed for writer");
+  nsresult rv;
+  rv = mFile->GetChunkLocked(chunkIdx, CacheFile::WRITER, nullptr,
+                             getter_AddRefs(mChunk));
+  if (NS_FAILED(rv)) {
+    LOG(("CacheFileOutputStream::EnsureCorrectChunk() - GetChunkLocked failed. "
+         "[this=%p, idx=%d, rv=0x%08x]", this, chunkIdx, rv));
+    CloseWithStatusLocked(rv);
+  }
 }
 
 void

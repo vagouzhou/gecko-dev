@@ -47,7 +47,8 @@ public:
   DrawTargetD2D();
   virtual ~DrawTargetD2D();
 
-  virtual BackendType GetType() const { return BackendType::DIRECT2D; }
+  virtual DrawTargetType GetType() const MOZ_OVERRIDE { return DrawTargetType::HARDWARE_RASTER; }
+  virtual BackendType GetBackendType() const { return BackendType::DIRECT2D; }
   virtual TemporaryRef<SourceSurface> Snapshot();
   virtual IntSize GetSize() { return mSize; }
 
@@ -138,6 +139,10 @@ public:
   uint32_t GetByteSize() const;
   TemporaryRef<ID2D1Layer> GetCachedLayer();
   void PopCachedLayer(ID2D1RenderTarget *aRT);
+
+#ifdef USE_D2D1_1
+  TemporaryRef<ID2D1Image> GetImageForSurface(SourceSurface *aSurface);
+#endif
 
   static ID2D1Factory *factory();
   static void CleanupD2D();

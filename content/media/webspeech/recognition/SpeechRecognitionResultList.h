@@ -27,15 +27,13 @@ class SpeechRecognitionResultList MOZ_FINAL : public nsISupports,
 {
 public:
   SpeechRecognitionResultList(SpeechRecognition* aParent);
-  ~SpeechRecognitionResultList();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(SpeechRecognitionResultList)
 
   nsISupports* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   uint32_t Length() const;
 
@@ -45,6 +43,8 @@ public:
 
   nsTArray<nsRefPtr<SpeechRecognitionResult> > mItems;
 private:
+  ~SpeechRecognitionResultList();
+
   nsRefPtr<SpeechRecognition> mParent;
 };
 

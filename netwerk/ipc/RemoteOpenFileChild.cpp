@@ -4,8 +4,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "mozilla/net/RemoteOpenFileChild.h"
+#include "RemoteOpenFileChild.h"
 
+#include "mozilla/unused.h"
 #include "mozilla/ipc/FileDescriptor.h"
 #include "mozilla/ipc/FileDescriptorUtils.h"
 #include "mozilla/ipc/URIUtils.h"
@@ -13,6 +14,8 @@
 #include "nsThreadUtils.h"
 #include "nsJARProtocolHandler.h"
 #include "nsIRemoteOpenFileListener.h"
+#include "nsProxyRelease.h"
+#include "SerializedLoadContext.h"
 
 // needed to alloc/free NSPR file descriptors
 #include "private/pprio.h"
@@ -62,10 +65,10 @@ private:
 // RemoteOpenFileChild
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS3(RemoteOpenFileChild,
-                   nsIFile,
-                   nsIHashable,
-                   nsICachedFileDescriptorListener)
+NS_IMPL_ISUPPORTS(RemoteOpenFileChild,
+                  nsIFile,
+                  nsIHashable,
+                  nsICachedFileDescriptorListener)
 
 RemoteOpenFileChild::RemoteOpenFileChild(const RemoteOpenFileChild& other)
   : mTabChild(other.mTabChild)
@@ -83,8 +86,40 @@ RemoteOpenFileChild::RemoteOpenFileChild(const RemoteOpenFileChild& other)
 
 RemoteOpenFileChild::~RemoteOpenFileChild()
 {
-  if (mListener) {
-    NotifyListener(NS_ERROR_UNEXPECTED);
+  if (NS_IsMainThread()) {
+    if (mListener) {
+      NotifyListener(NS_ERROR_UNEXPECTED);
+    }
+  } else {
+    nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
+    if (mainThread) {
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_ProxyRelease(mainThread, mURI, true)));
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_ProxyRelease(mainThread, mAppURI, true)));
+      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_ProxyRelease(mainThread, mListener,
+                                                   true)));
+
+      TabChild* tabChild;
+      mTabChild.forget(&tabChild);
+
+      if (tabChild) {
+        nsCOMPtr<nsIRunnable> runnable =
+          NS_NewNonOwningRunnableMethod(tabChild, &TabChild::Release);
+        MOZ_ASSERT(runnable);
+
+        MOZ_ALWAYS_TRUE(NS_SUCCEEDED(mainThread->Dispatch(runnable,
+                                                          NS_DISPATCH_NORMAL)));
+      }
+    } else {
+      using mozilla::unused;
+
+      NS_WARNING("RemoteOpenFileChild released after thread shutdown, leaking "
+                 "its members!");
+
+      unused << mURI.forget();
+      unused << mAppURI.forget();
+      unused << mListener.forget();
+      unused << mTabChild.forget();
+    }
   }
 
   if (mNSPRFileDesc) {
@@ -141,7 +176,8 @@ RemoteOpenFileChild::Init(nsIURI* aRemoteOpenUri, nsIURI* aAppUri)
 nsresult
 RemoteOpenFileChild::AsyncRemoteFileOpen(int32_t aFlags,
                                          nsIRemoteOpenFileListener* aListener,
-                                         nsITabChild* aTabChild)
+                                         nsITabChild* aTabChild,
+                                         nsILoadContext *aLoadContext)
 {
   if (!mFile) {
     return NS_ERROR_NOT_INITIALIZED;
@@ -193,7 +229,8 @@ RemoteOpenFileChild::AsyncRemoteFileOpen(int32_t aFlags,
   OptionalURIParams appUri;
   SerializeURI(mAppURI, appUri);
 
-  gNeckoChild->SendPRemoteOpenFileConstructor(this, uri, appUri);
+  IPC::SerializedLoadContext loadContext(aLoadContext);
+  gNeckoChild->SendPRemoteOpenFileConstructor(this, loadContext, uri, appUri);
 
   // The chrome process now has a logical ref to us until it calls Send__delete.
   AddIPDLReference();
@@ -401,9 +438,9 @@ RemoteOpenFileChild::Equals(nsIFile *inFile, bool *_retval)
 }
 
 NS_IMETHODIMP
-RemoteOpenFileChild::Contains(nsIFile *inFile, bool recur, bool *_retval)
+RemoteOpenFileChild::Contains(nsIFile *inFile, bool *_retval)
 {
-  return mFile->Contains(inFile, recur, _retval);
+  return mFile->Contains(inFile, _retval);
 }
 
 NS_IMETHODIMP

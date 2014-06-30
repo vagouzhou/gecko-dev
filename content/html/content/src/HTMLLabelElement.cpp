@@ -25,15 +25,15 @@ HTMLLabelElement::~HTMLLabelElement()
 }
 
 JSObject*
-HTMLLabelElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLLabelElement::WrapNode(JSContext *aCx)
 {
-  return HTMLLabelElementBinding::Wrap(aCx, aScope, this);
+  return HTMLLabelElementBinding::Wrap(aCx, this);
 }
 
 // nsISupports
 
-NS_IMPL_ISUPPORTS_INHERITED1(HTMLLabelElement, nsGenericHTMLFormElement,
-                             nsIDOMHTMLLabelElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLLabelElement, nsGenericHTMLFormElement,
+                            nsIDOMHTMLLabelElement)
 
 // nsIDOMHTMLLabelElement
 
@@ -101,16 +101,6 @@ EventTargetIn(WidgetEvent* aEvent, nsIContent* aChild, nsIContent* aStop)
   return false;
 }
 
-static void
-DestroyMouseDownPoint(void *    /*aObject*/,
-                      nsIAtom * /*aPropertyName*/,
-                      void *    aPropertyValue,
-                      void *    /*aData*/)
-{
-  LayoutDeviceIntPoint* pt = static_cast<LayoutDeviceIntPoint*>(aPropertyValue);
-  delete pt;
-}
-
 nsresult
 HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
 {
@@ -139,7 +129,7 @@ HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
             new LayoutDeviceIntPoint(mouseEvent->refPoint);
           SetProperty(nsGkAtoms::labelMouseDownPtProperty,
                       static_cast<void*>(curPoint),
-                      DestroyMouseDownPoint);
+                      nsINode::DeleteProperty<LayoutDeviceIntPoint>);
         }
         break;
 

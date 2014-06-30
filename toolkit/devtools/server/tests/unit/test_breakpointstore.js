@@ -1,16 +1,15 @@
-/* -*- Mode: js; js-indent-level: 2; -*- */
+/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Test the functionality of the BreakpointStore object.
 
+const { BreakpointStore, ThreadActor } = devtools.require("devtools/server/actors/script");
+
 function run_test()
 {
   Cu.import("resource://gre/modules/jsdebugger.jsm");
   addDebuggerToGlobal(this);
-  let loader = Cc["@mozilla.org/moz/jssubscript-loader;1"]
-    .getService(Components.interfaces.mozIJSSubScriptLoader);
-  loader.loadSubScript("resource://gre/modules/devtools/server/actors/script.js");
 
   test_has_breakpoint();
   test_bug_754251();

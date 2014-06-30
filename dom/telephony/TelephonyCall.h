@@ -11,19 +11,22 @@
 
 #include "mozilla/dom/DOMError.h"
 
+#include "TelephonyCallId.h"
+
 class nsPIDOMWindow;
 
 namespace mozilla {
 namespace dom {
 
-class TelephonyCall MOZ_FINAL : public nsDOMEventTargetHelper
+class TelephonyCall MOZ_FINAL : public DOMEventTargetHelper
 {
   nsRefPtr<Telephony> mTelephony;
   nsRefPtr<TelephonyCallGroup> mGroup;
 
+  nsRefPtr<TelephonyCallId> mId;
+  nsRefPtr<TelephonyCallId> mSecondId;
+
   uint32_t mServiceId;
-  nsString mNumber;
-  nsString mSecondNumber;
   nsString mState;
   bool mEmergency;
   nsRefPtr<DOMError> mError;
@@ -36,10 +39,9 @@ class TelephonyCall MOZ_FINAL : public nsDOMEventTargetHelper
 
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsDOMEventTargetHelper)
+  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(DOMEventTargetHelper)
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(TelephonyCall,
-                                           nsDOMEventTargetHelper)
-
+                                           DOMEventTargetHelper)
   friend class Telephony;
 
   nsPIDOMWindow*
@@ -50,20 +52,14 @@ public:
 
   // WrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // WebIDL
-  void
-  GetNumber(nsString& aNumber) const
-  {
-    aNumber.Assign(mNumber);
-  }
+  already_AddRefed<TelephonyCallId>
+  Id() const;
 
-  void
-  GetSecondNumber(nsString& aSecondNumber) const
-  {
-    aSecondNumber.Assign(mSecondNumber);
-  }
+  already_AddRefed<TelephonyCallId>
+  GetSecondId() const;
 
   void
   GetState(nsString& aState) const
@@ -121,10 +117,9 @@ public:
   IMPL_EVENT_HANDLER(groupchange)
 
   static already_AddRefed<TelephonyCall>
-  Create(Telephony* aTelephony, uint32_t aServiceId,
-         const nsAString& aNumber, uint16_t aCallState,
-         uint32_t aCallIndex = telephony::kOutgoingPlaceholderCallIndex,
-         bool aEmergency = false, bool aIsConference = false,
+  Create(Telephony* aTelephony, TelephonyCallId* aId,
+         uint32_t aServiceId, uint32_t aCallIndex, uint16_t aCallState,
+         bool aEmergency = false, bool aConference = false,
          bool aSwitchable = true, bool aMergeable = true);
 
   void
@@ -145,14 +140,6 @@ public:
     return mCallIndex;
   }
 
-  void
-  UpdateCallIndex(uint32_t aCallIndex)
-  {
-    NS_ASSERTION(mCallIndex == telephony::kOutgoingPlaceholderCallIndex,
-                 "Call index should not be set!");
-    mCallIndex = aCallIndex;
-  }
-
   uint16_t
   CallState() const
   {
@@ -166,12 +153,6 @@ public:
   }
 
   void
-  UpdateSecondNumber(const nsAString& aNumber)
-  {
-    mSecondNumber = aNumber;
-  }
-
-  void
   UpdateSwitchable(bool aSwitchable) {
     mSwitchable = aSwitchable;
   }
@@ -179,6 +160,11 @@ public:
   void
   UpdateMergeable(bool aMergeable) {
     mMergeable = aMergeable;
+  }
+
+  void
+  UpdateSecondId(TelephonyCallId* aId) {
+    mSecondId = aId;
   }
 
   void

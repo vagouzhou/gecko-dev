@@ -47,6 +47,9 @@
 #include "prlog.h"
 #include "prenv.h"
 
+// See definition of SandboxDie, below.
+#include "sandbox/linux/seccomp-bpf/die.h"
+
 namespace mozilla {
 #if defined(ANDROID)
 #define LOG_ERROR(args...) __android_log_print(ANDROID_LOG_ERROR, "Sandbox", ## args)
@@ -73,7 +76,7 @@ SandboxLogJSStack(void)
   }
   nsCOMPtr<nsIStackFrame> frame = dom::GetCurrentJSStack();
   for (int i = 0; frame != nullptr; ++i) {
-    nsAutoCString fileName, funName;
+    nsAutoString fileName, funName;
     int32_t lineNumber;
 
     // Don't stop unwinding if an attribute can't be read.
@@ -86,8 +89,10 @@ SandboxLogJSStack(void)
 
     if (!funName.IsVoid() || !fileName.IsVoid()) {
       LOG_ERROR("JS frame %d: %s %s line %d", i,
-                funName.IsVoid() ? "(anonymous)" : funName.get(),
-                fileName.IsVoid() ? "(no file)" : fileName.get(),
+                funName.IsVoid() ?
+                  "(anonymous)" : NS_ConvertUTF16toUTF8(funName).get(),
+                fileName.IsVoid() ?
+                  "(no file)" : NS_ConvertUTF16toUTF8(fileName).get(),
                 lineNumber);
     }
 
@@ -204,7 +209,7 @@ InstallSyscallReporter(void)
  * @see sock_fprog (the seccomp_prog).
  */
 static int
-InstallSyscallFilter(void)
+InstallSyscallFilter(const sock_fprog *prog)
 {
 #ifdef MOZ_DMD
   char* e = PR_GetEnv("DMD");
@@ -219,9 +224,7 @@ InstallSyscallFilter(void)
     return 1;
   }
 
-  const sock_fprog *filter = GetSandboxFilter();
-
-  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, (unsigned long)filter, 0, 0)) {
+  if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, (unsigned long)prog, 0, 0)) {
     return 1;
   }
   return 0;
@@ -233,6 +236,8 @@ static mozilla::Atomic<int> sSetSandboxDone;
 // about:memory has the first 3 RT signals.  (We should allocate
 // signals centrally instead of hard-coding them like this.)
 static const int sSetSandboxSignum = SIGRTMIN + 3;
+// Pass the filter itself through a global.
+static const sock_fprog *sSetSandboxFilter;
 
 static bool
 SetThreadSandbox()
@@ -241,7 +246,7 @@ SetThreadSandbox()
 
   if (PR_GetEnv("MOZ_DISABLE_CONTENT_SANDBOX") == nullptr &&
       prctl(PR_GET_SECCOMP, 0, 0, 0, 0) == 0) {
-    if (InstallSyscallFilter() == 0) {
+    if (InstallSyscallFilter(sSetSandboxFilter) == 0) {
       didAnything = true;
     }
     /*
@@ -275,6 +280,8 @@ BroadcastSetThreadSandbox()
   pid_t pid, tid;
   DIR *taskdp;
   struct dirent *de;
+  SandboxFilter filter(&sSetSandboxFilter,
+                       PR_GetEnv("MOZ_CONTENT_SANDBOX_VERBOSE"));
 
   static_assert(sizeof(mozilla::Atomic<int>) == sizeof(int),
                 "mozilla::Atomic<int> isn't represented by an int");
@@ -386,6 +393,14 @@ BroadcastSetThreadSandbox()
   SetThreadSandbox();
 }
 
+// This function can overapproximate (i.e., return true even if
+// sandboxing isn't supported, but not the reverse).  See bug 993145.
+static bool
+IsSandboxingSupported(void)
+{
+  return prctl(PR_GET_SECCOMP) != -1;
+}
+
 /**
  * Starts the seccomp sandbox for this process and sets user/group-based privileges.
  * Should be called only once, and before any potentially harmful content is loaded.
@@ -408,8 +423,40 @@ SetCurrentProcessSandbox()
   }
 #endif
 
-  BroadcastSetThreadSandbox();
+  if (IsSandboxingSupported()) {
+    BroadcastSetThreadSandbox();
+  }
 }
 
 } // namespace mozilla
 
+
+// "Polyfill" for sandbox::Die, the real version of which requires
+// Chromium's logging code.
+namespace sandbox {
+
+void
+Die::SandboxDie(const char* msg, const char* file, int line)
+{
+  LOG_ERROR("%s:%d: %s\n", file, line, msg);
+  _exit(127);
+}
+
+} // namespace sandbox
+
+
+// Stubs for unreached logging calls from Chromium CHECK() macro.
+#include "base/logging.h"
+namespace logging {
+
+LogMessage::LogMessage(const char *file, int line, int)
+  : line_(line), file_(file)
+{
+  MOZ_CRASH("Unexpected call to logging::LogMessage::LogMessage");
+}
+
+LogMessage::~LogMessage() {
+  MOZ_CRASH("Unexpected call to logging::LogMessage::~LogMessage");
+}
+
+} // namespace logging

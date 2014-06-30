@@ -33,8 +33,10 @@ class HeapSlot;
 void SetGCZeal(JSRuntime *, uint8_t, uint32_t);
 
 namespace gc {
-class Cell;
+struct Cell;
+class Collector;
 class MinorCollectionTracer;
+class ForkJoinNursery;
 } /* namespace gc */
 
 namespace types {
@@ -48,17 +50,53 @@ class ICStubCompiler;
 class BaselineCompiler;
 }
 
+namespace gc {
+
+/*
+ * This structure overlays a Cell in the Nursery and re-purposes its memory
+ * for managing the Nursery collection process.
+ */
+class RelocationOverlay
+{
+    friend class MinorCollectionTracer;
+    friend class ForkJoinNursery;
+
+    /* The low bit is set so this should never equal a normal pointer. */
+    static const uintptr_t Relocated = uintptr_t(0xbad0bad1);
+
+    /* Set to Relocated when moved. */
+    uintptr_t magic_;
+
+    /* The location |this| was moved to. */
+    Cell *newLocation_;
+
+    /* A list entry to track all relocated things. */
+    RelocationOverlay *next_;
+
+  public:
+    static inline RelocationOverlay *fromCell(Cell *cell);
+    inline bool isForwarded() const;
+    inline Cell *forwardingAddress() const;
+    inline void forwardTo(Cell *cell);
+    inline RelocationOverlay *next() const;
+};
+
+} /* namespace gc */
+
 class Nursery
 {
   public:
     static const int NumNurseryChunks = 16;
     static const int LastNurseryChunk = NumNurseryChunks - 1;
     static const size_t Alignment = gc::ChunkSize;
+    static const size_t ChunkShift = gc::ChunkShift;
     static const size_t NurserySize = gc::ChunkSize * NumNurseryChunks;
 
     explicit Nursery(JSRuntime *rt)
       : runtime_(rt),
         position_(0),
+        heapStart_(0),
+        heapEnd_(0),
         currentStart_(0),
         currentEnd_(0),
         currentChunk_(0),
@@ -75,9 +113,13 @@ class Nursery
     /* Return true if no allocations have been made since the last collection. */
     bool isEmpty() const;
 
-    template <typename T>
-    MOZ_ALWAYS_INLINE bool isInside(const T *p) const {
-        return gc::IsInsideNursery((JS::shadow::Runtime *)runtime_, p);
+    /*
+     * Check whether an arbitrary pointer is within the nursery. This is
+     * slower than IsInsideNursery(Cell*), but works on all types of pointers.
+     */
+    MOZ_ALWAYS_INLINE bool isInside(gc::Cell *cellp) const MOZ_DELETE;
+    MOZ_ALWAYS_INLINE bool isInside(const void *p) const {
+        return uintptr_t(p) >= heapStart_ && uintptr_t(p) < heapEnd_;
     }
 
     /*
@@ -103,9 +145,6 @@ class Nursery
     /* Free a slots array. */
     void freeSlots(JSContext *cx, HeapSlot *slots);
 
-    /* Add a slots to our tracking list if it is out-of-line. */
-    void notifyInitialSlots(gc::Cell *cell, HeapSlot *slots);
-
     typedef Vector<types::TypeObject *, 0, SystemAllocPolicy> TypeObjectList;
 
     /*
@@ -125,8 +164,34 @@ class Nursery
     /* Forward a slots/elements pointer stored in an Ion frame. */
     void forwardBufferPointer(HeapSlot **pSlotsElems);
 
-    size_t sizeOfHeapCommitted() { return numActiveChunks_ * gc::ChunkSize; }
-    size_t sizeOfHeapDecommitted() { return (NumNurseryChunks - numActiveChunks_) * gc::ChunkSize; }
+    static void forwardBufferPointer(JSTracer* trc, HeapSlot **pSlotsElems);
+
+    size_t sizeOfHeapCommitted() const {
+        return numActiveChunks_ * gc::ChunkSize;
+    }
+    size_t sizeOfHeapDecommitted() const {
+        return (NumNurseryChunks - numActiveChunks_) * gc::ChunkSize;
+    }
+    size_t sizeOfHugeSlots(mozilla::MallocSizeOf mallocSizeOf) const {
+        size_t total = 0;
+        for (HugeSlotsSet::Range r = hugeSlots.all(); !r.empty(); r.popFront())
+            total += mallocSizeOf(r.front());
+        total += hugeSlots.sizeOfExcludingThis(mallocSizeOf);
+        return total;
+    }
+
+    MOZ_ALWAYS_INLINE uintptr_t start() const {
+        return heapStart_;
+    }
+
+    MOZ_ALWAYS_INLINE uintptr_t heapEnd() const {
+        return heapEnd_;
+    }
+
+#ifdef JS_GC_ZEAL
+    void enterZealMode();
+    void leaveZealMode();
+#endif
 
   private:
     /*
@@ -138,6 +203,10 @@ class Nursery
 
     /* Pointer to the first unallocated byte in the nursery. */
     uintptr_t position_;
+
+    /* Pointer to first and last address of the total nursery allocation. */
+    uintptr_t heapStart_;
+    uintptr_t heapEnd_;
 
     /* Pointer to the logical start of the Nursery. */
     uintptr_t currentStart_;
@@ -179,14 +248,11 @@ class Nursery
         return reinterpret_cast<NurseryChunkLayout *>(start())[index];
     }
 
-    MOZ_ALWAYS_INLINE uintptr_t start() const {
-        JS_ASSERT(runtime_);
-        return ((JS::shadow::Runtime *)runtime_)->gcNurseryStart_;
-    }
-
-    MOZ_ALWAYS_INLINE uintptr_t heapEnd() const {
-        JS_ASSERT(runtime_);
-        return ((JS::shadow::Runtime *)runtime_)->gcNurseryEnd_;
+    MOZ_ALWAYS_INLINE void initChunk(int chunkno) {
+        NurseryChunkLayout &c = chunk(chunkno);
+        c.trailer.storeBuffer = JS::shadow::Runtime::asShadowRuntime(runtime())->gcStoreBufferPtr();
+        c.trailer.location = gc::ChunkLocationBitNursery;
+        c.trailer.runtime = runtime();
     }
 
     MOZ_ALWAYS_INLINE void setCurrentChunk(int chunkno) {
@@ -195,26 +261,14 @@ class Nursery
         currentChunk_ = chunkno;
         position_ = chunk(chunkno).start();
         currentEnd_ = chunk(chunkno).end();
-        chunk(chunkno).trailer.runtime = runtime();
+        initChunk(chunkno);
     }
 
-    void updateDecommittedRegion() {
-#ifndef JS_GC_ZEAL
-        if (numActiveChunks_ < NumNurseryChunks) {
-            uintptr_t decommitStart = chunk(numActiveChunks_).start();
-            JS_ASSERT(decommitStart == AlignBytes(decommitStart, 1 << 20));
-            gc::MarkPagesUnused(runtime(), (void *)decommitStart, heapEnd() - decommitStart);
-        }
-#endif
-    }
+    void updateDecommittedRegion();
 
     MOZ_ALWAYS_INLINE uintptr_t allocationEnd() const {
         JS_ASSERT(numActiveChunks_ > 0);
         return chunk(numActiveChunks_ - 1).end();
-    }
-
-    MOZ_ALWAYS_INLINE bool isFullyGrown() const {
-        return numActiveChunks_ == NumNurseryChunks;
     }
 
     MOZ_ALWAYS_INLINE uintptr_t currentEnd() const {
@@ -256,6 +310,7 @@ class Nursery
     size_t moveObjectToTenured(JSObject *dst, JSObject *src, gc::AllocKind dstKind);
     size_t moveElementsToTenured(JSObject *dst, JSObject *src, gc::AllocKind dstKind);
     size_t moveSlotsToTenured(JSObject *dst, JSObject *src, gc::AllocKind dstKind);
+    void forwardTypedArrayPointers(JSObject *dst, JSObject *src);
 
     /* Handle relocation of slots/elements pointers stored in Ion frames. */
     void setSlotsForwardingPointer(HeapSlot *oldSlots, HeapSlot *newSlots, uint32_t nslots);
@@ -263,13 +318,13 @@ class Nursery
                                       uint32_t nelems);
 
     /* Free malloced pointers owned by freed things in the nursery. */
-    void freeHugeSlots(JSRuntime *rt);
+    void freeHugeSlots();
 
     /*
      * Frees all non-live nursery-allocated things at the end of a minor
      * collection.
      */
-    void sweep(JSRuntime *rt);
+    void sweep();
 
     /* Change the allocable space provided by the nursery. */
     void growAllocableSpace();
@@ -277,36 +332,8 @@ class Nursery
 
     static void MinorGCCallback(JSTracer *trc, void **thingp, JSGCTraceKind kind);
 
-#ifdef JS_GC_ZEAL
-    /*
-     * In debug and zeal builds, these bytes indicate the state of an unused
-     * segment of nursery-allocated memory.
-     */
-    static const uint8_t FreshNursery = 0x2a;
-    static const uint8_t SweptNursery = 0x2b;
-    static const uint8_t AllocatedThing = 0x2c;
-    void enterZealMode() {
-        if (isEnabled())
-            numActiveChunks_ = NumNurseryChunks;
-    }
-    void leaveZealMode() {
-        if (isEnabled()) {
-            JS_ASSERT(isEmpty());
-            setCurrentChunk(0);
-            currentStart_ = start();
-        }
-    }
-#else
-    void enterZealMode() {}
-    void leaveZealMode() {}
-#endif
-
     friend class gc::MinorCollectionTracer;
-    friend class jit::CodeGenerator;
     friend class jit::MacroAssembler;
-    friend class jit::ICStubCompiler;
-    friend class jit::BaselineCompiler;
-    friend void SetGCZeal(JSRuntime *, uint8_t, uint32_t);
 };
 
 } /* namespace js */

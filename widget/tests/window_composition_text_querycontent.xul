@@ -2791,6 +2791,85 @@ function runBug811755Test()
   return queryContent.text == textContent.text;
 }
 
+function runIsComposingTest()
+{
+  var expectedIsComposing = false;
+  var descriptionBase = "runIsComposingTest: ";
+  var description = "";
+
+  function eventHandler(aEvent)
+  {
+    if (aEvent.type == "keydown" || aEvent.type == "keyup") {
+      is(aEvent.isComposing, expectedIsComposing,
+         "runIsComposingTest: " + description + " (type=" + aEvent.type + ", key=" + aEvent.key + ")");
+    } else {
+      is(aEvent.isComposing, expectedIsComposing,
+         "runIsComposingTest: " + description + " (type=" + aEvent.type + ")");
+    }
+  }
+
+  textarea.addEventListener("keydown", eventHandler, true);
+  textarea.addEventListener("keypress", eventHandler, true);
+  textarea.addEventListener("keyup", eventHandler, true);
+  textarea.addEventListener("input", eventHandler, true);
+
+  textarea.focus();
+  textarea.value = "";
+
+  // XXX These cases shouldn't occur in actual native key events because we
+  //     don't dispatch key events while composition (bug 354358).
+  expectedIsComposing = false;
+  description = "events before dispatching compositionstart";
+  synthesizeKey("VK_LEFT", {});
+
+  synthesizeKey("a", { type: "keydown" });
+  synthesizeComposition({ type: "compositionstart" });
+  expectedIsComposing = true;
+  description = "events after dispatching compositionstart";
+  synthesizeComposition({ type: "compositionupdate", data: "\u3042" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u3042",
+        "clauses":
+        [
+          { "length": 1, "attr": COMPOSITION_ATTR_RAWINPUT }
+        ]
+      },
+      "caret": { "start": 1, "length": 0 }
+    });
+  synthesizeKey("a", { type: "keyup" });
+
+  // Although, firing keypress event during composition is a bug.
+  synthesizeKey("VK_INSERT", {});
+
+  description = "events for committing composition string";
+  synthesizeKey("VK_RETURN", { type: "keydown" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u3042",
+        "clauses":
+        [
+          { "length": 0, "attr": 0 }
+        ]
+      },
+      "caret": { "start": 1, "length": 0 }
+    });
+
+  // input event will be fired by synthesizing compositionend event.
+  // Then, its isComposing should be false.
+  expectedIsComposing = false;
+  description = "events after dispatching compositionend";
+  synthesizeComposition({ type: "compositionend" });
+  synthesizeKey("VK_RETURN", { type: "keyup" });
+
+  textarea.removeEventListener("keydown", eventHandler, true);
+  textarea.removeEventListener("keypress", eventHandler, true);
+  textarea.removeEventListener("keyup", eventHandler, true);
+  textarea.removeEventListener("input", eventHandler, true);
+
+  textarea.value = "";
+}
+
 function runRemoveContentTest(aCallback)
 {
   var events = [];
@@ -3364,6 +3443,95 @@ function runMaxLengthTest()
       !checkSelection(1 + 0, "", kDesc, "#3-4")) {
     return;
   }
+
+  // The input element whose content length is already maxlength and
+  // the carest is at start of the content.
+  input.value = "X";
+  input.selectionStart = input.selectionEnd = 0;
+
+  // start composition
+  synthesizeComposition({ type: "compositionstart" });
+
+  // input characters
+  synthesizeComposition({ type: "compositionupdate", data: "\u9B54" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u9B54",
+        "clauses":
+        [
+          { "length": 1, "attr": COMPOSITION_ATTR_RAWINPUT }
+        ]
+      },
+      "caret": { "start": 1, "length": 0 }
+    });
+
+  if (!checkContent("\u9B54X", kDesc, "#4-1") ||
+      !checkSelection(1, "", kDesc, "#4-1")) {
+    return;
+  }
+
+  // commit the composition string
+  synthesizeComposition({ type: "compositionupdate", data: "\u9B54" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u9B54",
+        "clauses":
+        [
+          { "length": 0, "attr": 0 }
+        ]
+      },
+      "caret": { "start": 1, "length": 0 }
+    });
+
+  // The input text must be discarded. Then, the caret position shouldn't be
+  // updated from its position at compositionstart.
+  if (!checkContent("X", kDesc, "#4-2") ||
+      !checkSelection(0, "", kDesc, "#4-2")) {
+    return;
+  }
+
+  synthesizeComposition({ type: "compositionend", data: "\u9B54" });
+
+  // start composition
+  synthesizeComposition({ type: "compositionstart" });
+
+  // input characters
+  synthesizeComposition({ type: "compositionupdate", data: "\u9B54\u6CD5" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u9B54\u6CD5",
+        "clauses":
+        [
+          { "length": 2, "attr": COMPOSITION_ATTR_RAWINPUT }
+        ]
+      },
+      "caret": { "start": 2, "length": 0 }
+    });
+
+  if (!checkContent("\u9B54\u6CD5X", kDesc, "#5-1") ||
+      !checkSelection(2, "", kDesc, "#5-1")) {
+    return;
+  }
+
+  // commit the composition string
+  synthesizeComposition({ type: "compositionupdate", data: "\u9B54\u6CD5" });
+  synthesizeText(
+    { "composition":
+      { "string": "\u9B54\u6CD5",
+        "clauses":
+        [
+          { "length": 0, "attr": 0 }
+        ]
+      },
+      "caret": { "start": 2, "length": 0 }
+    });
+
+  if (!checkContent("X", kDesc, "#5-2") ||
+      !checkSelection(0, "", kDesc, "#5-2")) {
+    return;
+  }
+
+  synthesizeComposition({ type: "compositionend", data: "\u9B54\u6CD5" });
 }
 
 function runTest()
@@ -3378,6 +3546,7 @@ function runTest()
   runBug722639Test();
   runForceCommitTest();
   runBug811755Test();
+  runIsComposingTest();
   runRemoveContentTest(function () {
     runFrameTest();
     runPanelTest();

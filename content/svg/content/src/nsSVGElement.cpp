@@ -63,7 +63,7 @@ static_assert(sizeof(void*) == sizeof(nullptr),
               "nullptr should be the correct size");
 
 nsresult
-NS_NewSVGElement(Element **aResult, already_AddRefed<nsINodeInfo>&& aNodeInfo)
+NS_NewSVGElement(Element **aResult, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
 {
   nsRefPtr<nsSVGElement> it = new nsSVGElement(aNodeInfo);
   nsresult rv = it->Init();
@@ -84,22 +84,22 @@ nsSVGEnumMapping nsSVGElement::sSVGUnitTypesMap[] = {
   {nullptr, 0}
 };
 
-nsSVGElement::nsSVGElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+nsSVGElement::nsSVGElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsSVGElementBase(aNodeInfo)
 {
 }
 
 JSObject*
-nsSVGElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+nsSVGElement::WrapNode(JSContext *aCx)
 {
-  return SVGElementBinding::Wrap(aCx, aScope, this);
+  return SVGElementBinding::Wrap(aCx, this);
 }
 
 //----------------------------------------------------------------------
 
 /* readonly attribute SVGAnimatedString className; */
 NS_IMETHODIMP
-nsSVGElement::GetClassName(nsISupports** aClassName)
+nsSVGElement::GetSVGClassName(nsISupports** aClassName)
 {
   *aClassName = ClassName().take();
   return NS_OK;
@@ -230,24 +230,15 @@ nsSVGElement::Init()
 //----------------------------------------------------------------------
 // nsISupports methods
 
-NS_IMPL_ISUPPORTS_INHERITED3(nsSVGElement, nsSVGElementBase,
-                             nsIDOMNode, nsIDOMElement,
-                             nsIDOMSVGElement)
+NS_IMPL_ISUPPORTS_INHERITED(nsSVGElement, nsSVGElementBase,
+                            nsIDOMNode, nsIDOMElement,
+                            nsIDOMSVGElement)
 
 //----------------------------------------------------------------------
 // Implementation
 
 //----------------------------------------------------------------------
 // nsIContent methods
-
-const nsAttrValue*
-nsSVGElement::DoGetClasses() const
-{
-  if (mClassAttribute.IsAnimated()) {
-    return mClassAnimAttr;
-  }
-  return nsSVGElementBase::DoGetClasses();
-}
 
 nsresult
 nsSVGElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
@@ -1094,19 +1085,6 @@ nsSVGElement::sMaskMap[] = {
 
 //----------------------------------------------------------------------
 // nsIDOMSVGElement methods
-
-/* attribute DOMString id; */
-NS_IMETHODIMP nsSVGElement::GetId(nsAString & aId)
-{
-  GetAttr(kNameSpaceID_None, nsGkAtoms::id, aId);
-
-  return NS_OK;
-}
-
-NS_IMETHODIMP nsSVGElement::SetId(const nsAString & aId)
-{
-  return SetAttr(kNameSpaceID_None, nsGkAtoms::id, aId, true);
-}
 
 /* readonly attribute nsIDOMSVGSVGElement ownerSVGElement; */
 NS_IMETHODIMP
@@ -2356,7 +2334,7 @@ nsSVGElement::DidChangeTransformList(const nsAttrValue& aEmptyOrOldValue)
 }
 
 void
-nsSVGElement::DidAnimateTransformList()
+nsSVGElement::DidAnimateTransformList(int32_t aModType)
 {
   NS_ABORT_IF_FALSE(GetTransformListAttrName(),
                     "Animating non-existent transform data?");
@@ -2365,10 +2343,9 @@ nsSVGElement::DidAnimateTransformList()
 
   if (frame) {
     nsIAtom *transformAttr = GetTransformListAttrName();
-    int32_t modType = nsIDOMMutationEvent::MODIFICATION;
     frame->AttributeChanged(kNameSpaceID_None,
                             transformAttr,
-                            modType);
+                            aModType);
     // When script changes the 'transform' attribute, Element::SetAttrAndNotify
     // will call nsNodeUtills::AttributeChanged, under which
     // SVGTransformableElement::GetAttributeChangeHint will be called and an
@@ -2377,7 +2354,7 @@ nsSVGElement::DidAnimateTransformList()
     // 'animateTransform' though (and sending out the mutation events that
     // nsNodeUtills::AttributeChanged dispatches would be inappropriate
     // anyway), so we need to post the change event ourself.
-    nsChangeHint changeHint = GetAttributeChangeHint(transformAttr, modType);
+    nsChangeHint changeHint = GetAttributeChangeHint(transformAttr, aModType);
     if (changeHint) {
       nsLayoutUtils::PostRestyleEvent(this, nsRestyleHint(0), changeHint);
     }

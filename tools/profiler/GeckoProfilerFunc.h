@@ -8,24 +8,24 @@
 
 #include "mozilla/NullPtr.h"
 #include "js/TypeDecls.h"
+#include "js/ProfilingStack.h"
 #include <stdint.h>
 
 namespace mozilla {
-class TimeDuration;
 class TimeStamp;
 }
-
-using mozilla::TimeStamp;
-using mozilla::TimeDuration;
 
 class ProfilerBacktrace;
 class ProfilerMarkerPayload;
 
 // Returns a handle to pass on exit. This can check that we are popping the
 // correct callstack.
-inline void* mozilla_sampler_call_enter(const char *aInfo, void *aFrameAddress = nullptr,
-                                        bool aCopy = false, uint32_t line = 0);
+inline void* mozilla_sampler_call_enter(const char *aInfo, js::ProfileEntry::Category aCategory,
+                                        void *aFrameAddress = nullptr, bool aCopy = false,
+                                        uint32_t line = 0);
+
 inline void  mozilla_sampler_call_exit(void* handle);
+
 void  mozilla_sampler_add_marker(const char *aInfo,
                                  ProfilerMarkerPayload *aPayload = nullptr);
 
@@ -56,6 +56,8 @@ char* mozilla_sampler_get_profile();
 
 JSObject *mozilla_sampler_get_profile_data(JSContext *aCx);
 
+void mozilla_sampler_save_profile_to_file(const char* aFilename);
+
 const char** mozilla_sampler_get_features();
 
 void mozilla_sampler_init(void* stackTop);
@@ -77,6 +79,9 @@ void mozilla_sampler_unlock();
 bool mozilla_sampler_register_thread(const char* name, void* stackTop);
 void mozilla_sampler_unregister_thread();
 
+void mozilla_sampler_sleep_start();
+void mozilla_sampler_sleep_end();
+
 double mozilla_sampler_time();
 double mozilla_sampler_time(const mozilla::TimeStamp& aTime);
 
@@ -84,6 +89,10 @@ double mozilla_sampler_time(const mozilla::TimeStamp& aTime);
 extern bool sps_version2();
 
 void mozilla_sampler_tracing(const char* aCategory, const char* aInfo,
+                             TracingMetadata aMetaData);
+
+void mozilla_sampler_tracing(const char* aCategory, const char* aInfo,
+                             ProfilerBacktrace* aCause,
                              TracingMetadata aMetaData);
 
 #endif

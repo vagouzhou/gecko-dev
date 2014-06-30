@@ -27,7 +27,7 @@ class EventChainPostVisitor;
 class EventChainPreVisitor;
 namespace dom {
 class OwningIDBObjectStoreOrIDBIndexOrIDBCursor;
-class ErrorEventInit;
+struct ErrorEventInit;
 }
 }
 
@@ -122,7 +122,7 @@ public:
 
   // nsWrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // WebIDL
   nsPIDOMWindow*
@@ -131,8 +131,15 @@ public:
     return GetOwner();
   }
 
-  JS::Value
-  GetResult(JSContext* aCx, ErrorResult& aRv) const;
+  void
+  GetResult(JS::MutableHandle<JS::Value> aResult, ErrorResult& aRv) const;
+
+  void
+  GetResult(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+            ErrorResult& aRv) const
+  {
+    GetResult(aResult, aRv);
+  }
 
   IDBTransaction*
   GetTransaction() const
@@ -209,7 +216,7 @@ public:
 
   // nsWrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // WebIDL
   IMPL_EVENT_HANDLER(blocked);

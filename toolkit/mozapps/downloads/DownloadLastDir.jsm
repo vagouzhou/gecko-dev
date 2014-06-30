@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -104,7 +104,7 @@ DownloadLastDir.prototype = {
   // This function is now deprecated as it uses the sync nsIContentPrefService
   // interface. New consumers should use the getFileAsync function.
   getFile: function (aURI) {
-    Components.utils.import("resource://gre/modules/Deprecated.jsm");
+    let Deprecated = Components.utils.import("resource://gre/modules/Deprecated.jsm", {}).Deprecated;
     Deprecated.warning("DownloadLastDir.getFile is deprecated. Please use getFileAsync instead.",
                        "https://developer.mozilla.org/en-US/docs/Mozilla/JavaScript_code_modules/DownloadLastDir.jsm",
                        Components.stack.caller);

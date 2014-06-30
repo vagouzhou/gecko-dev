@@ -28,15 +28,13 @@ class SpeechSynthesis MOZ_FINAL : public nsISupports,
 {
 public:
   SpeechSynthesis(nsPIDOMWindow* aParent);
-  virtual ~SpeechSynthesis();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(SpeechSynthesis)
 
   nsIDOMWindow* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   bool Pending() const;
 
@@ -57,6 +55,7 @@ public:
   void GetVoices(nsTArray< nsRefPtr<SpeechSynthesisVoice> >& aResult);
 
 private:
+  virtual ~SpeechSynthesis();
 
   void AdvanceQueue();
 

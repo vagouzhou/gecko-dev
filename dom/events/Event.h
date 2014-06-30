@@ -29,6 +29,7 @@ namespace dom {
 
 class EventTarget;
 class ErrorEvent;
+class ProgressEvent;
 
 // Dummy class so we can cast through it to get from nsISupports to
 // Event subclasses with only two non-ambiguous static casts.
@@ -44,6 +45,8 @@ public:
         nsPresContext* aPresContext,
         WidgetEvent* aEvent);
   Event(nsPIDOMWindow* aWindow);
+
+protected:
   virtual ~Event();
 
 private:
@@ -87,13 +90,17 @@ public:
     return mOwner;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE
   {
-    return EventBinding::Wrap(aCx, aScope, this);
+    return EventBinding::Wrap(aCx, this);
   }
 
   virtual ErrorEvent* AsErrorEvent()
+  {
+    return nullptr;
+  }
+
+  virtual ProgressEvent* AsProgressEvent()
   {
     return nullptr;
   }
@@ -188,10 +195,7 @@ public:
     return mEvent->mFlags.mIsSynthesizedForTests;
   }
 
-  uint64_t TimeStamp() const
-  {
-    return mEvent->time;
-  }
+  double TimeStamp() const;
 
   void InitEvent(const nsAString& aType, bool aBubbles, bool aCancelable,
                  ErrorResult& aRv)

@@ -1,11 +1,10 @@
-/* -*- Mode: javascript; js-indent-level: 2; -*- */
+/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Test that we can nest event loops when needed in
 // ThreadActor.prototype.synchronize.
 
-const { defer } = devtools.require("sdk/core/promise");
 var gClient;
 var gThreadActor;
 
@@ -26,7 +25,7 @@ function run_test() {
 
 function test_nesting() {
   const thread = gThreadActor;
-  const { resolve, reject, promise } = defer();
+  const { resolve, reject, promise: p } = promise.defer();
 
   let currentStep = 0;
 
@@ -38,7 +37,7 @@ function test_nesting() {
     resolve(true);
   });
 
-  do_check_eq(thread.synchronize(promise), true);
+  do_check_eq(thread.synchronize(p), true);
 
   // Should be on the second step
   do_check_eq(++currentStep, 2);

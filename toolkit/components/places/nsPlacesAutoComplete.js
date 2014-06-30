@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=2 sts=2 expandtab
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -1404,9 +1404,7 @@ urlInlineComplete.prototype = {
           untrimmedHost = null;
         }
 
-        // TODO (bug 754265): this is a temporary solution introduced while
-        // waiting for a propert dedicated API.
-        ac._result.appendMatch(ac._strippedPrefix + trimmedHost, untrimmedHost);
+        ac._result.appendMatch(ac._strippedPrefix + trimmedHost, "", "", "", untrimmedHost);
 
         // handleCompletion() will cause the result listener to be called, and
         // will display the result in the UI.
@@ -1480,9 +1478,7 @@ urlInlineComplete.prototype = {
           untrimmedURL = null;
          }
 
-        // TODO (bug 754265): this is a temporary solution introduced while
-        // waiting for a propert dedicated API.
-        ac._result.appendMatch(ac._strippedPrefix + url, untrimmedURL);
+        ac._result.appendMatch(ac._strippedPrefix + url, "", "", "", untrimmedURL);
 
         // handleCompletion() will cause the result listener to be called, and
         // will display the result in the UI.

@@ -23,6 +23,7 @@
 #include "jsutil.h"
 
 #include "ds/Sort.h"
+#include "gc/Heap.h"
 #include "vm/ArgumentsObject.h"
 #include "vm/ForkJoin.h"
 #include "vm/Interpreter.h"
@@ -47,6 +48,8 @@ using mozilla::CeilingLog2;
 using mozilla::DebugOnly;
 using mozilla::IsNaN;
 using mozilla::PointerRangeSize;
+
+using JS::AutoCheckCannotGC;
 
 bool
 js::GetLengthProperty(JSContext *cx, HandleObject obj, uint32_t *lengthp)
@@ -88,19 +91,18 @@ js::GetLengthProperty(JSContext *cx, HandleObject obj, uint32_t *lengthp)
  *
  * This means the largest allowed index is actually 2^32-2 (4294967294).
  *
- * In our implementation, it would be sufficient to check for JSVAL_IS_INT(id)
+ * In our implementation, it would be sufficient to check for id.isInt32()
  * except that by using signed 31-bit integers we miss the top half of the
  * valid range. This function checks the string representation itself; note
  * that calling a standard conversion routine might allow strings such as
  * "08" or "4.0" as array indices, which they are not.
  *
  */
-JS_FRIEND_API(bool)
-js::StringIsArrayIndex(JSLinearString *str, uint32_t *indexp)
+template <typename CharT>
+static bool
+StringIsArrayIndex(const CharT *s, uint32_t length, uint32_t *indexp)
 {
-    const jschar *s = str->chars();
-    uint32_t length = str->length();
-    const jschar *end = s + length;
+    const CharT *end = s + length;
 
     if (length == 0 || length > (sizeof("4294967294") - 1) || !JS7_ISDEC(*s))
         return false;
@@ -130,6 +132,15 @@ js::StringIsArrayIndex(JSLinearString *str, uint32_t *indexp)
     }
 
     return false;
+}
+
+JS_FRIEND_API(bool)
+js::StringIsArrayIndex(JSLinearString *str, uint32_t *indexp)
+{
+    AutoCheckCannotGC nogc;
+    return str->hasLatin1Chars()
+           ? ::StringIsArrayIndex(str->latin1Chars(nogc), str->length(), indexp)
+           : ::StringIsArrayIndex(str->twoByteChars(nogc), str->length(), indexp);
 }
 
 static bool
@@ -336,10 +347,10 @@ DeleteArrayElement(JSContext *cx, HandleObject obj, double index, bool *succeede
         return true;
     }
 
-    if (index <= UINT32_MAX)
-        return JSObject::deleteElement(cx, obj, uint32_t(index), succeeded);
-
-    return JSObject::deleteByValue(cx, obj, DoubleValue(index), succeeded);
+    RootedId id(cx);
+    if (!ToId(cx, index, &id))
+        return false;
+    return JSObject::deleteGeneric(cx, obj, id, succeeded);
 }
 
 /* ES6 20130308 draft 9.3.5 */
@@ -759,7 +770,7 @@ js::WouldDefinePastNonwritableLength(ThreadSafeContext *cx,
     // Error in strict mode code or warn with strict option.
     unsigned flags = strict ? JSREPORT_ERROR : (JSREPORT_STRICT | JSREPORT_WARNING);
     if (cx->isForkJoinContext())
-        return cx->asForkJoinContext()->reportError(ParallelBailoutUnsupportedVM, flags);
+        return cx->asForkJoinContext()->reportError(flags);
 
     if (!cx->isJSContext())
         return true;
@@ -830,23 +841,6 @@ js::ObjectMayHaveExtraIndexedProperties(JSObject *obj)
     return false;
 }
 
-const Class ArrayObject::class_ = {
-    "Array",
-    JSCLASS_HAS_CACHED_PROTO(JSProto_Array),
-    array_addProperty,
-    JS_DeletePropertyStub,   /* delProperty */
-    JS_PropertyStub,         /* getProperty */
-    JS_StrictPropertyStub,   /* setProperty */
-    JS_EnumerateStub,
-    JS_ResolveStub,
-    JS_ConvertStub,
-    nullptr,
-    nullptr,        /* call        */
-    nullptr,        /* hasInstance */
-    nullptr,        /* construct   */
-    nullptr         /* trace       */
-};
-
 static bool
 AddLengthProperty(ExclusiveContext *cx, HandleObject obj)
 {
@@ -866,16 +860,17 @@ AddLengthProperty(ExclusiveContext *cx, HandleObject obj)
 }
 
 #if JS_HAS_TOSOURCE
-MOZ_ALWAYS_INLINE bool
-IsArray(HandleValue v)
-{
-    return v.isObject() && v.toObject().is<ArrayObject>();
-}
 
-MOZ_ALWAYS_INLINE bool
-array_toSource_impl(JSContext *cx, CallArgs args)
+static bool
+array_toSource(JSContext *cx, unsigned argc, Value *vp)
 {
-    JS_ASSERT(IsArray(args.thisv()));
+    JS_CHECK_RECURSION(cx, return false);
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    if (!args.thisv().isObject()) {
+        ReportIncompatible(cx, args);
+        return false;
+    }
 
     Rooted<JSObject*> obj(cx, &args.thisv().toObject());
     RootedValue elt(cx);
@@ -941,13 +936,6 @@ array_toSource_impl(JSContext *cx, CallArgs args)
     return true;
 }
 
-static bool
-array_toSource(JSContext *cx, unsigned argc, Value *vp)
-{
-    JS_CHECK_RECURSION(cx, return false);
-    CallArgs args = CallArgsFromVp(argc, vp);
-    return CallNonGenericMethod<IsArray, array_toSource_impl>(cx, args);
-}
 #endif
 
 struct EmptySeparatorOp
@@ -955,23 +943,22 @@ struct EmptySeparatorOp
     bool operator()(JSContext *, StringBuffer &sb) { return true; }
 };
 
+template <typename CharT>
 struct CharSeparatorOp
 {
-    jschar sep;
-    CharSeparatorOp(jschar sep) : sep(sep) {};
+    const CharT sep;
+    explicit CharSeparatorOp(CharT sep) : sep(sep) {};
     bool operator()(JSContext *, StringBuffer &sb) { return sb.append(sep); }
 };
 
 struct StringSeparatorOp
 {
-    const jschar *sepchars;
-    size_t seplen;
+    HandleLinearString sep;
 
-    StringSeparatorOp(const jschar *sepchars, size_t seplen)
-      : sepchars(sepchars), seplen(seplen) {};
+    explicit StringSeparatorOp(HandleLinearString sep) : sep(sep) {}
 
     bool operator()(JSContext *cx, StringBuffer &sb) {
-        return sb.append(sepchars, seplen);
+        return sb.append(sep);
     }
 };
 
@@ -1002,11 +989,14 @@ ArrayJoinKernel(JSContext *cx, SeparatorOp sepOp, HandleObject obj, uint32_t len
             } else if (elem.isBoolean()) {
                 if (!BooleanToStringBuffer(elem.toBoolean(), sb))
                     return false;
-            } else if (elem.isObject()) {
+            } else if (elem.isObject() || elem.isSymbol()) {
                 /*
                  * Object stringifying could modify the initialized length or make
                  * the array sparse. Delegate it to a separate loop to keep this
                  * one tight.
+                 *
+                 * Symbol stringifying is a TypeError, so into the slow path
+                 * with those as well.
                  */
                 break;
             } else {
@@ -1076,22 +1066,16 @@ ArrayJoin(JSContext *cx, CallArgs &args)
         return false;
 
     // Steps 4 and 5
-    RootedString sepstr(cx, nullptr);
-    const jschar *sepchars;
-    size_t seplen;
+    RootedLinearString sepstr(cx);
     if (!Locale && args.hasDefined(0)) {
-        sepstr = ToString<CanGC>(cx, args[0]);
+        JSString *s = ToString<CanGC>(cx, args[0]);
+        if (!s)
+            return false;
+        sepstr = s->ensureLinear(cx);
         if (!sepstr)
             return false;
-        sepchars = sepstr->getChars(cx);
-        if (!sepchars)
-            return false;
-        seplen = sepstr->length();
     } else {
-        HandlePropertyName comma = cx->names().comma;
-        sepstr = comma;
-        sepchars = comma->chars();
-        seplen = comma->length();
+        sepstr = cx->names().comma;
     }
 
     JS::Anchor<JSString*> anchor(sepstr);
@@ -1112,9 +1096,12 @@ ArrayJoin(JSContext *cx, CallArgs &args)
     }
 
     StringBuffer sb(cx);
+    if (sepstr->hasTwoByteChars() && !sb.ensureTwoByteChars())
+        return false;
 
     // The separator will be added |length - 1| times, reserve space for that
     // so that we don't have to unnecessarily grow the buffer.
+    size_t seplen = sepstr->length();
     if (length > 0 && !sb.reserve(seplen * (length - 1)))
         return false;
 
@@ -1124,11 +1111,18 @@ ArrayJoin(JSContext *cx, CallArgs &args)
         if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
             return false;
     } else if (seplen == 1) {
-        CharSeparatorOp op(sepchars[0]);
-        if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
-            return false;
+        jschar c = sepstr->latin1OrTwoByteChar(0);
+        if (c <= JSString::MAX_LATIN1_CHAR) {
+            CharSeparatorOp<Latin1Char> op(c);
+            if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
+                return false;
+        } else {
+            CharSeparatorOp<jschar> op(c);
+            if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
+                return false;
+        }
     } else {
-        StringSeparatorOp op(sepchars, seplen);
+        StringSeparatorOp op(sepstr);
         if (!ArrayJoinKernel<Locale>(cx, op, obj, length, sb))
             return false;
     }
@@ -1156,7 +1150,7 @@ array_toString(JSContext *cx, unsigned argc, Value *vp)
     if (!JSObject::getProperty(cx, obj, obj, cx->names().join, &join))
         return false;
 
-    if (!js_IsCallable(join)) {
+    if (!IsCallable(join)) {
         JSString *str = JS_BasicObjectToString(cx, obj);
         if (!str)
             return false;
@@ -1490,9 +1484,10 @@ CompareLexicographicInt32(const Value &a, const Value &b, bool *lessOrEqualp)
     return true;
 }
 
+template <typename Char1, typename Char2>
 static inline bool
-CompareSubStringValues(JSContext *cx, const jschar *s1, size_t l1,
-                       const jschar *s2, size_t l2, bool *lessOrEqualp)
+CompareSubStringValues(JSContext *cx, const Char1 *s1, size_t len1, const Char2 *s2, size_t len2,
+                       bool *lessOrEqualp)
 {
     if (!CheckForInterrupt(cx))
         return false;
@@ -1500,7 +1495,7 @@ CompareSubStringValues(JSContext *cx, const jschar *s1, size_t l1,
     if (!s1 || !s2)
         return false;
 
-    int32_t result = CompareChars(s1, l1, s2, l2);
+    int32_t result = CompareChars(s1, len1, s2, len2);
     *lessOrEqualp = (result <= 0);
     return true;
 }
@@ -1509,7 +1504,7 @@ struct SortComparatorStrings
 {
     JSContext   *const cx;
 
-    SortComparatorStrings(JSContext *cx)
+    explicit SortComparatorStrings(JSContext *cx)
       : cx(cx) {}
 
     bool operator()(const Value &a, const Value &b, bool *lessOrEqualp) {
@@ -1540,8 +1535,17 @@ struct SortComparatorStringifiedElements
       : cx(cx), sb(sb) {}
 
     bool operator()(const StringifiedElement &a, const StringifiedElement &b, bool *lessOrEqualp) {
-        return CompareSubStringValues(cx, sb.begin() + a.charsBegin, a.charsEnd - a.charsBegin,
-                                      sb.begin() + b.charsBegin, b.charsEnd - b.charsBegin,
+        size_t lenA = a.charsEnd - a.charsBegin;
+        size_t lenB = b.charsEnd - b.charsBegin;
+
+        if (sb.isUnderlyingBufferLatin1()) {
+            return CompareSubStringValues(cx, sb.rawLatin1Begin() + a.charsBegin, lenA,
+                                          sb.rawLatin1Begin() + b.charsBegin, lenB,
+                                          lessOrEqualp);
+        }
+
+        return CompareSubStringValues(cx, sb.rawTwoByteBegin() + a.charsBegin, lenA,
+                                      sb.rawTwoByteBegin() + b.charsBegin, lenB,
                                       lessOrEqualp);
     }
 };
@@ -1743,14 +1747,14 @@ MergeSortByKey(K keys, size_t len, K scratch, C comparator, AutoValueVector *vec
         do {
             size_t k = keys[j].elementIndex;
             keys[j].elementIndex = j;
-            (*vec)[j] = (*vec)[k];
+            (*vec)[j].set((*vec)[k]);
             j = k;
         } while (j != i);
 
         // We could assert the loop invariant that |i == keys[i].elementIndex|
         // here if we synced |keys[i].elementIndex|.  But doing so would render
         // the assertion vacuous, so don't bother, even in debug builds.
-        (*vec)[i] = tv;
+        (*vec)[i].set(tv);
     }
 
     return true;
@@ -1819,7 +1823,7 @@ SortNumerically(JSContext *cx, AutoValueVector *vec, size_t len, ComparatorMatch
             return false;
 
         double dv;
-        if (!ToNumber(cx, vec->handleAt(i), &dv))
+        if (!ToNumber(cx, (*vec)[i], &dv))
             return false;
 
         NumericElement el = { dv, i };
@@ -2141,7 +2145,7 @@ js::ArrayShiftMoveElements(JSObject *obj)
      * themselves.
      */
     uint32_t initlen = obj->getDenseInitializedLength();
-    obj->moveDenseElementsUnbarriered(0, 1, initlen);
+    obj->moveDenseElementsNoPreBarrier(0, 1, initlen);
 }
 
 /* ES5 15.4.4.9 */
@@ -2353,8 +2357,14 @@ CanOptimizeForDenseStorage(HandleObject arr, uint32_t startingIndex, uint32_t co
 }
 
 /* ES5 15.4.4.12. */
-static bool
-array_splice(JSContext *cx, unsigned argc, Value *vp)
+bool
+js::array_splice(JSContext *cx, unsigned argc, Value *vp)
+{
+    return array_splice_impl(cx, argc, vp, true);
+}
+
+bool
+js::array_splice_impl(JSContext *cx, unsigned argc, Value *vp, bool returnValueIsUsed)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
@@ -2401,10 +2411,12 @@ array_splice(JSContext *cx, unsigned argc, Value *vp)
     /* Steps 2, 8-9. */
     Rooted<ArrayObject*> arr(cx);
     if (CanOptimizeForDenseStorage(obj, actualStart, actualDeleteCount, cx)) {
-        arr = NewDenseCopiedArray(cx, actualDeleteCount, obj, actualStart);
-        if (!arr)
-            return false;
-        TryReuseArrayType(obj, arr);
+        if (returnValueIsUsed) {
+            arr = NewDenseCopiedArray(cx, actualDeleteCount, obj, actualStart);
+            if (!arr)
+                return false;
+            TryReuseArrayType(obj, arr);
+        }
     } else {
         arr = NewDenseAllocatedArray(cx, actualDeleteCount);
         if (!arr)
@@ -2444,10 +2456,6 @@ array_splice(JSContext *cx, unsigned argc, Value *vp)
 
             /* Steps 12(c)-(d). */
             obj->shrinkElements(cx, finalLength);
-
-            /* Fix running enumerators for the deleted items. */
-            if (!js_SuppressDeletedElements(cx, obj, finalLength, len))
-                return false;
         } else {
             /*
              * This is all very slow if the length is very large. We don't yet
@@ -2561,7 +2569,9 @@ array_splice(JSContext *cx, unsigned argc, Value *vp)
         return false;
 
     /* Step 17. */
-    args.rval().setObject(*arr);
+    if (returnValueIsUsed)
+        args.rval().setObject(*arr);
+
     return true;
 }
 
@@ -2982,6 +2992,9 @@ static const JSFunctionSpec array_methods[] = {
     /* ES6 additions */
     JS_SELF_HOSTED_FN("find",        "ArrayFind",        1,0),
     JS_SELF_HOSTED_FN("findIndex",   "ArrayFindIndex",   1,0),
+    JS_SELF_HOSTED_FN("copyWithin",  "ArrayCopyWithin",  3,0),
+
+    JS_SELF_HOSTED_FN("fill",        "ArrayFill",        3,0),
 
     JS_SELF_HOSTED_FN("@@iterator",  "ArrayValues",      0,0),
     JS_SELF_HOSTED_FN("entries",     "ArrayEntries",     0,0),
@@ -2999,6 +3012,7 @@ static const JSFunctionSpec array_static_methods[] = {
     JS_SELF_HOSTED_FN("some",        "ArrayStaticSome",  2,0),
     JS_SELF_HOSTED_FN("reduce",      "ArrayStaticReduce", 2,0),
     JS_SELF_HOSTED_FN("reduceRight", "ArrayStaticReduceRight", 2,0),
+    JS_SELF_HOSTED_FN("from",        "ArrayFrom", 3,0),
     JS_FN("of",                 array_of,           0,0),
 
 #ifdef ENABLE_PARALLEL_JS
@@ -3061,18 +3075,15 @@ js_Array(JSContext *cx, unsigned argc, Value *vp)
     return true;
 }
 
-JSObject *
-js_InitArrayClass(JSContext *cx, HandleObject obj)
+static JSObject *
+CreateArrayPrototype(JSContext *cx, JSProtoKey key)
 {
-    JS_ASSERT(obj->isNative());
-
-    Rooted<GlobalObject*> global(cx, &obj->as<GlobalObject>());
-
-    RootedObject proto(cx, global->getOrCreateObjectPrototype(cx));
+    JS_ASSERT(key == JSProto_Array);
+    RootedObject proto(cx, cx->global()->getOrCreateObjectPrototype(cx));
     if (!proto)
         return nullptr;
 
-    RootedTypeObject type(cx, cx->getNewType(&ArrayObject::class_, proto.get()));
+    RootedTypeObject type(cx, cx->getNewType(&ArrayObject::class_, TaggedProto(proto)));
     if (!type)
         return nullptr;
 
@@ -3083,14 +3094,11 @@ js_InitArrayClass(JSContext *cx, HandleObject obj)
     RootedShape shape(cx, EmptyShape::getInitialShape(cx, &ArrayObject::class_, TaggedProto(proto),
                                                       proto->getParent(), metadata,
                                                       gc::FINALIZE_OBJECT0));
+    if (!shape)
+        return nullptr;
 
     RootedObject arrayProto(cx, JSObject::createArray(cx, gc::FINALIZE_OBJECT4, gc::TenuredHeap, shape, type, 0));
     if (!arrayProto || !JSObject::setSingletonType(cx, arrayProto) || !AddLengthProperty(cx, arrayProto))
-        return nullptr;
-
-    RootedFunction ctor(cx);
-    ctor = global->createConstructor(cx, js_Array, cx->names().Array, 1);
-    if (!ctor)
         return nullptr;
 
     /*
@@ -3102,20 +3110,31 @@ js_InitArrayClass(JSContext *cx, HandleObject obj)
     if (!JSObject::setNewTypeUnknown(cx, &ArrayObject::class_, arrayProto))
         return nullptr;
 
-    if (!LinkConstructorAndPrototype(cx, ctor, arrayProto))
-        return nullptr;
-
-    if (!DefinePropertiesAndBrand(cx, arrayProto, nullptr, array_methods) ||
-        !DefinePropertiesAndBrand(cx, ctor, nullptr, array_static_methods))
-    {
-        return nullptr;
-    }
-
-    if (!GlobalObject::initBuiltinConstructor(cx, global, JSProto_Array, ctor, arrayProto))
-        return nullptr;
-
     return arrayProto;
 }
+
+const Class ArrayObject::class_ = {
+    "Array",
+    JSCLASS_HAS_CACHED_PROTO(JSProto_Array),
+    array_addProperty,
+    JS_DeletePropertyStub,   /* delProperty */
+    JS_PropertyStub,         /* getProperty */
+    JS_StrictPropertyStub,   /* setProperty */
+    JS_EnumerateStub,
+    JS_ResolveStub,
+    JS_ConvertStub,
+    nullptr,
+    nullptr,        /* call        */
+    nullptr,        /* hasInstance */
+    nullptr,        /* construct   */
+    nullptr,        /* trace       */
+    {
+        GenericCreateConstructor<js_Array, NAME_OFFSET(Array), 1>,
+        CreateArrayPrototype,
+        array_static_methods,
+        array_methods
+    }
+};
 
 /*
  * Array allocation functions.
@@ -3180,7 +3199,7 @@ NewArray(ExclusiveContext *cxArg, uint32_t length,
     if (!proto && !GetBuiltinPrototype(cxArg, JSProto_Array, &proto))
         return nullptr;
 
-    RootedTypeObject type(cxArg, cxArg->getNewType(&ArrayObject::class_, proto.get()));
+    RootedTypeObject type(cxArg, cxArg->getNewType(&ArrayObject::class_, TaggedProto(proto)));
     if (!type)
         return nullptr;
 

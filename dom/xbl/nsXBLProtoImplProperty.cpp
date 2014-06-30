@@ -129,7 +129,8 @@ nsXBLProtoImplProperty::InstallMember(JSContext *aCx,
   MOZ_ASSERT(mGetter.IsCompiled() && mSetter.IsCompiled());
   MOZ_ASSERT(js::IsObjectInContextCompartment(aTargetClassObject, aCx));
   JS::Rooted<JSObject*> globalObject(aCx, JS_GetGlobalForObject(aCx, aTargetClassObject));
-  MOZ_ASSERT(xpc::IsInXBLScope(globalObject) ||
+  MOZ_ASSERT(xpc::IsInContentXBLScope(globalObject) ||
+             xpc::IsInAddonScope(globalObject) ||
              globalObject == xpc::GetXBLScope(aCx, globalObject));
 
   JS::Rooted<JSObject*> getter(aCx, mGetter.GetJSFunction());
@@ -148,10 +149,9 @@ nsXBLProtoImplProperty::InstallMember(JSContext *aCx,
     nsDependentString name(mName);
     if (!::JS_DefineUCProperty(aCx, aTargetClassObject,
                                static_cast<const jschar*>(mName),
-                               name.Length(), JSVAL_VOID,
+                               name.Length(), JS::UndefinedHandleValue, mJSAttributes,
                                JS_DATA_TO_FUNC_PTR(JSPropertyOp, getter.get()),
-                               JS_DATA_TO_FUNC_PTR(JSStrictPropertyOp, setter.get()),
-                               mJSAttributes))
+                               JS_DATA_TO_FUNC_PTR(JSStrictPropertyOp, setter.get())))
       return NS_ERROR_OUT_OF_MEMORY;
   }
   return NS_OK;

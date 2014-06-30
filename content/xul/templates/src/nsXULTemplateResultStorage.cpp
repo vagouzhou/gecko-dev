@@ -9,7 +9,7 @@
 #include "nsString.h"
 #include "nsXULTemplateResultStorage.h"
 
-NS_IMPL_ISUPPORTS1(nsXULTemplateResultStorage, nsIXULTemplateResult)
+NS_IMPL_ISUPPORTS(nsXULTemplateResultStorage, nsIXULTemplateResult)
 
 nsXULTemplateResultStorage::nsXULTemplateResultStorage(nsXULTemplateResultSetStorage* aResultSet)
 {
@@ -20,6 +20,10 @@ nsXULTemplateResultStorage::nsXULTemplateResultStorage(nsXULTemplateResultSetSto
     if (aResultSet) {
         mResultSet->FillColumnValues(mValues);
     }
+}
+
+nsXULTemplateResultStorage::~nsXULTemplateResultStorage()
+{
 }
 
 NS_IMETHODIMP

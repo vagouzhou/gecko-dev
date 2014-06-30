@@ -136,7 +136,7 @@ nsMathMLmoFrame::ProcessTextData()
   if (mFrames.GetLength() != 1) {
     data.Truncate(); // empty data to reset the char
     mMathMLChar.SetData(presContext, data);
-    ResolveMathMLCharStyle(presContext, mContent, mStyleContext, &mMathMLChar, false);
+    ResolveMathMLCharStyle(presContext, mContent, mStyleContext, &mMathMLChar);
     return;
   }
 
@@ -192,7 +192,7 @@ nsMathMLmoFrame::ProcessTextData()
   if (isMutable)
     mFlags |= NS_MATHML_OPERATOR_MUTABLE;
 
-  ResolveMathMLCharStyle(presContext, mContent, mStyleContext, &mMathMLChar, isMutable);
+  ResolveMathMLCharStyle(presContext, mContent, mStyleContext, &mMathMLChar);
 }
 
 // get our 'form' and lookup in the Operator Dictionary to fetch 
@@ -310,11 +310,23 @@ nsMathMLmoFrame::ProcessOperatorData()
     nsIFrame* nextSibling = embellishAncestor->GetNextSibling();
     nsIFrame* prevSibling = embellishAncestor->GetPrevSibling();
 
-    // flag to distinguish from a real infix
-    if (!prevSibling && !nextSibling)
+    // flag to distinguish from a real infix.  Set for (embellished) operators
+    // that live in (inferred) mrows.
+    nsIMathMLFrame* mathAncestor = do_QueryFrame(parentAncestor);
+    bool zeroSpacing = false;
+    if (mathAncestor) {
+      zeroSpacing =  !mathAncestor->IsMrowLike();
+    } else {
+      nsMathMLmathBlockFrame* blockFrame = do_QueryFrame(parentAncestor);
+      if (blockFrame) {
+        zeroSpacing = !blockFrame->IsMrowLike();
+      }
+    }
+    if (zeroSpacing) {
       mFlags |= NS_MATHML_OPERATOR_EMBELLISH_ISOLATED;
-    else
+    } else {
       mFlags &= ~NS_MATHML_OPERATOR_EMBELLISH_ISOLATED;
+    }
 
     // find our form
     form = NS_MATHML_OPERATOR_FORM_INFIX;
@@ -344,7 +356,10 @@ nsMathMLmoFrame::ProcessOperatorData()
     nsAutoString data;
     mMathMLChar.GetData(data);
     nsMathMLOperators::LookupOperator(data, form, &mFlags, &lspace, &rspace);
-    if (lspace || rspace) {
+    // Spacing is zero if our outermost embellished operator is not in an
+    // inferred mrow.
+    if (!NS_MATHML_OPERATOR_EMBELLISH_IS_ISOLATED(mFlags) &&
+        (lspace || rspace)) {
       // Cache the default values of lspace and rspace.
       // since these values are relative to the 'em' unit, convert to twips now
       nscoord em;
@@ -358,16 +373,10 @@ nsMathMLmoFrame::ProcessOperatorData()
       // tuning if we don't want too much extra space when we are a script.
       // (with its fonts, TeX sets lspace=0 & rspace=0 as soon as scriptlevel>0.
       // Our fonts can be anything, so...)
-      if (StyleFont()->mScriptLevel > 0) {
-        if (NS_MATHML_OPERATOR_EMBELLISH_IS_ISOLATED(mFlags)) {
-          // could be an isolated accent or script, e.g., x^{+}, just zero out
-          mEmbellishData.leadingSpace = 0;
-          mEmbellishData.trailingSpace  = 0;
-        }
-        else if (!NS_MATHML_OPERATOR_HAS_EMBELLISH_ANCESTOR(mFlags)) {
-          mEmbellishData.leadingSpace /= 2;
-          mEmbellishData.trailingSpace  /= 2;
-        }
+      if (StyleFont()->mScriptLevel > 0 &&
+          !NS_MATHML_OPERATOR_HAS_EMBELLISH_ANCESTOR(mFlags)) {
+        mEmbellishData.leadingSpace /= 2;
+        mEmbellishData.trailingSpace /= 2;
       }
     }
   }
@@ -801,7 +810,7 @@ nsMathMLmoFrame::Stretch(nsRenderingContext& aRenderingContext,
     NS_MATHML_EMBELLISH_IS_ACCENT(mEmbellishData.flags);
   if (isAccent) {
     nsEmbellishData parentData;
-    GetEmbellishDataFrom(mParent, parentData);
+    GetEmbellishDataFrom(GetParent(), parentData);
     isAccent =
        (NS_MATHML_EMBELLISH_IS_ACCENTOVER(parentData.flags) ||
         NS_MATHML_EMBELLISH_IS_ACCENTUNDER(parentData.flags)) &&
@@ -809,26 +818,28 @@ nsMathMLmoFrame::Stretch(nsRenderingContext& aRenderingContext,
   }
   if (isAccent && firstChild) {
     // see bug 188467 for what is going on here
-    nscoord dy = aDesiredStretchSize.TopAscent() - (mBoundingMetrics.ascent + leading);
-    aDesiredStretchSize.SetTopAscent(mBoundingMetrics.ascent + leading);
-    aDesiredStretchSize.Height() = aDesiredStretchSize.TopAscent() + mBoundingMetrics.descent;
+    nscoord dy = aDesiredStretchSize.BlockStartAscent() -
+      (mBoundingMetrics.ascent + leading);
+    aDesiredStretchSize.SetBlockStartAscent(mBoundingMetrics.ascent + leading);
+    aDesiredStretchSize.Height() = aDesiredStretchSize.BlockStartAscent() +
+                                   mBoundingMetrics.descent;
 
     firstChild->SetPosition(firstChild->GetPosition() - nsPoint(0, dy));
   }
   else if (useMathMLChar) {
     nscoord ascent = fm->MaxAscent();
     nscoord descent = fm->MaxDescent();
-    aDesiredStretchSize.SetTopAscent(std::max(mBoundingMetrics.ascent + leading, ascent));
-    aDesiredStretchSize.Height() = aDesiredStretchSize.TopAscent() +
+    aDesiredStretchSize.SetBlockStartAscent(std::max(mBoundingMetrics.ascent + leading, ascent));
+    aDesiredStretchSize.Height() = aDesiredStretchSize.BlockStartAscent() +
                                  std::max(mBoundingMetrics.descent + leading, descent);
   }
   aDesiredStretchSize.Width() = mBoundingMetrics.width;
   aDesiredStretchSize.mBoundingMetrics = mBoundingMetrics;
   mReference.x = 0;
-  mReference.y = aDesiredStretchSize.TopAscent();
+  mReference.y = aDesiredStretchSize.BlockStartAscent();
   // Place our mMathMLChar, its origin is in our coordinate system
   if (useMathMLChar) {
-    nscoord dy = aDesiredStretchSize.TopAscent() - mBoundingMetrics.ascent;
+    nscoord dy = aDesiredStretchSize.BlockStartAscent() - mBoundingMetrics.ascent;
     mMathMLChar.SetRect(nsRect(0, dy, charSize.width, charSize.ascent + charSize.descent));
   }
 
@@ -913,20 +924,16 @@ nsMathMLmoFrame::TransmitAutomaticData()
   return NS_OK;
 }
 
-nsresult
+void
 nsMathMLmoFrame::SetInitialChildList(ChildListID     aListID,
                                      nsFrameList&    aChildList)
 {
   // First, let the parent class do its work
-  nsresult rv = nsMathMLTokenFrame::SetInitialChildList(aListID, aChildList);
-  if (NS_FAILED(rv))
-    return rv;
-
+  nsMathMLTokenFrame::SetInitialChildList(aListID, aChildList);
   ProcessTextData();
-  return rv;
 }
 
-nsresult
+void
 nsMathMLmoFrame::Reflow(nsPresContext*          aPresContext,
                         nsHTMLReflowMetrics&     aDesiredSize,
                         const nsHTMLReflowState& aReflowState,
@@ -936,8 +943,8 @@ nsMathMLmoFrame::Reflow(nsPresContext*          aPresContext,
   // it is safer to just process the whole lot here
   ProcessOperatorData();
 
-  return nsMathMLTokenFrame::Reflow(aPresContext, aDesiredSize,
-                                    aReflowState, aStatus);
+  nsMathMLTokenFrame::Reflow(aPresContext, aDesiredSize,
+                             aReflowState, aStatus);
 }
 
 /* virtual */ void

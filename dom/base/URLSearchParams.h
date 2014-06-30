@@ -28,12 +28,13 @@ public:
 class URLSearchParams MOZ_FINAL : public nsISupports,
                                   public nsWrapperCache
 {
+  ~URLSearchParams();
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(URLSearchParams)
 
   URLSearchParams();
-  ~URLSearchParams();
 
   // WebIDL methods
   nsISupports* GetParentObject() const
@@ -42,7 +43,7 @@ public:
   }
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static already_AddRefed<URLSearchParams>
   Constructor(const GlobalObject& aGlobal, const nsAString& aInit,

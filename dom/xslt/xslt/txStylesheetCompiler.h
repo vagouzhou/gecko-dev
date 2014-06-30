@@ -45,8 +45,8 @@ public:
 class txACompileObserver
 {
 public:
-    NS_IMETHOD_(nsrefcnt) AddRef() = 0;
-    NS_IMETHOD_(nsrefcnt) Release() = 0;
+    NS_IMETHOD_(MozExternalRefCountType) AddRef() = 0;
+    NS_IMETHOD_(MozExternalRefCountType) Release() = 0;
 
     virtual nsresult loadURI(const nsAString& aUri,
                              const nsAString& aReferrerUri,
@@ -111,7 +111,7 @@ public:
     nsresult addToplevelItem(txToplevelItem* aItem);
     nsresult openInstructionContainer(txInstructionContainer* aContainer);
     void closeInstructionContainer();
-    nsresult addInstruction(nsAutoPtr<txInstruction> aInstruction);
+    nsresult addInstruction(nsAutoPtr<txInstruction>&& aInstruction);
     nsresult loadIncludedStylesheet(const nsAString& aURI);
     nsresult loadImportedStylesheet(const nsAString& aURI,
                                     txStylesheet::ImportFrame* aFrame);
@@ -181,8 +181,8 @@ struct txStylesheetAttr
     nsString mValue;
 };
 
-class txStylesheetCompiler : private txStylesheetCompilerState,
-                             public txACompileObserver
+class txStylesheetCompiler MOZ_FINAL : private txStylesheetCompilerState,
+                                       public txACompileObserver
 {
 public:
     friend class txStylesheetCompilerState;
@@ -202,7 +202,7 @@ public:
                           int32_t aAttrCount);
     nsresult startElement(const char16_t *aName,
                           const char16_t **aAtts,
-                          int32_t aAttrCount, int32_t aIDOffset);
+                          int32_t aAttrCount);
     nsresult endElement();
     nsresult characters(const nsAString& aStr);
     nsresult doneLoading();
@@ -216,11 +216,15 @@ public:
     NS_INLINE_DECL_REFCOUNTING(txStylesheetCompiler)
 
 private:
+    // Private destructor, to discourage deletion outside of Release():
+    ~txStylesheetCompiler()
+    {
+    }
+
     nsresult startElementInternal(int32_t aNamespaceID, nsIAtom* aLocalName,
                                   nsIAtom* aPrefix,
                                   txStylesheetAttr* aAttributes,
-                                  int32_t aAttrCount,
-                                  int32_t aIDOffset = -1);
+                                  int32_t aAttrCount);
 
     nsresult flushCharacters();
     nsresult ensureNewElementContext();

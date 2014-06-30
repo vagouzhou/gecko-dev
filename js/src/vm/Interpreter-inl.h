@@ -31,6 +31,16 @@ inline bool
 ComputeThis(JSContext *cx, AbstractFramePtr frame)
 {
     JS_ASSERT_IF(frame.isInterpreterFrame(), !frame.asInterpreterFrame()->runningInJit());
+
+    if (frame.isFunctionFrame() && frame.fun()->isArrow()) {
+        /*
+         * Arrow functions store their (lexical) |this| value in an
+         * extended slot.
+         */
+        frame.thisValue() = frame.fun()->getExtendedSlot(0);
+        return true;
+    }
+
     if (frame.thisValue().isObject())
         return true;
     RootedValue thisv(cx, frame.thisValue());
@@ -229,13 +239,14 @@ SetNameOperation(JSContext *cx, JSScript *script, jsbytecode *pc, HandleObject s
     /*
      * In strict-mode, we need to trigger an error when trying to assign to an
      * undeclared global variable. To do this, we call SetPropertyHelper
-     * directly and pass DNP_UNQUALIFIED.
+     * directly and pass Unqualified.
      */
     if (scope->is<GlobalObject>()) {
         JS_ASSERT(!scope->getOps()->setProperty);
         RootedId id(cx, NameToId(name));
         return baseops::SetPropertyHelper<SequentialExecution>(cx, scope, scope, id,
-                                                               DNP_UNQUALIFIED, &valCopy, strict);
+                                                               baseops::Unqualified, &valCopy,
+                                                               strict);
     }
 
     return JSObject::setProperty(cx, scope, scope, name, &valCopy, strict);
@@ -341,6 +352,16 @@ GetObjectElementOperation(JSContext *cx, JSOp op, JSObject *objArg, bool wasObje
             RootedObject obj(cx, objArg);
             if (!JSObject::getElement(cx, obj, obj, index, res))
                 return false;
+            objArg = obj;
+            break;
+        }
+
+        if (rref.isSymbol()) {
+            RootedObject obj(cx, objArg);
+            RootedId id(cx, SYMBOL_TO_JSID(rref.toSymbol()));
+            if (!JSObject::getGeneric(cx, obj, obj, id, res))
+                return false;
+
             objArg = obj;
             break;
         }
@@ -474,13 +495,16 @@ InitArrayElemOperation(JSContext *cx, jsbytecode *pc, HandleObject obj, uint32_t
      * If val is a hole, do not call JSObject::defineElement. In this case,
      * if the current op is the last element initialiser, set the array length
      * to one greater than id.
+     *
+     * If val is a hole and current op is JSOP_INITELEM_INC, always call
+     * SetLengthProperty even if it is not the last element initialiser,
+     * because it may be followed by JSOP_SPREAD, which will not set the array
+     * length if nothing is spreaded.
      */
     if (val.isMagic(JS_ELEMENTS_HOLE)) {
         JSOp next = JSOp(*GetNextPc(pc));
 
-        if ((op == JSOP_INITELEM_ARRAY && next == JSOP_ENDINIT) ||
-            (op == JSOP_INITELEM_INC && next == JSOP_POP))
-        {
+        if ((op == JSOP_INITELEM_ARRAY && next == JSOP_ENDINIT) || op == JSOP_INITELEM_INC) {
             if (!SetLengthProperty(cx, obj, index + 1))
                 return false;
         }

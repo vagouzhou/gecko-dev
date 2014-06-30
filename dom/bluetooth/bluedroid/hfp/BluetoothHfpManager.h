@@ -7,9 +7,7 @@
 #ifndef mozilla_dom_bluetooth_bluetoothhfpmanager_h__
 #define mozilla_dom_bluetooth_bluetoothhfpmanager_h__
 
-#include <hardware/bluetooth.h>
-#include <hardware/bt_hf.h>
-
+#include "BluetoothInterface.h"
 #include "BluetoothCommon.h"
 #include "BluetoothHfpManagerBase.h"
 #include "BluetoothRilListener.h"
@@ -62,6 +60,7 @@ enum PhoneType {
 class Call {
 public:
   Call();
+  void Set(const nsAString& aNumber, const bool aIsOutgoing);
   void Reset();
   bool IsActive();
 
@@ -83,6 +82,8 @@ public:
 
   static BluetoothHfpManager* Get();
   virtual ~BluetoothHfpManager();
+  static void InitHfpInterface();
+  static void DeinitHfpInterface();
 
   bool ConnectSco();
   bool DisconnectSco();
@@ -111,6 +112,7 @@ public:
   void ProcessAtCops();
   void ProcessAtClcc();
   void ProcessUnknownAt(char *aAtString);
+  void ProcessKeyPressed();
 
   // CDMA-specific functions
   void UpdateSecondNumber(const nsAString& aNumber);
@@ -132,8 +134,7 @@ private:
 
   BluetoothHfpManager();
   bool Init();
-  bool InitHfpInterface();
-  void DeinitHfpInterface();
+  void Cleanup();
 
   void HandleShutdown();
   void HandleVolumeChanged(const nsAString& aData);
@@ -146,9 +147,11 @@ private:
   void ResetCallArray();
   uint32_t FindFirstCall(uint16_t aState);
   uint32_t GetNumberOfCalls(uint16_t aState);
+  uint16_t GetCallSetupState();
+  bool IsTransitionState(uint16_t aCallState, bool aIsConference);
   bthf_call_state_t ConvertToBthfCallState(int aCallState);
 
-  void UpdatePhoneCIND(uint32_t aCallIndex, bool aSend = true);
+  void UpdatePhoneCIND(uint32_t aCallIndex);
   void UpdateDeviceCIND();
   void SendCLCC(Call& aCall, int aIndex);
   void SendLine(const char* aMessage);
@@ -157,8 +160,6 @@ private:
   int mConnectionState;
   int mPrevConnectionState;
   int mAudioState;
-  // Phone CIND
-  int mCallSetupState;
   // Device CIND
   int mBattChg;
   int mService;

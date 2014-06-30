@@ -23,6 +23,7 @@
 #include "nsASocketHandler.h"
 
 #include "prerror.h"
+#include "nsAutoPtr.h"
 
 class nsSocketTransport;
 class nsICancelable;
@@ -149,6 +150,7 @@ public:
 protected:
 
     virtual ~nsSocketTransport();
+    void     CleanupTypes();
 
 private:
 
@@ -268,6 +270,7 @@ private:
     uint16_t     mProxyPort;
     bool mProxyTransparent;
     bool mProxyTransparentResolvesHost;
+    bool mHttpsProxy;
     uint32_t     mConnectionFlags;
     
     uint16_t         SocketPort() { return (!mProxyHost.IsEmpty() && !mProxyTransparent) ? mProxyPort : mPort; }
@@ -328,6 +331,11 @@ private:
     LockedPRFileDesc mFD;
     nsrefcnt         mFDref;       // mFD is closed when mFDref goes to zero.
     bool             mFDconnected; // mFD is available to consumer when TRUE.
+
+    // A delete protector reference to gSocketTransportService held for lifetime
+    // of 'this'. Sometimes used interchangably with gSocketTransportService due
+    // to scoping.
+    nsRefPtr<nsSocketTransportService> mSocketTransportService;
 
     nsCOMPtr<nsIInterfaceRequestor> mCallbacks;
     nsCOMPtr<nsITransportEventSink> mEventSink;

@@ -1,4 +1,4 @@
-/* -*-  Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2; -*- */
+/* -*-  indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -2234,7 +2234,7 @@ function run_void_tests(library) {
 
     // Check that WINAPI symbol lookup for a regular stdcall function fails on
     // Win32 (it's all the same on Win64 though).
-    if (ctypes.voidptr_t.size == 8) {
+    if (ctypes.voidptr_t.size == 4) {
       do_check_throws(function() {
         let test_winapi_t = library.declare("test_void_t_stdcall", ctypes.winapi_abi, ctypes.void_t);
       }, Error);

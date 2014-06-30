@@ -30,9 +30,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGPathElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGPathElement::WrapNode(JSContext *aCx)
 {
-  return SVGPathElementBinding::Wrap(aCx, aScope, this);
+  return SVGPathElementBinding::Wrap(aCx, this);
 }
 
 nsSVGElement::NumberInfo SVGPathElement::sNumberInfo = 
@@ -41,9 +41,19 @@ nsSVGElement::NumberInfo SVGPathElement::sNumberInfo =
 //----------------------------------------------------------------------
 // Implementation
 
-SVGPathElement::SVGPathElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+SVGPathElement::SVGPathElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : SVGPathElementBase(aNodeInfo)
 {
+}
+
+//----------------------------------------------------------------------
+// memory reporting methods
+
+size_t
+SVGPathElement::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+{
+  return SVGPathElementBase::SizeOfExcludingThis(aMallocSizeOf) +
+         mD.SizeOfExcludingThis(aMallocSizeOf);
 }
 
 //----------------------------------------------------------------------

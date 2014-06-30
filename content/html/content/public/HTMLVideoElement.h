@@ -21,7 +21,7 @@ class HTMLVideoElement MOZ_FINAL : public HTMLMediaElement,
                                    public nsIDOMHTMLVideoElement
 {
 public:
-  HTMLVideoElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLVideoElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLVideoElement();
 
   NS_IMPL_FROMCONTENT_HTML_WITH_TAG(HTMLVideoElement, video)
@@ -46,7 +46,7 @@ public:
 
   virtual nsMapRuleToAttributesFunc GetAttributeMappingFunction() const MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   // Set size with the current video frame's height and width.
   // If there is no video frame, returns NS_ERROR_FAILURE.
@@ -109,12 +109,11 @@ public:
   already_AddRefed<VideoPlaybackQuality> GetVideoPlaybackQuality();
 
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual void WakeLockCreate();
   virtual void WakeLockRelease();
-  void WakeLockUpdate();
+  void UpdateScreenWakeLock();
 
   nsRefPtr<WakeLock> mScreenWakeLock;
 

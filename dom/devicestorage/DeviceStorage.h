@@ -11,7 +11,7 @@
 #include "nsIFile.h"
 #include "nsIPrincipal.h"
 #include "nsIObserver.h"
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/RefPtr.h"
 #include "mozilla/StaticPtr.h"
 #include "mozilla/dom/DOMRequest.h"
@@ -25,11 +25,12 @@
 
 class DeviceStorageFile;
 class nsIInputStream;
+class nsIOutputStream;
 
 namespace mozilla {
 class EventListenerManager;
 namespace dom {
-class DeviceStorageEnumerationParameters;
+struct DeviceStorageEnumerationParameters;
 class DOMCursor;
 class DOMRequest;
 class Promise;
@@ -38,6 +39,13 @@ class DeviceStorageFileSystem;
 namespace ipc {
 class FileDescriptor;
 }
+
+template<>
+struct HasDangerousPublicDestructor<DeviceStorageFile>
+{
+  static const bool value = true;
+};
+
 } // namespace mozilla
 
 class DeviceStorageFile MOZ_FINAL
@@ -92,6 +100,9 @@ public:
   nsresult Remove();
   nsresult Write(nsIInputStream* aInputStream);
   nsresult Write(InfallibleTArray<uint8_t>& bits);
+  nsresult Append(nsIInputStream* aInputStream);
+  nsresult Append(nsIInputStream* aInputStream,
+                  nsIOutputStream* aOutputStream);
   void CollectFiles(nsTArray<nsRefPtr<DeviceStorageFile> >& aFiles,
                     PRTime aSince = 0);
   void collectFilesInternal(nsTArray<nsRefPtr<DeviceStorageFile> >& aFiles,
@@ -141,6 +152,8 @@ private:
 class FileUpdateDispatcher MOZ_FINAL
   : public nsIObserver
 {
+  ~FileUpdateDispatcher() {}
+
  public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
@@ -151,7 +164,7 @@ class FileUpdateDispatcher MOZ_FINAL
 };
 
 class nsDOMDeviceStorage MOZ_FINAL
-  : public nsDOMEventTargetHelper
+  : public mozilla::DOMEventTargetHelper
   , public nsIDOMDeviceStorage
   , public nsIObserver
 {
@@ -209,7 +222,7 @@ public:
     return GetOwner();
   }
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   IMPL_EVENT_HANDLER(change)
 
@@ -217,6 +230,13 @@ public:
   Add(nsIDOMBlob* aBlob, ErrorResult& aRv);
   already_AddRefed<DOMRequest>
   AddNamed(nsIDOMBlob* aBlob, const nsAString& aPath, ErrorResult& aRv);
+
+  already_AddRefed<DOMRequest>
+  AppendNamed(nsIDOMBlob* aBlob, const nsAString& aPath, ErrorResult& aRv);
+
+  already_AddRefed<DOMRequest>
+  AddOrAppendNamed(nsIDOMBlob* aBlob, const nsAString& aPath,
+                   const int32_t aRequestType, ErrorResult& aRv);
 
   already_AddRefed<DOMRequest>
   Get(const nsAString& aPath, ErrorResult& aRv)
@@ -256,6 +276,9 @@ public:
   already_AddRefed<DOMRequest> Mount(ErrorResult& aRv);
   already_AddRefed<DOMRequest> Unmount(ErrorResult& aRv);
 
+  bool CanBeMounted();
+  bool CanBeFormatted();
+  bool CanBeShared();
   bool Default();
 
   // Uses XPCOM GetStorageName
@@ -305,6 +328,7 @@ private:
   nsString mStorageType;
   nsCOMPtr<nsIFile> mRootDirectory;
   nsString mStorageName;
+  bool mIsShareable;
 
   already_AddRefed<nsDOMDeviceStorage> GetStorage(const nsAString& aFullPath,
                                                   nsAString& aOutStoragePath);
@@ -321,13 +345,7 @@ private:
   friend class WatchFileEvent;
   friend class DeviceStorageRequest;
 
-  class VolumeNameCache : public mozilla::RefCounted<VolumeNameCache>
-  {
-  public:
-    MOZ_DECLARE_REFCOUNTED_TYPENAME(VolumeNameCache)
-    nsTArray<nsString>  mVolumeNames;
-  };
-  static mozilla::StaticRefPtr<VolumeNameCache> sVolumeNameCache;
+  static mozilla::StaticAutoPtr<nsTArray<nsString>> sVolumeNameCache;
 
 #ifdef MOZ_WIDGET_GONK
   nsString mLastStatus;

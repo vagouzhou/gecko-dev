@@ -33,12 +33,11 @@ public:
   };
 
   MediaStreamList(sipcc::PeerConnectionImpl* peerConnection, StreamType type);
-  virtual ~MediaStreamList();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaStreamList)
 
-  virtual JSObject* WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+  virtual JSObject* WrapObject(JSContext *cx)
     MOZ_OVERRIDE;
   nsISupports* GetParentObject();
 
@@ -46,6 +45,8 @@ public:
   uint32_t Length();
 
 private:
+  virtual ~MediaStreamList();
+
   nsRefPtr<sipcc::PeerConnectionImpl> mPeerConnection;
   StreamType mType;
 };

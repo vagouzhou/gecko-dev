@@ -6,6 +6,7 @@
 #include "gfxDrawable.h"
 #include "gfxASurface.h"
 #include "gfxContext.h"
+#include "gfxImageSurface.h"
 #include "gfxPlatform.h"
 #include "gfxColor.h"
 #ifdef MOZ_X11
@@ -96,8 +97,8 @@ PreparePatternForUntiledDrawing(gfxPattern* aPattern,
             // enough X server.
             if (static_cast<gfxXlibSurface*>(currentTarget)->IsPadSlow()) {
                 bool isDownscale =
-                    aDeviceToImage.xx >= 1.0 && aDeviceToImage.yy >= 1.0 &&
-                    aDeviceToImage.xy == 0.0 && aDeviceToImage.yx == 0.0;
+                    aDeviceToImage._11 >= 1.0 && aDeviceToImage._22 >= 1.0 &&
+                    aDeviceToImage._21 == 0.0 && aDeviceToImage._12 == 0.0;
 
                 GraphicsFilter filter =
                     isDownscale ? aDefaultFilter : (const GraphicsFilter)GraphicsFilter::FILTER_FAST;
@@ -195,14 +196,18 @@ gfxCallbackDrawable::gfxCallbackDrawable(gfxDrawingCallback* aCallback,
 already_AddRefed<gfxSurfaceDrawable>
 gfxCallbackDrawable::MakeSurfaceDrawable(const GraphicsFilter aFilter)
 {
-    nsRefPtr<gfxASurface> surface =
-        gfxPlatform::GetPlatform()->CreateOffscreenSurface(mSize.ToIntSize(),
-                                                           gfxContentType::COLOR_ALPHA);
-    if (!surface || surface->CairoStatus() != 0)
+    SurfaceFormat format =
+        gfxPlatform::GetPlatform()->Optimal2DFormatForContent(gfxContentType::COLOR_ALPHA);
+    RefPtr<DrawTarget> dt =
+        gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(mSize.ToIntSize(),
+                                                                     format);
+    if (!dt)
         return nullptr;
 
-    nsRefPtr<gfxContext> ctx = new gfxContext(surface);
+    nsRefPtr<gfxContext> ctx = new gfxContext(dt);
     Draw(ctx, gfxRect(0, 0, mSize.width, mSize.height), false, aFilter);
+
+    RefPtr<SourceSurface> surface = dt->Snapshot();
     nsRefPtr<gfxSurfaceDrawable> drawable = new gfxSurfaceDrawable(surface, mSize);
     return drawable.forget();
 }

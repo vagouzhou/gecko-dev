@@ -11,6 +11,8 @@
 
 #include "OrientedImage.h"
 
+using namespace mozilla::gfx;
+
 using std::swap;
 using mozilla::layers::LayerManager;
 using mozilla::layers::ImageContainer;
@@ -18,7 +20,7 @@ using mozilla::layers::ImageContainer;
 namespace mozilla {
 namespace image {
 
-NS_IMPL_ISUPPORTS1(OrientedImage, imgIContainer)
+NS_IMPL_ISUPPORTS(OrientedImage, imgIContainer)
 
 nsIntRect
 OrientedImage::FrameRect(uint32_t aWhichFrame)
@@ -75,7 +77,7 @@ OrientedImage::GetIntrinsicRatio(nsSize* aRatio)
   return rv;
 }
 
-NS_IMETHODIMP_(already_AddRefed<gfxASurface>)
+NS_IMETHODIMP_(TemporaryRef<SourceSurface>)
 OrientedImage::GetFrame(uint32_t aWhichFrame,
                         uint32_t aFlags)
 {
@@ -87,33 +89,35 @@ OrientedImage::GetFrame(uint32_t aWhichFrame,
 
   // Get the underlying dimensions.
   int32_t width, height;
+  rv = InnerImage()->GetWidth(&width);
+  NS_ENSURE_SUCCESS(rv, nullptr);
+  rv = InnerImage()->GetHeight(&height);
+  NS_ENSURE_SUCCESS(rv, nullptr);
   if (mOrientation.SwapsWidthAndHeight()) {
-    rv = InnerImage()->GetWidth(&height);
-    rv = NS_FAILED(rv) ? rv : InnerImage()->GetHeight(&width);
-  } else {
-    rv = InnerImage()->GetWidth(&width);
-    rv = NS_FAILED(rv) ? rv : InnerImage()->GetHeight(&height);
+    swap(width, height);
   }
   NS_ENSURE_SUCCESS(rv, nullptr);
 
   // Determine an appropriate format for the surface.
   gfx::SurfaceFormat surfaceFormat;
-  gfxImageFormat imageFormat;
   if (InnerImage()->FrameIsOpaque(aWhichFrame)) {
     surfaceFormat = gfx::SurfaceFormat::B8G8R8X8;
-    imageFormat = gfxImageFormat::ARGB32;
   } else {
     surfaceFormat = gfx::SurfaceFormat::B8G8R8A8;
-    imageFormat = gfxImageFormat::ARGB32;
   }
 
   // Create a surface to draw into.
-  mozilla::RefPtr<mozilla::gfx::DrawTarget> target;
-  target = gfxPlatform::GetPlatform()->
-    CreateOffscreenContentDrawTarget(gfx::IntSize(width, height), surfaceFormat);
+  mozilla::RefPtr<DrawTarget> target =
+    gfxPlatform::GetPlatform()->
+      CreateOffscreenContentDrawTarget(IntSize(width, height), surfaceFormat);
+  if (!target) {
+    NS_ERROR("Could not create a DrawTarget");
+    return nullptr;
+  }
+
 
   // Create our drawable.
-  nsRefPtr<gfxASurface> innerSurface =
+  RefPtr<SourceSurface> innerSurface =
     InnerImage()->GetFrame(aWhichFrame, aFlags);
   NS_ENSURE_TRUE(innerSurface, nullptr);
   nsRefPtr<gfxDrawable> drawable =
@@ -124,12 +128,9 @@ OrientedImage::GetFrame(uint32_t aWhichFrame,
   gfxRect imageRect(0, 0, width, height);
   gfxUtils::DrawPixelSnapped(ctx, drawable, OrientationMatrix(nsIntSize(width, height)),
                              imageRect, imageRect, imageRect, imageRect,
-                             imageFormat, GraphicsFilter::FILTER_FAST);
+                             surfaceFormat, GraphicsFilter::FILTER_FAST);
   
-  nsRefPtr<gfxASurface> surface = gfxPlatform::GetPlatform()->
-    GetThebesSurfaceForDrawTarget(target);
-
-  return surface.forget();
+  return target->Snapshot();
 }
 
 NS_IMETHODIMP
@@ -247,6 +248,33 @@ OrientedImage::Draw(gfxContext* aContext,
   return InnerImage()->Draw(aContext, aFilter, userSpaceToImageSpace,
                             aFill, subimage, viewportSize, aSVGContext,
                             aWhichFrame, aFlags);
+}
+
+NS_IMETHODIMP_(nsIntRect)
+OrientedImage::GetImageSpaceInvalidationRect(const nsIntRect& aRect)
+{
+  nsIntRect rect(InnerImage()->GetImageSpaceInvalidationRect(aRect));
+
+  if (mOrientation.IsIdentity()) {
+    return rect;
+  }
+
+  int32_t width, height;
+  nsresult rv = InnerImage()->GetWidth(&width);
+  rv = NS_FAILED(rv) ? rv : InnerImage()->GetHeight(&height);
+  if (NS_FAILED(rv)) {
+    // Fall back to identity if the width and height aren't available.
+    return rect;
+  }
+
+  // Transform the invalidation rect into the correct orientation.
+  gfxMatrix matrix(OrientationMatrix(nsIntSize(width, height)).Invert());
+  gfxRect invalidRect(matrix.TransformBounds(gfxRect(rect.x, rect.y,
+                                                     rect.width, rect.height)));
+  invalidRect.RoundOut();
+
+  return nsIntRect(invalidRect.x, invalidRect.y,
+                   invalidRect.width, invalidRect.height);
 }
 
 } // namespace image

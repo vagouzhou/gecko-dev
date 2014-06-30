@@ -22,7 +22,9 @@ DEFINES += -DMOZ_CHILD_PROCESS_NAME=$(MOZ_CHILD_PROCESS_NAME)
 
 # Set MSVC dlls version to package, if any.
 ifdef WIN32_REDIST_DIR
+ifdef MOZ_NO_DEBUG_RTL
 DEFINES += -DMOZ_MSVC_REDIST=$(_MSC_VER)
+endif
 endif
 
 ifdef ENABLE_MARIONETTE
@@ -36,6 +38,13 @@ endif
 MOZ_PACKAGER_MINIFY=1
 
 include $(topsrcdir)/toolkit/mozapps/installer/packager.mk
+
+# Note that JS_BINARY can be defined in packager.mk, so this test must come after
+# including that file. MOZ_PACKAGER_MINIFY_JS is used in packager.mk, but since
+# recipe evaluation is deferred, we can set it here after the inclusion.
+ifneq (,$(JS_BINARY))
+MOZ_PACKAGER_MINIFY_JS=1
+endif
 
 ifeq (bundle, $(MOZ_FS_LAYOUT))
 BINPATH = $(_BINPATH)
@@ -58,6 +67,20 @@ ifdef GKMEDIAS_SHARED_LIBRARY
 DEFINES += -DGKMEDIAS_SHARED_LIBRARY
 endif
 
+ifdef MOZ_REPLACE_MALLOC
+DEFINES += -DMOZ_REPLACE_MALLOC
+endif
+ifdef MOZ_JEMALLOC3
+DEFINES += -DMOZ_JEMALLOC3
+endif
+
+ifdef MOZ_WIDGET_GTK
+DEFINES += -DMOZ_GTK=1
+ifdef MOZ_ENABLE_GTK3
+DEFINES += -DMOZ_GTK3=1
+endif
+endif
+
 ifdef MOZ_PKG_MANIFEST_P
 $(MOZ_PKG_MANIFEST): $(MOZ_PKG_MANIFEST_P) FORCE
 	$(call py_action,preprocessor,$(DEFINES) $(ACDEFINES) $< -o $@)
@@ -71,4 +94,18 @@ ifdef MOZ_CHROME_MULTILOCALE
 endif
 
 GARBAGE += $(MOZ_PKG_MANIFEST)
+endif
+
+ifdef FXOS_SIMULATOR
+export MAKE
+
+.PHONY: simulator
+simulator: make-package
+	@echo 'Building simulator addon...'
+	$(PYTHON) $(topsrcdir)/b2g/simulator/build_xpi.py $(MOZ_PKG_PLATFORM)
+
+libs:: simulator
+
+# Ensure copying Simulator xpi to ftp
+UPLOAD_EXTRA_FILES += fxos-simulator-*-*.xpi
 endif

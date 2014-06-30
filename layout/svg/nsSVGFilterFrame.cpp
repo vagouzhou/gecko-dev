@@ -7,7 +7,6 @@
 #include "nsSVGFilterFrame.h"
 
 // Keep others in (case-insensitive) order:
-#include "gfxASurface.h"
 #include "gfxUtils.h"
 #include "nsGkAtoms.h"
 #include "nsRenderingContext.h"
@@ -188,9 +187,9 @@ nsSVGFilterFrame::AttributeChanged(int32_t  aNameSpaceID,
 
 #ifdef DEBUG
 void
-nsSVGFilterFrame::Init(nsIContent* aContent,
-                       nsIFrame* aParent,
-                       nsIFrame* aPrevInFlow)
+nsSVGFilterFrame::Init(nsIContent*       aContent,
+                       nsContainerFrame* aParent,
+                       nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::filter),
                "Content is not an SVG filter");

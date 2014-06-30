@@ -7,8 +7,6 @@
 #include "nsIImageLoadingContent.h"
 #include "nsExpirationTracker.h"
 #include "imgIRequest.h"
-#include "gfxASurface.h"
-#include "gfxPoint.h"
 #include "mozilla/dom/Element.h"
 #include "nsTHashtable.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
@@ -120,6 +118,7 @@ static ImageCache* gImageCache = nullptr;
 
 class CanvasImageCacheShutdownObserver MOZ_FINAL : public nsIObserver
 {
+  ~CanvasImageCacheShutdownObserver() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIOBSERVER
@@ -189,7 +188,7 @@ CanvasImageCache::Lookup(Element* aImage,
   return entry->mData->mSourceSurface;
 }
 
-NS_IMPL_ISUPPORTS1(CanvasImageCacheShutdownObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(CanvasImageCacheShutdownObserver, nsIObserver)
 
 NS_IMETHODIMP
 CanvasImageCacheShutdownObserver::Observe(nsISupports *aSubject,

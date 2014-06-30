@@ -8,14 +8,16 @@ package org.mozilla.gecko;
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.net.URLConnection;
+import java.net.MalformedURLException;
 import java.net.Proxy;
 import java.net.URL;
 import java.nio.ByteBuffer;
@@ -34,7 +36,6 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import org.mozilla.gecko.favicons.OnFaviconLoadedListener;
 import org.mozilla.gecko.favicons.decoders.FaviconDecoder;
 import org.mozilla.gecko.gfx.BitmapUtils;
-import org.mozilla.gecko.gfx.GeckoLayerClient;
 import org.mozilla.gecko.gfx.LayerView;
 import org.mozilla.gecko.gfx.PanZoomController;
 import org.mozilla.gecko.mozglue.GeckoLoader;
@@ -45,6 +46,7 @@ import org.mozilla.gecko.mozglue.generatorannotations.WrapElementForJNI;
 import org.mozilla.gecko.prompts.PromptService;
 import org.mozilla.gecko.util.GeckoEventListener;
 import org.mozilla.gecko.util.HardwareUtils;
+import org.mozilla.gecko.util.NativeJSContainer;
 import org.mozilla.gecko.util.ProxySelector;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.webapp.Allocator;
@@ -109,6 +111,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.webkit.MimeTypeMap;
+import android.webkit.URLUtil;
 import android.widget.AbsoluteLayout;
 import android.widget.Toast;
 
@@ -139,8 +142,6 @@ public class GeckoAppShell
 
     static private int sDensityDpi = 0;
     static private int sScreenDepth = 0;
-
-    private static final EventDispatcher sEventDispatcher = new EventDispatcher();
 
     /* Default colors. */
     private static final float[] DEFAULT_LAUNCHER_ICON_HSV = { 32.0f, 1.0f, 1.0f };
@@ -191,7 +192,7 @@ public class GeckoAppShell
 
     // helper methods
     //    public static native void setSurfaceView(GeckoSurfaceView sv);
-    public static native void setLayerClient(GeckoLayerClient client);
+    public static native void setLayerClient(Object client);
     public static native void onResume();
     public static void callObserver(String observerKey, String topic, String data) {
         sendEventToGecko(GeckoEvent.createCallObserverEvent(observerKey, topic, data));
@@ -319,7 +320,7 @@ public class GeckoAppShell
         GeckoAppShell.nativeInit();
 
         if (sLayerView != null)
-            GeckoAppShell.setLayerClient(sLayerView.getLayerClient());
+            GeckoAppShell.setLayerClient(sLayerView.getLayerClientObject());
 
         // First argument is the .apk path
         String combinedArgs = apkPath + " -greomni " + apkPath;
@@ -329,6 +330,16 @@ public class GeckoAppShell
             combinedArgs += " -url " + url;
         if (type != null)
             combinedArgs += " " + type;
+
+        // In un-official builds, we want to load Javascript resources fresh
+        // with each build.  In official builds, the startup cache is purged by
+        // the buildid mechanism, but most un-official builds don't bump the
+        // buildid, so we purge here instead.
+        if (!AppConstants.MOZILLA_OFFICIAL) {
+            Log.w(LOGTAG, "STARTUP PERFORMANCE WARNING: un-official build: purging the " +
+                          "startup (JavaScript) caches.");
+            combinedArgs += " -purgecaches";
+        }
 
         DisplayMetrics metrics = getContext().getResources().getDisplayMetrics();
         combinedArgs += " -width " + metrics.widthPixels + " -height " + metrics.heightPixels;
@@ -340,8 +351,10 @@ public class GeckoAppShell
                 }
             });
 
+        if (!AppConstants.MOZILLA_OFFICIAL) {
+            Log.d(LOGTAG, "GeckoLoader.nativeRun " + combinedArgs);
+        }
         // and go
-        Log.d(LOGTAG, "GeckoLoader.nativeRun " + combinedArgs);
         GeckoLoader.nativeRun(combinedArgs);
 
         // Remove pumpMessageLoop() idle handler
@@ -704,6 +717,43 @@ public class GeckoAppShell
     }
 
     @WrapElementForJNI
+    public static void startMonitoringGamepad() {
+        if (Build.VERSION.SDK_INT < 9) {
+            return;
+        }
+        ThreadUtils.postToUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    AndroidGamepadManager.startup();
+                }
+            });
+    }
+
+    @WrapElementForJNI
+    public static void stopMonitoringGamepad() {
+        if (Build.VERSION.SDK_INT < 9) {
+            return;
+        }
+
+        ThreadUtils.postToUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    AndroidGamepadManager.shutdown();
+                }
+            });
+    }
+
+    @WrapElementForJNI
+    public static void gamepadAdded(final int device_id, final int service_id) {
+        ThreadUtils.postToUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    AndroidGamepadManager.gamepadAdded(device_id, service_id);
+                }
+            });
+    }
+
+    @WrapElementForJNI
     public static void moveTaskToBack() {
         if (getGeckoInterface() != null)
             getGeckoInterface().getActivity().moveTaskToBack(true);
@@ -743,41 +793,19 @@ public class GeckoAppShell
     public static Intent getWebappIntent(String aURI, String aOrigin, String aTitle, Bitmap aIcon) {
         Intent intent;
 
-        if (AppConstants.MOZ_ANDROID_SYNTHAPKS) {
-            Allocator slots = Allocator.getInstance(getContext());
-            int index = slots.getIndexForOrigin(aOrigin);
+        Allocator slots = Allocator.getInstance(getContext());
+        int index = slots.getIndexForOrigin(aOrigin);
 
-            if (index == -1) {
-                return null;
-            }
-            String packageName = slots.getAppForIndex(index);
-            intent = getContext().getPackageManager().getLaunchIntentForPackage(packageName);
-            if (aURI != null) {
-                intent.setData(Uri.parse(aURI));
-            }
-        } else {
-            int index;
-            if (aIcon != null && !TextUtils.isEmpty(aTitle))
-                index = WebappAllocator.getInstance(getContext()).findAndAllocateIndex(aOrigin, aTitle, aIcon);
-            else
-                index = WebappAllocator.getInstance(getContext()).getIndexForApp(aOrigin);
-
-            if (index == -1)
-                return null;
-
-            intent = getWebappIntent(index, aURI);
+        if (index == -1) {
+            return null;
         }
 
-        return intent;
-    }
+        String packageName = slots.getAppForIndex(index);
+        intent = getContext().getPackageManager().getLaunchIntentForPackage(packageName);
+        if (aURI != null) {
+            intent.setData(Uri.parse(aURI));
+        }
 
-    // The old implementation of getWebappIntent.  Not used by MOZ_ANDROID_SYNTHAPKS.
-    public static Intent getWebappIntent(int aIndex, String aURI) {
-        Intent intent = new Intent();
-        intent.setAction(GeckoApp.ACTION_WEBAPP_PREFIX + aIndex);
-        intent.setData(Uri.parse(aURI));
-        intent.setClassName(AppConstants.ANDROID_PACKAGE_NAME,
-                            AppConstants.ANDROID_PACKAGE_NAME + ".WebApps$WebApp" + aIndex);
         return intent;
     }
 
@@ -830,10 +858,10 @@ public class GeckoAppShell
             shortcutIntent = getWebappIntent(aURI, aUniqueURI, aTitle, aIcon);
         } else {
             shortcutIntent = new Intent();
-            shortcutIntent.setAction(GeckoApp.ACTION_BOOKMARK);
+            shortcutIntent.setAction(GeckoApp.ACTION_HOMESCREEN_SHORTCUT);
             shortcutIntent.setData(Uri.parse(aURI));
             shortcutIntent.setClassName(AppConstants.ANDROID_PACKAGE_NAME,
-                                        AppConstants.BROWSER_INTENT_CLASS);
+                                        AppConstants.BROWSER_INTENT_CLASS_NAME);
         }
 
         Intent intent = new Intent();
@@ -869,9 +897,9 @@ public class GeckoAppShell
                         return;
                 } else {
                     shortcutIntent = new Intent();
-                    shortcutIntent.setAction(GeckoApp.ACTION_BOOKMARK);
+                    shortcutIntent.setAction(GeckoApp.ACTION_HOMESCREEN_SHORTCUT);
                     shortcutIntent.setClassName(AppConstants.ANDROID_PACKAGE_NAME,
-                                                AppConstants.BROWSER_INTENT_CLASS);
+                                                AppConstants.BROWSER_INTENT_CLASS_NAME);
                     shortcutIntent.setData(Uri.parse(aURI));
                 }
         
@@ -1046,81 +1074,6 @@ public class GeckoAppShell
             if (stream != null)
                 stream.close();
         } catch (IOException e) {}
-    }
-
-    static void shareImage(String aSrc, String aType) {
-
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        boolean isDataURI = aSrc.startsWith("data:");
-        OutputStream os = null;
-        File dir = GeckoApp.getTempDirectory();
-
-        if (dir == null) {
-            showImageShareFailureToast();
-            return;
-        }
-
-        GeckoApp.deleteTempFiles();
-
-        try {
-            // Create a temporary file for the image
-            File imageFile = File.createTempFile("image",
-                                                 "." + aType.replace("image/",""),
-                                                 dir);
-            os = new FileOutputStream(imageFile);
-
-            if (isDataURI) {
-                // We are dealing with a Data URI
-                int dataStart = aSrc.indexOf(',');
-                byte[] buf = Base64.decode(aSrc.substring(dataStart+1), Base64.DEFAULT);
-                os.write(buf);
-            } else {
-                // We are dealing with a URL
-                InputStream is = null;
-                try {
-                    URL url = new URL(aSrc);
-                    is = url.openStream();
-                    byte[] buf = new byte[2048];
-                    int length;
-
-                    while ((length = is.read(buf)) != -1) {
-                        os.write(buf, 0, length);
-                    }
-                } finally {
-                    safeStreamClose(is);
-                }
-            }
-            intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(imageFile));
-
-            // If we were able to determine the image type, send that in the intent. Otherwise,
-            // use a generic type.
-            if (aType.startsWith("image/")) {
-                intent.setType(aType);
-            } else {
-                intent.setType("image/*");
-            }
-        } catch (IOException e) {
-            if (!isDataURI) {
-               // If we failed, at least send through the URL link
-               intent.putExtra(Intent.EXTRA_TEXT, aSrc);
-               intent.setType("text/plain");
-            } else {
-               showImageShareFailureToast();
-               return;
-            }
-        } finally {
-            safeStreamClose(os);
-        }
-        getContext().startActivity(Intent.createChooser(intent,
-                getContext().getResources().getString(R.string.share_title)));
-    }
-
-    // Don't fail silently, tell the user that we weren't able to share the image
-    private static final void showImageShareFailureToast() {
-        Toast toast = Toast.makeText(getContext(),
-                                     getContext().getResources().getString(R.string.share_image_failed),
-                                     Toast.LENGTH_SHORT);
-        toast.show();
     }
 
     static boolean isUriSafeForScheme(Uri aUri) {
@@ -2325,34 +2278,6 @@ public class GeckoAppShell
         }
     }
 
-    /**
-     * Adds a listener for a gecko event.
-     * This method is thread-safe and may be called at any time. In particular, calling it
-     * with an event that is currently being processed has the properly-defined behaviour that
-     * any added listeners will not be invoked on the event currently being processed, but
-     * will be invoked on future events of that type.
-     */
-    @RobocopTarget
-    public static void registerEventListener(String event, GeckoEventListener listener) {
-        sEventDispatcher.registerEventListener(event, listener);
-    }
-
-    public static EventDispatcher getEventDispatcher() {
-        return sEventDispatcher;
-    }
-
-    /**
-     * Remove a previously-registered listener for a gecko event.
-     * This method is thread-safe and may be called at any time. In particular, calling it
-     * with an event that is currently being processed has the properly-defined behaviour that
-     * any removed listeners will still be invoked on the event currently being processed, but
-     * will not be invoked on future events of that type.
-     */
-    @RobocopTarget
-    public static void unregisterEventListener(String event, GeckoEventListener listener) {
-        sEventDispatcher.unregisterEventListener(event, listener);
-    }
-
     /*
      * Battery API related methods.
      */
@@ -2362,8 +2287,9 @@ public class GeckoAppShell
     }
 
     @WrapElementForJNI(stubName = "HandleGeckoMessageWrapper")
-    public static void handleGeckoMessage(String message) {
-        sEventDispatcher.dispatchEvent(message);
+    public static void handleGeckoMessage(final NativeJSContainer message) {
+        EventDispatcher.getInstance().dispatchEvent(message);
+        message.dispose();
     }
 
     @WrapElementForJNI
@@ -2699,6 +2625,110 @@ public class GeckoAppShell
         }
 
         return "DIRECT";
+    }
+
+    /* Downloads the uri pointed to by a share intent, and alters the intent to point to the locally stored file.
+     */
+    public static void downloadImageForIntent(final Intent intent) {
+        final String src = intent.getStringExtra(Intent.EXTRA_TEXT);
+        final File dir = GeckoApp.getTempDirectory();
+
+        if (dir == null) {
+            showImageShareFailureToast();
+            return;
+        }
+
+        GeckoApp.deleteTempFiles();
+
+        String type = intent.getType();
+        OutputStream os = null;
+        try {
+            // Create a temporary file for the image
+            if (src.startsWith("data:")) {
+                final int dataStart = src.indexOf(",");
+
+                String extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+
+                // If we weren't given an explicit mimetype, try to dig one out of the data uri.
+                if (TextUtils.isEmpty(extension) && dataStart > 5) {
+                    type = src.substring(5, dataStart).replace(";base64", "");
+                    extension = MimeTypeMap.getSingleton().getExtensionFromMimeType(type);
+                }
+
+                final File imageFile = File.createTempFile("image", "." + extension, dir);
+                os = new FileOutputStream(imageFile);
+
+                byte[] buf = Base64.decode(src.substring(dataStart + 1), Base64.DEFAULT);
+                os.write(buf);
+
+                // Only alter the intent when we're sure everything has worked
+                intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(imageFile));
+            } else {
+                InputStream is = null;
+                try {
+                    final byte[] buf = new byte[2048];
+                    final URL url = new URL(src);
+                    final String filename = URLUtil.guessFileName(src, null, type);
+                    is = url.openStream();
+
+                    final File imageFile = new File(dir, filename);
+                    os = new FileOutputStream(imageFile);
+
+                    int length;
+                    while ((length = is.read(buf)) != -1) {
+                        os.write(buf, 0, length);
+                    }
+
+                    // Only alter the intent when we're sure everything has worked
+                    intent.putExtra(Intent.EXTRA_STREAM, Uri.fromFile(imageFile));
+                } finally {
+                    safeStreamClose(is);
+                }
+            }
+        } catch(IOException ex) {
+            // If something went wrong, we'll just leave the intent un-changed
+        } finally {
+            safeStreamClose(os);
+        }
+    }
+
+    // Don't fail silently, tell the user that we weren't able to share the image
+    private static final void showImageShareFailureToast() {
+        Toast toast = Toast.makeText(getContext(),
+                                     getContext().getResources().getString(R.string.share_image_failed),
+                                     Toast.LENGTH_SHORT);
+        toast.show();
+    }
+
+    @WrapElementForJNI(allowMultithread = true)
+    static InputStream createInputStream(URLConnection connection) throws IOException {
+        return connection.getInputStream();
+    }
+
+    @WrapElementForJNI(allowMultithread = true, narrowChars = true)
+    static URLConnection getConnection(String url) {
+        try {
+            String spec;
+            if (url.startsWith("android://")) {
+                spec = url.substring(10);
+            } else {
+                spec = url.substring(8);
+            }
+
+            // if the colon got stripped, put it back
+            int colon = spec.indexOf(':');
+            if (colon == -1 || colon > spec.indexOf('/')) {
+                spec = spec.replaceFirst("/", ":/");
+            }
+        } catch(Exception ex) {
+            return null;
+        }
+        return null;
+    }
+
+    @WrapElementForJNI(allowMultithread = true, narrowChars = true)
+    static String connectionGetMimeType(URLConnection connection) {
+        return connection.getContentType();
     }
 
 }

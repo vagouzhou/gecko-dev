@@ -68,6 +68,7 @@ typedef enum {
 GStreamerReader::GStreamerReader(AbstractMediaDecoder* aDecoder)
   : MediaDecoderReader(aDecoder),
   mMP3FrameParser(aDecoder->GetResource()->GetLength()),
+  mDataOffset(0),
   mUseParserDuration(false),
 #if GST_VERSION_MAJOR >= 1
   mAllocator(nullptr),
@@ -238,7 +239,7 @@ void GStreamerReader::PlayBinSourceSetup(GstAppSrc* aSource)
   resource->Seek(SEEK_SET, 0);
 
   /* now we should have a length */
-  int64_t resourceLength = resource->GetLength();
+  int64_t resourceLength = GetDataLength();
   gst_app_src_set_size(mSource, resourceLength);
   if (resource->IsDataCachedToEndOfResource(0) ||
       (resourceLength != -1 && resourceLength <= SHORT_FILE_SIZE)) {
@@ -287,9 +288,26 @@ nsresult GStreamerReader::ParseMP3Headers()
 
   if (mMP3FrameParser.IsMP3()) {
     mLastParserDuration = mMP3FrameParser.GetDuration();
+    mDataOffset = mMP3FrameParser.GetMP3Offset();
+
+    // Update GStreamer's stream length in case we found any ID3 headers to
+    // ignore.
+    gst_app_src_set_size(mSource, GetDataLength());
   }
 
   return NS_OK;
+}
+
+int64_t
+GStreamerReader::GetDataLength()
+{
+  int64_t streamLen = mDecoder->GetResource()->GetLength();
+
+  if (streamLen < 0) {
+    return streamLen;
+  }
+
+  return streamLen - mDataOffset;
 }
 
 nsresult GStreamerReader::ReadMetadata(MediaInfo* aInfo,
@@ -419,8 +437,6 @@ nsresult GStreamerReader::ReadMetadata(MediaInfo* aInfo,
       LOG(PR_LOG_DEBUG, "have duration %" GST_TIME_FORMAT, GST_TIME_ARGS(duration));
       duration = GST_TIME_AS_USECONDS (duration);
       mDecoder->SetMediaDuration(duration);
-    } else {
-      mDecoder->SetMediaSeekable(false);
     }
   }
 
@@ -445,6 +461,28 @@ nsresult GStreamerReader::ReadMetadata(MediaInfo* aInfo,
   gst_element_set_state(mPlayBin, GST_STATE_PLAYING);
 
   return NS_OK;
+}
+
+bool
+GStreamerReader::IsMediaSeekable()
+{
+  if (mUseParserDuration) {
+    return true;
+  }
+
+  gint64 duration;
+#if GST_VERSION_MAJOR >= 1
+  if (gst_element_query_duration(GST_ELEMENT(mPlayBin), GST_FORMAT_TIME,
+                                 &duration)) {
+#else
+  GstFormat format = GST_FORMAT_TIME;
+  if (gst_element_query_duration(GST_ELEMENT(mPlayBin), &format, &duration) &&
+      format == GST_FORMAT_TIME) {
+#endif
+    return true;
+  }
+
+  return false;
 }
 
 nsresult GStreamerReader::CheckSupportedFormats()
@@ -758,8 +796,11 @@ nsresult GStreamerReader::Seek(int64_t aTarget,
   LOG(PR_LOG_DEBUG, "%p About to seek to %" GST_TIME_FORMAT,
         mDecoder, GST_TIME_ARGS(seekPos));
 
-  if (!gst_element_seek_simple(mPlayBin, GST_FORMAT_TIME,
-    static_cast<GstSeekFlags>(GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_ACCURATE), seekPos)) {
+  int flags = GST_SEEK_FLAG_FLUSH | GST_SEEK_FLAG_KEY_UNIT;
+  if (!gst_element_seek_simple(mPlayBin,
+                               GST_FORMAT_TIME,
+                               static_cast<GstSeekFlags>(flags),
+                               seekPos)) {
     LOG(PR_LOG_ERROR, "seek failed");
     return NS_ERROR_FAILURE;
   }
@@ -769,7 +810,7 @@ nsresult GStreamerReader::Seek(int64_t aTarget,
   gst_message_unref(message);
   LOG(PR_LOG_DEBUG, "seek completed");
 
-  return DecodeToTarget(aTarget);
+  return NS_OK;
 }
 
 nsresult GStreamerReader::GetBuffered(dom::TimeRanges* aBuffered,
@@ -797,7 +838,7 @@ nsresult GStreamerReader::GetBuffered(dom::TimeRanges* aBuffered,
 
     double end = (double) duration / GST_MSECOND;
     LOG(PR_LOG_DEBUG, "complete range [0, %f] for [0, %li]",
-          end, resource->GetLength());
+          end, GetDataLength());
     aBuffered->Add(0, end);
     return NS_OK;
   }
@@ -826,7 +867,7 @@ nsresult GStreamerReader::GetBuffered(dom::TimeRanges* aBuffered,
     double start = (double) GST_TIME_AS_USECONDS (startTime) / GST_MSECOND;
     double end = (double) GST_TIME_AS_USECONDS (endTime) / GST_MSECOND;
     LOG(PR_LOG_DEBUG, "adding range [%f, %f] for [%li %li] size %li",
-          start, end, startOffset, endOffset, resource->GetLength());
+          start, end, startOffset, endOffset, GetDataLength());
     aBuffered->Add(start, end);
   }
 
@@ -930,6 +971,8 @@ gboolean GStreamerReader::SeekDataCb(GstAppSrc* aSrc,
 
 gboolean GStreamerReader::SeekData(GstAppSrc* aSrc, guint64 aOffset)
 {
+  aOffset += mDataOffset;
+
   ReentrantMonitorAutoEnter mon(mGstThreadsMonitor);
   MediaResource* resource = mDecoder->GetResource();
   int64_t resourceLength = resource->GetLength();
@@ -938,7 +981,7 @@ gboolean GStreamerReader::SeekData(GstAppSrc* aSrc, guint64 aOffset)
     /* It's possible that we didn't know the length when we initialized mSource
      * but maybe we do now
      */
-    gst_app_src_set_size(mSource, resourceLength);
+    gst_app_src_set_size(mSource, GetDataLength());
   }
 
   nsresult rv = NS_ERROR_FAILURE;

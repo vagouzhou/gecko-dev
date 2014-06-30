@@ -32,9 +32,9 @@ public:
 
   
   // nsIFrame interface:
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual nsresult  AttributeChanged(int32_t         aNameSpaceID,
                                      nsIAtom*        aAttribute,
@@ -99,9 +99,9 @@ NS_QUERYFRAME_TAIL_INHERITING(nsSVGUseFrameBase)
 // nsIFrame methods:
 
 void
-nsSVGUseFrame::Init(nsIContent* aContent,
-                    nsIFrame* aParent,
-                    nsIFrame* aPrevInFlow)
+nsSVGUseFrame::Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::use),
                "Content is not an SVG use!");
@@ -187,6 +187,13 @@ nsSVGUseFrame::ReflowSVG()
   mRect.MoveTo(nsLayoutUtils::RoundGfxRectToAppRect(
                  gfxRect(x, y, 0.0, 0.0),
                  PresContext()->AppUnitsPerCSSPixel()).TopLeft());
+
+  // If we have a filter, we need to invalidate ourselves because filter
+  // output can change even if none of our descendants need repainting.
+  if (StyleSVGReset()->HasFilters()) {
+    InvalidateFrame();
+  }
+
   nsSVGUseFrameBase::ReflowSVG();
 }
 

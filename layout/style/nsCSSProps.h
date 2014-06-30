@@ -16,6 +16,10 @@
 #include "nsStyleStructFwd.h"
 #include "nsCSSKeywords.h"
 
+// Length of the "--" prefix on custom names (such as custom property names,
+// and, in the future, custom media query names).
+#define CSS_CUSTOM_NAME_PREFIX_LENGTH 2
+
 // Flags for ParseVariant method
 #define VARIANT_KEYWORD         0x000001  // K
 #define VARIANT_LENGTH          0x000002  // L
@@ -214,7 +218,7 @@ static_assert((CSS_PROPERTY_PARSE_PROPERTY_MASK &
  */
 enum nsStyleAnimType {
   // requires a custom implementation in
-  // nsStyleAnimation::ExtractComputedValue
+  // StyleAnimationValue::ExtractComputedValue
   eStyleAnimType_Custom,
 
   // nsStyleCoord with animatable values
@@ -289,8 +293,7 @@ public:
   static nsCSSProperty LookupProperty(const nsACString& aProperty,
                                       EnabledState aEnabled);
   // Returns whether aProperty is a custom property name, i.e. begins with
-  // "var-" and has at least one more character.  This assumes that
-  // the CSS Variables pref has been enabled.
+  // "--".  This assumes that the CSS Variables pref has been enabled.
   static bool IsCustomPropertyName(const nsAString& aProperty);
   static bool IsCustomPropertyName(const nsACString& aProperty);
 
@@ -307,9 +310,18 @@ public:
   static nsCSSFontDesc LookupFontDesc(const nsAString& aProperty);
   static nsCSSFontDesc LookupFontDesc(const nsACString& aProperty);
 
+  // For @counter-style descriptors
+  static nsCSSCounterDesc LookupCounterDesc(const nsAString& aProperty);
+  static nsCSSCounterDesc LookupCounterDesc(const nsACString& aProperty);
+
+  // For predefined counter styles which need to be lower-cased during parse
+  static bool IsPredefinedCounterStyle(const nsAString& aStyle);
+  static bool IsPredefinedCounterStyle(const nsACString& aStyle);
+
   // Given a property enum, get the string value
   static const nsAFlatCString& GetStringValue(nsCSSProperty aProperty);
   static const nsAFlatCString& GetStringValue(nsCSSFontDesc aFontDesc);
+  static const nsAFlatCString& GetStringValue(nsCSSCounterDesc aCounterDesc);
 
   // Get the property to report the computed value of aProperty as being
   // the computed value of.  aProperty must have the
@@ -503,7 +515,6 @@ public:
   static const KTableValue kBackfaceVisibilityKTable[];
   static const KTableValue kTransformStyleKTable[];
   static const KTableValue kBackgroundAttachmentKTable[];
-  static const KTableValue kBackgroundInlinePolicyKTable[];
   static const KTableValue kBackgroundOriginKTable[];
   static const KTableValue kBackgroundPositionKTable[];
   static const KTableValue kBackgroundRepeatKTable[];
@@ -517,6 +528,7 @@ public:
   static const KTableValue kBorderStyleKTable[];
   static const KTableValue kBorderWidthKTable[];
   static const KTableValue kBoxAlignKTable[];
+  static const KTableValue kBoxDecorationBreakKTable[];
   static const KTableValue kBoxDirectionKTable[];
   static const KTableValue kBoxOrientKTable[];
   static const KTableValue kBoxPackKTable[];
@@ -615,7 +627,7 @@ public:
   // "layout.css.text-align-true-value.enabled" changes:
   static KTableValue kTextAlignKTable[];
   static KTableValue kTextAlignLastKTable[];
-  static const KTableValue kTextCombineHorizontalKTable[];
+  static const KTableValue kTextCombineUprightKTable[];
   static const KTableValue kTextDecorationLineKTable[];
   static const KTableValue kTextDecorationStyleKTable[];
   static const KTableValue kTextOrientationKTable[];
@@ -638,6 +650,9 @@ public:
   static const KTableValue kWordWrapKTable[];
   static const KTableValue kWritingModeKTable[];
   static const KTableValue kHyphensKTable[];
+  static const KTableValue kCounterSystemKTable[];
+  static const KTableValue kCounterRangeKTable[];
+  static const KTableValue kCounterSpeakAsKTable[];
 };
 
 inline nsCSSProps::EnabledState operator|(nsCSSProps::EnabledState a,

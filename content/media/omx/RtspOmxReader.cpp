@@ -299,19 +299,10 @@ nsresult RtspOmxReader::Seek(int64_t aTime, int64_t aStartTime,
   return MediaOmxReader::Seek(aTime, aStartTime, aEndTime, aCurrentTime);
 }
 
-nsresult
-RtspOmxReader::ReadMetadata(MediaInfo* aInfo,
-                            MetadataTags** aTags)
-{
-  nsresult rv = MediaOmxReader::ReadMetadata(aInfo, aTags);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  SetActive();
-
-  return NS_OK;
-}
-
 void RtspOmxReader::SetIdle() {
+  // Call parent class to set OMXCodec idle.
+  MediaOmxReader::SetIdle();
+
   // Need to pause RTSP streaming OMXCodec decoding.
   if (mRtspResource) {
     nsIStreamingProtocolController* controller =
@@ -319,13 +310,11 @@ void RtspOmxReader::SetIdle() {
     if (controller) {
       controller->Pause();
     }
+    mRtspResource->SetSuspend(true);
   }
-
-  // Call parent class to set OMXCodec idle.
-  MediaOmxReader::SetIdle();
 }
 
-void RtspOmxReader::SetActive() {
+void RtspOmxReader::EnsureActive() {
   // Need to start RTSP streaming OMXCodec decoding.
   if (mRtspResource) {
     nsIStreamingProtocolController* controller =
@@ -333,10 +322,11 @@ void RtspOmxReader::SetActive() {
     if (controller) {
       controller->Play();
     }
+    mRtspResource->SetSuspend(false);
   }
 
   // Call parent class to set OMXCodec active.
-  MediaOmxReader::SetActive();
+  MediaOmxReader::EnsureActive();
 }
 
 } // namespace mozilla

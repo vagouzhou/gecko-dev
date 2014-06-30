@@ -226,6 +226,12 @@ function whenTabLoaded(aTab, aCallback) {
   }, true);
 }
 
+function promiseTabLoaded(aTab) {
+  let deferred = Promise.defer();
+  whenTabLoaded(aTab, deferred.resolve);
+  return deferred.promise;
+}
+
 function addVisits(aPlaceInfo, aCallback) {
   let places = [];
   if (aPlaceInfo instanceof Ci.nsIURI) {
@@ -289,6 +295,71 @@ function promiseHistoryClearedState(aURIs, aShouldBeCleared) {
     });
   });
 
+  return deferred.promise;
+}
+
+/**
+ * Allows waiting for an observer notification once.
+ *
+ * @param topic
+ *        Notification topic to observe.
+ *
+ * @return {Promise}
+ * @resolves The array [subject, data] from the observed notification.
+ * @rejects Never.
+ */
+function promiseTopicObserved(topic)
+{
+  let deferred = Promise.defer();
+  Services.obs.addObserver(function PTO_observe(subject, topic, data) {
+    Services.obs.removeObserver(PTO_observe, topic);
+    deferred.resolve([subject, data]);
+  }, topic, false);
+  return deferred.promise;
+}
+
+/**
+ * Clears history asynchronously.
+ *
+ * @return {Promise}
+ * @resolves When history has been cleared.
+ * @rejects Never.
+ */
+function promiseClearHistory() {
+  let promise = promiseTopicObserved(PlacesUtils.TOPIC_EXPIRATION_FINISHED);
+  PlacesUtils.bhistory.removeAllPages();
+  return promise;
+}
+
+/**
+ * Waits for the next top-level document load in the current browser.  The URI
+ * of the document is compared against aExpectedURL.  The load is then stopped
+ * before it actually starts.
+ *
+ * @param aExpectedURL
+ *        The URL of the document that is expected to load.
+ * @return promise
+ */
+function waitForDocLoadAndStopIt(aExpectedURL) {
+  let deferred = Promise.defer();
+  let progressListener = {
+    onStateChange: function (webProgress, req, flags, status) {
+      info("waitForDocLoadAndStopIt: onStateChange: " + req.name);
+      let docStart = Ci.nsIWebProgressListener.STATE_IS_DOCUMENT |
+                     Ci.nsIWebProgressListener.STATE_START;
+      if ((flags & docStart) && webProgress.isTopLevel) {
+        info("waitForDocLoadAndStopIt: Document start: " +
+             req.QueryInterface(Ci.nsIChannel).URI.spec);
+        is(req.originalURI.spec, aExpectedURL,
+           "waitForDocLoadAndStopIt: The expected URL was loaded");
+        req.cancel(Components.results.NS_ERROR_FAILURE);
+        gBrowser.removeProgressListener(progressListener);
+        deferred.resolve();
+      }
+    },
+  };
+  gBrowser.addProgressListener(progressListener);
+  info("waitForDocLoadAndStopIt: Waiting for URL: " + aExpectedURL);
   return deferred.promise;
 }
 
@@ -400,3 +471,4 @@ let FullZoomHelper = {
     };
   },
 };
+

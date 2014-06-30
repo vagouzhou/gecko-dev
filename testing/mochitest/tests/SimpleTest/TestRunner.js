@@ -1,4 +1,4 @@
-/* -*- js-indent-level: 4 -*- */
+/* -*- js-indent-level: 4; indent-tabs-mode: nil -*- */
 /*
  * e10s event dispatcher from content->chrome
  *
@@ -91,6 +91,7 @@ TestRunner.runSlower = false;
 TestRunner.dumpOutputDirectory = "";
 TestRunner.dumpAboutMemoryAfterTest = false;
 TestRunner.dumpDMDAfterTest = false;
+TestRunner.quiet = false;
 TestRunner.slowestTestTime = 0;
 TestRunner.slowestTestURL = "";
 
@@ -477,6 +478,7 @@ TestRunner.testFinished = function(tests) {
 
     SpecialPowers.executeAfterFlushingMessageQueue(function() {
         cleanUpCrashDumpFiles();
+        SpecialPowers.flushAllAppsLaunchable();
         SpecialPowers.flushPermissions(function () { SpecialPowers.flushPrefEnv(runNextTest); });
     });
 };

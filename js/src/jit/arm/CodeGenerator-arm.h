@@ -49,18 +49,56 @@ class CodeGeneratorARM : public CodeGeneratorShared
     bool bailoutFrom(Label *label, LSnapshot *snapshot);
     bool bailout(LSnapshot *snapshot);
 
+    template <typename T1, typename T2>
+    bool bailoutCmpPtr(Assembler::Condition c, T1 lhs, T2 rhs, LSnapshot *snapshot) {
+        masm.cmpPtr(lhs, rhs);
+        return bailoutIf(c, snapshot);
+    }
+    bool bailoutTestPtr(Assembler::Condition c, Register lhs, Register rhs, LSnapshot *snapshot) {
+        masm.testPtr(lhs, rhs);
+        return bailoutIf(c, snapshot);
+    }
+    template <typename T1, typename T2>
+    bool bailoutCmp32(Assembler::Condition c, T1 lhs, T2 rhs, LSnapshot *snapshot) {
+        masm.cmp32(lhs, rhs);
+        return bailoutIf(c, snapshot);
+    }
+    template <typename T1, typename T2>
+    bool bailoutTest32(Assembler::Condition c, T1 lhs, T2 rhs, LSnapshot *snapshot) {
+        masm.test32(lhs, rhs);
+        return bailoutIf(c, snapshot);
+    }
+    bool bailoutIfFalseBool(Register reg, LSnapshot *snapshot) {
+        masm.test32(reg, Imm32(0xFF));
+        return bailoutIf(Assembler::Zero, snapshot);
+    }
+
   protected:
     bool generatePrologue();
+    bool generateAsmJSPrologue(Label *stackOverflowLabel);
     bool generateEpilogue();
     bool generateOutOfLineCode();
 
-    void emitRoundDouble(const FloatRegister &src, const Register &dest, Label *fail);
+    void emitRoundDouble(FloatRegister src, Register dest, Label *fail);
 
     // Emits a branch that directs control flow to the true block if |cond| is
     // true, and the false block if |cond| is false.
     void emitBranch(Assembler::Condition cond, MBasicBlock *ifTrue, MBasicBlock *ifFalse);
 
-    bool emitTableSwitchDispatch(MTableSwitch *mir, const Register &index, const Register &base);
+    void testNullEmitBranch(Assembler::Condition cond, const ValueOperand &value,
+                            MBasicBlock *ifTrue, MBasicBlock *ifFalse)
+    {
+        cond = masm.testNull(cond, value);
+        emitBranch(cond, ifTrue, ifFalse);
+    }
+    void testUndefinedEmitBranch(Assembler::Condition cond, const ValueOperand &value,
+                                 MBasicBlock *ifTrue, MBasicBlock *ifFalse)
+    {
+        cond = masm.testUndefined(cond, value);
+        emitBranch(cond, ifTrue, ifFalse);
+    }
+
+    bool emitTableSwitchDispatch(MTableSwitch *mir, Register index, Register base);
 
   public:
     // Instruction visitors.
@@ -111,6 +149,8 @@ class CodeGeneratorARM : public CodeGeneratorShared
     virtual bool visitMathF(LMathF *math);
     virtual bool visitFloor(LFloor *lir);
     virtual bool visitFloorF(LFloorF *lir);
+    virtual bool visitCeil(LCeil *lir);
+    virtual bool visitCeilF(LCeilF *lir);
     virtual bool visitRound(LRound *lir);
     virtual bool visitRoundF(LRoundF *lir);
     virtual bool visitTruncateDToInt32(LTruncateDToInt32 *ins);
@@ -128,9 +168,6 @@ class CodeGeneratorARM : public CodeGeneratorShared
     // Functions for LTestVAndBranch.
     Register splitTagForTest(const ValueOperand &value);
 
-    void storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
-                           const Register &elements, const LAllocation *index);
-
     bool divICommon(MDiv *mir, Register lhs, Register rhs, Register output, LSnapshot *snapshot,
                     Label &done);
     bool modICommon(MMod *mir, Register lhs, Register rhs, Register output, LSnapshot *snapshot,
@@ -147,18 +184,9 @@ class CodeGeneratorARM : public CodeGeneratorShared
     bool visitDouble(LDouble *ins);
     bool visitFloat32(LFloat32 *ins);
 
-    bool visitLoadSlotV(LLoadSlotV *load);
-    bool visitLoadSlotT(LLoadSlotT *load);
-    bool visitStoreSlotT(LStoreSlotT *load);
-
-    bool visitLoadElementT(LLoadElementT *load);
-
     bool visitGuardShape(LGuardShape *guard);
     bool visitGuardObjectType(LGuardObjectType *guard);
     bool visitGuardClass(LGuardClass *guard);
-    bool visitImplicitThis(LImplicitThis *lir);
-
-    bool visitInterruptCheck(LInterruptCheck *lir);
 
     bool visitNegI(LNegI *lir);
     bool visitNegD(LNegD *lir);
@@ -178,7 +206,7 @@ class CodeGeneratorARM : public CodeGeneratorShared
     bool generateInvalidateEpilogue();
   protected:
     void postAsmJSCall(LAsmJSCall *lir) {
-        if (!useHardFpABI() && lir->mir()->callee().which() == MAsmJSCall::Callee::Builtin) {
+        if (!UseHardFpABI() && lir->mir()->callee().which() == MAsmJSCall::Callee::Builtin) {
             switch (lir->mir()->type()) {
               case MIRType_Double:
                 masm.ma_vxfer(r0, r1, d0);

@@ -9,6 +9,7 @@
 #include "nsMappedAttributes.h"
 #include "nsRuleData.h"
 #include "nsContentUtils.h"
+#include "nsCSSParser.h"
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Font)
 
@@ -20,9 +21,9 @@ HTMLFontElement::~HTMLFontElement()
 }
 
 JSObject*
-HTMLFontElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLFontElement::WrapNode(JSContext *aCx)
 {
-  return HTMLFontElementBinding::Wrap(aCx, aScope, this);
+  return HTMLFontElementBinding::Wrap(aCx, this);
 }
 
 NS_IMPL_ELEMENT_CLONE(HTMLFontElement)
@@ -62,7 +63,9 @@ HTMLFontElement::MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
       const nsAttrValue* value = aAttributes->GetAttr(nsGkAtoms::face);
       if (value && value->Type() == nsAttrValue::eString &&
           !value->IsEmptyString()) {
-        family->SetStringValue(value->GetStringValue(), eCSSUnit_Families);
+        nsCSSParser parser;
+        parser.ParseFontFamilyListString(value->GetStringValue(),
+                                         nullptr, 0, *family);
       }
     }
 

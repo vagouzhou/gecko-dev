@@ -14,7 +14,6 @@
 #include "secasn1.h"
 #include "pk11pqg.h"
 #include "nsKeygenHandler.h"
-#include "nsVoidArray.h"
 #include "nsIServiceManager.h"
 #include "nsIDOMHTMLSelectElement.h"
 #include "nsIContent.h"
@@ -67,9 +66,6 @@ const SEC_ASN1Template SECKEY_PQGParamsTemplate[] = {
     { SEC_ASN1_INTEGER, offsetof(PQGParams,base) },
     { 0, }
 };
-
-
-static NS_DEFINE_IID(kIDOMHTMLSelectElementIID, NS_IDOMHTMLSELECTELEMENT_IID);
 
 static PQGParams *
 decode_pqg_params(char *aStr)
@@ -257,7 +253,7 @@ decode_ec_params(const char *curve)
     return ecparams;
 }
 
-NS_IMPL_ISUPPORTS1(nsKeygenFormProcessor, nsIFormProcessor)
+NS_IMPL_ISUPPORTS(nsKeygenFormProcessor, nsIFormProcessor)
 
 nsKeygenFormProcessor::nsKeygenFormProcessor()
 { 

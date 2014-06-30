@@ -12,7 +12,7 @@
 class SVGFEImageFrame;
 
 nsresult NS_NewSVGFEImageElement(nsIContent **aResult,
-                                 already_AddRefed<nsINodeInfo>&& aNodeInfo);
+                                 already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
 namespace dom {
@@ -26,11 +26,10 @@ class SVGFEImageElement : public SVGFEImageElementBase,
 
 protected:
   friend nsresult (::NS_NewSVGFEImageElement(nsIContent **aResult,
-                                             already_AddRefed<nsINodeInfo>&& aNodeInfo));
-  SVGFEImageElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+                                             already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
+  SVGFEImageElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~SVGFEImageElement();
-  virtual JSObject* WrapNode(JSContext *aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
 public:
   virtual bool SubregionIsUnionOfRegions() MOZ_OVERRIDE { return false; }
@@ -52,7 +51,7 @@ public:
   // nsIContent
   NS_IMETHOD_(bool) IsAttributeMapped(const nsIAtom* aAttribute) const MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   virtual nsresult AfterSetAttr(int32_t aNamespaceID, nsIAtom* aName,
                                 const nsAttrValue* aValue, bool aNotify) MOZ_OVERRIDE;
@@ -60,7 +59,7 @@ public:
                               nsIContent* aBindingParent,
                               bool aCompileEventHandlers) MOZ_OVERRIDE;
   virtual void UnbindFromTree(bool aDeep, bool aNullParent) MOZ_OVERRIDE;
-  virtual nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  virtual EventStates IntrinsicState() const MOZ_OVERRIDE;
 
   NS_IMETHODIMP Notify(imgIRequest *aRequest, int32_t aType, const nsIntRect* aData) MOZ_OVERRIDE;
 

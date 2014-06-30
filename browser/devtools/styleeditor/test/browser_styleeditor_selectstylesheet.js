@@ -15,17 +15,10 @@ function test()
 {
   waitForExplicitFinish();
 
-  addTabAndOpenStyleEditor(function(panel) {
+  addTabAndOpenStyleEditors(2, function(panel) {
     gContentWin = gBrowser.selectedTab.linkedBrowser.contentWindow.wrappedJSObject;
     gUI = panel.UI;
-
-    let count = 0;
-    gUI.on("editor-added", function editorAdded(event, editor) {
-      if (++count == 2) {
-        gUI.off("editor-added", editorAdded);
-        gUI.editors[0].getSourceEditor().then(runTests);
-      }
-    })
+    gUI.editors[0].getSourceEditor().then(runTests);
   });
 
   content.location = TESTCASE_URI;
@@ -37,11 +30,16 @@ function runTests()
 
   // Make sure Editor doesn't go into an infinite loop when
   // column isn't passed. See bug 941018.
-  gUI.once("editor-selected", (event, editor) => {
+  gUI.on("editor-selected", function editorSelected(event, editor) {
+    if (editor.styleSheet != gUI.editors[1].styleSheet) {
+      return;
+    }
+    gUI.off("editor-selected", editorSelected);
+
     editor.getSourceEditor().then(() => {
       is(gUI.selectedEditor, gUI.editors[1], "second editor is selected");
       let {line, ch} = gUI.selectedEditor.sourceEditor.getCursor();
-      
+
       is(line, LINE_NO, "correct line selected");
       is(ch, COL_NO, "correct column selected");
 
@@ -49,6 +47,5 @@ function runTests()
       finish();
     });
   });
-
   gUI.selectStyleSheet(gUI.editors[1].styleSheet.href, LINE_NO);
 }

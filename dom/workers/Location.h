@@ -47,6 +47,11 @@ class WorkerLocation MOZ_FINAL : public nsWrapperCache
     SetIsDOMBinding();
   }
 
+  ~WorkerLocation()
+  {
+    MOZ_COUNT_DTOR(WorkerLocation);
+  }
+
 public:
 
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(WorkerLocation)
@@ -56,15 +61,10 @@ public:
   Create(WorkerPrivate::LocationInfo& aInfo);
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const {
     return nullptr;
-  }
-
-  ~WorkerLocation()
-  {
-    MOZ_COUNT_DTOR(WorkerLocation);
   }
 
   void Stringify(nsString& aHref) const

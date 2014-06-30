@@ -165,6 +165,15 @@ let CustomizableUIInternal = {
       panelPlacements.push("switch-to-metro-button");
     }
 
+#ifdef E10S_TESTING_ONLY
+    if (gPalette.has("e10s-button")) {
+      let newWindowIndex = panelPlacements.indexOf("new-window-button");
+      if (newWindowIndex > -1) {
+        panelPlacements.splice(newWindowIndex + 1, 0, "e10s-button");
+      }
+    }
+#endif
+
     let showCharacterEncoding = Services.prefs.getComplexValue(
       "browser.menu.showCharacterEncoding",
       Ci.nsIPrefLocalizedString
@@ -191,6 +200,9 @@ let CustomizableUIInternal = {
         "bookmarks-menu-button",
         "downloads-button",
         "home-button",
+#ifdef MOZ_LOOP
+        "loop-call-button",
+#endif
         "social-share-button",
       ],
       defaultCollapsed: false,
@@ -224,7 +236,6 @@ let CustomizableUIInternal = {
         "tabbrowser-tabs",
         "new-tab-button",
         "alltabs-button",
-        "tabs-closebutton",
       ],
       defaultCollapsed: null,
     }, true);
@@ -243,6 +254,18 @@ let CustomizableUIInternal = {
       defaultPlacements: ["addonbar-closebutton", "status-bar"],
       defaultCollapsed: false,
     }, true);
+  },
+
+  get _builtinToolbars() {
+    return new Set([
+      CustomizableUI.AREA_NAVBAR,
+      CustomizableUI.AREA_BOOKMARKS,
+      CustomizableUI.AREA_TABSTRIP,
+      CustomizableUI.AREA_ADDONBAR,
+#ifndef XP_MACOSX
+      CustomizableUI.AREA_MENUBAR,
+#endif
+    ]);
   },
 
   _defineBuiltInWidgets: function() {
@@ -285,7 +308,12 @@ let CustomizableUIInternal = {
 
     let areaIsKnown = gAreas.has(aName);
     let props = areaIsKnown ? gAreas.get(aName) : new Map();
+    const kImmutableProperties = new Set(["type", "legacy", "overflowable"]);
     for (let key in aProperties) {
+      if (areaIsKnown && kImmutableProperties.has(key) &&
+          props.get(key) != aProperties[key]) {
+        throw new Error("An area cannot change the property for '" + key + "'");
+      }
       //XXXgijs for special items, we need to make sure they have an appropriate ID
       // so we aren't perpetually in a non-default state:
       if (key == "defaultPlacements" && Array.isArray(aProperties[key])) {
@@ -299,7 +327,9 @@ let CustomizableUIInternal = {
       props.set("type", CustomizableUI.TYPE_TOOLBAR);
     }
     if (props.get("type") == CustomizableUI.TYPE_TOOLBAR) {
-      if (!aInternalCaller && props.has("defaultCollapsed")) {
+      // Check aProperties instead of props because this check is only interested
+      // in the passed arguments, not the state of a potentially pre-existing area.
+      if (!aInternalCaller && aProperties["defaultCollapsed"]) {
         throw new Error("defaultCollapsed is only allowed for default toolbars.")
       }
       if (!props.has("defaultCollapsed")) {
@@ -326,7 +356,7 @@ let CustomizableUIInternal = {
     if (!areaIsKnown) {
       gAreas.set(aName, props);
 
-      if (props.get("legacy")) {
+      if (props.get("legacy") && !gPlacements.has(aName)) {
         // Guarantee this area exists in gFuturePlacements, to avoid checking it in
         // various places elsewhere.
         gFuturePlacements.set(aName, new Set());
@@ -374,6 +404,13 @@ let CustomizableUIInternal = {
         gPlacements.set(aName, placements);
       }
       gFuturePlacements.delete(aName);
+      let existingAreaNodes = gBuildAreas.get(aName);
+      if (existingAreaNodes) {
+        for (let areaNode of existingAreaNodes) {
+          this.notifyListeners("onAreaNodeUnregistered", aName, areaNode.customizationTarget,
+                               CustomizableUI.REASON_AREA_UNREGISTERED);
+        }
+      }
       gBuildAreas.delete(aName);
     } finally {
       this.endBatchUpdate(true);
@@ -446,6 +483,7 @@ let CustomizableUIInternal = {
       if (gDirtyAreaCache.has(area)) {
         this.buildArea(area, placements, aToolbar);
       }
+      this.notifyListeners("onAreaNodeRegistered", area, aToolbar.customizationTarget);
       aToolbar.setAttribute("currentset", placements.join(","));
     } finally {
       this.endBatchUpdate();
@@ -457,6 +495,7 @@ let CustomizableUIInternal = {
     let window = document.defaultView;
     let inPrivateWindow = PrivateBrowsingUtils.isWindowPrivate(window);
     let container = aAreaNode.customizationTarget;
+    let areaIsPanel = gAreas.get(aArea).get("type") == CustomizableUI.TYPE_MENU_PANEL;
 
     if (!container) {
       throw new Error("Expected area " + aArea
@@ -481,6 +520,11 @@ let CustomizableUIInternal = {
 
         if (currentNode && currentNode.id == id) {
           currentNode = currentNode.nextSibling;
+          continue;
+        }
+
+        if (this.isSpecialWidget(id) && areaIsPanel) {
+          placementsToRemove.add(id);
           continue;
         }
 
@@ -513,7 +557,7 @@ let CustomizableUIInternal = {
 
         this.ensureButtonContextMenu(node, aAreaNode);
         if (node.localName == "toolbarbutton") {
-          if (aArea == CustomizableUI.AREA_PANEL) {
+          if (areaIsPanel) {
             node.setAttribute("wrap", "true");
           } else {
             node.removeAttribute("wrap");
@@ -687,6 +731,8 @@ let CustomizableUIInternal = {
 
     let placements = gPlacements.get(CustomizableUI.AREA_PANEL);
     this.buildArea(CustomizableUI.AREA_PANEL, placements, aPanelContents);
+    this.notifyListeners("onAreaNodeRegistered", CustomizableUI.AREA_PANEL, aPanelContents);
+
     for (let child of aPanelContents.children) {
       if (child.localName != "toolbarbutton") {
         if (child.localName == "toolbaritem") {
@@ -729,14 +775,15 @@ let CustomizableUIInternal = {
         continue;
       }
 
+      let container = areaNode.customizationTarget;
       let widgetNode = window.document.getElementById(aWidgetId);
-      if (!widgetNode) {
+      if (widgetNode && isOverflowable) {
+        container = areaNode.overflowable.getContainerFor(widgetNode);
+      }
+
+      if (!widgetNode || !container.contains(widgetNode)) {
         INFO("Widget not found, unable to remove");
         continue;
-      }
-      let container = areaNode.customizationTarget;
-      if (isOverflowable) {
-        container = areaNode.overflowable.getContainerFor(widgetNode);
       }
 
       this.notifyListeners("onWidgetBeforeDOMChange", widgetNode, null, container, true);
@@ -810,6 +857,8 @@ let CustomizableUIInternal = {
 
       aWindow.addEventListener("unload", this);
       aWindow.addEventListener("command", this, true);
+
+      this.notifyListeners("onWindowOpened", aWindow);
     }
   },
 
@@ -825,6 +874,8 @@ let CustomizableUIInternal = {
       let areaProperties = gAreas.get(areaId);
       for (let node of areaNodes) {
         if (node.ownerDocument == document) {
+          this.notifyListeners("onAreaNodeUnregistered", areaId, node.customizationTarget,
+                               CustomizableUI.REASON_WINDOW_CLOSED);
           if (areaProperties.has("overflowable")) {
             node.overflowable.uninit();
             node.overflowable = null;
@@ -850,6 +901,8 @@ let CustomizableUIInternal = {
         areaMap.delete(toDelete);
       }
     }
+
+    this.notifyListeners("onWindowClosed", aWindow);
   },
 
   setLocationAttributes: function(aNode, aArea) {
@@ -863,6 +916,8 @@ let CustomizableUIInternal = {
     let anchor = props.get("anchor");
     if (anchor) {
       aNode.setAttribute("cui-anchorid", anchor);
+    } else {
+      aNode.removeAttribute("cui-anchorid");
     }
   },
 
@@ -1201,6 +1256,32 @@ let CustomizableUIInternal = {
     return def;
   },
 
+  addShortcut: function(aShortcutNode, aTargetNode) {
+    if (!aTargetNode)
+      aTargetNode = aShortcutNode;
+    let document = aShortcutNode.ownerDocument;
+
+    // Detect if we've already been here before.
+    if (!aTargetNode || aTargetNode.hasAttribute("shortcut"))
+      return;
+
+    let shortcutId = aShortcutNode.getAttribute("key");
+    let shortcut;
+    if (shortcutId) {
+      shortcut = document.getElementById(shortcutId);
+    } else {
+      let commandId = aShortcutNode.getAttribute("command");
+      if (commandId)
+        shortcut = ShortcutUtils.findShortcut(document.getElementById(commandId));
+    }
+    if (!shortcut) {
+      ERROR("Could not find a keyboard shortcut for '" + aShortcutNode.outerHTML + "'.");
+      return;
+    }
+
+    aTargetNode.setAttribute("shortcut", ShortcutUtils.prettifyShortcut(shortcut));
+  },
+
   handleWidgetCommand: function(aWidget, aNode, aEvent) {
     LOG("handleWidgetCommand");
 
@@ -1309,6 +1390,12 @@ let CustomizableUIInternal = {
         menuitemCloseMenu = (closemenuVal == "single" || closemenuVal == "none") ?
                             closemenuVal : "auto";
       }
+      // Break out of the loop immediately for disabled items, as we need to
+      // keep the menu open in that case.
+      if (target.getAttribute("disabled") == "true") {
+        return true;
+      }
+
       // This isn't in the loop condition because we want to break before
       // changing |target| if any of these conditions are true
       if (inInput || inItem || target == panel) {
@@ -1324,6 +1411,7 @@ let CustomizableUIInternal = {
         target = target.parentNode;
       }
     }
+
     // If the user clicked a menu item...
     if (inMenu) {
       // We care if we're in an input also,
@@ -1484,6 +1572,13 @@ let CustomizableUIInternal = {
       throw new Error("Unknown customization area: " + aArea);
     }
 
+    // Hack: don't want special widgets in the panel (need to check here as well
+    // as in canWidgetMoveToArea because the menu panel is lazy):
+    if (gAreas.get(aArea).get("type") == CustomizableUI.TYPE_MENU_PANEL &&
+        this.isSpecialWidget(aWidgetId)) {
+      return;
+    }
+
     // If this is a lazy area that hasn't been restored yet, we can't yet modify
     // it - would would at least like to add to it. So we keep track of it in
     // gFuturePlacements,  and use that to add it when restoring the area. We
@@ -1590,6 +1685,12 @@ let CustomizableUIInternal = {
       aPosition = placements.length;
     }
 
+    let widget = gPalette.get(aWidgetId);
+    if (widget) {
+      widget.currentPosition = aPosition;
+      widget.currentArea = oldPlacement.area;
+    }
+
     if (aPosition == oldPlacement.position) {
       return;
     }
@@ -1601,11 +1702,6 @@ let CustomizableUIInternal = {
       aPosition--;
     }
     placements.splice(aPosition, 0, aWidgetId);
-
-    let widget = gPalette.get(aWidgetId);
-    if (widget) {
-      widget.currentPosition = aPosition;
-    }
 
     gDirty = true;
     gDirtyAreaCache.add(oldPlacement.area);
@@ -1638,7 +1734,12 @@ let CustomizableUIInternal = {
     }
     try {
       gSavedState = JSON.parse(state);
+      if (typeof gSavedState != "object" || gSavedState === null) {
+        throw "Invalid saved state";
+      }
     } catch(e) {
+      Services.prefs.clearUserPref(kPrefCustomizationState);
+      gSavedState = {};
       LOG("Error loading saved UI customization state, falling back to defaults.");
     }
 
@@ -1652,19 +1753,25 @@ let CustomizableUIInternal = {
   },
 
   restoreStateForArea: function(aArea, aLegacyState) {
-    if (gPlacements.has(aArea)) {
-      // Already restored.
-      return;
-    }
+    let placementsPreexisted = gPlacements.has(aArea);
 
     this.beginBatchUpdate();
     try {
       gRestoring = true;
 
       let restored = false;
-      gPlacements.set(aArea, []);
+      if (placementsPreexisted) {
+        LOG("Restoring " + aArea + " from pre-existing placements");
+        for (let [position, id] in Iterator(gPlacements.get(aArea))) {
+          this.moveWidgetWithinArea(id, position);
+        }
+        gDirty = false;
+        restored = true;
+      } else {
+        gPlacements.set(aArea, []);
+      }
 
-      if (gSavedState && aArea in gSavedState.placements) {
+      if (!restored && gSavedState && aArea in gSavedState.placements) {
         LOG("Restoring " + aArea + " from saved state");
         let placements = gSavedState.placements[aArea];
         for (let id of placements)
@@ -1822,24 +1929,37 @@ let CustomizableUIInternal = {
     this.notifyListeners("onWidgetCreated", widget.id);
 
     if (widget.defaultArea) {
+      let addToDefaultPlacements = false;
       let area = gAreas.get(widget.defaultArea);
-      //XXXgijs this won't have any effect for legacy items. Sort of OK because
-      // consumers can modify currentset? Maybe?
-      if (area.has("defaultPlacements")) {
-        area.get("defaultPlacements").push(widget.id);
-      } else {
-        area.set("defaultPlacements", [widget.id]);
+      if (widget.source == CustomizableUI.SOURCE_BUILTIN) {
+        addToDefaultPlacements = true;
+      } else if (!CustomizableUI.isBuiltinToolbar(widget.defaultArea) &&
+                 widget.defaultArea != CustomizableUI.AREA_PANEL) {
+        addToDefaultPlacements = true;
+      }
+
+      if (addToDefaultPlacements) {
+        if (area.has("defaultPlacements")) {
+          area.get("defaultPlacements").push(widget.id);
+        } else {
+          area.set("defaultPlacements", [widget.id]);
+        }
       }
     }
 
     // Look through previously saved state to see if we're restoring a widget.
     let seenAreas = new Set();
+    let widgetMightNeedAutoAdding = true;
     for (let [area, placements] of gPlacements) {
       seenAreas.add(area);
+      let areaIsRegistered = gAreas.has(area);
       let index = gPlacements.get(area).indexOf(widget.id);
       if (index != -1) {
-        widget.currentArea = area;
-        widget.currentPosition = index;
+        widgetMightNeedAutoAdding = false;
+        if (areaIsRegistered) {
+          widget.currentArea = area;
+          widget.currentPosition = index;
+        }
         break;
       }
     }
@@ -1847,16 +1967,20 @@ let CustomizableUIInternal = {
     // Also look at saved state data directly in areas that haven't yet been
     // restored. Can't rely on this for restored areas, as they may have
     // changed.
-    if (!widget.currentArea && gSavedState) {
+    if (widgetMightNeedAutoAdding && gSavedState) {
       for (let area of Object.keys(gSavedState.placements)) {
         if (seenAreas.has(area)) {
           continue;
         }
 
+        let areaIsRegistered = gAreas.has(area);
         let index = gSavedState.placements[area].indexOf(widget.id);
         if (index != -1) {
-          widget.currentArea = area;
-          widget.currentPosition = index;
+          widgetMightNeedAutoAdding = false;
+          if (areaIsRegistered) {
+            widget.currentArea = area;
+            widget.currentPosition = index;
+          }
           break;
         }
       }
@@ -1868,7 +1992,7 @@ let CustomizableUIInternal = {
     if (widget.currentArea) {
       this.notifyListeners("onWidgetAdded", widget.id, widget.currentArea,
                            widget.currentPosition);
-    } else {
+    } else if (widgetMightNeedAutoAdding) {
       let autoAdd = true;
       try {
         autoAdd = Services.prefs.getBoolPref(kPrefCustomizationAutoAdd);
@@ -2041,6 +2165,13 @@ let CustomizableUIInternal = {
   destroyWidget: function(aWidgetId) {
     let widget = gPalette.get(aWidgetId);
     if (!widget) {
+      gGroupWrapperCache.delete(aWidgetId);
+      for (let [window, ] of gBuildWindows) {
+        let windowCache = gSingleWrapperCache.get(window);
+        if (windowCache) {
+          windowCache.delete(aWidgetId);
+        }
+      }
       return;
     }
 
@@ -2146,15 +2277,15 @@ let CustomizableUIInternal = {
   },
 
   _resetExtraToolbars: function(aFilter = null) {
-    let firstWindow = true; // Only need to persist once
+    let firstWindow = true; // Only need to unregister and persist once
     for (let [win, ] of gBuildWindows) {
       let toolbox = win.gNavToolbox;
       for (let child of toolbox.children) {
         let matchesFilter = !aFilter || aFilter == child.id;
         if (child.hasAttribute("customindex") && matchesFilter) {
+          let toolbarId = "toolbar" + child.getAttribute("customindex");
+          toolbox.toolbarset.removeAttribute(toolbarId);
           if (firstWindow) {
-            let toolbarId = "toolbar" + child.getAttribute("customindex");
-            toolbox.toolbarset.removeAttribute(toolbarId);
             win.document.persist(toolbox.toolbarset.id, toolbarId);
             // We have to unregister it properly to ensure we don't kill
             // XUL widgets which might be in here
@@ -2170,6 +2301,7 @@ let CustomizableUIInternal = {
   _rebuildRegisteredAreas: function() {
     for (let [areaId, areaNodes] of gBuildAreas) {
       let placements = gPlacements.get(areaId);
+      let isFirstChangedToolbar = true;
       for (let areaNode of areaNodes) {
         this.buildArea(areaId, placements, areaNode);
 
@@ -2178,9 +2310,10 @@ let CustomizableUIInternal = {
           let defaultCollapsed = area.get("defaultCollapsed");
           let win = areaNode.ownerDocument.defaultView;
           if (defaultCollapsed !== null) {
-            win.setToolbarVisibility(areaNode, !defaultCollapsed);
+            win.setToolbarVisibility(areaNode, !defaultCollapsed, isFirstChangedToolbar);
           }
         }
+        isFirstChangedToolbar = false;
       }
     }
   },
@@ -2277,10 +2410,16 @@ let CustomizableUIInternal = {
 
   canWidgetMoveToArea: function(aWidgetId, aArea) {
     let placement = this.getPlacementOfWidget(aWidgetId);
-    if (placement && placement.area != aArea &&
-        !this.isWidgetRemovable(aWidgetId)) {
-      return false;
+    if (placement && placement.area != aArea) {
+      // Special widgets can't move to the menu panel.
+      if (this.isSpecialWidget(aWidgetId) && gAreas.has(aArea) &&
+          gAreas.get(aArea).get("type") == CustomizableUI.TYPE_MENU_PANEL) {
+        return false;
+      }
+      // For everything else, just return whether the widget is removable.
+      return this.isWidgetRemovable(aWidgetId);
     }
+
     return true;
   },
 
@@ -2377,7 +2516,19 @@ let CustomizableUIInternal = {
     }
 
     return true;
-  }
+  },
+
+  setToolbarVisibility: function(aToolbarId, aIsVisible) {
+    // We only persist the attribute the first time.
+    let isFirstChangedToolbar = true;
+    for (let window of CustomizableUI.windows) {
+      let toolbar = window.document.getElementById(aToolbarId);
+      if (toolbar) {
+        window.setToolbarVisibility(toolbar, aIsVisible, isFirstChangedToolbar);
+        isFirstChangedToolbar = false;
+      }
+    }
+  },
 };
 Object.freeze(CustomizableUIInternal);
 
@@ -2448,6 +2599,29 @@ this.CustomizableUI = {
    * The (constant) number of columns in the menu panel.
    */
   get PANEL_COLUMN_COUNT() 3,
+
+  /**
+   * Constant indicating the reason the event was fired was a window closing
+   */
+  get REASON_WINDOW_CLOSED() "window-closed",
+  /**
+   * Constant indicating the reason the event was fired was an area being
+   * unregistered separately from window closing mechanics.
+   */
+  get REASON_AREA_UNREGISTERED() "area-unregistered",
+
+
+  /**
+   * An iteratable property of windows managed by CustomizableUI.
+   * Note that this can *only* be used as an iterator. ie:
+   *     for (let window of CustomizableUI.windows) { ... }
+   */
+  windows: {
+    "@@iterator": function*() {
+      for (let [window,] of gBuildWindows)
+        yield window;
+    }
+  },
 
   /**
    * Add a listener object that will get fired for various events regarding
@@ -2532,6 +2706,21 @@ this.CustomizableUI = {
    *   - onWidgetUnderflow(aNode, aContainer)
    *     Fired when a widget's DOM node is *not* overflowing its container, a
    *     toolbar, anymore.
+   *   - onWindowOpened(aWindow)
+   *     Fired when a window has been opened that is managed by CustomizableUI,
+   *     once all of the prerequisite setup has been done.
+   *   - onWindowClosed(aWindow)
+   *     Fired when a window that has been managed by CustomizableUI has been
+   *     closed.
+   *   - onAreaNodeRegistered(aArea, aContainer)
+   *     Fired after an area node is first built when it is registered. This
+   *     is often when the window has opened, but in the case of add-ons,
+   *     could fire when the node has just been registered with CustomizableUI
+   *     after an add-on update or disable/enable sequence.
+   *   - onAreaNodeUnregistered(aArea, aContainer, aReason)
+   *     Fired when an area node is explicitly unregistered by an API caller,
+   *     or by a window closing. The aReason parameter indicates which of
+   *     these is the case.
    */
   addListener: function(aListener) {
     CustomizableUIInternal.addListener(aListener);
@@ -3095,6 +3284,16 @@ this.CustomizableUI = {
   get inDefaultState() {
     return CustomizableUIInternal.inDefaultState;
   },
+
+  /**
+   * Set a toolbar's visibility state in all windows.
+   * @param aToolbarId    the toolbar whose visibility should be adjusted
+   * @param aIsVisible    whether the toolbar should be visible
+   */
+  setToolbarVisibility: function(aToolbarId, aIsVisible) {
+    CustomizableUIInternal.setToolbarVisibility(aToolbarId, aIsVisible);
+  },
+
   /**
    * Get a localized property off a (widget?) object.
    *
@@ -3121,6 +3320,18 @@ this.CustomizableUI = {
   getLocalizedProperty: function(aWidget, aProp, aFormatArgs, aDef) {
     return CustomizableUIInternal.getLocalizedProperty(aWidget, aProp,
       aFormatArgs, aDef);
+  },
+  /**
+   * Utility function to detect, find and set a keyboard shortcut for a menuitem
+   * or (toolbar)button.
+   *
+   * @param aShortcutNode the XUL node where the shortcut will be derived from;
+   * @param aTargetNode   (optional) the XUL node on which the `shortcut`
+   *                      attribute will be set. If NULL, the shortcut will be
+   *                      set on aShortcutNode;
+   */
+  addShortcut: function(aShortcutNode, aTargetNode) {
+    return CustomizableUIInternal.addShortcut(aShortcutNode, aTargetNode);
   },
   /**
    * Given a node, walk up to the first panel in its ancestor chain, and
@@ -3234,10 +3445,18 @@ this.CustomizableUI = {
       node = node.parentNode;
     }
     return place;
-  }
+  },
+
+  /**
+   * Check if a toolbar is builtin or not.
+   * @param aToolbarId the ID of the toolbar you want to check
+   */
+  isBuiltinToolbar: function(aToolbarId) {
+    return CustomizableUIInternal._builtinToolbars.has(aToolbarId);
+  },
 };
 Object.freeze(this.CustomizableUI);
-
+Object.freeze(this.CustomizableUI.windows);
 
 /**
  * All external consumers of widgets are really interacting with these wrappers
@@ -3331,8 +3550,8 @@ function WidgetSingleWrapper(aWidget, aNode) {
     this[prop] = aWidget[prop];
   }
 
-  const nodeProps = ["label", "tooltiptext"];
-  for (let prop of nodeProps) {
+  const kNodeProps = ["label", "tooltiptext"];
+  for (let prop of kNodeProps) {
     let propertyName = prop;
     // Look at the node for these, instead of the widget data, to ensure the
     // wrapper always reflects this live instance.
@@ -3400,7 +3619,7 @@ function XULWidgetGroupWrapper(aWidgetId) {
       instance = aWindow.gNavToolbox.palette.getElementsByAttribute("id", aWidgetId)[0];
     }
 
-    let wrapper = new XULWidgetSingleWrapper(aWidgetId, instance);
+    let wrapper = new XULWidgetSingleWrapper(aWidgetId, instance, aWindow.document);
     wrapperMap.set(aWidgetId, wrapper);
     return wrapper;
   };
@@ -3426,14 +3645,47 @@ function XULWidgetGroupWrapper(aWidgetId) {
  * A XULWidgetSingleWrapper is a wrapper around a single instance of a XUL 
  * widget in a particular window.
  */
-function XULWidgetSingleWrapper(aWidgetId, aNode) {
+function XULWidgetSingleWrapper(aWidgetId, aNode, aDocument) {
   this.isGroup = false;
 
   this.id = aWidgetId;
   this.type = "custom";
   this.provider = CustomizableUI.PROVIDER_XUL;
 
-  this.node = aNode;
+  let weakDoc = Cu.getWeakReference(aDocument);
+  // If we keep a strong ref, the weak ref will never die, so null it out:
+  aDocument = null;
+
+  this.__defineGetter__("node", function() {
+    // If we've set this to null (further down), we're sure there's nothing to
+    // be gotten here, so bail out early:
+    if (!weakDoc) {
+      return null;
+    }
+    if (aNode) {
+      // Return the last known node if it's still in the DOM...
+      if (aNode.ownerDocument.contains(aNode)) {
+        return aNode;
+      }
+      // ... or the toolbox
+      let toolbox = aNode.ownerDocument.defaultView.gNavToolbox;
+      if (toolbox && toolbox.palette && aNode.parentNode == toolbox.palette) {
+        return aNode;
+      }
+      // If it isn't, clear the cached value and fall through to the "slow" case:
+      aNode = null;
+    }
+
+    let doc = weakDoc.get();
+    if (doc) {
+      // Store locally so we can cache the result:
+      aNode = CustomizableUIInternal.findWidgetInWindow(aWidgetId, doc.defaultView);
+      return aNode;
+    }
+    // The weakref to the document is dead, we're done here forever more:
+    weakDoc = null;
+    return null;
+  });
 
   this.__defineGetter__("anchor", function() {
     let anchorId;
@@ -3442,22 +3694,28 @@ function XULWidgetSingleWrapper(aWidgetId, aNode) {
     if (placement) {
       anchorId = gAreas.get(placement.area).get("anchor");
     }
-    if (!anchorId) {
-      anchorId = aNode.getAttribute("cui-anchorid");
+
+    let node = this.node;
+    if (!anchorId && node) {
+      anchorId = node.getAttribute("cui-anchorid");
     }
 
-    return anchorId ? aNode.ownerDocument.getElementById(anchorId)
-                    : aNode;
+    return (anchorId && node) ? node.ownerDocument.getElementById(anchorId) : node;
   });
 
   this.__defineGetter__("overflowed", function() {
-    return aNode.getAttribute("overflowedItem") == "true";
+    let node = this.node;
+    if (!node) {
+      return false;
+    }
+    return node.getAttribute("overflowedItem") == "true";
   });
 
   Object.freeze(this);
 }
 
 const LAZY_RESIZE_INTERVAL_MS = 200;
+const OVERFLOW_PANEL_HIDE_DELAY_MS = 500
 
 function OverflowableToolbar(aToolbarNode) {
   this._toolbar = aToolbarNode;
@@ -3501,6 +3759,8 @@ OverflowableToolbar.prototype = {
     let chevronId = this._toolbar.getAttribute("overflowbutton");
     this._chevron = doc.getElementById(chevronId);
     this._chevron.addEventListener("command", this);
+    this._chevron.addEventListener("dragover", this);
+    this._chevron.addEventListener("dragend", this);
 
     let panelId = this._toolbar.getAttribute("overflowpanel");
     this._panel = doc.getElementById(panelId);
@@ -3535,6 +3795,8 @@ OverflowableToolbar.prototype = {
     window.gNavToolbox.removeEventListener("customizationstarting", this);
     window.gNavToolbox.removeEventListener("aftercustomization", this);
     this._chevron.removeEventListener("command", this);
+    this._chevron.removeEventListener("dragover", this);
+    this._chevron.removeEventListener("dragend", this);
     this._panel.removeEventListener("popuphiding", this);
     CustomizableUI.removeListener(this);
     CustomizableUIInternal.removePanelCloseListeners(this._panel);
@@ -3542,8 +3804,8 @@ OverflowableToolbar.prototype = {
 
   handleEvent: function(aEvent) {
     switch(aEvent.type) {
-      case "resize":
-        this._onResize(aEvent);
+      case "aftercustomization":
+        this._enable();
         break;
       case "command":
         if (aEvent.target == this._chevron) {
@@ -3552,15 +3814,20 @@ OverflowableToolbar.prototype = {
           this._panel.hidePopup();
         }
         break;
-      case "popuphiding":
-        this._onPanelHiding(aEvent);
-        break;
       case "customizationstarting":
         this._disable();
         break;
-      case "aftercustomization":
-        this._enable();
+      case "dragover":
+        this._showWithTimeout();
         break;
+      case "dragend":
+        this._panel.hidePopup();
+        break;
+      case "popuphiding":
+        this._onPanelHiding(aEvent);
+        break;
+      case "resize":
+        this._onResize(aEvent);
     }
   },
 
@@ -3578,8 +3845,11 @@ OverflowableToolbar.prototype = {
     this._panel.openPopup(anchor || this._chevron);
     this._chevron.open = true;
 
-    this._panel.addEventListener("popupshown", function onPopupShown() {
+    let overflowableToolbarInstance = this;
+    this._panel.addEventListener("popupshown", function onPopupShown(aEvent) {
       this.removeEventListener("popupshown", onPopupShown);
+      this.addEventListener("dragover", overflowableToolbarInstance);
+      this.addEventListener("dragend", overflowableToolbarInstance);
       deferred.resolve();
     });
 
@@ -3597,6 +3867,8 @@ OverflowableToolbar.prototype = {
 
   _onPanelHiding: function(aEvent) {
     this._chevron.open = false;
+    this._panel.removeEventListener("dragover", this);
+    this._panel.removeEventListener("dragend", this);
     let doc = aEvent.target.ownerDocument;
     let contextMenu = doc.getElementById(this._panel.getAttribute("context"));
     gELS.removeSystemEventListener(contextMenu, 'command', this, true);
@@ -3830,6 +4102,21 @@ OverflowableToolbar.prototype = {
       return this._list;
     }
     return this._target;
+  },
+
+  _hideTimeoutId: null,
+  _showWithTimeout: function() {
+    this.show();
+    let window = this._toolbar.ownerDocument.defaultView;
+    if (this._hideTimeoutId) {
+      window.clearTimeout(this._hideTimeoutId);
+      this._hideTimeoutId = null;
+    }
+    this._hideTimeoutId = window.setTimeout(() => {
+      if (!this._panel.firstChild.mozMatchesSelector(":hover")) {
+        this._panel.hidePopup();
+      }
+    }, OVERFLOW_PANEL_HIDE_DELAY_MS);
   },
 };
 

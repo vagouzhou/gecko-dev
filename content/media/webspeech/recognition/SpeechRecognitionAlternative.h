@@ -25,15 +25,13 @@ class SpeechRecognitionAlternative MOZ_FINAL : public nsISupports,
 {
 public:
   SpeechRecognitionAlternative(SpeechRecognition* aParent);
-  ~SpeechRecognitionAlternative();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(SpeechRecognitionAlternative)
 
   nsISupports* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   void GetTranscript(nsString& aRetVal) const;
 
@@ -42,6 +40,8 @@ public:
   nsString mTranscript;
   float mConfidence;
 private:
+  ~SpeechRecognitionAlternative();
+
   nsRefPtr<SpeechRecognition> mParent;
 };
 

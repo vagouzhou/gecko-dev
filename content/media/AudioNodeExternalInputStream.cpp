@@ -7,6 +7,7 @@
 #include "AudioNodeExternalInputStream.h"
 #include "AudioChannelFormat.h"
 #include "speex/speex_resampler.h"
+#include "mozilla/dom/MediaStreamAudioSourceNode.h"
 
 using namespace mozilla::dom;
 
@@ -31,14 +32,14 @@ AudioNodeExternalInputStream::TrackMapEntry::~TrackMapEntry()
   }
 }
 
-uint32_t
+size_t
 AudioNodeExternalInputStream::GetTrackMapEntry(const StreamBuffer::Track& aTrack,
                                                GraphTime aFrom)
 {
   AudioSegment* segment = aTrack.Get<AudioSegment>();
 
   // Check the map for an existing entry corresponding to the input track.
-  for (uint32_t i = 0; i < mTrackMap.Length(); ++i) {
+  for (size_t i = 0; i < mTrackMap.Length(); ++i) {
     TrackMapEntry* map = &mTrackMap[i];
     if (map->mTrackID == aTrack.GetID()) {
       return i;
@@ -58,7 +59,8 @@ AudioNodeExternalInputStream::GetTrackMapEntry(const StreamBuffer::Track& aTrack
   // Create a speex resampler with the same sample rate and number of channels
   // as the track.
   SpeexResamplerState* resampler = nullptr;
-  uint32_t channelCount = (*ci).mChannelData.Length();
+  size_t channelCount = std::min((*ci).mChannelData.Length(),
+                                   WebAudioUtils::MaxChannelCount);
   if (aTrack.GetRate() != mSampleRate) {
     resampler = speex_resampler_init(channelCount,
       aTrack.GetRate(), mSampleRate, SPEEX_RESAMPLER_QUALITY_DEFAULT, nullptr);
@@ -105,15 +107,6 @@ ResampleChannelBuffer(SpeexResamplerState* aResampler, uint32_t aChannel,
     aOutput->SetLength(prevLength + out);
   }
 }
-
-class SharedChannelArrayBuffer : public ThreadSharedObject {
-public:
-  SharedChannelArrayBuffer(nsTArray<nsTArray<float> >* aBuffers)
-  {
-    mBuffers.SwapElements(*aBuffers);
-  }
-  nsTArray<nsTArray<float> > mBuffers;
-};
 
 void
 AudioNodeExternalInputStream::TrackMapEntry::ResampleChannels(const nsTArray<const void*>& aBuffers,
@@ -177,7 +170,7 @@ AudioNodeExternalInputStream::TrackMapEntry::ResampleChannels(const nsTArray<con
   }
 
   uint32_t length = resampledBuffers[0].Length();
-  nsRefPtr<ThreadSharedObject> buf = new SharedChannelArrayBuffer(&resampledBuffers);
+  nsRefPtr<ThreadSharedObject> buf = new SharedChannelArrayBuffer<float>(&resampledBuffers);
   mResampledData.AppendFrames(buf.forget(), bufferPtrs, length);
 }
 
@@ -332,7 +325,7 @@ AudioNodeExternalInputStream::ProcessInput(GraphTime aFrom, GraphTime aTo,
 
   // GC stuff can result in our input stream being destroyed before this stream.
   // Handle that.
-  if (mInputs.IsEmpty()) {
+  if (!IsEnabled() || mInputs.IsEmpty()) {
     mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
     AdvanceOutputSegment();
     return;
@@ -348,7 +341,7 @@ AudioNodeExternalInputStream::ProcessInput(GraphTime aFrom, GraphTime aTo,
        !tracks.IsEnded(); tracks.Next()) {
     const StreamBuffer::Track& inputTrack = *tracks;
     // Create a TrackMapEntry if necessary.
-    uint32_t trackMapIndex = GetTrackMapEntry(inputTrack, aFrom);
+    size_t trackMapIndex = GetTrackMapEntry(inputTrack, aFrom);
     // Maybe there's nothing in this track yet. If so, ignore it. (While the
     // track is only playing silence, we may not be able to determine the
     // correct number of channels to start resampling.)
@@ -412,7 +405,7 @@ AudioNodeExternalInputStream::ProcessInput(GraphTime aFrom, GraphTime aTo,
                               std::min(inputTrackEndPoint, inputEndTicks));
         }
         // Pad if we're looking past the end of the track
-        segment.AppendNullData(std::max<TrackTicks>(0, inputEndTicks - inputTrackEndPoint));
+        segment.AppendNullData(ticks - segment.GetDuration());
       }
     }
 
@@ -436,25 +429,34 @@ AudioNodeExternalInputStream::ProcessInput(GraphTime aFrom, GraphTime aTo,
     }
   }
 
-  uint32_t outputChannels = ComputeFinalOuputChannelCount(inputChannels);
-
-  if (outputChannels) {
-    AllocateAudioBlock(outputChannels, &mLastChunks[0]);
+  uint32_t accumulateIndex = 0;
+  if (inputChannels) {
     nsAutoTArray<float,GUESS_AUDIO_CHANNELS*WEBAUDIO_BLOCK_SIZE> downmixBuffer;
     for (uint32_t i = 0; i < audioSegments.Length(); ++i) {
       AudioChunk tmpChunk;
       ConvertSegmentToAudioBlock(&audioSegments[i], &tmpChunk);
       if (!tmpChunk.IsNull()) {
-        AccumulateInputChunk(i, tmpChunk, &mLastChunks[0], &downmixBuffer);
+        if (accumulateIndex == 0) {
+          AllocateAudioBlock(inputChannels, &mLastChunks[0]);
+        }
+        AccumulateInputChunk(accumulateIndex, tmpChunk, &mLastChunks[0], &downmixBuffer);
+        accumulateIndex++;
       }
     }
-  } else {
+  }
+  if (accumulateIndex == 0) {
     mLastChunks[0].SetNull(WEBAUDIO_BLOCK_SIZE);
   }
   mCurrentOutputPosition += WEBAUDIO_BLOCK_SIZE;
 
   // Using AudioNodeStream's AdvanceOutputSegment to push the media stream graph along with null data.
   AdvanceOutputSegment();
+}
+
+bool
+AudioNodeExternalInputStream::IsEnabled()
+{
+  return ((MediaStreamAudioSourceNodeEngine*)Engine())->IsEnabled();
 }
 
 }

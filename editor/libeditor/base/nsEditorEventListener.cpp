@@ -301,7 +301,7 @@ nsEditorEventListener::GetPresShell()
  *  nsISupports implementation
  */
 
-NS_IMPL_ISUPPORTS1(nsEditorEventListener, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsEditorEventListener, nsIDOMEventListener)
 
 /**
  *  nsIDOMEventListener implementation
@@ -731,6 +731,10 @@ nsEditorEventListener::CleanupDragDropCaret()
     nsCOMPtr<nsIPresShell> presShell = GetPresShell();
     if (presShell)
     {
+      nsCOMPtr<nsISelectionController> selCon(do_QueryInterface(presShell));
+      if (selCon) {
+        selCon->SetCaretEnabled(false);
+      }
       presShell->RestoreCaret();
     }
 

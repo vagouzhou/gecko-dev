@@ -1,6 +1,5 @@
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
 
 public class StringHelper {
     // Note: DEFAULT_BOOKMARKS_TITLES.length == DEFAULT_BOOKMARKS_URLS.length
@@ -77,6 +76,7 @@ public class StringHelper {
     public static final String ROBOCOP_TEXT_PAGE_URL = "/robocop/robocop_text_page.html";
     public static final String ROBOCOP_ADOBE_FLASH_URL = "/robocop/robocop_adobe_flash.html";
     public static final String ROBOCOP_INPUT_URL = "/robocop/robocop_input.html";
+    public static final String ROBOCOP_JS_HARNESS_URL = "/robocop/robocop_javascript.html";
 
     // Robocop page titles
     public static final String ROBOCOP_BIG_LINK_TITLE = "Big Link";
@@ -92,6 +92,7 @@ public class StringHelper {
     public static final String ROBOCOP_SEARCH_TITLE = "Robocop Search Engine";
     public static final String ROBOCOP_TEXT_PAGE_TITLE = "Robocop Text Page";
     public static final String ROBOCOP_INPUT_TITLE = "Robocop Input";
+    public static final String ROBOCOP_SELECTION_HANDLER_TITLE = "Automated Text Selection tests for Mobile";
 
     // Settings menu strings
     // Section labels - ordered as found in the settings menu
@@ -148,6 +149,8 @@ public class StringHelper {
     public static final String TABS_FROM_LAST_TIME_LABEL = "Open all tabs from last time";
 
     // Desktop default bookmarks folders
+    public static final String BOOKMARKS_UP_TO = "Up to %s";
+    public static final String BOOKMARKS_ROOT_LABEL = "Bookmarks";
     public static final String DESKTOP_FOLDER_LABEL = "Desktop Bookmarks";
     public static final String TOOLBAR_FOLDER_LABEL = "Bookmarks Toolbar";
     public static final String BOOKMARKS_MENU_FOLDER_LABEL = "Bookmarks Menu";

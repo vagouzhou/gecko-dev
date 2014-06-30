@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80 filetype=javascript: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -78,14 +78,6 @@ XPCOMUtils.defineLazyGetter(this, "gParentalControlsService", function() {
 XPCOMUtils.defineLazyServiceGetter(this, "gApplicationReputationService",
            "@mozilla.org/downloads/application-reputation-service;1",
            Ci.nsIApplicationReputationService);
-
-/**
- * ArrayBufferView representing the bytes to be written to the "Zone.Identifier"
- * Alternate Data Stream to mark a file as coming from the Internet zone.
- */
-XPCOMUtils.defineLazyGetter(this, "gInternetZoneIdentifier", function() {
-  return new TextEncoder().encode("[ZoneTransfer]\r\nZoneId=3\r\n");
-});
 
 XPCOMUtils.defineLazyServiceGetter(this, "volumeService",
                                    "@mozilla.org/telephony/volume-service;1",
@@ -284,10 +276,7 @@ this.DownloadIntegration = {
       // Now get the path for this storage area.
       if (preferredStorageName) {
         let volume = volumeService.getVolumeByName(preferredStorageName);
-        if (volume &&
-            volume.isMediaPresent &&
-            !volume.isMountLocked &&
-            !volume.isSharing) {
+        if (volume && volume.state === Ci.nsIVolume.STATE_MOUNTED){
           directoryPath = OS.Path.join(volume.mountPoint, "downloads");
           yield OS.File.makeDir(directoryPath, { ignoreExisting: true });
         }
@@ -511,11 +500,13 @@ this.DownloadIntegration = {
     }
     let hash;
     let sigInfo;
+    let channelRedirects;
     try {
       hash = aDownload.saver.getSha256Hash();
       sigInfo = aDownload.saver.getSignatureInfo();
+      channelRedirects = aDownload.saver.getRedirects();
     } catch (ex) {
-      // Bail if DownloadSaver doesn't have a hash.
+      // Bail if DownloadSaver doesn't have a hash or signature info.
       return Promise.resolve(false);
     }
     if (!hash || !sigInfo) {
@@ -531,7 +522,8 @@ this.DownloadIntegration = {
       referrerURI: aReferrer,
       fileSize: aDownload.currentBytes,
       sha256Hash: hash,
-      signatureInfo: sigInfo },
+      signatureInfo: sigInfo,
+      redirects: channelRedirects },
       function onComplete(aShouldBlock, aRv) {
         deferred.resolve(aShouldBlock);
       });
@@ -586,13 +578,25 @@ this.DownloadIntegration = {
       // The stream created in this way is forward-compatible with all the
       // current and future versions of Windows.
       if (this._shouldSaveZoneInformation()) {
+        let zone;
         try {
-          let streamPath = aDownload.target.path + ":Zone.Identifier";
-          let stream = yield OS.File.open(streamPath, { create: true });
-          try {
-            yield stream.write(gInternetZoneIdentifier);
-          } finally {
-            yield stream.close();
+          zone = gDownloadPlatform.mapUrlToZone(aDownload.source.url);
+        } catch (e) {
+          // Default to Internet Zone if mapUrlToZone failed for
+          // whatever reason.
+          zone = Ci.mozIDownloadPlatform.ZONE_INTERNET;
+        }
+        try {
+          // Don't write zone IDs for Local, Intranet, or Trusted sites
+          // to match Windows behavior.
+          if (zone >= Ci.mozIDownloadPlatform.ZONE_INTERNET) {
+            let streamPath = aDownload.target.path + ":Zone.Identifier";
+            let stream = yield OS.File.open(streamPath, { create: true });
+            try {
+              yield stream.write(new TextEncoder().encode("[ZoneTransfer]\r\nZoneId=" + zone + "\r\n"));
+            } finally {
+              yield stream.close();
+            }
           }
         } catch (ex) {
           // If writing to the stream fails, we ignore the error and continue.
@@ -606,6 +610,17 @@ this.DownloadIntegration = {
         }
       }
 #endif
+
+      // Now that the file is completely downloaded, mark it
+      // accessible by other users on this system, if the user's
+      // global preferences so indicate.  (On Unix, this applies the
+      // umask.  On Windows, currently does nothing.)
+      // Errors should be reported, but are not fatal.
+      try {
+        yield OS.File.setPermissions(aDownload.target.path);
+      } catch (ex) {
+        Cu.reportError(ex);
+      }
 
       gDownloadPlatform.downloadDone(NetUtil.newURI(aDownload.source.url),
                                      new FileUtils.File(aDownload.target.path),
@@ -791,7 +806,13 @@ this.DownloadIntegration = {
 
     if (this.dontOpenFileAndFolder) {
       deferred.then((value) => { this._deferTestShowDir.resolve("success"); },
-                    (error) => { this._deferTestShowDir.reject(error); });
+                    (error) => {
+                      // Ensure that _deferTestShowDir has at least one consumer
+                      // for the error, otherwise the error will be reported as
+                      // uncaught.
+                      this._deferTestShowDir.promise.then(null, function() {});
+                      this._deferTestShowDir.reject(error);
+                    });
     }
 
     return deferred;

@@ -33,9 +33,6 @@
     <!-- Search Engine Row height -->
     <dimen name="search_row_height">48dp</dimen>
 
-    <!-- Max width of arrow popups on tablets -->
-    <dimen name="arrow_popup_width">400dp</dimen>
-
     <!-- Padding at the top of the site identity popup, when no identity data is available. -->
     <dimen name="identity_padding_top">5dp</dimen>
 
@@ -48,12 +45,12 @@
     <dimen name="menu_item_icon">21dp</dimen>
     <dimen name="menu_item_textsize">16sp</dimen>
     <dimen name="menu_item_state_icon">18dp</dimen>
-    <dimen name="menu_item_row_height">44dp</dimen>
+    <!-- This is chosen to match Android's listPreferredItemHeight.
+         TODO: We should inherit these from the system.
+         http://androidxref.com/4.2.2_r1/xref/frameworks/base/core/res/res/values/themes.xml#123 -->
+    <dimen name="menu_item_row_height">64dip</dimen>
     <dimen name="menu_item_row_width">240dp</dimen>
     <dimen name="menu_item_more_offset">5dp</dimen>
-    <dimen name="menu_popup_arrow_offset">8dp</dimen>
-    <dimen name="menu_popup_arrow_margin">5dip</dimen>
-    <dimen name="menu_popup_arrow_width">40dip</dimen>
     <dimen name="menu_popup_offset">12dp</dimen>
     <dimen name="menu_popup_width">256dp</dimen>
     <dimen name="nav_button_border_width">0.75dp</dimen>
@@ -63,7 +60,6 @@
     <dimen name="prompt_service_inputs_padding">16dp</dimen>
     <dimen name="prompt_service_left_right_text_with_icon_padding">10dp</dimen>
     <dimen name="prompt_service_top_bottom_text_with_icon_padding">8dp</dimen>
-    <dimen name="prompt_service_min_list_item_height">48dp</dimen>
     <dimen name="remote_tab_child_row_height">64dp</dimen>
     <dimen name="remote_tab_group_row_height">26dp</dimen>
     <dimen name="searchpreferences_icon_size">32dp</dimen>
@@ -84,14 +80,7 @@
     <dimen name="validation_message_margin_top">6dp</dimen>
     <dimen name="forward_default_offset">-13dip</dimen>
     <dimen name="url_bar_offset_left">32dp</dimen>
-    <dimen name="toast_button_padding">8dp</dimen>
     <dimen name="history_tab_indicator_height">50dp</dimen>
-
-    <!-- We need to maintain height for the tab widget on History Page
-         since android does not add footer/header divider height to its
-         calculation for wrap_content in LinearLayout.
-         50dp * 2 Views + 30dp padding + 4dp dividers-->
-    <dimen name="history_tab_widget_height">134dp</dimen>
 
     <!-- PageActionButtons dimensions -->
     <dimen name="page_action_button_width">32dp</dimen>
@@ -105,4 +94,15 @@
 
     <!-- PanelGridView dimensions -->
     <dimen name="panel_grid_view_column_width">150dp</dimen>
+
+    <!-- PanelItemView dimensions -->
+    <dimen name="panel_article_item_height">95dp</dimen>
+
+    <!-- Button toast dimenstions. -->
+    <dimen name="toast_button_corner_radius">2dp</dimen>
+
+    <!-- ArrowPopup dimensions. -->
+    <dimen name="arrow_popup_arrow_width">40dip</dimen>
+    <dimen name="arrow_popup_arrow_height">12dip</dimen>
+    <dimen name="arrow_popup_arrow_offset">8dp</dimen>
 </resources>

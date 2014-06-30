@@ -12,11 +12,13 @@
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/Attributes.h"         // for MOZ_OVERRIDE
 #include "mozilla/RefPtr.h"             // for RefPtr, TemporaryRef
+#include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/Point.h"          // for IntSize
 #include "mozilla/gfx/Rect.h"           // for Rect
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat
 #include "mozilla/layers/CompositorTypes.h"
 #include "mozilla/layers/LayersTypes.h"  // for LayersBackend, etc
+#include "mozilla/RefPtr.h"
 #include "nsAString.h"
 #include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
@@ -27,7 +29,6 @@
 #include "nscore.h"                     // for nsAString, etc
 #include "LayerTreeInvalidation.h"
 
-class gfxASurface;
 class gfxContext;
 struct nsIntPoint;
 struct nsIntSize;
@@ -53,7 +54,7 @@ class ColorLayerComposite;
 class CompositableHost;
 class Compositor;
 class ContainerLayerComposite;
-class EffectChain;
+struct EffectChain;
 class ImageLayer;
 class ImageLayerComposite;
 class LayerComposite;
@@ -66,6 +67,10 @@ struct FPSState;
 
 class LayerManagerComposite : public LayerManager
 {
+  typedef mozilla::gfx::DrawTarget DrawTarget;
+  typedef mozilla::gfx::IntSize IntSize;
+  typedef mozilla::gfx::SurfaceFormat SurfaceFormat;
+
 public:
   LayerManagerComposite(Compositor* aCompositor);
   ~LayerManagerComposite();
@@ -106,7 +111,7 @@ public:
   {
     MOZ_CRASH("Use BeginTransactionWithDrawTarget");
   }
-  void BeginTransactionWithDrawTarget(gfx::DrawTarget* aTarget);
+  void BeginTransactionWithDrawTarget(gfx::DrawTarget* aTarget, const nsIntRect& aRect);
 
   virtual bool EndEmptyTransaction(EndTransactionFlags aFlags = END_DEFAULT) MOZ_OVERRIDE;
   virtual void EndTransaction(DrawThebesLayerCallback aCallback,
@@ -147,8 +152,8 @@ public:
     MOZ_CRASH("Shouldn't be called for composited layer manager");
   }
 
-  virtual already_AddRefed<gfxASurface>
-    CreateOptimalMaskSurface(const gfx::IntSize &aSize) MOZ_OVERRIDE;
+  virtual TemporaryRef<DrawTarget>
+    CreateOptimalMaskDrawTarget(const IntSize &aSize) MOZ_OVERRIDE;
 
   virtual const char* Name() const MOZ_OVERRIDE { return ""; }
 
@@ -216,8 +221,6 @@ public:
     return mCompositor;
   }
 
-  bool PlatformDestroySharedSurface(SurfaceDescriptor* aSurface);
-
   /**
    * LayerManagerComposite provides sophisticated debug overlays
    * that can request a next frame.
@@ -268,6 +271,7 @@ private:
    * Context target, nullptr when drawing directly to our swap chain.
    */
   RefPtr<gfx::DrawTarget> mTarget;
+  nsIntRect mTargetBounds;
 
   gfx::Matrix mWorldMatrix;
   nsIntRegion mInvalidRegion;
@@ -278,6 +282,7 @@ private:
   bool mDebugOverlayWantsNextFrame;
 
   RefPtr<TextRenderer> mTextRenderer;
+  bool mGeometryChanged;
 };
 
 /**
@@ -333,6 +338,8 @@ public:
 
 
   virtual void DestroyFrontBuffer() { }
+
+  void AddBlendModeEffect(EffectChain& aEffectChain);
 
   /**
    * The following methods are

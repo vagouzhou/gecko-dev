@@ -1,4 +1,4 @@
-/* -*- Mode: Javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -7,8 +7,6 @@
 
 function test() {
   let inspector, toolbox;
-
-  waitForExplicitFinish();
 
   gBrowser.selectedTab = gBrowser.addTab();
   gBrowser.selectedBrowser.addEventListener("load", function onload() {
@@ -21,7 +19,10 @@ function test() {
     }, content);
   }, true);
 
-  content.location = "data:text/html,<p>p</p>";
+  // Reload should reselect the currently selected markup view element.
+  // This should work even when an element whose selector needs escaping
+  // is selected (bug 100228).
+  content.location = "data:text/html,<p id='1'>p</p>";
 
   function startInspectorTests(aToolbox)
   {

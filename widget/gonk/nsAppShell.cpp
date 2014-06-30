@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <utils/BitSet.h>
 
 #include "base/basictypes.h"
 #include "GonkPermission.h"
@@ -67,6 +68,7 @@
 #include "ipc/Nuwa.h"
 #endif
 
+#include "mozilla/Preferences.h"
 #include "GeckoProfiler.h"
 
 // Defines kKeyMapping and GetKeyNameIndex()
@@ -99,7 +101,7 @@ static int32_t sMicrophoneState;
 // Amount of time in MS before an input is considered expired.
 static const uint64_t kInputExpirationThresholdMs = 1000;
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsAppShell, nsBaseAppShell, nsIObserver)
+NS_IMPL_ISUPPORTS_INHERITED(nsAppShell, nsBaseAppShell, nsIObserver)
 
 static uint64_t
 nanosecsToMillisecs(nsecs_t nsecs)
@@ -228,6 +230,29 @@ addDOMTouch(UserInputData& data, WidgetTouchEvent& event, int i)
     );
 }
 
+static void
+printUniformityInfo(UserInputData& aData)
+{
+    char* touchAction;
+    const ::Touch& touch = aData.motion.touches[0];
+    int32_t action = aData.action & AMOTION_EVENT_ACTION_MASK;
+    switch (action) {
+    case AMOTION_EVENT_ACTION_DOWN:
+         touchAction = "Touch_Event_Down";
+         break;
+    case AMOTION_EVENT_ACTION_MOVE:
+         touchAction = "Touch_Event_Move";
+          break;
+    case AMOTION_EVENT_ACTION_UP:
+         touchAction = "Touch_Event_Up";
+         break;
+    default :
+         return;
+    }
+    LOG("UniformityInfo %s %llu %f %f", touchAction, systemTime(SYSTEM_TIME_MONOTONIC),
+        touch.coords.getX(),  touch.coords.getY() );
+}
+
 static nsEventStatus
 sendTouchEvent(UserInputData& data, bool* captured)
 {
@@ -288,6 +313,7 @@ private:
 
     uint32_t mDOMKeyCode;
     KeyNameIndex mDOMKeyNameIndex;
+    CodeNameIndex mDOMCodeNameIndex;
     char16_t mDOMPrintableKeyValue;
 
     bool IsKeyPress() const
@@ -329,6 +355,7 @@ KeyEventDispatcher::KeyEventDispatcher(const UserInputData& aData,
     mDOMKeyCode = (mData.key.keyCode < (ssize_t)ArrayLength(kKeyMapping)) ?
         kKeyMapping[mData.key.keyCode] : 0;
     mDOMKeyNameIndex = GetKeyNameIndex(mData.key.keyCode);
+    mDOMCodeNameIndex = GetCodeNameIndex(mData.key.scanCode);
 
     if (!mKeyCharMap.get()) {
         return;
@@ -379,6 +406,7 @@ KeyEventDispatcher::DispatchKeyEventInternal(uint32_t aEventMessage)
     if (mDOMPrintableKeyValue) {
         event.mKeyValue = mDOMPrintableKeyValue;
     }
+    event.mCodeNameIndex = mDOMCodeNameIndex;
     event.modifiers = mData.DOMModifiers();
     event.location = nsIDOMKeyEvent::DOM_KEY_LOCATION_MOBILE;
     event.time = mData.timeMs;
@@ -446,7 +474,7 @@ updateHeadphoneSwitch()
         break;
     case AKEY_STATE_DOWN:
         event.status() = sMicrophoneState == AKEY_STATE_DOWN ?
-            hal::SWITCH_STATE_HEADPHONE : hal::SWITCH_STATE_HEADSET;
+            hal::SWITCH_STATE_HEADSET : hal::SWITCH_STATE_HEADPHONE;
         break;
     default:
         return;
@@ -572,7 +600,9 @@ public:
         , mKeyDownCount(0)
         , mTouchEventsFiltered(false)
         , mKeyEventsFiltered(false)
-    {}
+    {
+      mEnabledUniformityInfo = Preferences::GetBool("layers.uniformity-info", false);
+    }
 
     virtual void dump(String8& dump);
 
@@ -621,6 +651,8 @@ private:
     int mKeyDownCount;
     bool mTouchEventsFiltered;
     bool mKeyEventsFiltered;
+    BitSet32 mTouchDown;
+    bool mEnabledUniformityInfo;
 };
 
 // GeckoInputReaderPolicy
@@ -698,10 +730,15 @@ GeckoInputDispatcher::dispatchOnce()
         }
 
         int32_t action = data.action & AMOTION_EVENT_ACTION_MASK;
+        int32_t index = data.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK;
+        index >>= AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
         switch (action) {
         case AMOTION_EVENT_ACTION_DOWN:
         case AMOTION_EVENT_ACTION_POINTER_DOWN:
-            mTouchDownCount++;
+            if (!mTouchDown.hasBit(index)) {
+                mTouchDown.markBit(index);
+                mTouchDownCount++;
+            }
             break;
         case AMOTION_EVENT_ACTION_MOVE:
         case AMOTION_EVENT_ACTION_HOVER_MOVE:
@@ -711,7 +748,10 @@ GeckoInputDispatcher::dispatchOnce()
         case AMOTION_EVENT_ACTION_POINTER_UP:
         case AMOTION_EVENT_ACTION_OUTSIDE:
         case AMOTION_EVENT_ACTION_CANCEL:
-            mTouchDownCount--;
+            if (mTouchDown.hasBit(index)) {
+                mTouchDown.clearBit(index);
+                mTouchDownCount--;
+            }
             break;
         default:
             break;
@@ -725,6 +765,9 @@ GeckoInputDispatcher::dispatchOnce()
         if (action != AMOTION_EVENT_ACTION_HOVER_MOVE) {
             bool captured;
             status = sendTouchEvent(data, &captured);
+            if (mEnabledUniformityInfo) {
+                printUniformityInfo(data);
+            }
             if (captured) {
                 return;
             }
@@ -956,6 +999,7 @@ nsAppShell::Init()
     nsCOMPtr<nsIObserverService> obsServ = GetObserverService();
     if (obsServ) {
         obsServ->AddObserver(this, "browser-ui-startup-complete", false);
+        obsServ->AddObserver(this, "network-connection-state-changed", false);
     }
 
 #ifdef MOZ_NUWA_PROCESS
@@ -973,19 +1017,24 @@ nsAppShell::Observe(nsISupports* aSubject,
                     const char* aTopic,
                     const char16_t* aData)
 {
-    if (strcmp(aTopic, "browser-ui-startup-complete")) {
-        return nsBaseAppShell::Observe(aSubject, aTopic, aData);
+    if (!strcmp(aTopic, "network-connection-state-changed")) {
+        NS_ConvertUTF16toUTF8 type(aData);
+        if (!type.IsEmpty()) {
+            hal::NotifyNetworkChange(hal::NetworkInformation(atoi(type.get()), 0, 0));
+        }
+        return NS_OK;
+    } else if (!strcmp(aTopic, "browser-ui-startup-complete")) {
+        if (sDevInputAudioJack) {
+            sHeadphoneState  = mReader->getSwitchState(-1, AINPUT_SOURCE_SWITCH, SW_HEADPHONE_INSERT);
+            sMicrophoneState = mReader->getSwitchState(-1, AINPUT_SOURCE_SWITCH, SW_MICROPHONE_INSERT);
+            updateHeadphoneSwitch();
+        }
+        mEnableDraw = true;
+        NotifyEvent();
+        return NS_OK;
     }
 
-    if (sDevInputAudioJack) {
-        sHeadphoneState  = mReader->getSwitchState(-1, AINPUT_SOURCE_SWITCH, SW_HEADPHONE_INSERT);
-        sMicrophoneState = mReader->getSwitchState(-1, AINPUT_SOURCE_SWITCH, SW_MICROPHONE_INSERT);
-        updateHeadphoneSwitch();
-    }
-
-    mEnableDraw = true;
-    NotifyEvent();
-    return NS_OK;
+    return nsBaseAppShell::Observe(aSubject, aTopic, aData);
 }
 
 NS_IMETHODIMP
@@ -995,6 +1044,7 @@ nsAppShell::Exit()
     nsCOMPtr<nsIObserverService> obsServ = GetObserverService();
     if (obsServ) {
         obsServ->RemoveObserver(this, "browser-ui-startup-complete");
+        obsServ->RemoveObserver(this, "network-connection-state-changed");
     }
     return nsBaseAppShell::Exit();
 }
@@ -1050,12 +1100,16 @@ nsAppShell::ScheduleNativeEventCallback()
 bool
 nsAppShell::ProcessNextNativeEvent(bool mayWait)
 {
-    PROFILER_LABEL("nsAppShell", "ProcessNextNativeEvent");
+    PROFILER_LABEL("nsAppShell", "ProcessNextNativeEvent",
+        js::ProfileEntry::Category::EVENTS);
+
     epoll_event events[16] = {{ 0 }};
 
     int event_count;
     {
-        PROFILER_LABEL("nsAppShell", "ProcessNextNativeEvent::Wait");
+        PROFILER_LABEL("nsAppShell", "ProcessNextNativeEvent::Wait",
+            js::ProfileEntry::Category::EVENTS);
+
         if ((event_count = epoll_wait(epollfd, events, 16,  mayWait ? -1 : 0)) <= 0)
             return true;
     }

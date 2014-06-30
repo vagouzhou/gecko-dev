@@ -27,7 +27,6 @@ class nsIDOMEventListener;
 class nsIDOMNodeList;
 class nsIFrame;
 class nsIDOMText;
-class nsINodeInfo;
 class nsURI;
 
 #define DATA_NODE_FLAG_BIT(n_) NODE_FLAG_BIT(NODE_TYPE_SPECIFIC_BITS_OFFSET + (n_))
@@ -51,10 +50,6 @@ enum {
   // bit is set, and if so it indicates whether we're only whitespace or
   // not.
   NS_TEXT_IS_ONLY_WHITESPACE =            DATA_NODE_FLAG_BIT(3),
-
-  // This bit is set to indicate that we must create frames for this text node
-  // even if it's only whitespace next to a block boundary.
-  NS_CREATE_FRAME_FOR_IGNORABLE_WHITESPACE = DATA_NODE_FLAG_BIT(4)
 };
 
 // Make sure we have enough space for those bits
@@ -69,9 +64,8 @@ public:
 
   NS_DECL_SIZEOF_EXCLUDING_THIS
 
-  nsGenericDOMDataNode(already_AddRefed<nsINodeInfo>& aNodeInfo);
-  nsGenericDOMDataNode(already_AddRefed<nsINodeInfo>&& aNodeInfo);
-  virtual ~nsGenericDOMDataNode();
+  nsGenericDOMDataNode(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
+  nsGenericDOMDataNode(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
   virtual void GetNodeValueInternal(nsAString& aNodeValue) MOZ_OVERRIDE;
   virtual void SetNodeValueInternal(const nsAString& aNodeValue,
@@ -119,7 +113,6 @@ public:
 
   virtual already_AddRefed<nsINodeList> GetChildren(uint32_t aFilter) MOZ_OVERRIDE;
 
-  virtual nsIAtom *GetIDAttributeName() const MOZ_OVERRIDE;
 
   nsresult SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
                    const nsAString& aValue, bool aNotify)
@@ -145,6 +138,7 @@ public:
   virtual nsresult AppendText(const char16_t* aBuffer, uint32_t aLength,
                               bool aNotify) MOZ_OVERRIDE;
   virtual bool TextIsOnlyWhitespace() MOZ_OVERRIDE;
+  virtual bool HasTextForTranslation() MOZ_OVERRIDE;
   virtual void AppendTextTo(nsAString& aResult) MOZ_OVERRIDE;
   virtual bool AppendTextTo(nsAString& aResult,
                             const mozilla::fallible_t&) MOZ_OVERRIDE NS_WARN_UNUSED_RESULT;
@@ -162,6 +156,8 @@ public:
                              nsBindingManager* aOldBindingManager = nullptr) MOZ_OVERRIDE;
   virtual mozilla::dom::ShadowRoot *GetContainingShadow() const MOZ_OVERRIDE;
   virtual mozilla::dom::ShadowRoot *GetShadowRoot() const MOZ_OVERRIDE;
+  virtual nsTArray<nsIContent*> &DestInsertionPoints() MOZ_OVERRIDE;
+  virtual nsTArray<nsIContent*> *GetExistingDestInsertionPoints() const MOZ_OVERRIDE;
   virtual void SetShadowRoot(mozilla::dom::ShadowRoot* aShadowRoot) MOZ_OVERRIDE;
   virtual nsIContent *GetXBLInsertionParent() const MOZ_OVERRIDE;
   virtual void SetXBLInsertionParent(nsIContent* aContent) MOZ_OVERRIDE;
@@ -171,15 +167,12 @@ public:
   virtual mozilla::dom::CustomElementData* GetCustomElementData() const MOZ_OVERRIDE;
   virtual void SetCustomElementData(mozilla::dom::CustomElementData* aData) MOZ_OVERRIDE;
 
-  virtual nsIAtom* DoGetID() const MOZ_OVERRIDE;
-  virtual const nsAttrValue* DoGetClasses() const MOZ_OVERRIDE;
   NS_IMETHOD WalkContentStyleRules(nsRuleWalker* aRuleWalker) MOZ_OVERRIDE;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsIAtom* aAttribute) const;
   virtual nsChangeHint GetAttributeChangeHint(const nsIAtom* aAttribute,
                                               int32_t aModType) const;
-  virtual nsIAtom *GetClassAttributeName() const;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE
   {
     *aResult = CloneDataNode(aNodeInfo, true);
     if (!*aResult) {
@@ -231,6 +224,8 @@ public:
   NS_DECL_CYCLE_COLLECTION_SKIPPABLE_SCRIPT_HOLDER_CLASS(nsGenericDOMDataNode)
 
 protected:
+  virtual ~nsGenericDOMDataNode();
+
   virtual mozilla::dom::Element* GetNameSpaceElement()
   {
     nsINode *parent = GetParentNode();
@@ -269,6 +264,11 @@ protected:
      * @see nsIContent::GetContainingShadow
      */
     nsRefPtr<mozilla::dom::ShadowRoot> mContainingShadow;
+
+    /**
+     * @see nsIContent::GetDestInsertionPoints
+     */
+    nsTArray<nsIContent*> mDestInsertionPoints;
   };
 
   // Override from nsINode
@@ -308,7 +308,7 @@ protected:
    * @param aCloneText if true the text content will be cloned too
    * @return the clone
    */
-  virtual nsGenericDOMDataNode *CloneDataNode(nsINodeInfo *aNodeInfo,
+  virtual nsGenericDOMDataNode *CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo,
                                               bool aCloneText) const = 0;
 
   nsTextFragment mText;

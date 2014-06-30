@@ -5,16 +5,18 @@
 #ifndef mozilla_dom_Icc_h
 #define mozilla_dom_Icc_h
 
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "nsIIccProvider.h"
 
 namespace mozilla {
 namespace dom {
 
-class Icc MOZ_FINAL : public nsDOMEventTargetHelper
+class DOMRequest;
+
+class Icc MOZ_FINAL : public DOMEventTargetHelper
 {
 public:
-  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsDOMEventTargetHelper)
+  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(DOMEventTargetHelper)
 
   Icc(nsPIDOMWindow* aWindow, long aClientId, const nsAString& aIccId);
 
@@ -41,7 +43,7 @@ public:
 
   // WrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // MozIcc WebIDL
   already_AddRefed<nsIDOMMozIccInfo>
@@ -66,39 +68,39 @@ public:
   SendStkEventDownload(const JSContext* aCx, JS::Handle<JS::Value> aEvent,
                        ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   GetCardLock(const nsAString& aLockType, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   UnlockCardLock(const JSContext* aCx, JS::Handle<JS::Value> aInfo,
                  ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   SetCardLock(const JSContext* aCx, JS::Handle<JS::Value> aInfo,
               ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   GetCardLockRetryCount(const nsAString& aLockType, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   ReadContacts(const nsAString& aContactType, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   UpdateContact(const JSContext* aCx, const nsAString& aContactType,
                 JS::Handle<JS::Value> aContact, const nsAString& aPin2,
                 ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   IccOpenChannel(const nsAString& aAid, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   IccExchangeAPDU(const JSContext* aCx, int32_t aChannel,
                   JS::Handle<JS::Value> aApdu, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   IccCloseChannel(int32_t aChannel, ErrorResult& aRv);
 
-  already_AddRefed<nsISupports>
+  already_AddRefed<DOMRequest>
   MatchMvno(const nsAString& aMvnoType, const nsAString& aMatchData,
             ErrorResult& aRv);
 

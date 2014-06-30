@@ -103,23 +103,37 @@ class RefCounted
   public:
     // Compatibility with nsRefPtr.
     void AddRef() const {
+      // Note: this method must be thread safe for AtomicRefCounted.
       MOZ_ASSERT(int32_t(refCnt) >= 0);
+#ifndef MOZ_REFCOUNTED_LEAK_CHECKING
       ++refCnt;
-#ifdef MOZ_REFCOUNTED_LEAK_CHECKING
-      detail::RefCountLogger::logAddRef(static_cast<const T*>(this), refCnt,
-                                        static_cast<const T*>(this)->typeName(),
-                                        static_cast<const T*>(this)->typeSize());
+#else
+      const char* type = static_cast<const T*>(this)->typeName();
+      uint32_t size = static_cast<const T*>(this)->typeSize();
+      const void* ptr = static_cast<const T*>(this);
+      MozRefCountType cnt = ++refCnt;
+      detail::RefCountLogger::logAddRef(ptr, cnt, type, size);
 #endif
     }
 
     void Release() const {
+      // Note: this method must be thread safe for AtomicRefCounted.
       MOZ_ASSERT(int32_t(refCnt) > 0);
-      --refCnt;
-#ifdef MOZ_REFCOUNTED_LEAK_CHECKING
-      detail::RefCountLogger::logRelease(static_cast<const T*>(this), refCnt,
-                                         static_cast<const T*>(this)->typeName());
+#ifndef MOZ_REFCOUNTED_LEAK_CHECKING
+      MozRefCountType cnt = --refCnt;
+#else
+      const char* type = static_cast<const T*>(this)->typeName();
+      const void* ptr = static_cast<const T*>(this);
+      MozRefCountType cnt = --refCnt;
+      // Note: it's not safe to touch |this| after decrementing the refcount,
+      // except for below.
+      detail::RefCountLogger::logRelease(ptr, cnt, type);
 #endif
-      if (0 == refCnt) {
+      if (0 == cnt) {
+        // Because we have atomically decremented the refcount above, only
+        // one thread can get a 0 count here, so as long as we can assume that
+        // everything else in the system is accessing this object through
+        // RefPtrs, it's safe to access |this| here.
 #ifdef DEBUG
         refCnt = detail::DEAD;
 #endif
@@ -141,17 +155,19 @@ class RefCounted
 };
 
 #ifdef MOZ_REFCOUNTED_LEAK_CHECKING
-#define MOZ_DECLARE_REFCOUNTED_TYPENAME(T) \
-  const char* typeName() const { return #T; } \
-  size_t typeSize() const { return sizeof(*this); }
-
 #define MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(T) \
   virtual const char* typeName() const { return #T; } \
   virtual size_t typeSize() const { return sizeof(*this); }
 #else
-#define MOZ_DECLARE_REFCOUNTED_TYPENAME(T)
 #define MOZ_DECLARE_REFCOUNTED_VIRTUAL_TYPENAME(T)
 #endif
+
+// Note that this macro is expanded unconditionally because it declares only
+// two small inline functions which will hopefully get eliminated by the linker
+// in non-leak-checking builds.
+#define MOZ_DECLARE_REFCOUNTED_TYPENAME(T) \
+  const char* typeName() const { return #T; } \
+  size_t typeSize() const { return sizeof(*this); }
 
 }
 
@@ -165,12 +181,17 @@ class RefCounted : public detail::RefCounted<T, detail::NonAtomicRefCount>
     }
 };
 
+namespace external {
+
 /**
  * AtomicRefCounted<T> is like RefCounted<T>, with an atomically updated
  * reference counter.
+ *
+ * NOTE: Please do not use this class, use NS_INLINE_DECL_THREADSAFE_REFCOUNTING
+ * instead.
  */
 template<typename T>
-class AtomicRefCounted : public detail::RefCounted<T, detail::AtomicRefCount>
+class AtomicRefCounted : public mozilla::detail::RefCounted<T, mozilla::detail::AtomicRefCount>
 {
   public:
     ~AtomicRefCounted() {
@@ -178,6 +199,8 @@ class AtomicRefCounted : public detail::RefCounted<T, detail::AtomicRefCount>
                     "T must derive from AtomicRefCounted<T>");
     }
 };
+
+}
 
 /**
  * RefPtr points to a refcounted thing that has AddRef and Release
@@ -201,8 +224,8 @@ class RefPtr
   public:
     RefPtr() : ptr(0) { }
     RefPtr(const RefPtr& o) : ptr(ref(o.ptr)) {}
-    RefPtr(const TemporaryRef<T>& o) : ptr(o.drop()) {}
-    RefPtr(T* t) : ptr(ref(t)) {}
+    MOZ_IMPLICIT RefPtr(const TemporaryRef<T>& o) : ptr(o.drop()) {}
+    MOZ_IMPLICIT RefPtr(T* t) : ptr(ref(t)) {}
 
     template<typename U>
     RefPtr(const RefPtr<U>& o) : ptr(ref(o.get())) {}
@@ -276,7 +299,7 @@ class TemporaryRef
     typedef typename RefPtr<T>::DontRef DontRef;
 
   public:
-    TemporaryRef(T* t) : ptr(RefPtr<T>::ref(t)) {}
+    MOZ_IMPLICIT TemporaryRef(T* t) : ptr(RefPtr<T>::ref(t)) {}
     TemporaryRef(const TemporaryRef& o) : ptr(o.drop()) {}
 
     template<typename U>
@@ -327,7 +350,7 @@ class OutParamRef
     operator T**() { return &tmp; }
 
   private:
-    OutParamRef(RefPtr<T>& p) : refPtr(p), tmp(p.get()) {}
+    explicit OutParamRef(RefPtr<T>& p) : refPtr(p), tmp(p.get()) {}
 
     RefPtr<T>& refPtr;
     T* tmp;

@@ -100,7 +100,7 @@ class OrderedHashTable
     AllocPolicy alloc;
 
   public:
-    OrderedHashTable(AllocPolicy &ap)
+    explicit OrderedHashTable(AllocPolicy &ap)
         : hashTable(nullptr), data(nullptr), dataLength(0), ranges(nullptr), alloc(ap) {}
 
     bool init() {
@@ -331,7 +331,7 @@ class OrderedHashTable
          * Create a Range over all the entries in ht.
          * (This is private on purpose. End users must use ht.all().)
          */
-        Range(OrderedHashTable &ht) : ht(ht), i(0), count(0), prevp(&ht.ranges), next(ht.ranges) {
+        explicit Range(OrderedHashTable &ht) : ht(ht), i(0), count(0), prevp(&ht.ranges), next(ht.ranges) {
             *prevp = this;
             if (next)
                 next->prevp = &next;
@@ -717,7 +717,7 @@ class OrderedHashMap
   public:
     typedef typename Impl::Range Range;
 
-    OrderedHashMap(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
+    explicit OrderedHashMap(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
     bool init()                                     { return impl.init(); }
     uint32_t count() const                          { return impl.count(); }
     bool has(const Key &key) const                  { return impl.has(key); }
@@ -753,7 +753,7 @@ class OrderedHashSet
   public:
     typedef typename Impl::Range Range;
 
-    OrderedHashSet(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
+    explicit OrderedHashSet(AllocPolicy ap = AllocPolicy()) : impl(ap) {}
     bool init()                                     { return impl.init(); }
     uint32_t count() const                          { return impl.count(); }
     bool has(const T &value) const                  { return impl.has(value); }
@@ -797,8 +797,8 @@ HashableValue::setValue(JSContext *cx, HandleValue v)
         value = v;
     }
 
-    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() ||
-              value.isNumber() || value.isString() || value.isObject());
+    JS_ASSERT(value.isUndefined() || value.isNull() || value.isBoolean() || value.isNumber() ||
+              value.isString() || value.isSymbol() || value.isObject());
     return true;
 }
 
@@ -829,7 +829,7 @@ HashableValue
 HashableValue::mark(JSTracer *trc) const
 {
     HashableValue hv(*this);
-    JS_SET_TRACING_LOCATION(trc, (void *)this);
+    trc->setTracingLocation((void *)this);
     gc::MarkValue(trc, &hv.value, "key");
     return hv;
 }
@@ -1048,10 +1048,10 @@ InitClass(JSContext *cx, Handle<GlobalObject*> global, const Class *clasp, JSPro
         return nullptr;
     proto->setPrivate(nullptr);
 
-    Rooted<JSFunction*> ctor(cx, global->createConstructor(cx, construct, ClassName(key, cx), 0));
+    Rooted<JSFunction*> ctor(cx, global->createConstructor(cx, construct, ClassName(key, cx), 1));
     if (!ctor ||
         !LinkConstructorAndPrototype(cx, ctor, proto) ||
-        !DefinePropertiesAndBrand(cx, proto, properties, methods) ||
+        !DefinePropertiesAndFunctions(cx, proto, properties, methods) ||
         !GlobalObject::initBuiltinConstructor(cx, global, key, ctor, proto))
     {
         return nullptr;
@@ -1073,7 +1073,7 @@ MapObject::initClass(JSContext *cx, JSObject *obj)
 
         // Define its alias.
         RootedValue funval(cx, ObjectValue(*fun));
-        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, 0))
             return nullptr;
     }
     return proto;
@@ -1131,23 +1131,27 @@ class OrderedHashTableRef : public gc::BufferableRef
 };
 #endif
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueMap *map, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueMap *map, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashMap<Value, Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredMap;
-    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
-                reinterpret_cast<UnbarrieredMap *>(map), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredMap>(
+                    reinterpret_cast<UnbarrieredMap *>(map), key));
+    }
 #endif
 }
 
-static void
-WriteBarrierPost(JSRuntime *rt, ValueSet *set, const HashableValue &key)
+inline static void
+WriteBarrierPost(JSRuntime *rt, ValueSet *set, const Value &key)
 {
 #ifdef JSGC_GENERATIONAL
     typedef OrderedHashSet<Value, UnbarrieredHashPolicy, RuntimeAllocPolicy> UnbarrieredSet;
-    rt->gcStoreBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
-                reinterpret_cast<UnbarrieredSet *>(set), key.get()));
+    if (MOZ_UNLIKELY(key.isObject() && IsInsideNursery(&key.toObject()))) {
+        rt->gc.storeBuffer.putGeneric(OrderedHashTableRef<UnbarrieredSet>(
+                    reinterpret_cast<UnbarrieredSet *>(set), key));
+    }
 #endif
 }
 
@@ -1213,7 +1217,7 @@ MapObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), map, hkey);
+            WriteBarrierPost(cx->runtime(), map, key);
         }
     }
 
@@ -1310,7 +1314,7 @@ MapObject::set_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &map, key);
+    WriteBarrierPost(cx->runtime(), &map, key.get());
     args.rval().setUndefined();
     return true;
 }
@@ -1642,9 +1646,9 @@ SetObject::initClass(JSContext *cx, JSObject *obj)
 
         // Define its aliases.
         RootedValue funval(cx, ObjectValue(*fun));
-        if (!JS_DefineProperty(cx, proto, "keys", funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, "keys", funval, 0))
             return nullptr;
-        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, nullptr, nullptr, 0))
+        if (!JS_DefineProperty(cx, proto, js_std_iterator_str, funval, 0))
             return nullptr;
     }
     return proto;
@@ -1703,7 +1707,7 @@ SetObject::construct(JSContext *cx, unsigned argc, Value *vp)
                 js_ReportOutOfMemory(cx);
                 return false;
             }
-            WriteBarrierPost(cx->runtime(), set, key);
+            WriteBarrierPost(cx->runtime(), set, keyVal);
         }
     }
 
@@ -1772,7 +1776,7 @@ SetObject::add_impl(JSContext *cx, CallArgs args)
         js_ReportOutOfMemory(cx);
         return false;
     }
-    WriteBarrierPost(cx->runtime(), &set, key);
+    WriteBarrierPost(cx->runtime(), &set, key.get());
     args.rval().setUndefined();
     return true;
 }

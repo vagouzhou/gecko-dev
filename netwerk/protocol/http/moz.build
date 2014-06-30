@@ -77,6 +77,8 @@ SOURCES += [
     'SpdySession31.cpp',
     'SpdyStream3.cpp',
     'SpdyStream31.cpp',
+    'SpdyZlibReporter.cpp',
+    'TunnelUtils.cpp',
 ]
 
 # These files cannot be built in unified mode because of OS X headers.
@@ -104,6 +106,4 @@ FINAL_LIBRARY = 'necko'
 LOCAL_INCLUDES += [
     '../../base/src',
     '/content/base/src',
-    '/dom/events',
-    '/xpcom/ds',
 ]

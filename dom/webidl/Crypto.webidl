@@ -16,6 +16,8 @@ interface RandomSource {
 Crypto implements RandomSource;
 
 interface Crypto {
+  [Pref="dom.webcrypto.enabled"]
+  readonly attribute SubtleCrypto subtle;
 };
 
 #ifndef MOZ_DISABLE_CRYPTOLEGACY
@@ -39,21 +41,12 @@ interface CryptoLegacy {
                                    DOMString cmmfResponse,
                                    boolean doForcedBackup);
 
-  [Throws]
-  DOMString popChallengeResponse(DOMString challenge);
-
-  [Throws]
-  DOMString random(long numBytes);
-
   DOMString signText(DOMString stringToSign,
                      DOMString caOption,
                      ByteString... args);
 
   [Throws]
   void logout();
-
-  [Throws]
-  void disableRightClick();
 };
 
 Crypto implements CryptoLegacy;

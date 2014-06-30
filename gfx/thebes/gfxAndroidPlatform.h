@@ -49,6 +49,8 @@ public:
     virtual gfxPlatformFontList* CreatePlatformFontList();
     virtual gfxFontEntry* MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
                                            const uint8_t *aFontData, uint32_t aLength);
+    virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
+                                          const nsAString& aFontName);
 
     virtual void GetCommonFallbackFonts(const uint32_t aCh,
                                         int32_t aRunScript,
@@ -60,16 +62,13 @@ public:
 
     virtual nsresult UpdateFontList();
 
-    virtual nsresult ResolveFontName(const nsAString& aFontName,
-                                     FontResolverCallback aCallback,
-                                     void *aClosure, bool& aAborted);
-
     virtual nsresult GetStandardFamilyName(const nsAString& aFontName,
                                            nsAString& aFamilyName);
 
-    virtual gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                          const gfxFontStyle *aStyle,
-                                          gfxUserFontSet* aUserFontSet);
+    virtual gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle *aStyle,
+                    gfxUserFontSet* aUserFontSet);
 
     virtual bool FontHintingEnabled() MOZ_OVERRIDE;
     virtual bool RequiresLinearZoom() MOZ_OVERRIDE;
@@ -80,9 +79,17 @@ public:
 
     virtual bool UseAcceleratedSkiaCanvas() MOZ_OVERRIDE;
 
+#ifdef MOZ_WIDGET_GONK
+    virtual bool IsInGonkEmulator() const { return mIsInGonkEmulator; }
+#endif
+
 private:
     int mScreenDepth;
     gfxImageFormat mOffscreenFormat;
+
+#ifdef MOZ_WIDGET_GONK
+    bool mIsInGonkEmulator;
+#endif
 };
 
 #endif /* GFX_PLATFORM_ANDROID_H */

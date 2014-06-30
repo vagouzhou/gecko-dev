@@ -15,12 +15,14 @@ static PRLogModuleInfo *gTestLog = nullptr;
 
 class MyStreamLoaderObserver MOZ_FINAL : public nsIStreamLoaderObserver
 {
+  ~MyStreamLoaderObserver() {}
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSISTREAMLOADEROBSERVER
 };
 
-NS_IMPL_ISUPPORTS1(MyStreamLoaderObserver, nsIStreamLoaderObserver)
+NS_IMPL_ISUPPORTS(MyStreamLoaderObserver, nsIStreamLoaderObserver)
 
 NS_IMETHODIMP
 MyStreamLoaderObserver::OnStreamComplete(nsIStreamLoader *loader,

@@ -29,12 +29,12 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-HTMLScriptElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLScriptElement::WrapNode(JSContext *aCx)
 {
-  return HTMLScriptElementBinding::Wrap(aCx, aScope, this);
+  return HTMLScriptElementBinding::Wrap(aCx, this);
 }
 
-HTMLScriptElement::HTMLScriptElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+HTMLScriptElement::HTMLScriptElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                                      FromParser aFromParser)
   : nsGenericHTMLElement(aNodeInfo)
   , nsScriptElement(aFromParser)
@@ -46,11 +46,11 @@ HTMLScriptElement::~HTMLScriptElement()
 {
 }
 
-NS_IMPL_ISUPPORTS_INHERITED4(HTMLScriptElement, nsGenericHTMLElement,
-                             nsIDOMHTMLScriptElement,
-                             nsIScriptLoaderObserver,
-                             nsIScriptElement,
-                             nsIMutationObserver)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLScriptElement, nsGenericHTMLElement,
+                            nsIDOMHTMLScriptElement,
+                            nsIScriptLoaderObserver,
+                            nsIScriptElement,
+                            nsIMutationObserver)
 
 nsresult
 HTMLScriptElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
@@ -62,7 +62,7 @@ HTMLScriptElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                                                  aCompileEventHandlers);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (aDocument) {
+  if (GetCrossShadowCurrentDoc()) {
     MaybeProcessScript();
   }
 
@@ -86,11 +86,11 @@ HTMLScriptElement::ParseAttribute(int32_t aNamespaceID,
 }
 
 nsresult
-HTMLScriptElement::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+HTMLScriptElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   *aResult = nullptr;
 
-  already_AddRefed<nsINodeInfo> ni = nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
   HTMLScriptElement* it = new HTMLScriptElement(ni, NOT_FROM_PARSER);
 
   nsCOMPtr<nsINode> kungFuDeathGrip = it;

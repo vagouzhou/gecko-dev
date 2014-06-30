@@ -183,9 +183,9 @@ nsImageBoxFrame::DestroyFrom(nsIFrame* aDestructRoot)
 
 
 void
-nsImageBoxFrame::Init(nsIContent*      aContent,
-                      nsIFrame*        aParent,
-                      nsIFrame*        aPrevInFlow)
+nsImageBoxFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
   if (!mListener) {
     nsImageBoxListener *listener = new nsImageBoxListener();
@@ -236,7 +236,7 @@ nsImageBoxFrame::UpdateImage()
                                             mContent->NodePrincipal())) {
       nsContentUtils::LoadImage(uri, doc, mContent->NodePrincipal(),
                                 doc->GetDocumentURI(), mListener, mLoadFlags,
-                                getter_AddRefs(mImageRequest));
+                                EmptyString(), getter_AddRefs(mImageRequest));
 
       if (mImageRequest) {
         nsLayoutUtils::RegisterImageRequestIfAnimated(presContext,
@@ -336,7 +336,7 @@ nsImageBoxFrame::PaintImage(nsRenderingContext& aRenderingContext,
 
   if (imgCon) {
     bool hasSubRect = !mUseSrcAttr && (mSubRect.width > 0 || mSubRect.height > 0);
-    nsLayoutUtils::DrawSingleImage(&aRenderingContext, imgCon,
+    nsLayoutUtils::DrawSingleImage(&aRenderingContext, PresContext(), imgCon,
         nsLayoutUtils::GetGraphicsFilterForFrame(this),
         rect, dirty, nullptr, aFlags, hasSubRect ? &mSubRect : nullptr);
   }
@@ -729,7 +729,7 @@ nsresult nsImageBoxFrame::FrameChanged(imgIRequest *aRequest)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS2(nsImageBoxListener, imgINotificationObserver, imgIOnloadBlocker)
+NS_IMPL_ISUPPORTS(nsImageBoxListener, imgINotificationObserver, imgIOnloadBlocker)
 
 nsImageBoxListener::nsImageBoxListener()
 {

@@ -9,8 +9,10 @@
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventDispatcher.h"
-#include "mozilla/dom/HTMLLinkElementBinding.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/dom/HTMLLinkElementBinding.h"
 #include "nsContentUtils.h"
 #include "nsGenericHTMLElement.h"
 #include "nsGkAtoms.h"
@@ -18,6 +20,7 @@
 #include "nsIDocument.h"
 #include "nsIDOMEvent.h"
 #include "nsIDOMStyleSheet.h"
+#include "nsINode.h"
 #include "nsIStyleSheet.h"
 #include "nsIStyleSheetLinkingElement.h"
 #include "nsIURL.h"
@@ -32,7 +35,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Link)
 namespace mozilla {
 namespace dom {
 
-HTMLLinkElement::HTMLLinkElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLLinkElement::HTMLLinkElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
   , Link(MOZ_THIS_IN_INITIALIZER_LIST())
 {
@@ -49,6 +52,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(HTMLLinkElement,
   tmp->nsStyleLinkElement::Traverse(cb);
   tmp->Link::Traverse(cb);
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mRelList)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mImportLoader)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(HTMLLinkElement,
@@ -56,6 +60,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(HTMLLinkElement,
   tmp->nsStyleLinkElement::Unlink();
   tmp->Link::Unlink();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mRelList)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mImportLoader)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_ADDREF_INHERITED(HTMLLinkElement, Element)
@@ -64,10 +69,10 @@ NS_IMPL_RELEASE_INHERITED(HTMLLinkElement, Element)
 
 // QueryInterface implementation for HTMLLinkElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLLinkElement)
-  NS_INTERFACE_TABLE_INHERITED3(HTMLLinkElement,
-                                nsIDOMHTMLLinkElement,
-                                nsIStyleSheetLinkingElement,
-                                Link)
+  NS_INTERFACE_TABLE_INHERITED(HTMLLinkElement,
+                               nsIDOMHTMLLinkElement,
+                               nsIStyleSheetLinkingElement,
+                               Link)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 
@@ -76,7 +81,7 @@ NS_IMPL_ELEMENT_CLONE(HTMLLinkElement)
 bool
 HTMLLinkElement::Disabled()
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   return ss && ss->Disabled();
 }
 
@@ -90,11 +95,10 @@ HTMLLinkElement::GetMozDisabled(bool* aDisabled)
 void
 HTMLLinkElement::SetDisabled(bool aDisabled)
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   if (ss) {
     ss->SetDisabled(aDisabled);
   }
-
 }
 
 NS_IMETHODIMP
@@ -147,6 +151,9 @@ HTMLLinkElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
   void (HTMLLinkElement::*update)() = &HTMLLinkElement::UpdateStyleSheetInternal;
   nsContentUtils::AddScriptRunner(NS_NewRunnableMethod(this, update));
 
+  void (HTMLLinkElement::*updateImport)() = &HTMLLinkElement::UpdateImport;
+  nsContentUtils::AddScriptRunner(NS_NewRunnableMethod(this, updateImport));
+
   CreateAndDispatchEvent(aDocument, NS_LITERAL_STRING("DOMLinkAdded"));
 
   return rv;
@@ -187,6 +194,7 @@ HTMLLinkElement::UnbindFromTree(bool aDeep, bool aNullParent)
   nsGenericHTMLElement::UnbindFromTree(aDeep, aNullParent);
 
   UpdateStyleSheetInternal(oldDoc, oldShadowRoot);
+  UpdateImport();
 }
 
 bool
@@ -195,10 +203,16 @@ HTMLLinkElement::ParseAttribute(int32_t aNamespaceID,
                                 const nsAString& aValue,
                                 nsAttrValue& aResult)
 {
-  if (aNamespaceID == kNameSpaceID_None &&
-      aAttribute == nsGkAtoms::crossorigin) {
-    ParseCORSValue(aValue, aResult);
-    return true;
+  if (aNamespaceID == kNameSpaceID_None) {
+    if (aAttribute == nsGkAtoms::crossorigin) {
+      ParseCORSValue(aValue, aResult);
+      return true;
+    }
+
+    if (aAttribute == nsGkAtoms::sizes) {
+      aResult.ParseAtomArray(aValue);
+      return true;
+    }
   }
 
   return nsGenericHTMLElement::ParseAttribute(aNamespaceID, aAttribute, aValue,
@@ -234,6 +248,63 @@ HTMLLinkElement::CreateAndDispatchEvent(nsIDocument* aDoc,
   asyncDispatcher->PostDOMEvent();
 }
 
+void
+HTMLLinkElement::UpdateImport()
+{
+  // 1. link node should be attached to the document.
+  nsCOMPtr<nsIDocument> doc = GetCurrentDoc();
+  if (!doc) {
+    // We might have been just removed from the document, so
+    // let's remove ourself from the list of link nodes of
+    // the import and reset mImportLoader.
+    if (mImportLoader) {
+      mImportLoader->RemoveLinkElement(this);
+      mImportLoader = nullptr;
+    }
+    return;
+  }
+
+  // Until the script execution order is not sorted out for nested cases
+  // let's not allow them.
+  if (!doc->IsMasterDocument()) {
+    nsContentUtils::LogSimpleConsoleError(
+      NS_LITERAL_STRING("Nested imports are not supported yet"),
+      "Imports");
+    return;
+  }
+
+  // 2. rel type should be import.
+  nsAutoString rel;
+  GetAttr(kNameSpaceID_None, nsGkAtoms::rel, rel);
+  uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(rel);
+  if (!(linkTypes & eHTMLIMPORT)) {
+    mImportLoader = nullptr;
+    return;
+  }
+
+  nsCOMPtr<nsIURI> uri = GetHrefURI();
+  if (!uri) {
+    mImportLoader = nullptr;
+    return;
+  }
+
+  if (!nsStyleLinkElement::IsImportEnabled()) {
+    // For now imports are hidden behind a pref...
+    return;
+  }
+
+  nsRefPtr<ImportManager> manager = doc->ImportManager();
+  MOZ_ASSERT(manager, "ImportManager should be created lazily when needed");
+
+  {
+    // The load even might fire sooner than we could set mImportLoader so
+    // we must use async event and a scriptBlocker here.
+    nsAutoScriptBlocker scriptBlocker;
+    // CORS check will happen at the start of the load.
+    mImportLoader = manager->Get(uri, this, doc);
+  }
+}
+
 nsresult
 HTMLLinkElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
                          nsIAtom* aPrefix, const nsAString& aValue,
@@ -258,9 +329,17 @@ HTMLLinkElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
        aName == nsGkAtoms::media ||
        aName == nsGkAtoms::type)) {
     bool dropSheet = false;
-    if (aName == nsGkAtoms::rel && GetSheet()) {
+    if (aName == nsGkAtoms::rel) {
       uint32_t linkTypes = nsStyleLinkElement::ParseLinkTypes(aValue);
-      dropSheet = !(linkTypes & nsStyleLinkElement::eSTYLESHEET);
+      if (GetSheet()) {
+        dropSheet = !(linkTypes & nsStyleLinkElement::eSTYLESHEET);
+      } else if (linkTypes & eHTMLIMPORT) {
+        UpdateImport();
+      }
+    }
+
+    if (aName == nsGkAtoms::href) {
+      UpdateImport();
     }
     
     UpdateStyleSheetInternal(nullptr, nullptr,
@@ -281,13 +360,18 @@ HTMLLinkElement::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttribute,
                                                 aNotify);
   // Since removing href or rel makes us no longer link to a
   // stylesheet, force updates for those too.
-  if (NS_SUCCEEDED(rv) && aNameSpaceID == kNameSpaceID_None &&
-      (aAttribute == nsGkAtoms::href ||
-       aAttribute == nsGkAtoms::rel ||
-       aAttribute == nsGkAtoms::title ||
-       aAttribute == nsGkAtoms::media ||
-       aAttribute == nsGkAtoms::type)) {
-    UpdateStyleSheetInternal(nullptr, nullptr, true);
+  if (NS_SUCCEEDED(rv) && aNameSpaceID == kNameSpaceID_None) {
+    if (aAttribute == nsGkAtoms::href ||
+        aAttribute == nsGkAtoms::rel ||
+        aAttribute == nsGkAtoms::title ||
+        aAttribute == nsGkAtoms::media ||
+        aAttribute == nsGkAtoms::type) {
+      UpdateStyleSheetInternal(nullptr, nullptr, true);
+    }
+    if (aAttribute == nsGkAtoms::href ||
+        aAttribute == nsGkAtoms::rel) {
+      UpdateImport();
+    }
   }
 
   // The ordering of the parent class's UnsetAttr call and Link::ResetLinkState
@@ -418,7 +502,7 @@ HTMLLinkElement::GetCORSMode() const
   return AttrValueToCORSMode(GetParsedAttr(nsGkAtoms::crossorigin)); 
 }
 
-nsEventStates
+EventStates
 HTMLLinkElement::IntrinsicState() const
 {
   return Link::LinkState() | nsGenericHTMLElement::IntrinsicState();
@@ -432,9 +516,15 @@ HTMLLinkElement::SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
 }
 
 JSObject*
-HTMLLinkElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLLinkElement::WrapNode(JSContext* aCx)
 {
-  return HTMLLinkElementBinding::Wrap(aCx, aScope, this);
+  return HTMLLinkElementBinding::Wrap(aCx, this);
+}
+
+already_AddRefed<nsIDocument>
+HTMLLinkElement::GetImport()
+{
+  return mImportLoader ? mImportLoader->GetImport() : nullptr;
 }
 
 } // namespace dom

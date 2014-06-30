@@ -6,11 +6,11 @@
 
 PARALLEL_DIRS += [
     'about',
-    'certerror',
     'customizableui',
     'dirprovider',
     'downloads',
     'feeds',
+    'loop',
     'places',
     'preferences',
     'privatebrowsing',
@@ -19,6 +19,7 @@ PARALLEL_DIRS += [
     'shell',
     'sidebar',
     'tabview',
+    'translation',
     'migration',
 ]
 
@@ -31,10 +32,8 @@ XPIDL_SOURCES += [
 
 XPIDL_MODULE = 'browsercompsbase'
 
-EXTRA_COMPONENTS += [
-    'BrowserComponents.manifest',
-]
 EXTRA_PP_COMPONENTS += [
+    'BrowserComponents.manifest',
     'nsBrowserContentHandler.js',
     'nsBrowserGlue.js',
 ]
@@ -49,4 +48,3 @@ BROWSER_CHROME_MANIFESTS += [
 
 if CONFIG['MOZ_SAFE_BROWSING']:
     BROWSER_CHROME_MANIFESTS += ['safebrowsing/content/test/browser.ini']
-

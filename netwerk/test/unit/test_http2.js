@@ -25,7 +25,7 @@ var bigListenerMD5 = '8f607cfdd2c87d6a7eedb657dafbd836';
 
 function checkIsHttp2(request) {
   try {
-    if (request.getResponseHeader("X-Firefox-Spdy") == "HTTP-draft-09/2.0") {
+    if (request.getResponseHeader("X-Firefox-Spdy") == "h2-13") {
       if (request.getResponseHeader("X-Connection-Http2") == "yes") {
         return true;
       }
@@ -292,6 +292,14 @@ function test_http2_push4() {
   chan.asyncOpen(listener, chan);
 }
 
+// this is a basic test where the server sends a simple document with 2 header
+// blocks. bug 1027364
+function test_http2_doubleheader() {
+  var chan = makeChan("https://localhost:6944/doubleheader");
+  var listener = new Http2CheckListener();
+  chan.asyncOpen(listener, null);
+}
+
 // Make sure we handle GETs that cover more than 2 frames properly
 function test_http2_big() {
   var chan = makeChan("https://localhost:6944/big");
@@ -338,6 +346,7 @@ var tests = [ test_http2_post_big
             , test_http2_push2
             , test_http2_push3
             , test_http2_push4
+            , test_http2_doubleheader
             , test_http2_xhr
             , test_http2_header
             , test_http2_cookie_crumbling
@@ -413,6 +422,7 @@ var spdypref;
 var spdy3pref;
 var spdypush;
 var http2pref;
+var tlspref;
 
 var loadGroup;
 
@@ -421,6 +431,7 @@ function resetPrefs() {
   prefs.setBoolPref("network.http.spdy.enabled.v3", spdy3pref);
   prefs.setBoolPref("network.http.spdy.allow-push", spdypush);
   prefs.setBoolPref("network.http.spdy.enabled.http2draft", http2pref);
+  prefs.setBoolPref("network.http.spdy.enforce-tls-profile", tlspref);
 }
 
 function run_test() {
@@ -437,15 +448,17 @@ function run_test() {
 
   prefs.setIntPref("network.http.speculative-parallel-limit", oldPref);
 
-  // Enable all versions of spdy to see that we auto negotiate spdy/3
+  // Enable all versions of spdy to see that we auto negotiate http/2
   spdypref = prefs.getBoolPref("network.http.spdy.enabled");
   spdy3pref = prefs.getBoolPref("network.http.spdy.enabled.v3");
   spdypush = prefs.getBoolPref("network.http.spdy.allow-push");
   http2pref = prefs.getBoolPref("network.http.spdy.enabled.http2draft");
+  tlspref = prefs.getBoolPref("network.http.spdy.enforce-tls-profile");
   prefs.setBoolPref("network.http.spdy.enabled", true);
   prefs.setBoolPref("network.http.spdy.enabled.v3", true);
   prefs.setBoolPref("network.http.spdy.allow-push", true);
   prefs.setBoolPref("network.http.spdy.enabled.http2draft", true);
+  prefs.setBoolPref("network.http.spdy.enforce-tls-profile", false);
 
   loadGroup = Cc["@mozilla.org/network/load-group;1"].createInstance(Ci.nsILoadGroup);
 

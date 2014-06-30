@@ -18,8 +18,8 @@
 
 using namespace mozilla;
 
-NS_IMPL_ISUPPORTS2(nsEffectiveTLDService, nsIEffectiveTLDService,
-                   nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(nsEffectiveTLDService, nsIEffectiveTLDService,
+                  nsIMemoryReporter)
 
 // ----------------------------------------------------------------------
 
@@ -111,7 +111,7 @@ MOZ_DEFINE_MALLOC_SIZE_OF(EffectiveTLDServiceMallocSizeOf)
 
 NS_IMETHODIMP
 nsEffectiveTLDService::CollectReports(nsIHandleReportCallback* aHandleReport,
-                                      nsISupports* aData)
+                                      nsISupports* aData, bool aAnonymize)
 {
   return MOZ_COLLECT_REPORT(
     "explicit/xpcom/effective-TLD-service", KIND_HEAP, UNITS_BYTES,

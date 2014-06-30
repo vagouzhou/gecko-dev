@@ -43,6 +43,7 @@
 #undef GetStartupInfo
 #endif
 
+#include "mozilla/IOInterposer.h"
 #include "mozilla/Telemetry.h"
 #include "mozilla/StartupTimeline.h"
 
@@ -161,6 +162,7 @@ nsAppStartup::Init()
     return NS_ERROR_FAILURE;
 
   os->AddObserver(this, "quit-application-forced", true);
+  os->AddObserver(this, "sessionstore-init-started", true);
   os->AddObserver(this, "sessionstore-windows-restored", true);
   os->AddObserver(this, "profile-change-teardown", true);
   os->AddObserver(this, "xul-window-registered", true);
@@ -215,12 +217,12 @@ nsAppStartup::Init()
 // nsAppStartup->nsISupports
 //
 
-NS_IMPL_ISUPPORTS5(nsAppStartup,
-                              nsIAppStartup,
-                              nsIWindowCreator,
-                              nsIWindowCreator2,
-                              nsIObserver,
-                              nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsAppStartup,
+                  nsIAppStartup,
+                  nsIWindowCreator,
+                  nsIWindowCreator2,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 
 //
@@ -361,6 +363,7 @@ nsAppStartup::Quit(uint32_t aMode)
           windowEnumerator->GetNext(getter_AddRefs(window));
           nsCOMPtr<nsPIDOMWindow> domWindow(do_QueryInterface(window));
           if (domWindow) {
+            MOZ_ASSERT(domWindow->IsOuterWindow());
             if (!domWindow->CanClose())
               return NS_OK;
           }
@@ -502,8 +505,10 @@ nsAppStartup::CloseAllWindows()
 
     nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(isupports);
     NS_ASSERTION(window, "not an nsPIDOMWindow");
-    if (window)
+    if (window) {
+      MOZ_ASSERT(window->IsOuterWindow());
       window->ForceClose();
+    }
   }
 }
 
@@ -607,7 +612,7 @@ nsAppStartup::CreateChromeWindow(nsIWebBrowserChrome *aParent,
                                  nsIWebBrowserChrome **_retval)
 {
   bool cancel;
-  return CreateChromeWindow2(aParent, aChromeFlags, 0, 0, &cancel, _retval);
+  return CreateChromeWindow2(aParent, aChromeFlags, 0, 0, nullptr, &cancel, _retval);
 }
 
 
@@ -620,6 +625,7 @@ nsAppStartup::CreateChromeWindow2(nsIWebBrowserChrome *aParent,
                                   uint32_t aChromeFlags,
                                   uint32_t aContextFlags,
                                   nsIURI *aURI,
+                                  nsITabParent *aOpeningTab,
                                   bool *aCancel,
                                   nsIWebBrowserChrome **_retval)
 {
@@ -639,7 +645,7 @@ nsAppStartup::CreateChromeWindow2(nsIWebBrowserChrome *aParent,
     NS_ASSERTION(xulParent, "window created using non-XUL parent. that's unexpected, but may work.");
 
     if (xulParent)
-      xulParent->CreateNewWindow(aChromeFlags, getter_AddRefs(newWindow));
+      xulParent->CreateNewWindow(aChromeFlags, aOpeningTab, getter_AddRefs(newWindow));
     // And if it fails, don't try again without a parent. It could fail
     // intentionally (bug 115969).
   } else { // try using basic methods:
@@ -652,10 +658,11 @@ nsAppStartup::CreateChromeWindow2(nsIWebBrowserChrome *aParent,
     nsCOMPtr<nsIAppShellService> appShell(do_GetService(NS_APPSHELLSERVICE_CONTRACTID));
     if (!appShell)
       return NS_ERROR_FAILURE;
-    
+
     appShell->CreateTopLevelWindow(0, 0, aChromeFlags,
                                    nsIAppShellService::SIZE_TO_CONTENT,
                                    nsIAppShellService::SIZE_TO_CONTENT,
+                                   aOpeningTab,
                                    getter_AddRefs(newWindow));
   }
 
@@ -695,7 +702,7 @@ nsAppStartup::Observe(nsISupports *aSubject,
     ExitLastWindowClosingSurvivalArea();
   } else if (!strcmp(aTopic, "sessionstore-windows-restored")) {
     StartupTimeline::Record(StartupTimeline::SESSION_RESTORED);
-    Telemetry::LeavingStartupStage();
+    IOInterposer::EnteringNextStage();
 #if defined(XP_WIN)
     if (mSessionWindowRestoredProbe) {
       mSessionWindowRestoredProbe->Trigger();
@@ -705,8 +712,10 @@ nsAppStartup::Observe(nsISupports *aSubject,
       mPlacesInitCompleteProbe->Trigger();
     }
 #endif //defined(XP_WIN)
+  } else if (!strcmp(aTopic, "sessionstore-init-started")) {
+    StartupTimeline::Record(StartupTimeline::SESSION_RESTORE_INIT);
   } else if (!strcmp(aTopic, "xpcom-shutdown")) {
-    Telemetry::EnteringShutdownStage();
+    IOInterposer::EnteringNextStage();
 #if defined(XP_WIN)
     if (mXPCOMShutdownProbe) {
       mXPCOMShutdownProbe->Trigger();
@@ -763,8 +772,7 @@ nsAppStartup::GetStartupInfo(JSContext* aCx, JS::MutableHandle<JS::Value> aRetva
         PRTime prStamp = ComputeAbsoluteTimestamp(absNow, now, stamp)
           / PR_USEC_PER_MSEC;
         JS::Rooted<JSObject*> date(aCx, JS_NewDateObjectMsec(aCx, prStamp));
-        JS_DefineProperty(aCx, obj, StartupTimeline::Describe(ev),
-          OBJECT_TO_JSVAL(date), nullptr, nullptr, JSPROP_ENUMERATE);
+        JS_DefineProperty(aCx, obj, StartupTimeline::Describe(ev), date, JSPROP_ENUMERATE);
       } else {
         Telemetry::Accumulate(Telemetry::STARTUP_MEASUREMENT_ERRORS, ev);
       }

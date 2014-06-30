@@ -15,9 +15,11 @@
 
 #ifdef DEBUG
 class nsFrameUtil : public nsIFrameUtil {
+protected:
+  virtual ~nsFrameUtil();
+
 public:
   nsFrameUtil();
-  virtual ~nsFrameUtil();
 
   NS_DECL_ISUPPORTS
 
@@ -495,7 +497,7 @@ nsFrameUtil::~nsFrameUtil()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsFrameUtil, nsIFrameUtil)
+NS_IMPL_ISUPPORTS(nsFrameUtil, nsIFrameUtil)
 
 void
 nsFrameUtil::DumpNode(Node* aNode, FILE* aOutputFile, int32_t aIndent)

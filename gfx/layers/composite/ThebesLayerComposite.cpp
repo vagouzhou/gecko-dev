@@ -54,12 +54,10 @@ bool
 ThebesLayerComposite::SetCompositableHost(CompositableHost* aHost)
 {
   switch (aHost->GetType()) {
-    case BUFFER_CONTENT:
-    case BUFFER_CONTENT_DIRECT:
-    case BUFFER_CONTENT_INC:
-    case BUFFER_TILED:
-    case COMPOSITABLE_CONTENT_SINGLE:
-    case COMPOSITABLE_CONTENT_DOUBLE:
+    case CompositableType::BUFFER_CONTENT_INC:
+    case CompositableType::BUFFER_TILED:
+    case CompositableType::CONTENT_SINGLE:
+    case CompositableType::CONTENT_DOUBLE:
       mBuffer = static_cast<ContentHost*>(aHost);
       return true;
     default:
@@ -91,7 +89,10 @@ ThebesLayerComposite::GetLayer()
 TiledLayerComposer*
 ThebesLayerComposite::GetTiledLayerComposer()
 {
-  MOZ_ASSERT(mBuffer && mBuffer->IsAttached());
+  if (!mBuffer) {
+    return nullptr;
+  }
+  MOZ_ASSERT(mBuffer->IsAttached());
   return mBuffer->AsTiledLayerComposer();
 }
 
@@ -110,7 +111,8 @@ ThebesLayerComposite::RenderLayer(const nsIntRect& aClipRect)
   if (!mBuffer || !mBuffer->IsAttached()) {
     return;
   }
-  PROFILER_LABEL("ThebesLayerComposite", "RenderLayer");
+  PROFILER_LABEL("ThebesLayerComposite", "RenderLayer",
+    js::ProfileEntry::Category::GRAPHICS);
 
   MOZ_ASSERT(mBuffer->GetCompositor() == mCompositeManager->GetCompositor() &&
              mBuffer->GetLayer() == this,
@@ -129,8 +131,9 @@ ThebesLayerComposite::RenderLayer(const nsIntRect& aClipRect)
 
   EffectChain effectChain(this);
   LayerManagerComposite::AutoAddMaskEffect autoMaskEffect(mMaskLayer, effectChain);
+  AddBlendModeEffect(effectChain);
 
-  nsIntRegion visibleRegion = GetEffectiveVisibleRegion();
+  const nsIntRegion& visibleRegion = GetEffectiveVisibleRegion();
 
   TiledLayerProperties tiledLayerProps;
   if (mRequiresTiledProperties) {
@@ -149,7 +152,7 @@ ThebesLayerComposite::RenderLayer(const nsIntRect& aClipRect)
                      &visibleRegion,
                      mRequiresTiledProperties ? &tiledLayerProps
                                               : nullptr);
-
+  mBuffer->BumpFlashCounter();
 
   if (mRequiresTiledProperties) {
     mValidRegion = tiledLayerProps.mValidRegion;
@@ -190,17 +193,16 @@ ThebesLayerComposite::GetEffectiveResolution()
   return CSSToScreenScale(1.0);
 }
 
-nsACString&
-ThebesLayerComposite::PrintInfo(nsACString& aTo, const char* aPrefix)
+void
+ThebesLayerComposite::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 {
-  ThebesLayer::PrintInfo(aTo, aPrefix);
-  aTo += "\n";
+  ThebesLayer::PrintInfo(aStream, aPrefix);
   if (mBuffer && mBuffer->IsAttached()) {
+    aStream << "\n";
     nsAutoCString pfx(aPrefix);
     pfx += "  ";
-    mBuffer->PrintInfo(aTo, pfx.get());
+    mBuffer->PrintInfo(aStream, pfx.get());
   }
-  return aTo;
 }
 
 } /* layers */

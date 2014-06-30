@@ -19,10 +19,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
-import android.app.Activity;
+
 import java.io.IOException;
-
-
 import java.util.Locale;
 
 public class GeckoThread extends Thread implements GeckoEventListener {
@@ -75,7 +73,7 @@ public class GeckoThread extends Thread implements GeckoEventListener {
         mAction = action;
         mUri = uri;
         setName("Gecko");
-        GeckoAppShell.getEventDispatcher().registerEventListener("Gecko:Ready", this);
+        EventDispatcher.getInstance().registerGeckoThreadListener(this, "Gecko:Ready");
     }
 
     public static boolean isCreated() {
@@ -97,7 +95,7 @@ public class GeckoThread extends Thread implements GeckoEventListener {
             Locale.setDefault(locale);
         }
 
-        Context app = GeckoAppShell.getContext();
+        Context context = GeckoAppShell.getContext();
         String resourcePath = "";
         Resources res  = null;
         String[] pluginDirs = null;
@@ -106,23 +104,21 @@ public class GeckoThread extends Thread implements GeckoEventListener {
         } catch (Exception e) {
             Log.w(LOGTAG, "Caught exception getting plugin dirs.", e);
         }
-        
-        if (app instanceof Activity) {
-            Activity activity = (Activity)app;
-            resourcePath = activity.getApplication().getPackageResourcePath();
-            res = activity.getBaseContext().getResources();
-            GeckoLoader.setupGeckoEnvironment(activity, pluginDirs, app.getFilesDir().getPath());
-        }
-        GeckoLoader.loadSQLiteLibs(app, resourcePath);
-        GeckoLoader.loadNSSLibs(app, resourcePath);
-        GeckoLoader.loadGeckoLibs(app, resourcePath);
+
+        resourcePath = context.getPackageResourcePath();
+        res = context.getResources();
+        GeckoLoader.setupGeckoEnvironment(context, pluginDirs, context.getFilesDir().getPath());
+
+        GeckoLoader.loadSQLiteLibs(context, resourcePath);
+        GeckoLoader.loadNSSLibs(context, resourcePath);
+        GeckoLoader.loadGeckoLibs(context, resourcePath);
         GeckoJavaSampler.setLibsLoaded();
 
         Locale.setDefault(locale);
 
         Configuration config = res.getConfiguration();
         config.locale = locale;
-        res.updateConfiguration(config, res.getDisplayMetrics());
+        res.updateConfiguration(config, null);
 
         return resourcePath;
     }
@@ -131,7 +127,7 @@ public class GeckoThread extends Thread implements GeckoEventListener {
         if (action != null && action.startsWith(GeckoApp.ACTION_WEBAPP_PREFIX)) {
             return "-webapp";
         }
-        if (GeckoApp.ACTION_BOOKMARK.equals(action)) {
+        if (GeckoApp.ACTION_HOMESCREEN_SHORTCUT.equals(action)) {
             return "-bookmark";
         }
         return null;
@@ -173,8 +169,10 @@ public class GeckoThread extends Thread implements GeckoEventListener {
         String args = addCustomProfileArg(mArgs);
         String type = getTypeFromAction(mAction);
 
+        if (!AppConstants.MOZILLA_OFFICIAL) {
+            Log.i(LOGTAG, "RunGecko - args = " + args);
+        }
         // and then fire us up
-        Log.i(LOGTAG, "RunGecko - args = " + args);
         GeckoAppShell.runGecko(path, args, mUri, type);
     }
 
@@ -183,7 +181,7 @@ public class GeckoThread extends Thread implements GeckoEventListener {
     @Override
     public void handleMessage(String event, JSONObject message) {
         if ("Gecko:Ready".equals(event)) {
-            GeckoAppShell.getEventDispatcher().unregisterEventListener(event, this);
+            EventDispatcher.getInstance().unregisterGeckoThreadListener(this, event);
             setLaunchState(LaunchState.GeckoRunning);
             GeckoAppShell.sendPendingEventsToGecko();
         }

@@ -23,7 +23,7 @@ class HTMLButtonElement MOZ_FINAL : public nsGenericHTMLFormElementWithState,
 public:
   using nsIConstraintValidation::GetValidationMessage;
 
-  HTMLButtonElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+  HTMLButtonElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                       FromParser aFromParser = NOT_FROM_PARSER);
   virtual ~HTMLButtonElement();
 
@@ -48,15 +48,16 @@ public:
   bool RestoreState(nsPresState* aState) MOZ_OVERRIDE;
   virtual bool IsDisabledForEvents(uint32_t aMessage) MOZ_OVERRIDE;
 
+  virtual void FieldSetDisabledChanged(bool aNotify) MOZ_OVERRIDE; 
+
   // nsIDOMEventTarget
   virtual nsresult PreHandleEvent(EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
   virtual nsresult PostHandleEvent(
                      EventChainPostVisitor& aVisitor) MOZ_OVERRIDE;
 
   // nsINode
-  virtual nsresult Clone(nsINodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   // nsIContent
   virtual nsresult BindToTree(nsIDocument* aDocument, nsIContent* aParent,
@@ -66,8 +67,9 @@ public:
                               bool aNullParent = true) MOZ_OVERRIDE;
   virtual void DoneCreatingElement() MOZ_OVERRIDE;
 
+  void UpdateBarredFromConstraintValidation();
   // Element
-  nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  EventStates IntrinsicState() const MOZ_OVERRIDE;
   /**
    * Called when an attribute is about to be changed
    */

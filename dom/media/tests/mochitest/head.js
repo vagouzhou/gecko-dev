@@ -1,4 +1,4 @@
-﻿/* This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -8,6 +8,16 @@ var Cr = SpecialPowers.Cr;
 
 // Specifies whether we are using fake streams to run this automation
 var FAKE_ENABLED = true;
+try {
+  var audioDevice = SpecialPowers.getCharPref('media.audio_loopback_dev');
+  var videoDevice = SpecialPowers.getCharPref('media.video_loopback_dev');
+  dump('TEST DEVICES: Using media devices:\n');
+  dump('audio: ' + audioDevice + '\nvideo: ' + videoDevice + '\n');
+  FAKE_ENABLED = false;
+} catch (e) {
+  dump('TEST DEVICES: No test devices found (in media.{audio,video}_loopback_dev, using fake streams.\n');
+  FAKE_ENABLED = true;
+}
 
 
 /**
@@ -97,7 +107,9 @@ function createMediaElement(type, label) {
  *        The error callback if the stream fails to be retrieved
  */
 function getUserMedia(constraints, onSuccess, onError) {
-  constraints["fake"] = FAKE_ENABLED;
+  if (!("fake" in constraints) && FAKE_ENABLED) {
+    constraints["fake"] = FAKE_ENABLED;
+  }
 
   info("Call getUserMedia for " + JSON.stringify(constraints));
   navigator.mozGetUserMedia(constraints, onSuccess, onError);
@@ -120,14 +132,14 @@ function runTest(aCallback) {
       ['dom.messageChannel.enabled', true],
       ['media.peerconnection.enabled', true],
       ['media.peerconnection.identity.enabled', true],
-      ['media.peerconnection.identity.timeout', 3000],
+      ['media.peerconnection.identity.timeout', 12000],
       ['media.navigator.permission.disabled', true]]
     }, function () {
       try {
         aCallback();
       }
       catch (err) {
-        unexpectedCallbackAndFinish()(err);
+        generateErrorCallback()(err);
       }
     });
   } else {
@@ -214,7 +226,7 @@ function getBlobContent(blob, onSuccess) {
  *        An optional message to show if no object gets passed into the
  *        generated callback method.
  */
-function unexpectedCallbackAndFinish(message) {
+function generateErrorCallback(message) {
   var stack = new Error().stack.split("\n");
   stack.shift(); // Don't include this instantiation frame
 
@@ -223,9 +235,15 @@ function unexpectedCallbackAndFinish(message) {
    *        The object fired back from the callback
    */
   return function (aObj) {
-    if (aObj && aObj.name && aObj.message) {
-      ok(false, "Unexpected callback for '" + aObj.name + "' with message = '" +
-         aObj.message + "' at " + JSON.stringify(stack));
+    if (aObj) {
+      if (aObj.name && aObj.message) {
+        ok(false, "Unexpected callback for '" + aObj.name +
+           "' with message = '" + aObj.message + "' at " +
+           JSON.stringify(stack));
+      } else {
+        ok(false, "Unexpected callback with = '" + aObj +
+           "' at: " + JSON.stringify(stack));
+      }
     } else {
       ok(false, "Unexpected callback with message = '" + message +
          "' at: " + JSON.stringify(stack));

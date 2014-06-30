@@ -22,7 +22,7 @@
 class gfxASurface;
 class gfxTextPerfMetrics;
 class gfxUserFontSet;
-class nsFont;
+struct nsFont;
 class nsFontCache;
 class nsFontMetrics;
 class nsIAtom;
@@ -30,14 +30,13 @@ class nsIDeviceContextSpec;
 class nsIScreen;
 class nsIScreenManager;
 class nsIWidget;
-class nsRect;
+struct nsRect;
 class nsRenderingContext;
 
-class nsDeviceContext
+class nsDeviceContext MOZ_FINAL
 {
 public:
     nsDeviceContext();
-    ~nsDeviceContext();
 
     NS_INLINE_DECL_REFCOUNTING(nsDeviceContext)
 
@@ -58,10 +57,10 @@ public:
     /**
      * Create a rendering context and initialize it.  Only call this
      * method on device contexts that were initialized for printing.
-     * @param aContext out parameter for new rendering context
-     * @return error status
+     *
+     * @return the new rendering context (guaranteed to be non-null)
      */
-    nsresult CreateRenderingContext(nsRenderingContext *&aContext);
+    already_AddRefed<nsRenderingContext> CreateRenderingContext();
 
     /**
      * Gets the number of app units in one CSS pixel; this number is global,
@@ -249,7 +248,10 @@ public:
      */
     bool IsPrinterSurface();
 
-protected:
+private:
+    // Private destructor, to discourage deletion outside of Release():
+    ~nsDeviceContext();
+
     void SetDPI();
     void ComputeClientRectUsingScreen(nsRect *outRect);
     void ComputeFullAreaUsingScreen(nsRect *outRect);

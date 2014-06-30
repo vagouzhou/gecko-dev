@@ -1,4 +1,4 @@
-// -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; js2-basic-offset: 2; js2-skip-preprocessor-directives: t; -*-
+// -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,6 +12,12 @@ const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/SharedPreferences.jsm");
 Cu.import("resource://gre/modules/Messaging.jsm");
+
+// Keep this in sync with the constant defined in PanelAuthCache.java
+const PREFS_PANEL_AUTH_PREFIX = "home_panels_auth_";
+
+// Default weight for a banner message.
+const DEFAULT_WEIGHT = 100;
 
 // See bug 915424
 function resolveGeckoURI(aURI) {
@@ -46,25 +52,57 @@ function BannerMessage(options) {
 
   if ("ondismiss" in options && typeof options.ondismiss === "function")
     this.ondismiss = options.ondismiss;
+
+  let weight = parseInt(options.weight, 10);
+  this.weight = weight > 0 ? weight : DEFAULT_WEIGHT;
 }
 
+// We need this object to have access to the HomeBanner
+// private members without leaking it outside Home.jsm.
+let HomeBannerMessageHandlers;
+
 let HomeBanner = (function () {
+  // Whether there is a "HomeBanner:Get" request we couldn't fulfill.
+  let _pendingRequest = false;
+
+  // Functions used to handle messages sent from Java.
+  HomeBannerMessageHandlers = {
+    "HomeBanner:Get": function handleBannerGet(data) {
+      if (Object.keys(_messages).length > 0) {
+        _sendBannerData();
+      } else {
+        _pendingRequest = true;
+      }
+    }
+  };
+
   // Holds the messages that will rotate through the banner.
   let _messages = {};
 
+  // Choose a random message from the set of messages, biasing towards those with higher weight.
+  // Weight logic copied from desktop snippets:
+  // https://github.com/mozilla/snippets-service/blob/7d80edb8b1cddaed075275c2fc7cdf69a10f4003/snippets/base/templates/base/includes/snippet_js.html#L119
+  let _sendBannerData = function() {
+    let totalWeight = 0;
+    for (let key in _messages) {
+      let message = _messages[key];
+      totalWeight += message.weight;
+      message.totalWeight = totalWeight;
+    }
 
-  let _handleGet = function() {
-    // Choose a message at random.
-    let keys = Object.keys(_messages);
-    let randomId = keys[Math.floor(Math.random() * keys.length)];
-    let message = _messages[randomId];
-
-    sendMessageToJava({
-      type: "HomeBanner:Data",
-      id: message.id,
-      text: message.text,
-      iconURI: message.iconURI
-    });
+    let threshold = Math.random() * totalWeight;
+    for (let key in _messages) {
+      let message = _messages[key];
+      if (threshold < message.totalWeight) {
+        sendMessageToJava({
+          type: "HomeBanner:Data",
+          id: message.id,
+          text: message.text,
+          iconURI: message.iconURI
+        });
+        return;
+      }
+    }
   };
 
   let _handleShown = function(id) {
@@ -88,10 +126,6 @@ let HomeBanner = (function () {
   return Object.freeze({
     observe: function(subject, topic, data) {
       switch(topic) {
-        case "HomeBanner:Get":
-          _handleGet();
-          break;
-
         case "HomeBanner:Shown":
           _handleShown(data);
           break;
@@ -118,14 +152,15 @@ let HomeBanner = (function () {
       // If this is the first message we're adding, add
       // observers to listen for requests from the Java UI.
       if (Object.keys(_messages).length == 1) {
-        Services.obs.addObserver(this, "HomeBanner:Get", false);
         Services.obs.addObserver(this, "HomeBanner:Shown", false);
         Services.obs.addObserver(this, "HomeBanner:Click", false);
         Services.obs.addObserver(this, "HomeBanner:Dismiss", false);
 
-        // Send a message to Java, in case there's an active HomeBanner
-        // waiting for a response.
-        _handleGet();
+        // Send a message to Java if there's a pending "HomeBanner:Get" request.
+        if (_pendingRequest) {
+          _pendingRequest = false;
+          _sendBannerData();
+        }
       }
 
       return message.id;
@@ -145,7 +180,6 @@ let HomeBanner = (function () {
 
       // If there are no more messages, remove the observers.
       if (Object.keys(_messages).length == 0) {
-        Services.obs.removeObserver(this, "HomeBanner:Get");
         Services.obs.removeObserver(this, "HomeBanner:Shown");
         Services.obs.removeObserver(this, "HomeBanner:Click");
         Services.obs.removeObserver(this, "HomeBanner:Dismiss");
@@ -154,22 +188,97 @@ let HomeBanner = (function () {
   });
 })();
 
-function Panel(id, options) {
-  this.id = id;
-  this.title = options.title;
-
-  if ("layout" in options)
-    this.layout = options.layout;
-
-  if ("views" in options)
-    this.views = options.views;
-}
-
-// We need this function to have access to the HomePanels
+// We need this object to have access to the HomePanels
 // private members without leaking it outside Home.jsm.
-let handlePanelsGet;
+let HomePanelsMessageHandlers;
 
 let HomePanels = (function () {
+  // Functions used to handle messages sent from Java.
+  HomePanelsMessageHandlers = {
+
+    "HomePanels:Get": function handlePanelsGet(data) {
+      data = JSON.parse(data);
+
+      let requestId = data.requestId;
+      let ids = data.ids || null;
+
+      let panels = [];
+      for (let id in _registeredPanels) {
+        // Null ids means we want to fetch all available panels
+        if (ids == null || ids.indexOf(id) >= 0) {
+          try {
+            panels.push(_generatePanel(id));
+          } catch(e) {
+            Cu.reportError("Home.panels: Invalid options, panel.id = " + id + ": " + e);
+          }
+        }
+      }
+
+      sendMessageToJava({
+        type: "HomePanels:Data",
+        panels: panels,
+        requestId: requestId
+      });
+    },
+
+    "HomePanels:Authenticate": function handlePanelsAuthenticate(id) {
+      // Generate panel options to get auth handler.
+      let options = _registeredPanels[id]();
+      if (!options.auth) {
+        throw "Home.panels: Invalid auth for panel.id = " + id;
+      }
+      if (!options.auth.authenticate || typeof options.auth.authenticate !== "function") {
+        throw "Home.panels: Invalid auth authenticate function: panel.id = " + this.id;
+      }
+      options.auth.authenticate();
+    },
+
+    "HomePanels:RefreshView": function handlePanelsRefreshView(data) {
+      data = JSON.parse(data);
+
+      let options = _registeredPanels[data.panelId]();
+      let view = options.views[data.viewIndex];
+
+      if (!view) {
+        throw "Home.panels: Invalid view for panel.id = " + data.panelId
+            + ", view.index = " + data.viewIndex;
+      }
+
+      if (!view.onrefresh || typeof view.onrefresh !== "function") {
+        throw "Home.panels: Invalid onrefresh for panel.id = " + data.panelId
+            + ", view.index = " + data.viewIndex;
+      }
+
+      view.onrefresh();
+    },
+
+    "HomePanels:Installed": function handlePanelsInstalled(id) {
+      _assertPanelExists(id);
+
+      let options = _registeredPanels[id]();
+      if (!options.oninstall) {
+        return;
+      }
+      if (typeof options.oninstall !== "function") {
+        throw "Home.panels: Invalid oninstall function: panel.id = " + this.id;
+      }
+      options.oninstall();
+    },
+
+    "HomePanels:Uninstalled": function handlePanelsUninstalled(id) {
+      _assertPanelExists(id);
+
+      let options = _registeredPanels[id]();
+      if (!options.onuninstall) {
+        return;
+      }
+      if (typeof options.onuninstall !== "function") {
+        throw "Home.panels: Invalid onuninstall function: panel.id = " + this.id;
+      }
+      options.onuninstall();
+    }
+  };
+
   // Holds the current set of registered panels that can be
   // installed, updated, uninstalled, or unregistered. It maps
   // panel ids with the functions that dynamically generate
@@ -201,23 +310,26 @@ let HomePanels = (function () {
     INTENT: "intent"
   });
 
-  let _generatePanel = function(id) {
-    let panel = new Panel(id, _registeredPanels[id]());
+  function Panel(id, options) {
+    this.id = id;
+    this.title = options.title;
+    this.layout = options.layout;
+    this.views = options.views;
 
-    if (!panel.id || !panel.title) {
+    if (!this.id || !this.title) {
       throw "Home.panels: Can't create a home panel without an id and title!";
     }
 
-    if (!panel.layout) {
+    if (!this.layout) {
       // Use FRAME layout by default
-      panel.layout = Layout.FRAME;
-    } else if (!_valueExists(Layout, panel.layout)) {
-      throw "Home.panels: Invalid layout for panel: panel.id = " + panel.id + ", panel.layout =" + panel.layout;
+      this.layout = Layout.FRAME;
+    } else if (!_valueExists(Layout, this.layout)) {
+      throw "Home.panels: Invalid layout for panel: panel.id = " + this.id + ", panel.layout =" + this.layout;
     }
 
-    for (let view of panel.views) {
+    for (let view of this.views) {
       if (!_valueExists(View, view.type)) {
-        throw "Home.panels: Invalid view type: panel.id = " + panel.id + ", view.type = " + view.type;
+        throw "Home.panels: Invalid view type: panel.id = " + this.id + ", view.type = " + view.type;
       }
 
       if (!view.itemType) {
@@ -229,45 +341,48 @@ let HomePanels = (function () {
           view.itemType = Item.IMAGE;
         }
       } else if (!_valueExists(Item, view.itemType)) {
-        throw "Home.panels: Invalid item type: panel.id = " + panel.id + ", view.itemType = " + view.itemType;
+        throw "Home.panels: Invalid item type: panel.id = " + this.id + ", view.itemType = " + view.itemType;
       }
 
       if (!view.itemHandler) {
         // Use BROWSER item handler by default
         view.itemHandler = ItemHandler.BROWSER;
       } else if (!_valueExists(ItemHandler, view.itemHandler)) {
-        throw "Home.panels: Invalid item handler: panel.id = " + panel.id + ", view.itemHandler = " + view.itemHandler;
+        throw "Home.panels: Invalid item handler: panel.id = " + this.id + ", view.itemHandler = " + view.itemHandler;
       }
 
       if (!view.dataset) {
-        throw "Home.panels: No dataset provided for view: panel.id = " + panel.id + ", view.type = " + view.type;
+        throw "Home.panels: No dataset provided for view: panel.id = " + this.id + ", view.type = " + view.type;
+      }
+
+      if (view.onrefresh) {
+        view.refreshEnabled = true;
       }
     }
 
-    return panel;
-  };
+    if (options.auth) {
+      if (!options.auth.messageText) {
+        throw "Home.panels: Invalid auth messageText: panel.id = " + this.id;
+      }
+      if (!options.auth.buttonText) {
+        throw "Home.panels: Invalid auth buttonText: panel.id = " + this.id;
+      }
 
-  handlePanelsGet = function(data) {
-    let requestId = data.requestId;
-    let ids = data.ids || null;
+      this.authConfig = {
+        messageText: options.auth.messageText,
+        buttonText: options.auth.buttonText
+      };
 
-    let panels = [];
-    for (let id in _registeredPanels) {
-      // Null ids means we want to fetch all available panels
-      if (ids == null || ids.indexOf(id) >= 0) {
-        try {
-          panels.push(_generatePanel(id));
-        } catch(e) {
-          Cu.reportError("Home.panels: Invalid options, panel.id = " + id + ": " + e);
-        }
+      // Include optional image URL if it is specified.
+      if (options.auth.imageUrl) {
+        this.authConfig.imageUrl = options.auth.imageUrl;
       }
     }
+  }
 
-    sendMessageToJava({
-      type: "HomePanels:Data",
-      panels: panels,
-      requestId: requestId
-    });
+  let _generatePanel = function(id) {
+    let options = _registeredPanels[id]();
+    return new Panel(id, options);
   };
 
   // Helper function used to see if a value is in an object.
@@ -336,6 +451,14 @@ let HomePanels = (function () {
         type: "HomePanels:Update",
         panel: _generatePanel(id)
       });
+    },
+
+    setAuthenticated: function(id, isAuthenticated) {
+      _assertPanelExists(id);
+
+      let authKey = PREFS_PANEL_AUTH_PREFIX + id;
+      let sharedPrefs = SharedPreferences.forProfile();
+      sharedPrefs.setBoolPref(authKey, isAuthenticated);
     }
   });
 })();
@@ -347,10 +470,12 @@ this.Home = Object.freeze({
 
   // Lazy notification observer registered in browser.js
   observe: function(subject, topic, data) {
-    switch(topic) {
-      case "HomePanels:Get":
-        handlePanelsGet(JSON.parse(data));
-        break;
+    if (topic in HomeBannerMessageHandlers) {
+      HomeBannerMessageHandlers[topic](data);
+    } else if (topic in HomePanelsMessageHandlers) {
+      HomePanelsMessageHandlers[topic](data);
+    } else {
+      Cu.reportError("Home.observe: message handler not found for topic: " + topic);
     }
   }
 });

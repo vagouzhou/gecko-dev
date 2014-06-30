@@ -12,8 +12,7 @@
 #include "SmsSegmentInfo.h"
 #include "nsJSUtils.h"
 #include "nsCxPusher.h"
-#include "mozilla/dom/MobileMessageManagerBinding.h"
-#include "mozilla/dom/MozMmsMessageBinding.h"
+#include "mozilla/dom/MozMobileMessageManagerBinding.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/Preferences.h"
 #include "nsString.h"
@@ -99,11 +98,11 @@ getDefaultServiceId(const char* aPrefKey)
 
 } // anonymous namespace
 
-NS_IMPL_ISUPPORTS4(SmsIPCService,
-                   nsISmsService,
-                   nsIMmsService,
-                   nsIMobileMessageDatabaseService,
-                   nsIObserver)
+NS_IMPL_ISUPPORTS(SmsIPCService,
+                  nsISmsService,
+                  nsIMmsService,
+                  nsIMobileMessageDatabaseService,
+                  nsIObserver)
 
 SmsIPCService::SmsIPCService()
 {

@@ -53,9 +53,9 @@ NS_QUERYFRAME_HEAD(nsContainerFrame)
 NS_QUERYFRAME_TAIL_INHERITING(nsSplittableFrame)
 
 void
-nsContainerFrame::Init(nsIContent* aContent,
-                       nsIFrame*   aParent,
-                       nsIFrame*   aPrevInFlow)
+nsContainerFrame::Init(nsIContent*       aContent,
+                       nsContainerFrame* aParent,
+                       nsIFrame*         aPrevInFlow)
 {
   nsSplittableFrame::Init(aContent, aParent, aPrevInFlow);
   if (aPrevInFlow) {
@@ -67,115 +67,75 @@ nsContainerFrame::Init(nsIContent* aContent,
   }
 }
 
-nsresult
+void
 nsContainerFrame::SetInitialChildList(ChildListID  aListID,
                                       nsFrameList& aChildList)
 {
-  nsresult  result;
-  if (mFrames.NotEmpty()) {
-    // We already have child frames which means we've already been
-    // initialized
-    NS_NOTREACHED("unexpected second call to SetInitialChildList");
-    result = NS_ERROR_UNEXPECTED;
-  } else if (aListID != kPrincipalList) {
-    // All we know about is the principal child list.
-    NS_NOTREACHED("unknown frame list");
-    result = NS_ERROR_INVALID_ARG;
-  } else {
+  MOZ_ASSERT(mFrames.IsEmpty(),
+             "unexpected second call to SetInitialChildList");
+  MOZ_ASSERT(aListID == kPrincipalList, "unexpected child list");
 #ifdef DEBUG
-    nsFrame::VerifyDirtyBitSet(aChildList);
+  nsFrame::VerifyDirtyBitSet(aChildList);
 #endif
-    mFrames.SetFrames(aChildList);
-    result = NS_OK;
-  }
-  return result;
+  mFrames.SetFrames(aChildList);
 }
 
-nsresult
+void
 nsContainerFrame::AppendFrames(ChildListID  aListID,
                                nsFrameList& aFrameList)
 {
-  if (aListID != kPrincipalList) {
-#ifdef IBMBIDI
-    if (aListID != kNoReflowPrincipalList)
-#endif
-    {
-      NS_ERROR("unexpected child list");
-      return NS_ERROR_INVALID_ARG;
-    }
-  }
+  MOZ_ASSERT(aListID == kPrincipalList || aListID == kNoReflowPrincipalList,
+             "unexpected child list");
   if (aFrameList.NotEmpty()) {
     mFrames.AppendFrames(this, aFrameList);
 
     // Ask the parent frame to reflow me.
-#ifdef IBMBIDI
     if (aListID == kPrincipalList)
-#endif
     {
       PresContext()->PresShell()->
         FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                          NS_FRAME_HAS_DIRTY_CHILDREN);
     }
   }
-  return NS_OK;
 }
 
-nsresult
+void
 nsContainerFrame::InsertFrames(ChildListID aListID,
                                nsIFrame* aPrevFrame,
                                nsFrameList& aFrameList)
 {
+  MOZ_ASSERT(aListID == kPrincipalList || aListID == kNoReflowPrincipalList,
+             "unexpected child list");
   NS_ASSERTION(!aPrevFrame || aPrevFrame->GetParent() == this,
                "inserting after sibling frame with different parent");
 
-  if (aListID != kPrincipalList) {
-#ifdef IBMBIDI
-    if (aListID != kNoReflowPrincipalList)
-#endif
-    {
-      NS_ERROR("unexpected child list");
-      return NS_ERROR_INVALID_ARG;
-    }
-  }
   if (aFrameList.NotEmpty()) {
     // Insert frames after aPrevFrame
     mFrames.InsertFrames(this, aPrevFrame, aFrameList);
 
-#ifdef IBMBIDI
     if (aListID == kPrincipalList)
-#endif
     {
       PresContext()->PresShell()->
         FrameNeedsReflow(this, nsIPresShell::eTreeChange,
                          NS_FRAME_HAS_DIRTY_CHILDREN);
     }
   }
-  return NS_OK;
 }
 
-nsresult
+void
 nsContainerFrame::RemoveFrame(ChildListID aListID,
                               nsIFrame* aOldFrame)
 {
-  if (aListID != kPrincipalList) {
-#ifdef IBMBIDI
-    if (kNoReflowPrincipalList != aListID)
-#endif
-    {
-      NS_ERROR("unexpected child list");
-      return NS_ERROR_INVALID_ARG;
-    }
-  }
+  MOZ_ASSERT(aListID == kPrincipalList || aListID == kNoReflowPrincipalList,
+             "unexpected child list");
 
   // Loop and destroy aOldFrame and all of its continuations.
   // Request a reflow on the parent frames involved unless we were explicitly
   // told not to (kNoReflowPrincipalList).
   bool generateReflowCommand = true;
-#ifdef IBMBIDI
   if (kNoReflowPrincipalList == aListID) {
     generateReflowCommand = false;
   }
-#endif
   nsIPresShell* shell = PresContext()->PresShell();
   nsContainerFrame* lastParent = nullptr;
   while (aOldFrame) {
@@ -184,8 +144,7 @@ nsContainerFrame::RemoveFrame(ChildListID aListID,
     //      for overflow containers once we can split abspos elements with
     //      inline containing blocks.
     nsIFrame* oldFrameNextContinuation = aOldFrame->GetNextContinuation();
-    nsContainerFrame* parent =
-      static_cast<nsContainerFrame*>(aOldFrame->GetParent());
+    nsContainerFrame* parent = aOldFrame->GetParent();
     parent->StealFrame(aOldFrame, true);
     aOldFrame->Destroy();
     aOldFrame = oldFrameNextContinuation;
@@ -195,7 +154,6 @@ nsContainerFrame::RemoveFrame(ChildListID aListID,
       lastParent = parent;
     }
   }
-  return NS_OK;
 }
 
 void
@@ -717,6 +675,13 @@ void nsContainerFrame::SetSizeConstraints(nsPresContext* aPresContext,
                          aPresContext->AppUnitsToDevPixels(aMaxSize.width),
                        aMaxSize.height == NS_INTRINSICSIZE ? NS_MAXSIZE :
                          aPresContext->AppUnitsToDevPixels(aMaxSize.height));
+
+  // MinSize has a priority over MaxSize
+  if (devMinSize.width > devMaxSize.width)
+    devMaxSize.width = devMinSize.width;
+  if (devMinSize.height > devMaxSize.height)
+    devMaxSize.height = devMinSize.height;
+
   widget::SizeConstraints constraints(devMinSize, devMaxSize);
 
   // The sizes are in inner window sizes, so convert them into outer window sizes.
@@ -849,12 +814,31 @@ nsContainerFrame::DoInlineIntrinsicWidth(nsRenderingContext *aRenderingContext,
   // This frame is a first-in-flow, but it might have a previous bidi
   // continuation, in which case that continuation should handle the startSide
   // border.
+  // For box-decoration-break:clone we setup clonePBM = startPBM + endPBM and
+  // add that to each line.  For box-decoration-break:slice clonePBM is zero.
+  nscoord clonePBM = 0; // PBM = PaddingBorderMargin
+  const bool sliceBreak =
+    styleBorder->mBoxDecorationBreak == NS_STYLE_BOX_DECORATION_BREAK_SLICE;
   if (!GetPrevContinuation()) {
-    aData->currentLine +=
+    nscoord startPBM =
       // clamp negative calc() to 0
       std::max(GetCoord(stylePadding->mPadding.Get(startSide), 0), 0) +
       styleBorder->GetComputedBorderWidth(startSide) +
       GetCoord(styleMargin->mMargin.Get(startSide), 0);
+    if (MOZ_LIKELY(sliceBreak)) {
+      aData->currentLine += startPBM;
+    } else {
+      clonePBM = startPBM;
+    }
+  }
+
+  nscoord endPBM =
+    // clamp negative calc() to 0
+    std::max(GetCoord(stylePadding->mPadding.Get(endSide), 0), 0) +
+    styleBorder->GetComputedBorderWidth(endSide) +
+    GetCoord(styleMargin->mMargin.Get(endSide), 0);
+  if (MOZ_UNLIKELY(!sliceBreak)) {
+    clonePBM += endPBM;
   }
 
   const nsLineList_iterator* savedLine = aData->line;
@@ -863,6 +847,9 @@ nsContainerFrame::DoInlineIntrinsicWidth(nsRenderingContext *aRenderingContext,
   nsContainerFrame *lastInFlow;
   for (nsContainerFrame *nif = this; nif;
        nif = static_cast<nsContainerFrame*>(nif->GetNextInFlow())) {
+    if (aData->currentLine == 0) {
+      aData->currentLine = clonePBM;
+    }
     for (nsIFrame *kid = nif->mFrames.FirstChild(); kid;
          kid = kid->GetNextSibling()) {
       if (aType == nsLayoutUtils::MIN_WIDTH)
@@ -891,12 +878,8 @@ nsContainerFrame::DoInlineIntrinsicWidth(nsRenderingContext *aRenderingContext,
   // We reached the last-in-flow, but it might have a next bidi
   // continuation, in which case that continuation should handle
   // the endSide border.
-  if (!lastInFlow->GetNextContinuation()) {
-    aData->currentLine +=
-      // clamp negative calc() to 0
-      std::max(GetCoord(stylePadding->mPadding.Get(endSide), 0), 0) +
-      styleBorder->GetComputedBorderWidth(endSide) +
-      GetCoord(styleMargin->mMargin.Get(endSide), 0);
+  if (MOZ_LIKELY(!lastInFlow->GetNextContinuation() && sliceBreak)) {
+    aData->currentLine += endPBM;
   }
 }
 
@@ -926,7 +909,7 @@ nsContainerFrame::ComputeAutoSize(nsRenderingContext *aRenderingContext,
  * requested), and then calls Reflow(). If the reflow succeeds and the child
  * frame is complete, deletes any next-in-flows using DeleteNextInFlowChild()
  */
-nsresult
+void
 nsContainerFrame::ReflowChild(nsIFrame*                aKidFrame,
                               nsPresContext*           aPresContext,
                               nsHTMLReflowMetrics&     aDesiredSize,
@@ -938,8 +921,6 @@ nsContainerFrame::ReflowChild(nsIFrame*                aKidFrame,
                               nsOverflowContinuationTracker* aTracker)
 {
   NS_PRECONDITION(aReflowState.frame == aKidFrame, "bad reflow state");
-
-  nsresult  result;
 
   // Send the WillReflow() notification, and position the child frame
   // and its view if requested
@@ -954,12 +935,11 @@ nsContainerFrame::ReflowChild(nsIFrame*                aKidFrame,
   }
 
   // Reflow the child frame
-  result = aKidFrame->Reflow(aPresContext, aDesiredSize, aReflowState,
-                             aStatus);
+  aKidFrame->Reflow(aPresContext, aDesiredSize, aReflowState, aStatus);
 
-  // If the reflow was successful and the child frame is complete, delete any
-  // next-in-flows, but only if the NO_DELETE_NEXT_IN_FLOW flag isn't set.
-  if (NS_SUCCEEDED(result) && NS_FRAME_IS_FULLY_COMPLETE(aStatus) &&
+  // If the child frame is complete, delete any next-in-flows,
+  // but only if the NO_DELETE_NEXT_IN_FLOW flag isn't set.
+  if (NS_FRAME_IS_FULLY_COMPLETE(aStatus) &&
       !(aFlags & NS_FRAME_NO_DELETE_NEXT_IN_FLOW_CHILD)) {
     nsIFrame* kidNextInFlow = aKidFrame->GetNextInFlow();
     if (kidNextInFlow) {
@@ -967,11 +947,9 @@ nsContainerFrame::ReflowChild(nsIFrame*                aKidFrame,
       // the right parent to do the removal (it's possible that the
       // parent is not this because we are executing pullup code)
       nsOverflowContinuationTracker::AutoFinish fini(aTracker, aKidFrame);
-      static_cast<nsContainerFrame*>(kidNextInFlow->GetParent())
-        ->DeleteNextInFlowChild(kidNextInFlow, true);
+      kidNextInFlow->GetParent()->DeleteNextInFlowChild(kidNextInFlow, true);
     }
   }
-  return result;
 }
 
 
@@ -1027,7 +1005,7 @@ nsContainerFrame::PositionChildViews(nsIFrame* aFrame)
  *    don't want to automatically sync the frame and view
  * NS_FRAME_NO_SIZE_VIEW - don't size the frame's view
  */
-nsresult
+void
 nsContainerFrame::FinishReflowChild(nsIFrame*                  aKidFrame,
                                     nsPresContext*             aPresContext,
                                     const nsHTMLReflowMetrics& aDesiredSize,
@@ -1061,10 +1039,10 @@ nsContainerFrame::FinishReflowChild(nsIFrame*                  aKidFrame,
     }
   }
 
-  return aKidFrame->DidReflow(aPresContext, aReflowState, nsDidReflowStatus::FINISHED);
+  aKidFrame->DidReflow(aPresContext, aReflowState, nsDidReflowStatus::FINISHED);
 }
 
-nsresult
+void
 nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPresContext,
                                                   const nsHTMLReflowState& aReflowState,
                                                   nsOverflowAreas&         aOverflowRects,
@@ -1072,7 +1050,6 @@ nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPres
                                                   nsReflowStatus&          aStatus)
 {
   NS_PRECONDITION(aPresContext, "null pointer");
-  nsresult rv = NS_OK;
 
   nsFrameList* overflowContainers =
                GetPropTableFrames(OverflowContainersProperty());
@@ -1111,7 +1088,7 @@ nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPres
     }
   }
   if (!overflowContainers) {
-    return NS_OK; // nothing to reflow
+    return; // nothing to reflow
   }
 
   nsOverflowContinuationTracker tracker(this, false, false);
@@ -1143,14 +1120,12 @@ nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPres
       nsReflowStatus frameStatus;
 
       // Reflow
-      rv = ReflowChild(frame, aPresContext, desiredSize, frameState,
-                       prevRect.x, 0, aFlags, frameStatus, &tracker);
-      NS_ENSURE_SUCCESS(rv, rv);
+      ReflowChild(frame, aPresContext, desiredSize, frameState,
+                  prevRect.x, 0, aFlags, frameStatus, &tracker);
       //XXXfr Do we need to override any shrinkwrap effects here?
       // e.g. desiredSize.Width() = prevRect.width;
-      rv = FinishReflowChild(frame, aPresContext, desiredSize, &frameState,
-                             prevRect.x, 0, aFlags);
-      NS_ENSURE_SUCCESS(rv, rv);
+      FinishReflowChild(frame, aPresContext, desiredSize, &frameState,
+                        prevRect.x, 0, aFlags);
 
       // Handle continuations
       if (!NS_FRAME_IS_FULLY_COMPLETE(frameStatus)) {
@@ -1174,9 +1149,10 @@ nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPres
         }
         else if (!(nif->GetStateBits() & NS_FRAME_IS_OVERFLOW_CONTAINER)) {
           // used to be a normal next-in-flow; steal it from the child list
-          rv = static_cast<nsContainerFrame*>(nif->GetParent())
-                 ->StealFrame(nif);
-          NS_ENSURE_SUCCESS(rv, rv);
+          nsresult rv = nif->GetParent()->StealFrame(nif);
+          if (NS_FAILED(rv)) {
+            return;
+          }
         }
 
         tracker.Insert(nif, frameStatus);
@@ -1193,8 +1169,6 @@ nsContainerFrame::ReflowOverflowContainerChildren(nsPresContext*           aPres
     }
     ConsiderChildOverflow(aOverflowRects, frame);
   }
-
-  return NS_OK;
 }
 
 void
@@ -1375,8 +1349,8 @@ nsContainerFrame::DeleteNextInFlowChild(nsIFrame* aNextInFlow,
     }
     for (int32_t i = frames.Length() - 1; i >= 0; --i) {
       nsIFrame* delFrame = frames.ElementAt(i);
-      static_cast<nsContainerFrame*>(delFrame->GetParent())
-        ->DeleteNextInFlowChild(delFrame, aDeletingEmptyFrames);
+      delFrame->GetParent()->
+        DeleteNextInFlowChild(delFrame, aDeletingEmptyFrames);
     }
   }
 
@@ -1664,8 +1638,7 @@ nsOverflowContinuationTracker::Insert(nsIFrame*       aOverflowCont,
       NS_ASSERTION(!(mOverflowContList &&
                      mOverflowContList->ContainsFrame(aOverflowCont)),
                    "overflow containers out of order");
-      rv = static_cast<nsContainerFrame*>(aOverflowCont->GetParent())
-             ->StealFrame(aOverflowCont);
+      rv = aOverflowCont->GetParent()->StealFrame(aOverflowCont);
       NS_ENSURE_SUCCESS(rv, rv);
     }
     else {
@@ -1730,8 +1703,7 @@ nsOverflowContinuationTracker::Insert(nsIFrame*       aOverflowCont,
               (!reparented && f->GetParent() == mParent) ||
               (reparented && f->GetParent() != mParent))) {
       if (!(f->GetStateBits() & NS_FRAME_IS_OVERFLOW_CONTAINER)) {
-        nsContainerFrame* parent = static_cast<nsContainerFrame*>(f->GetParent());
-        rv = parent->StealFrame(f);
+        rv = f->GetParent()->StealFrame(f);
         NS_ENSURE_SUCCESS(rv, rv);
       }
       Insert(f, aReflowStatus);
@@ -1778,7 +1750,7 @@ nsOverflowContinuationTracker::EndFinish(nsIFrame* aChild)
       // mOverflowContList was deleted
       mPrevOverflowCont = nullptr;
       mSentry = nullptr;
-      mParent = static_cast<nsContainerFrame*>(aChild->GetParent());
+      mParent = aChild->GetParent();
       mOverflowContList = nullptr;
       SetupOverflowContList();
       return;

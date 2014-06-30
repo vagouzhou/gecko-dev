@@ -8,6 +8,8 @@
 
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/Move.h"
+#include "mozilla/MathAlgorithms.h"
 
 #include "nsCSSParser.h"
 #include "nsCSSProps.h"
@@ -20,7 +22,7 @@
 #include "nsCSSRules.h"
 #include "mozilla/css/NameSpaceRule.h"
 #include "nsTArray.h"
-#include "nsCSSStyleSheet.h"
+#include "mozilla/CSSStyleSheet.h"
 #include "mozilla/css/Declaration.h"
 #include "nsStyleConsts.h"
 #include "nsNetUtil.h"
@@ -46,6 +48,7 @@
 #include "nsRuleData.h"
 #include "mozilla/CSSVariableValues.h"
 #include "mozilla/dom/URL.h"
+#include "gfxFontFamilyList.h"
 
 using namespace mozilla;
 
@@ -60,20 +63,23 @@ nsCSSProps::kParserVariantTable[eCSSProperty_COUNT_no_shorthands] = {
 #undef CSS_PROP
 };
 
-// Length of the "var-" prefix of custom property names.
-#define VAR_PREFIX_LENGTH 4
+// Maximum number of repetitions for the repeat() function
+// in the grid-template-columns and grid-template-rows properties,
+// to limit high memory usage from small stylesheets.
+// Must be a positive integer. Should be large-ish.
+#define GRID_TEMPLATE_MAX_REPETITIONS 10000
 
 // End-of-array marker for mask arguments to ParseBitmaskValues
 #define MASK_END_VALUE  (-1)
 
-MOZ_BEGIN_ENUM_CLASS(nsParsingStatus, int32_t)
+MOZ_BEGIN_ENUM_CLASS(CSSParseResult, int32_t)
   // Parsed something successfully:
   Ok,
   // Did not find what we were looking for, but did not consume any token:
   NotFound,
   // Unexpected token or token value, too late for UngetToken() to be enough:
   Error
-MOZ_END_ENUM_CLASS(nsParsingStatus)
+MOZ_END_ENUM_CLASS(CSSParseResult)
 
 namespace {
 
@@ -96,7 +102,7 @@ public:
   CSSParserImpl();
   ~CSSParserImpl();
 
-  nsresult SetStyleSheet(nsCSSStyleSheet* aSheet);
+  nsresult SetStyleSheet(CSSStyleSheet* aSheet);
 
   nsresult SetQuirkMode(bool aQuirkMode);
 
@@ -147,6 +153,13 @@ public:
                       nsMediaList* aMediaList,
                       bool aHTMLMode);
 
+  bool ParseSourceSizeList(const nsAString& aBuffer,
+                           nsIURI* aURI, // for error reporting
+                           uint32_t aLineNumber, // for error reporting
+                           InfallibleTArray< nsAutoPtr<nsMediaQuery> >& aQueries,
+                           InfallibleTArray<nsCSSValue>& aValues,
+                           bool aHTMLMode);
+
   nsresult ParseVariable(const nsAString& aVariableName,
                          const nsAString& aPropValue,
                          nsIURI* aSheetURL,
@@ -155,6 +168,11 @@ public:
                          css::Declaration* aDeclaration,
                          bool* aChanged,
                          bool aIsImportant);
+
+  bool ParseFontFamilyListString(const nsSubstring& aBuffer,
+                                 nsIURI* aURL, // for error reporting
+                                 uint32_t aLineNumber, // for error reporting
+                                 nsCSSValue& aValue);
 
   bool ParseColorString(const nsSubstring& aBuffer,
                         nsIURI* aURL, // for error reporting
@@ -186,6 +204,18 @@ public:
                                  nsIURI* aDocURL,
                                  nsIURI* aBaseURL,
                                  nsIPrincipal* aDocPrincipal);
+
+  bool ParseCounterStyleName(const nsAString& aBuffer,
+                             nsIURI* aURL,
+                             nsAString& aName);
+
+  bool ParseCounterDescriptor(nsCSSCounterDesc aDescID,
+                              const nsAString& aBuffer,
+                              nsIURI* aSheetURL,
+                              nsIURI* aBaseURL,
+                              nsIPrincipal* aSheetPrincipal,
+                              nsCSSValue& aValue);
+
 
   typedef nsCSSParser::VariableEnumFunc VariableEnumFunc;
 
@@ -256,7 +286,7 @@ public:
                                            nsIURI* aDocURL,
                                            nsIURI* aBaseURL,
                                            nsIPrincipal* aDocPrincipal,
-                                           nsCSSStyleSheet* aSheet,
+                                           CSSStyleSheet* aSheet,
                                            uint32_t aLineNumber,
                                            uint32_t aLineOffset);
 
@@ -418,9 +448,17 @@ protected:
   bool ParseCharsetRule(RuleAppendFunc aAppendFunc, void* aProcessData);
   bool ParseImportRule(RuleAppendFunc aAppendFunc, void* aProcessData);
   bool ParseURLOrString(nsString& aURL);
-  bool GatherMedia(nsMediaList* aMedia,
-                   bool aInAtRule);
-  bool ParseMediaQuery(bool aInAtRule, nsMediaQuery **aQuery,
+  bool GatherMedia(nsMediaList* aMedia, bool aInAtRule);
+
+  enum eMediaQueryType { eMediaQueryNormal,
+                         // Parsing an at rule
+                         eMediaQueryAtRule,
+                         // Attempt to consume a single media-condition and
+                         // stop. Note that the spec defines "expression and/or
+                         // expression" as one condition but "expression,
+                         // expression" as two.
+                         eMediaQuerySingleCondition };
+  bool ParseMediaQuery(eMediaQueryType aMode, nsMediaQuery **aQuery,
                        bool *aHitStop);
   bool ParseMediaQueryExpression(nsMediaQuery* aQuery);
   void ProcessImport(const nsString& aURLSpec,
@@ -459,6 +497,13 @@ protected:
   bool ParseSupportsConditionTermsAfterOperator(
                                        bool& aConditionMet,
                                        SupportsConditionTermOperator aOperator);
+
+  bool ParseCounterStyleRule(RuleAppendFunc aAppendFunc, void* aProcessData);
+  bool ParseCounterStyleName(nsAString& aName, bool aForDefinition);
+  bool ParseCounterDescriptor(nsCSSCounterStyleRule *aRule);
+  bool ParseCounterDescriptorValue(nsCSSCounterDesc aDescID,
+                                   nsCSSValue& aValue);
+  bool ParseCounterRange(nsCSSValuePair& aPair);
 
   /**
    * Parses the current input stream for a CSS token stream value and resolves
@@ -646,17 +691,23 @@ protected:
   // CSS Grid
   bool ParseGridAutoFlow();
 
-  // Parse an optional <line-names> expression.
-  // If successful, leave aValue untouched,
+  // Parse a <line-names> expression.
+  // If successful, either leave aValue untouched,
   // to indicate that we parsed the empty list,
   // or set it to a eCSSUnit_List of eCSSUnit_Ident.
-  // Not finding an open paren is considered the same as an empty list.
+  //
+  // To parse an optional <line-names> (ie. if not finding an open paren
+  // is considered the same as an empty list),
+  // treat CSSParseResult::NotFound the same as CSSParseResult::Ok.
   //
   // If aValue is already a eCSSUnit_List, append to that list.
-  bool ParseGridLineNames(nsCSSValue& aValue);
+  CSSParseResult ParseGridLineNames(nsCSSValue& aValue);
+  bool ParseGridLineNameListRepeat(nsCSSValueList** aTailPtr);
+  bool ParseOptionalLineNameListAfterSubgrid(nsCSSValue& aValue);
   bool ParseGridTrackBreadth(nsCSSValue& aValue);
-  nsParsingStatus ParseGridTrackSize(nsCSSValue& aValue);
+  CSSParseResult ParseGridTrackSize(nsCSSValue& aValue);
   bool ParseGridAutoColumnsRows(nsCSSProperty aPropID);
+  bool ParseGridTrackListRepeat(nsCSSValueList** aTailPtr);
 
   // Assuming a [ <line-names>? ] has already been parsed,
   // parse the rest of a <track-list>.
@@ -685,7 +736,6 @@ protected:
   bool ParseGrid();
   bool ParseGridShorthandAutoProps();
   bool ParseGridLine(nsCSSValue& aValue);
-  bool ParseGridAutoPosition();
   bool ParseGridColumnRowStartEnd(nsCSSProperty aPropID);
   bool ParseGridColumnRow(nsCSSProperty aStartPropID,
                           nsCSSProperty aEndPropID);
@@ -708,13 +758,14 @@ protected:
   bool ParseFontVariantLigatures(nsCSSValue& aValue);
   bool ParseFontVariantNumeric(nsCSSValue& aValue);
   bool ParseFontWeight(nsCSSValue& aValue);
-  bool ParseOneFamily(nsAString& aFamily, bool& aOneKeyword);
+  bool ParseOneFamily(nsAString& aFamily, bool& aOneKeyword, bool& aQuoted);
   bool ParseFamily(nsCSSValue& aValue);
   bool ParseFontFeatureSettings(nsCSSValue& aValue);
   bool ParseFontSrc(nsCSSValue& aValue);
   bool ParseFontSrcFormat(InfallibleTArray<nsCSSValue>& values);
   bool ParseFontRanges(nsCSSValue& aValue);
   bool ParseListStyle();
+  bool ParseListStyleType(nsCSSValue& aValue);
   bool ParseMargin();
   bool ParseMarks(nsCSSValue& aValue);
   bool ParseTransform(bool aIsPrefixed);
@@ -729,7 +780,7 @@ protected:
   bool ParseTextAlignLast(nsCSSValue& aValue);
   bool ParseTextDecoration();
   bool ParseTextDecorationLine(nsCSSValue& aValue);
-  bool ParseTextCombineHorizontal(nsCSSValue& aValue);
+  bool ParseTextCombineUpright(nsCSSValue& aValue);
   bool ParseTextOverflow(nsCSSValue& aValue);
   bool ParseTouchAction(nsCSSValue& aValue);
 
@@ -841,6 +892,10 @@ protected:
   bool ParseOneOrLargerVariant(nsCSSValue& aValue,
                                int32_t aVariantMask,
                                const KTableValue aKeywordTable[]);
+  bool ParseNonNegativeInteger(nsCSSValue& aValue)
+  {
+    return ParseNonNegativeVariant(aValue, VARIANT_INTEGER, nullptr);
+  }
 
   // http://dev.w3.org/csswg/css-values/#custom-idents
   // Parse an identifier that is none of:
@@ -931,7 +986,7 @@ protected:
   nsCOMPtr<nsIPrincipal> mSheetPrincipal;
 
   // The sheet we're parsing into
-  nsRefPtr<nsCSSStyleSheet> mSheet;
+  nsRefPtr<CSSStyleSheet> mSheet;
 
   // Used for @import rules
   mozilla::css::Loader* mChildLoader; // not ref counted, it owns us
@@ -939,7 +994,7 @@ protected:
   // Sheet section we're in.  This is used to enforce correct ordering of the
   // various rule types (eg the fact that a @charset rule must come before
   // anything else).  Note that there are checks of similar things in various
-  // places in nsCSSStyleSheet.cpp (e.g in insertRule, RebuildChildList).
+  // places in CSSStyleSheet.cpp (e.g in insertRule, RebuildChildList).
   enum nsCSSSection {
     eCSSSection_Charset,
     eCSSSection_Import,
@@ -1084,7 +1139,7 @@ CSSParserImpl::~CSSParserImpl()
 }
 
 nsresult
-CSSParserImpl::SetStyleSheet(nsCSSStyleSheet* aSheet)
+CSSParserImpl::SetStyleSheet(CSSStyleSheet* aSheet)
 {
   if (aSheet != mSheet) {
     // Switch to using the new sheet, if any
@@ -1499,7 +1554,7 @@ CSSParserImpl::ParseVariable(const nsAString& aVariableName,
   }
 
   if (!parsedOK) {
-    REPORT_UNEXPECTED_P(PEValueParsingError, NS_LITERAL_STRING("var-") +
+    REPORT_UNEXPECTED_P(PEValueParsingError, NS_LITERAL_STRING("--") +
                                              aVariableName);
     REPORT_UNEXPECTED(PEDeclDropped);
     OUTPUT_ERROR();
@@ -1561,6 +1616,90 @@ CSSParserImpl::ParseMediaList(const nsSubstring& aBuffer,
   mHTMLMediaMode = false;
 }
 
+//  <source-size-list> = <source-size>#?
+//  <source-size> = <media-condition>? <length>
+bool
+CSSParserImpl::ParseSourceSizeList(const nsAString& aBuffer,
+                                   nsIURI* aURI, // for error reporting
+                                   uint32_t aLineNumber, // for error reporting
+                                   InfallibleTArray< nsAutoPtr<nsMediaQuery> >& aQueries,
+                                   InfallibleTArray<nsCSSValue>& aValues,
+                                   bool aHTMLMode)
+{
+  aQueries.Clear();
+  aValues.Clear();
+
+  // fake base URI since media value lists don't have URIs in them
+  nsCSSScanner scanner(aBuffer, aLineNumber);
+  css::ErrorReporter reporter(scanner, mSheet, mChildLoader, aURI);
+  InitScanner(scanner, reporter, aURI, aURI, nullptr);
+
+  // See ParseMediaList comment about HTML mode
+  mHTMLMediaMode = aHTMLMode;
+
+  bool hitError = false;
+  for (;;) {
+    nsAutoPtr<nsMediaQuery> query;
+    nsCSSValue value;
+
+    bool hitStop;
+    if (!ParseMediaQuery(eMediaQuerySingleCondition, getter_Transfers(query),
+                         &hitStop)) {
+      NS_ASSERTION(!hitStop, "should return true when hit stop");
+      hitError = true;
+      break;
+    }
+
+    if (!query) {
+      REPORT_UNEXPECTED_EOF(PEParseSourceSizeListEOF);
+      NS_ASSERTION(hitStop,
+                   "should return hitStop or an error if returning no query");
+      hitError = true;
+      break;
+    }
+
+    if (hitStop) {
+      // Empty conditions (e.g. just a bare value) should be treated as always
+      // matching (a query with no expressions fails to match, so a negated one
+      // always matches.)
+      query->SetNegated();
+    }
+
+    if (!ParseNonNegativeVariant(value, VARIANT_LPCALC, nullptr)) {
+      hitError = true;
+      break;
+    }
+
+    aQueries.AppendElement(query.forget());
+    aValues.AppendElement(value);
+
+    if (!GetToken(true)) {
+      // Expected EOF
+      break;
+    }
+
+    if (eCSSToken_Symbol != mToken.mType || mToken.mSymbol != ',') {
+      REPORT_UNEXPECTED_TOKEN(PEParseSourceSizeListNotComma);
+      hitError = true;
+      break;
+    }
+  }
+
+  if (hitError) {
+    // Per spec, a parse failure in this list invalidates it
+    // entirely. Currently, this grammar is specified standalone and not part of
+    // any larger grammar, so it doesn't make sense to try to advance the token
+    // beyond it.
+    OUTPUT_ERROR();
+  }
+
+  CLEAR_ERROR();
+  ReleaseScanner();
+  mHTMLMediaMode = false;
+
+  return !hitError;
+}
+
 bool
 CSSParserImpl::ParseColorString(const nsSubstring& aBuffer,
                                 nsIURI* aURI, // for error reporting
@@ -1576,6 +1715,23 @@ CSSParserImpl::ParseColorString(const nsSubstring& aBuffer,
   OUTPUT_ERROR();
   ReleaseScanner();
   return colorParsed;
+}
+
+bool
+CSSParserImpl::ParseFontFamilyListString(const nsSubstring& aBuffer,
+                                         nsIURI* aURI, // for error reporting
+                                         uint32_t aLineNumber, // for error reporting
+                                         nsCSSValue& aValue)
+{
+  nsCSSScanner scanner(aBuffer, aLineNumber);
+  css::ErrorReporter reporter(scanner, mSheet, mChildLoader, aURI);
+  InitScanner(scanner, reporter, aURI, aURI, nullptr);
+
+  // Parse a font family list, and check that there's nothing else after it.
+  bool familyParsed = ParseFamily(aValue) && !GetToken(true);
+  OUTPUT_ERROR();
+  ReleaseScanner();
+  return familyParsed;
 }
 
 nsresult
@@ -1681,10 +1837,10 @@ CSSParserImpl::EvaluateSupportsDeclaration(const nsAString& aProperty,
   bool parsedOK;
 
   if (propID == eCSSPropertyExtra_variable) {
-    MOZ_ASSERT(Substring(aProperty,
-                         0, VAR_PREFIX_LENGTH).EqualsLiteral("var-"));
+    MOZ_ASSERT(Substring(aProperty, 0,
+                         CSS_CUSTOM_NAME_PREFIX_LENGTH).EqualsLiteral("--"));
     const nsDependentSubstring varName =
-      Substring(aProperty, VAR_PREFIX_LENGTH);  // remove 'var-'
+      Substring(aProperty, CSS_CUSTOM_NAME_PREFIX_LENGTH);  // remove '--'
     CSSVariableDeclarations::Type variableType;
     nsString variableValue;
     parsedOK = ParseVariableDeclaration(&variableType, variableValue) &&
@@ -2017,16 +2173,25 @@ CSSParserImpl::ResolveValueWithVariableReferencesRec(
           recLastToken = eCSSTokenSerialization_Nothing;
 
           if (!GetToken(true) ||
-              mToken.mType != eCSSToken_Ident) {
-            // "var(" must be followed by an identifier.
+              mToken.mType != eCSSToken_Ident ||
+              !nsCSSProps::IsCustomPropertyName(mToken.mIdent)) {
+            // "var(" must be followed by an identifier, and it must be a
+            // custom property name.
             return false;
           }
+
+          // Turn the custom property name into a variable name by removing the
+          // '--' prefix.
+          MOZ_ASSERT(Substring(mToken.mIdent, 0,
+                               CSS_CUSTOM_NAME_PREFIX_LENGTH).
+                       EqualsLiteral("--"));
+          nsDependentString variableName(mToken.mIdent,
+                                         CSS_CUSTOM_NAME_PREFIX_LENGTH);
 
           // Get the value of the identified variable.  Note that we
           // check if the variable value is the empty string, as that means
           // that the variable was invalid at computed value time due to
           // unresolveable variable references or cycles.
-          const nsString& variableName = mToken.mIdent;
           nsString variableValue;
           nsCSSTokenSerializationType varFirstToken, varLastToken;
           bool valid = aVariables->Get(variableName, variableValue,
@@ -2247,7 +2412,7 @@ CSSParserImpl::ParsePropertyWithVariableReferences(
                                             nsIURI* aDocURL,
                                             nsIURI* aBaseURL,
                                             nsIPrincipal* aDocPrincipal,
-                                            nsCSSStyleSheet* aSheet,
+                                            CSSStyleSheet* aSheet,
                                             uint32_t aLineNumber,
                                             uint32_t aLineOffset)
 {
@@ -2325,6 +2490,44 @@ CSSParserImpl::ParsePropertyWithVariableReferences(
 
   mTempData.ClearProperty(propertyToParse);
   mTempData.AssertInitialState();
+}
+
+bool
+CSSParserImpl::ParseCounterStyleName(const nsAString& aBuffer,
+                                     nsIURI* aURL,
+                                     nsAString& aName)
+{
+  nsCSSScanner scanner(aBuffer, 0);
+  css::ErrorReporter reporter(scanner, mSheet, mChildLoader, aURL);
+  InitScanner(scanner, reporter, aURL, aURL, nullptr);
+
+  bool success = ParseCounterStyleName(aName, true) && !GetToken(true);
+
+  OUTPUT_ERROR();
+  ReleaseScanner();
+
+  return success;
+}
+
+bool
+CSSParserImpl::ParseCounterDescriptor(nsCSSCounterDesc aDescID,
+                                      const nsAString& aBuffer,
+                                      nsIURI* aSheetURL,
+                                      nsIURI* aBaseURL,
+                                      nsIPrincipal* aSheetPrincipal,
+                                      nsCSSValue& aValue)
+{
+  nsCSSScanner scanner(aBuffer, 0);
+  css::ErrorReporter reporter(scanner, mSheet, mChildLoader, aSheetURL);
+  InitScanner(scanner, reporter, aSheetURL, aBaseURL, aSheetPrincipal);
+
+  bool success = ParseCounterDescriptorValue(aDescID, aValue) &&
+                 !GetToken(true);
+
+  OUTPUT_ERROR();
+  ReleaseScanner();
+
+  return success;
 }
 
 //----------------------------------------------------------------------
@@ -2549,9 +2752,12 @@ CSSParserImpl::ParseAtRule(RuleAppendFunc aAppendFunc,
     parseFunc = &CSSParserImpl::ParseKeyframesRule;
     newSection = eCSSSection_General;
 
-  } else if (mToken.mIdent.LowerCaseEqualsLiteral("supports") &&
-             CSSSupportsRule::PrefEnabled()) {
+  } else if (mToken.mIdent.LowerCaseEqualsLiteral("supports")) {
     parseFunc = &CSSParserImpl::ParseSupportsRule;
+    newSection = eCSSSection_General;
+
+  } else if (mToken.mIdent.LowerCaseEqualsLiteral("counter-style")) {
+    parseFunc = &CSSParserImpl::ParseCounterStyleRule;
     newSection = eCSSSection_General;
 
   } else {
@@ -2626,12 +2832,15 @@ CSSParserImpl::ParseURLOrString(nsString& aURL)
 }
 
 bool
-CSSParserImpl::ParseMediaQuery(bool aInAtRule,
+CSSParserImpl::ParseMediaQuery(eMediaQueryType aQueryType,
                                nsMediaQuery **aQuery,
                                bool *aHitStop)
 {
   *aQuery = nullptr;
   *aHitStop = false;
+  bool inAtRule = aQueryType == eMediaQueryAtRule;
+  // Attempt to parse a single condition and stop
+  bool singleCondition = aQueryType == eMediaQuerySingleCondition;
 
   // "If the comma-separated list is the empty list it is assumed to
   // specify the media query 'all'."  (css3-mediaqueries, section
@@ -2639,7 +2848,7 @@ CSSParserImpl::ParseMediaQuery(bool aInAtRule,
   if (!GetToken(true)) {
     *aHitStop = true;
     // expected termination by EOF
-    if (!aInAtRule)
+    if (!inAtRule)
       return true;
 
     // unexpected termination by EOF
@@ -2647,7 +2856,7 @@ CSSParserImpl::ParseMediaQuery(bool aInAtRule,
     return true;
   }
 
-  if (eCSSToken_Symbol == mToken.mType && aInAtRule &&
+  if (eCSSToken_Symbol == mToken.mType && inAtRule &&
       (mToken.mSymbol == ';' || mToken.mSymbol == '{' || mToken.mSymbol == '}' )) {
     *aHitStop = true;
     UngetToken();
@@ -2668,6 +2877,12 @@ CSSParserImpl::ParseMediaQuery(bool aInAtRule,
       OUTPUT_ERROR();
       query->SetHadUnknownExpression();
     }
+  } else if (singleCondition) {
+    // Since we are only trying to consume a single condition, which precludes
+    // media types and not/only, this should be the same as reaching immediate
+    // EOF (no condition to parse)
+    *aHitStop = true;
+    return true;
   } else {
     nsCOMPtr<nsIAtom> mediaType;
     bool gotNotOrOnly = false;
@@ -2712,7 +2927,7 @@ CSSParserImpl::ParseMediaQuery(bool aInAtRule,
     if (!GetToken(true)) {
       *aHitStop = true;
       // expected termination by EOF
-      if (!aInAtRule)
+      if (!inAtRule)
         break;
 
       // unexpected termination by EOF
@@ -2720,21 +2935,29 @@ CSSParserImpl::ParseMediaQuery(bool aInAtRule,
       break;
     }
 
-    if (eCSSToken_Symbol == mToken.mType && aInAtRule &&
+    if (eCSSToken_Symbol == mToken.mType && inAtRule &&
         (mToken.mSymbol == ';' || mToken.mSymbol == '{' || mToken.mSymbol == '}')) {
       *aHitStop = true;
       UngetToken();
       break;
     }
-    if (eCSSToken_Symbol == mToken.mType && mToken.mSymbol == ',') {
+    if (!singleCondition &&
+        eCSSToken_Symbol == mToken.mType && mToken.mSymbol == ',') {
       // Done with the expressions for this query
       break;
     }
     if (eCSSToken_Ident != mToken.mType ||
         !mToken.mIdent.LowerCaseEqualsLiteral("and")) {
-      REPORT_UNEXPECTED_TOKEN(PEGatherMediaNotComma);
-      UngetToken();
-      return false;
+      if (singleCondition) {
+        // We have a condition at this point -- if we're not chained to other
+        // conditions with and/or, we're done.
+        UngetToken();
+        break;
+      } else {
+        REPORT_UNEXPECTED_TOKEN(PEGatherMediaNotComma);
+        UngetToken();
+        return false;
+      }
     }
     if (!ParseMediaQueryExpression(query)) {
       OUTPUT_ERROR();
@@ -2750,11 +2973,11 @@ bool
 CSSParserImpl::GatherMedia(nsMediaList* aMedia,
                            bool aInAtRule)
 {
+  eMediaQueryType type = aInAtRule ? eMediaQueryAtRule : eMediaQueryNormal;
   for (;;) {
     nsAutoPtr<nsMediaQuery> query;
     bool hitStop;
-    if (!ParseMediaQuery(aInAtRule, getter_Transfers(query),
-                         &hitStop)) {
+    if (!ParseMediaQuery(type, getter_Transfers(query), &hitStop)) {
       NS_ASSERTION(!hitStop, "should return true when hit stop");
       OUTPUT_ERROR();
       if (query) {
@@ -3290,26 +3513,25 @@ CSSParserImpl::ParseFontFeatureValuesRule(RuleAppendFunc aAppendFunc,
                valuesRule(new nsCSSFontFeatureValuesRule());
 
   // parse family list
-  nsCSSValue familyValue;
+  nsCSSValue fontlistValue;
 
-  if (!ParseFamily(familyValue) ||
-      familyValue.GetUnit() != eCSSUnit_Families)
+  if (!ParseFamily(fontlistValue) ||
+      fontlistValue.GetUnit() != eCSSUnit_FontFamilyList)
   {
     REPORT_UNEXPECTED_TOKEN(PEFFVNoFamily);
     return false;
   }
 
   // add family to rule
-  nsAutoString familyList;
-  bool hasGeneric;
-  familyValue.GetStringValue(familyList);
-  valuesRule->SetFamilyList(familyList, hasGeneric);
+  const FontFamilyList* fontlist = fontlistValue.GetFontFamilyListValue();
 
   // family list has generic ==> parse error
-  if (hasGeneric) {
+  if (fontlist->HasGeneric()) {
     REPORT_UNEXPECTED_TOKEN(PEFFVGenericInFamilyList);
     return false;
   }
+
+  valuesRule->SetFamilyList(*fontlist);
 
   // open brace
   if (!ExpectSymbol('{', true)) {
@@ -3558,7 +3780,7 @@ CSSParserImpl::ParsePageRule(RuleAppendFunc aAppendFunc, void* aData)
   }
 
   // Takes ownership of declaration.
-  nsRefPtr<nsCSSPageRule> rule = new nsCSSPageRule(declaration);
+  nsRefPtr<nsCSSPageRule> rule = new nsCSSPageRule(Move(declaration));
 
   (*aAppendFunc)(rule, aData);
   return true;
@@ -3582,7 +3804,7 @@ CSSParserImpl::ParseKeyframeRule()
 
   // Takes ownership of declaration, and steals contents of selectorList.
   nsRefPtr<nsCSSKeyframeRule> rule =
-    new nsCSSKeyframeRule(selectorList, declaration);
+    new nsCSSKeyframeRule(selectorList, Move(declaration));
 
   return rule.forget();
 }
@@ -3918,6 +4140,348 @@ CSSParserImpl::ParseSupportsConditionTermsAfterOperator(
       return true;
     }
   }
+}
+
+bool
+CSSParserImpl::ParseCounterStyleRule(RuleAppendFunc aAppendFunc, void* aData)
+{
+  nsAutoString name;
+  if (!ParseCounterStyleName(name, true)) {
+    REPORT_UNEXPECTED_TOKEN(PECounterStyleNotIdent);
+    return false;
+  }
+
+  if (!ExpectSymbol('{', true)) {
+    REPORT_UNEXPECTED_TOKEN(PECounterStyleBadBlockStart);
+    return false;
+  }
+
+  nsRefPtr<nsCSSCounterStyleRule> rule = new nsCSSCounterStyleRule(name);
+  for (;;) {
+    if (!GetToken(true)) {
+      REPORT_UNEXPECTED_EOF(PECounterStyleEOF);
+      break;
+    }
+    if (mToken.IsSymbol('}')) {
+      break;
+    }
+    if (mToken.IsSymbol(';')) {
+      continue;
+    }
+
+    if (!ParseCounterDescriptor(rule)) {
+      REPORT_UNEXPECTED(PEDeclSkipped);
+      OUTPUT_ERROR();
+      if (!SkipDeclaration(true)) {
+        REPORT_UNEXPECTED_EOF(PECounterStyleEOF);
+        break;
+      }
+    }
+  }
+
+  int32_t system = rule->GetSystem();
+  bool isCorrect = false;
+  switch (system) {
+    case NS_STYLE_COUNTER_SYSTEM_CYCLIC:
+    case NS_STYLE_COUNTER_SYSTEM_NUMERIC:
+    case NS_STYLE_COUNTER_SYSTEM_ALPHABETIC:
+    case NS_STYLE_COUNTER_SYSTEM_SYMBOLIC:
+    case NS_STYLE_COUNTER_SYSTEM_FIXED: {
+      // check whether symbols is set and the length is sufficient
+      const nsCSSValue& symbols = rule->GetDesc(eCSSCounterDesc_Symbols);
+      if (symbols.GetUnit() == eCSSUnit_List &&
+          nsCSSCounterStyleRule::CheckDescValue(
+              system, eCSSCounterDesc_Symbols, symbols)) {
+        isCorrect = true;
+      }
+      break;
+    }
+    case NS_STYLE_COUNTER_SYSTEM_ADDITIVE: {
+      // for additive system, additive-symbols must be set
+      const nsCSSValue& symbols =
+        rule->GetDesc(eCSSCounterDesc_AdditiveSymbols);
+      if (symbols.GetUnit() == eCSSUnit_PairList) {
+        isCorrect = true;
+      }
+      break;
+    }
+    case NS_STYLE_COUNTER_SYSTEM_EXTENDS: {
+      // for extends system, symbols & additive-symbols must not be set
+      const nsCSSValue& symbols = rule->GetDesc(eCSSCounterDesc_Symbols);
+      const nsCSSValue& additiveSymbols =
+        rule->GetDesc(eCSSCounterDesc_AdditiveSymbols);
+      if (symbols.GetUnit() == eCSSUnit_Null &&
+          additiveSymbols.GetUnit() == eCSSUnit_Null) {
+        isCorrect = true;
+      }
+      break;
+    }
+    default:
+      NS_NOTREACHED("unknown system");
+  }
+
+  if (isCorrect) {
+    (*aAppendFunc)(rule, aData);
+  }
+  return true;
+}
+
+bool
+CSSParserImpl::ParseCounterStyleName(nsAString& aName, bool aForDefinition)
+{
+  if (!GetToken(true)) {
+    return false;
+  }
+
+  if (mToken.mType != eCSSToken_Ident) {
+    UngetToken();
+    return false;
+  }
+
+  static const nsCSSKeyword kReservedNames[] = {
+    eCSSKeyword_none,
+    eCSSKeyword_decimal,
+    eCSSKeyword_UNKNOWN
+  };
+
+  nsCSSValue value; // we don't actually care about the value
+  if (!ParseCustomIdent(value, mToken.mIdent,
+                        aForDefinition ? kReservedNames : nullptr)) {
+    REPORT_UNEXPECTED_TOKEN(PECounterStyleBadName);
+    UngetToken();
+    return false;
+  }
+
+  aName = mToken.mIdent;
+  if (nsCSSProps::IsPredefinedCounterStyle(aName)) {
+    ToLowerCase(aName);
+  }
+  return true;
+}
+
+bool
+CSSParserImpl::ParseCounterDescriptor(nsCSSCounterStyleRule* aRule)
+{
+  if (eCSSToken_Ident != mToken.mType) {
+    REPORT_UNEXPECTED_TOKEN(PECounterDescExpected);
+    return false;
+  }
+
+  nsString descName = mToken.mIdent;
+  if (!ExpectSymbol(':', true)) {
+    REPORT_UNEXPECTED_TOKEN(PEParseDeclarationNoColon);
+    OUTPUT_ERROR();
+    return false;
+  }
+
+  nsCSSCounterDesc descID = nsCSSProps::LookupCounterDesc(descName);
+  nsCSSValue value;
+
+  if (descID == eCSSCounterDesc_UNKNOWN) {
+    REPORT_UNEXPECTED_P(PEUnknownCounterDesc, descName);
+    return false;
+  }
+
+  if (!ParseCounterDescriptorValue(descID, value)) {
+    REPORT_UNEXPECTED_P(PEValueParsingError, descName);
+    return false;
+  }
+
+  if (!ExpectEndProperty()) {
+    return false;
+  }
+
+  aRule->SetDesc(descID, value);
+  return true;
+}
+
+bool
+CSSParserImpl::ParseCounterDescriptorValue(nsCSSCounterDesc aDescID,
+                                           nsCSSValue& aValue)
+{
+  // Should also include VARIANT_IMAGE, but it is not supported currently.
+  // See bug 1024179.
+  static const int32_t VARIANT_COUNTER_SYMBOL =
+    VARIANT_STRING | VARIANT_IDENTIFIER;
+
+  switch (aDescID) {
+    case eCSSCounterDesc_System: {
+      nsCSSValue system;
+      if (!ParseEnum(system, nsCSSProps::kCounterSystemKTable)) {
+        return false;
+      }
+      switch (system.GetIntValue()) {
+        case NS_STYLE_COUNTER_SYSTEM_FIXED: {
+          nsCSSValue start;
+          if (!ParseVariant(start, VARIANT_INTEGER, nullptr)) {
+            start.SetIntValue(1, eCSSUnit_Integer);
+          }
+          aValue.SetPairValue(system, start);
+          return true;
+        }
+        case NS_STYLE_COUNTER_SYSTEM_EXTENDS: {
+          nsString name;
+          if (!ParseCounterStyleName(name, false)) {
+            REPORT_UNEXPECTED_TOKEN(PECounterExtendsNotIdent);
+            return false;
+          }
+          aValue.SetPairValue(system, nsCSSValue(name, eCSSUnit_Ident));
+          return true;
+        }
+        default:
+          aValue = system;
+          return true;
+      }
+    }
+
+    case eCSSCounterDesc_Negative: {
+      nsCSSValue first, second;
+      if (!ParseVariant(first, VARIANT_COUNTER_SYMBOL, nullptr)) {
+        return false;
+      }
+      if (!ParseVariant(second, VARIANT_COUNTER_SYMBOL, nullptr)) {
+        aValue = first;
+      } else {
+        aValue.SetPairValue(first, second);
+      }
+      return true;
+    }
+
+    case eCSSCounterDesc_Prefix:
+    case eCSSCounterDesc_Suffix:
+      return ParseVariant(aValue, VARIANT_COUNTER_SYMBOL, nullptr);
+
+    case eCSSCounterDesc_Range: {
+      if (ParseVariant(aValue, VARIANT_AUTO, nullptr)) {
+        return true;
+      }
+      nsCSSValuePairList* item = aValue.SetPairListValue();
+      for (;;) {
+        nsCSSValuePair pair;
+        if (!ParseCounterRange(pair)) {
+          return false;
+        }
+        item->mXValue = pair.mXValue;
+        item->mYValue = pair.mYValue;
+        if (!ExpectSymbol(',', true)) {
+          return true;
+        }
+        item->mNext = new nsCSSValuePairList;
+        item = item->mNext;
+      }
+      // should always return in the loop
+    }
+
+    case eCSSCounterDesc_Pad: {
+      nsCSSValue width, symbol;
+      bool hasWidth = ParseNonNegativeInteger(width);
+      if (!ParseVariant(symbol, VARIANT_COUNTER_SYMBOL, nullptr) ||
+          (!hasWidth && !ParseNonNegativeInteger(width))) {
+        return false;
+      }
+      aValue.SetPairValue(width, symbol);
+      return true;
+    }
+
+    case eCSSCounterDesc_Fallback: {
+      nsString name;
+      if (!ParseCounterStyleName(name, false)) {
+        return false;
+      }
+      aValue.SetStringValue(name, eCSSUnit_Ident);
+      return true;
+    }
+
+    case eCSSCounterDesc_Symbols: {
+      nsCSSValueList* item = nullptr;
+      for (;;) {
+        nsCSSValue value;
+        if (!ParseVariant(value, VARIANT_COUNTER_SYMBOL, nullptr)) {
+          return !!item;
+        }
+        if (!item) {
+          item = aValue.SetListValue();
+        } else {
+          item->mNext = new nsCSSValueList;
+          item = item->mNext;
+        }
+        item->mValue = value;
+      }
+      // should always return in the loop
+    }
+
+    case eCSSCounterDesc_AdditiveSymbols: {
+      nsCSSValuePairList* item = nullptr;
+      int32_t lastWeight = -1;
+      for (;;) {
+        nsCSSValue weight, symbol;
+        bool hasWeight = ParseNonNegativeInteger(weight);
+        if (!ParseVariant(symbol, VARIANT_COUNTER_SYMBOL, nullptr) ||
+            (!hasWeight && !ParseNonNegativeInteger(weight))) {
+          return false;
+        }
+        if (lastWeight != -1 && weight.GetIntValue() >= lastWeight) {
+          REPORT_UNEXPECTED(PECounterASWeight);
+          return false;
+        }
+        lastWeight = weight.GetIntValue();
+        if (!item) {
+          item = aValue.SetPairListValue();
+        } else {
+          item->mNext = new nsCSSValuePairList;
+          item = item->mNext;
+        }
+        item->mXValue = weight;
+        item->mYValue = symbol;
+        if (!ExpectSymbol(',', true)) {
+          return true;
+        }
+      }
+      // should always return in the loop
+    }
+
+    case eCSSCounterDesc_SpeakAs: {
+      if (ParseVariant(aValue, VARIANT_AUTO | VARIANT_KEYWORD,
+                      nsCSSProps::kCounterSpeakAsKTable)) {
+        if (aValue.GetUnit() == eCSSUnit_Enumerated &&
+            aValue.GetIntValue() == NS_STYLE_COUNTER_SPEAKAS_SPELL_OUT) {
+          // Currently spell-out is not supported, so it is explicitly
+          // rejected here rather than parsed as a custom identifier.
+          // See bug 1024178.
+          return false;
+        }
+        return true;
+      }
+      nsString name;
+      if (ParseCounterStyleName(name, false)) {
+        aValue.SetStringValue(name, eCSSUnit_Ident);
+        return true;
+      }
+      return false;
+    }
+
+    default:
+      NS_NOTREACHED("unknown descriptor");
+      return false;
+  }
+}
+
+bool
+CSSParserImpl::ParseCounterRange(nsCSSValuePair& aPair)
+{
+  static const int32_t VARIANT_BOUND = VARIANT_INTEGER | VARIANT_KEYWORD;
+  nsCSSValue lower, upper;
+  if (!ParseVariant(lower, VARIANT_BOUND, nsCSSProps::kCounterRangeKTable) ||
+      !ParseVariant(upper, VARIANT_BOUND, nsCSSProps::kCounterRangeKTable)) {
+    return false;
+  }
+  if (lower.GetUnit() != eCSSUnit_Enumerated &&
+      upper.GetUnit() != eCSSUnit_Enumerated &&
+      lower.GetIntValue() > upper.GetIntValue()) {
+    return false;
+  }
+  aPair = nsCSSValuePair(lower, upper);
+  return true;
 }
 
 bool
@@ -5917,9 +6481,10 @@ CSSParserImpl::ParseDeclaration(css::Declaration* aDeclaration,
   }
 
   if (customProperty) {
-    MOZ_ASSERT(Substring(propertyName,
-                         0, VAR_PREFIX_LENGTH).EqualsLiteral("var-"));
-    nsDependentString varName(propertyName, VAR_PREFIX_LENGTH); // remove 'var-'
+    MOZ_ASSERT(Substring(propertyName, 0,
+                         CSS_CUSTOM_NAME_PREFIX_LENGTH).EqualsLiteral("--"));
+    // remove '--'
+    nsDependentString varName(propertyName, CSS_CUSTOM_NAME_PREFIX_LENGTH);
     aDeclaration->AddVariableDeclaration(varName, variableType, variableValue,
                                          status == ePriority_Important, false);
   } else {
@@ -6542,24 +7107,15 @@ CSSParserImpl::ParseCounter(nsCSSValue& aValue)
     }
 
     // get optional type
-    int32_t type = NS_STYLE_LIST_STYLE_DECIMAL;
+    nsString type = NS_LITERAL_STRING("decimal");
     if (ExpectSymbol(',', true)) {
-      if (!GetToken(true)) {
-        break;
-      }
-      nsCSSKeyword keyword;
-      if (eCSSToken_Ident != mToken.mType ||
-          (keyword = nsCSSKeywords::LookupKeyword(mToken.mIdent)) ==
-            eCSSKeyword_UNKNOWN ||
-          !nsCSSProps::FindKeyword(keyword, nsCSSProps::kListStyleKTable,
-                                   type)) {
-        UngetToken();
+      if (!ParseCounterStyleName(type, false)) {
         break;
       }
     }
 
     int32_t typeItem = eCSSUnit_Counters == unit ? 2 : 1;
-    val->Item(typeItem).SetIntValue(type, eCSSUnit_Enumerated);
+    val->Item(typeItem).SetStringValue(type, eCSSUnit_Ident);
 
     if (!ExpectSymbol(')', true)) {
       break;
@@ -6903,8 +7459,8 @@ CSSParserImpl::ParseFlexFlow()
 
   int32_t found = ParseChoice(values, kFlexFlowSubprops, numProps);
 
-  // Bail if we didn't successfully parse anything, or if there's trailing junk.
-  if (found < 1 || !ExpectEndProperty()) {
+  // Bail if we didn't successfully parse anything
+  if (found < 1) {
     return false;
   }
 
@@ -6933,7 +7489,8 @@ CSSParserImpl::ParseGridAutoFlow()
   }
 
   static const int32_t mask[] = {
-    NS_STYLE_GRID_AUTO_FLOW_COLUMN | NS_STYLE_GRID_AUTO_FLOW_ROW,
+    NS_STYLE_GRID_AUTO_FLOW_ROW | NS_STYLE_GRID_AUTO_FLOW_COLUMN,
+    NS_STYLE_GRID_AUTO_FLOW_DENSE | NS_STYLE_GRID_AUTO_FLOW_STACK,
     MASK_END_VALUE
   };
   if (!ParseBitmaskValues(value, nsCSSProps::kGridAutoFlowKTable, mask)) {
@@ -6942,32 +7499,32 @@ CSSParserImpl::ParseGridAutoFlow()
   int32_t bitField = value.GetIntValue();
 
   // Requires one of these
-  if (!(bitField & NS_STYLE_GRID_AUTO_FLOW_NONE ||
+  if (!(bitField & NS_STYLE_GRID_AUTO_FLOW_ROW ||
         bitField & NS_STYLE_GRID_AUTO_FLOW_COLUMN ||
-        bitField & NS_STYLE_GRID_AUTO_FLOW_ROW)) {
+        bitField & NS_STYLE_GRID_AUTO_FLOW_STACK)) {
     return false;
   }
 
-  // 'none' is only valid if it occurs alone:
-  if (bitField & NS_STYLE_GRID_AUTO_FLOW_NONE &&
-      bitField != NS_STYLE_GRID_AUTO_FLOW_NONE) {
-    return false;
+  // 'stack' without 'row' or 'column' defaults to 'stack row'
+  if (bitField == NS_STYLE_GRID_AUTO_FLOW_STACK) {
+    value.SetIntValue(bitField | NS_STYLE_GRID_AUTO_FLOW_ROW,
+                      eCSSUnit_Enumerated);
   }
 
   AppendValue(eCSSProperty_grid_auto_flow, value);
   return true;
 }
 
-bool
+CSSParseResult
 CSSParserImpl::ParseGridLineNames(nsCSSValue& aValue)
 {
   if (!ExpectSymbol('(', true)) {
-    return true;
+    return CSSParseResult::NotFound;
   }
   if (!GetToken(true) || mToken.IsSymbol(')')) {
-    return true;
+    return CSSParseResult::Ok;
   }
-  // 'return true' so far keeps eCSSUnit_Null, to represent an empty list.
+  // 'return' so far leaves aValue untouched, to represent an empty list.
 
   nsCSSValueList* item;
   if (aValue.GetUnit() == eCSSUnit_List) {
@@ -6992,13 +7549,103 @@ CSSParserImpl::ParseGridLineNames(nsCSSValue& aValue)
           ParseCustomIdent(item->mValue, mToken.mIdent))) {
       UngetToken();
       SkipUntil(')');
-      return false;
+      return CSSParseResult::Error;
     }
     if (!GetToken(true) || mToken.IsSymbol(')')) {
-      return true;
+      return CSSParseResult::Ok;
     }
     item->mNext = new nsCSSValueList;
     item = item->mNext;
+  }
+}
+
+// Assuming the 'repeat(' function token has already been consumed,
+// parse the rest of repeat(<positive-integer>, <line-names>+)
+// Append to the linked list whose end is given by |aTailPtr|,
+// and updated |aTailPtr| to point to the new end of the list.
+bool
+CSSParserImpl::ParseGridLineNameListRepeat(nsCSSValueList** aTailPtr)
+{
+  if (!(GetToken(true) &&
+        mToken.mType == eCSSToken_Number &&
+        mToken.mIntegerValid &&
+        mToken.mInteger > 0)) {
+    SkipUntil(')');
+    return false;
+  }
+  int32_t repetitions = std::min(mToken.mInteger,
+                                 GRID_TEMPLATE_MAX_REPETITIONS);
+  if (!ExpectSymbol(',', true)) {
+    SkipUntil(')');
+    return false;
+  }
+
+  // Parse at least one <line-names>
+  nsCSSValueList* tail = *aTailPtr;
+  do {
+    tail->mNext = new nsCSSValueList;
+    tail = tail->mNext;
+    if (ParseGridLineNames(tail->mValue) != CSSParseResult::Ok) {
+      SkipUntil(')');
+      return false;
+    }
+  } while (!ExpectSymbol(')', true));
+  nsCSSValueList* firstRepeatedItem = (*aTailPtr)->mNext;
+  nsCSSValueList* lastRepeatedItem = tail;
+
+  // Our repeated items are already in the target list once,
+  // so they need to be repeated |repetitions - 1| more times.
+  MOZ_ASSERT(repetitions > 0, "Expected positive repetitions");
+  while (--repetitions) {
+    nsCSSValueList* repeatedItem = firstRepeatedItem;
+    for (;;) {
+      tail->mNext = new nsCSSValueList;
+      tail = tail->mNext;
+      tail->mValue = repeatedItem->mValue;
+      if (repeatedItem == lastRepeatedItem) {
+        break;
+      }
+      repeatedItem = repeatedItem->mNext;
+    }
+  }
+  *aTailPtr = tail;
+  return true;
+}
+
+// Assuming a 'subgrid' keyword was already consumed, parse <line-name-list>?
+bool
+CSSParserImpl::ParseOptionalLineNameListAfterSubgrid(nsCSSValue& aValue)
+{
+  nsCSSValueList* item = aValue.SetListValue();
+  // This marker distinguishes the value from a <track-list>.
+  item->mValue.SetIntValue(NS_STYLE_GRID_TEMPLATE_SUBGRID,
+                           eCSSUnit_Enumerated);
+  for (;;) {
+    // First try to parse repeat(<positive-integer>, <line-names>+)
+    if (!GetToken(true)) {
+      return true;
+    }
+    if (mToken.mType == eCSSToken_Function &&
+        mToken.mIdent.LowerCaseEqualsLiteral("repeat")) {
+      if (!ParseGridLineNameListRepeat(&item)) {
+        return false;
+      }
+    } else {
+      UngetToken();
+
+      // This was not a repeat() function. Try to parse <line-names>.
+      nsCSSValue lineNames;
+      CSSParseResult result = ParseGridLineNames(lineNames);
+      if (result == CSSParseResult::NotFound) {
+        return true;
+      }
+      if (result == CSSParseResult::Error) {
+        return false;
+      }
+      item->mNext = new nsCSSValueList;
+      item = item->mNext;
+      item->mValue = lineNames;
+    }
   }
 }
 
@@ -7027,33 +7674,33 @@ CSSParserImpl::ParseGridTrackBreadth(nsCSSValue& aValue)
 }
 
 // Parse a <track-size>
-nsParsingStatus
+CSSParseResult
 CSSParserImpl::ParseGridTrackSize(nsCSSValue& aValue)
 {
   // Attempt to parse 'auto' or a single <track-breadth>
   if (ParseGridTrackBreadth(aValue) ||
       ParseVariant(aValue, VARIANT_AUTO, nullptr)) {
-    return nsParsingStatus::Ok;
+    return CSSParseResult::Ok;
   }
 
   // Attempt to parse a minmax() function
   if (!GetToken(true)) {
-    return nsParsingStatus::NotFound;
+    return CSSParseResult::NotFound;
   }
   if (!(eCSSToken_Function == mToken.mType &&
         mToken.mIdent.LowerCaseEqualsLiteral("minmax"))) {
     UngetToken();
-    return nsParsingStatus::NotFound;
+    return CSSParseResult::NotFound;
   }
   nsCSSValue::Array* func = aValue.InitFunction(eCSSKeyword_minmax, 2);
   if (ParseGridTrackBreadth(func->Item(1)) &&
       ExpectSymbol(',', true) &&
       ParseGridTrackBreadth(func->Item(2)) &&
       ExpectSymbol(')', true)) {
-    return nsParsingStatus::Ok;
+    return CSSParseResult::Ok;
   }
   SkipUntil(')');
-  return nsParsingStatus::Error;
+  return CSSParseResult::Error;
 }
 
 bool
@@ -7061,7 +7708,7 @@ CSSParserImpl::ParseGridAutoColumnsRows(nsCSSProperty aPropID)
 {
   nsCSSValue value;
   if (ParseVariant(value, VARIANT_INHERIT, nullptr) ||
-      ParseGridTrackSize(value) == nsParsingStatus::Ok) {
+      ParseGridTrackSize(value) == CSSParseResult::Ok) {
     AppendValue(aPropID, value);
     return true;
   }
@@ -7072,46 +7719,268 @@ bool
 CSSParserImpl::ParseGridTrackListWithFirstLineNames(nsCSSValue& aValue,
                                                     const nsCSSValue& aFirstLineNames)
 {
-  nsAutoPtr<nsCSSValueList> firstTrackSizeItem(new nsCSSValueList);
+  nsCSSValueList* firstLineNamesItem = aValue.SetListValue();
+  firstLineNamesItem->mValue = aFirstLineNames;
 
-  // FIXME: add repeat()
-  if (ParseGridTrackSize(firstTrackSizeItem->mValue) != nsParsingStatus::Ok) {
-    // We need at least one <track-size>,
-    // so even nsParsingStatus::NotFound is an error here.
+  // This function is trying to parse <track-list>, which is
+  //   [ <line-names>? [ <track-size> | <repeat()> ] ]+ <line-names>?
+  // and we're already past the first "<line-names>?".
+  //
+  // Each iteration of the following loop attempts to parse either a
+  // repeat() or a <track-size> expression, and then an (optional)
+  // <line-names> expression.
+  //
+  // The only successful exit point from this loop is the ::NotFound
+  // case after ParseGridTrackSize(); i.e. we'll greedily parse
+  // repeat()/<track-size> until we can't find one.
+  nsCSSValueList* item = firstLineNamesItem;
+  for (;;) {
+    // First try to parse repeat()
+    if (!GetToken(true)) {
+      break;
+    }
+    if (mToken.mType == eCSSToken_Function &&
+        mToken.mIdent.LowerCaseEqualsLiteral("repeat")) {
+      if (!ParseGridTrackListRepeat(&item)) {
+        return false;
+      }
+    } else {
+      UngetToken();
+
+      // This was not a repeat() function. Try to parse <track-size>.
+      nsCSSValue trackSize;
+      CSSParseResult result = ParseGridTrackSize(trackSize);
+      if (result == CSSParseResult::Error) {
+        return false;
+      }
+      if (result == CSSParseResult::NotFound) {
+        // What we've parsed so far is a valid <track-list>
+        // (modulo the "at least one <track-size>" check below.)
+        // Stop here.
+        break;
+      }
+      item->mNext = new nsCSSValueList;
+      item = item->mNext;
+      item->mValue = trackSize;
+
+      item->mNext = new nsCSSValueList;
+      item = item->mNext;
+    }
+    if (ParseGridLineNames(item->mValue) == CSSParseResult::Error) {
+      return false;
+    }
+  }
+
+  // Require at least one <track-size>.
+  if (item == firstLineNamesItem) {
     return false;
   }
 
-  nsCSSValueList* item = firstTrackSizeItem;
+  MOZ_ASSERT(aValue.GetListValue() &&
+             aValue.GetListValue()->mNext &&
+             aValue.GetListValue()->mNext->mNext,
+             "<track-list> should have a minimum length of 3");
+  return true;
+}
+
+// Takes ownership of |aSecond|
+static void
+ConcatLineNames(nsCSSValue& aFirst, nsCSSValue& aSecond)
+{
+  if (aSecond.GetUnit() == eCSSUnit_Null) {
+    // Nothing to do.
+    return;
+  }
+  if (aFirst.GetUnit() == eCSSUnit_Null) {
+    // Empty or omitted <line-names>. Replace it.
+    aFirst = aSecond;
+    return;
+  }
+
+  // Join the two <line-names> lists.
+  nsCSSValueList* source = aSecond.GetListValue();
+  nsCSSValueList* target = aFirst.GetListValue();
+  // Find the end:
+  while (target->mNext) {
+    target = target->mNext;
+  }
+  // Copy the first name. We can't take ownership of it
+  // as it'll be destroyed when |aSecond| goes out of scope.
+  target->mNext = new nsCSSValueList;
+  target = target->mNext;
+  target->mValue = source->mValue;
+  // Move the rest of the linked list.
+  target->mNext = source->mNext;
+  source->mNext = nullptr;
+}
+
+// Assuming the 'repeat(' function token has already been consumed,
+// parse the rest of
+// repeat( <positive-integer> ,
+//         [ <line-names>? <track-size> ]+ <line-names>? )
+// Append to the linked list whose end is given by |aTailPtr|,
+// and updated |aTailPtr| to point to the new end of the list.
+bool
+CSSParserImpl::ParseGridTrackListRepeat(nsCSSValueList** aTailPtr)
+{
+  if (!(GetToken(true) &&
+        mToken.mType == eCSSToken_Number &&
+        mToken.mIntegerValid &&
+        mToken.mInteger > 0)) {
+    SkipUntil(')');
+    return false;
+  }
+  int32_t repetitions = std::min(mToken.mInteger,
+                                 GRID_TEMPLATE_MAX_REPETITIONS);
+  if (!ExpectSymbol(',', true)) {
+    SkipUntil(')');
+    return false;
+  }
+
+  // Parse [ <line-names>? <track-size> ]+ <line-names>?
+  // but keep the first and last <line-names> separate
+  // because they'll need to be joined.
+  // http://dev.w3.org/csswg/css-grid/#repeat-notation
+  nsCSSValue firstLineNames;
+  nsCSSValue trackSize;
+  nsCSSValue lastLineNames;
+  // Optional
+  if (ParseGridLineNames(firstLineNames) == CSSParseResult::Error) {
+    SkipUntil(')');
+    return false;
+  }
+  // Required
+  if (ParseGridTrackSize(trackSize) != CSSParseResult::Ok) {
+    SkipUntil(')');
+    return false;
+  }
+  // Use nsAutoPtr to free the list in case of early return.
+  nsAutoPtr<nsCSSValueList> firstTrackSizeItemAuto(new nsCSSValueList);
+  firstTrackSizeItemAuto->mValue = trackSize;
+
+  nsCSSValueList* item = firstTrackSizeItemAuto;
   for (;;) {
-    item->mNext = new nsCSSValueList;
-    item = item->mNext;
-    if (!ParseGridLineNames(item->mValue)) {
+    // Optional
+    if (ParseGridLineNames(lastLineNames) == CSSParseResult::Error) {
+      SkipUntil(')');
       return false;
     }
 
-    // FIXME: add repeat()
-    nsCSSValue trackSize;
-    nsParsingStatus result = ParseGridTrackSize(trackSize);
-    if (result == nsParsingStatus::Error) {
-      return false;
-    }
-    if (result == nsParsingStatus::NotFound) {
-      // What we've parsed so far is a valid <track-list>. Stop here.
+    if (ExpectSymbol(')', true)) {
       break;
     }
+
+    // Required
+    if (ParseGridTrackSize(trackSize) != CSSParseResult::Ok) {
+      SkipUntil(')');
+      return false;
+    }
+
+    item->mNext = new nsCSSValueList;
+    item = item->mNext;
+    item->mValue = lastLineNames;
+    // Do not append to this list at the next iteration.
+    lastLineNames.Reset();
+
     item->mNext = new nsCSSValueList;
     item = item->mNext;
     item->mValue = trackSize;
   }
+  nsCSSValueList* lastTrackSizeItem = item;
 
-  // Set up our outparam as a list, with aFirstLineNames as the first entry,
-  // followed by the rest of the <track-list> that we just finished parsing.
-  item = aValue.SetListValue();
-  item->mValue = aFirstLineNames;
-  item->mNext = firstTrackSizeItem.forget();
-  MOZ_ASSERT(aValue.GetListValue() && aValue.GetListValue()->mNext &&
-             aValue.GetListValue()->mNext->mNext,
-             "<track-list> should have a minimum length of 3");
+  // [ <line-names>? <track-size> ]+ <line-names>?  is now parsed into:
+  // * firstLineNames: the first <line-names>
+  // * a linked list of odd length >= 1, from firstTrackSizeItem
+  //   (the first <track-size>) to lastTrackSizeItem (the last),
+  //   with the <line-names> sublists in between
+  // * lastLineNames: the last <line-names>
+
+
+  // Join the last and first <line-names> (in that order.)
+  // For example, repeat(3, (a) 100px (b) 200px (c)) results in
+  // (a) 100px (b) 200px (c a) 100px (b) 200px (c a) 100px (b) 200px (c)
+  // This is (c a).
+  // Make deep copies: the originals will be moved.
+  nsCSSValue joinerLineNames;
+  {
+    nsCSSValueList* target = nullptr;
+    if (lastLineNames.GetUnit() != eCSSUnit_Null) {
+      target = joinerLineNames.SetListValue();
+      nsCSSValueList* source = lastLineNames.GetListValue();
+      for (;;) {
+        target->mValue = source->mValue;
+        source = source->mNext;
+        if (!source) {
+          break;
+        }
+        target->mNext = new nsCSSValueList;
+        target = target->mNext;
+      }
+    }
+
+    if (firstLineNames.GetUnit() != eCSSUnit_Null) {
+      if (target) {
+        target->mNext = new nsCSSValueList;
+        target = target->mNext;
+      } else {
+        target = joinerLineNames.SetListValue();
+      }
+      nsCSSValueList* source = firstLineNames.GetListValue();
+      for (;;) {
+        target->mValue = source->mValue;
+        source = source->mNext;
+        if (!source) {
+          break;
+        }
+        target->mNext = new nsCSSValueList;
+        target = target->mNext;
+      }
+    }
+  }
+
+  // Join our first <line-names> with the one before repeat().
+  // (a) repeat(1, (b) 20px) expands to (a b) 20px
+  nsCSSValueList* previousItemBeforeRepeat = *aTailPtr;
+  ConcatLineNames(previousItemBeforeRepeat->mValue, firstLineNames);
+
+  // Move our linked list
+  // (first to last <track-size>, with the <line-names> sublists in between).
+  // This is the first repetition.
+  NS_ASSERTION(previousItemBeforeRepeat->mNext == nullptr,
+               "Expected the end of a linked list");
+  previousItemBeforeRepeat->mNext = firstTrackSizeItemAuto.forget();
+  nsCSSValueList* firstTrackSizeItem = previousItemBeforeRepeat->mNext;
+  nsCSSValueList* tail = lastTrackSizeItem;
+
+  // Repeat |repetitions - 1| more times:
+  // * the joiner <line-names>
+  // * the linked list
+  //   (first to last <track-size>, with the <line-names> sublists in between)
+  MOZ_ASSERT(repetitions > 0, "Expected positive repetitions");
+  while (--repetitions) {
+    tail->mNext = new nsCSSValueList;
+    tail = tail->mNext;
+    tail->mValue = joinerLineNames;
+
+    nsCSSValueList* repeatedItem = firstTrackSizeItem;
+    for (;;) {
+      tail->mNext = new nsCSSValueList;
+      tail = tail->mNext;
+      tail->mValue = repeatedItem->mValue;
+      if (repeatedItem == lastTrackSizeItem) {
+        break;
+      }
+      repeatedItem = repeatedItem->mNext;
+    }
+  }
+
+  // Finally, move our last <line-names>.
+  // Any <line-names> immediately after repeat() will append to it.
+  tail->mNext = new nsCSSValueList;
+  tail = tail->mNext;
+  tail->mValue = lastLineNames;
+
+  *aTailPtr = tail;
   return true;
 }
 
@@ -7123,11 +7992,22 @@ CSSParserImpl::ParseGridTemplateColumnsRows(nsCSSProperty aPropID)
     AppendValue(aPropID, value);
     return true;
   }
-  // FIXME (bug 983175): add subgrid parsing
+
+  nsSubstring* ident = NextIdent();
+  if (ident) {
+    if (ident->LowerCaseEqualsLiteral("subgrid")) {
+      if (!ParseOptionalLineNameListAfterSubgrid(value)) {
+        return false;
+      }
+      AppendValue(aPropID, value);
+      return true;
+    }
+    UngetToken();
+  }
 
   nsCSSValue firstLineNames;
-  if (!(ParseGridLineNames(firstLineNames) &&
-        ParseGridTrackListWithFirstLineNames(value, firstLineNames))) {
+  if (ParseGridLineNames(firstLineNames) == CSSParseResult::Error ||
+      !ParseGridTrackListWithFirstLineNames(value, firstLineNames)) {
     return false;
   }
   AppendValue(aPropID, value);
@@ -7145,8 +8025,11 @@ CSSParserImpl::ParseGridTemplateAreasLine(const nsAutoString& aInput,
   nsCSSGridTemplateAreaToken token;
   css::GridNamedArea* currentArea = nullptr;
   uint32_t row = aAreas->NRows();
-  uint32_t column;
-  for (column = 1; scanner.Next(token); column++) {
+  // Column numbers starts at 1, but we might not have any, eg
+  // grid-template-areas:""; which will result in mNColumns == 0.
+  uint32_t column = 0;
+  while (scanner.Next(token)) {
+    ++column;
     if (token.isTrash) {
       return false;
     }
@@ -7198,7 +8081,7 @@ CSSParserImpl::ParseGridTemplateAreasLine(const nsAutoString& aInput,
       }
     }
   }
-  if (currentArea && currentArea->mColumnEnd != column) {
+  if (currentArea && currentArea->mColumnEnd != column + 1) {
     NS_ASSERTION(currentArea->mRowStart != row,
                  "Inconsistent column end for the first row of a named area.");
     // Not a rectangle
@@ -7267,6 +8150,8 @@ CSSParserImpl::ParseGridTemplate()
 
   // TODO (bug 983175): add parsing for 'subgrid' by itself
 
+  // 'none' can appear either by itself,
+  // or as the beginning of <'grid-template-columns'> / <'grid-template-rows'>
   if (ParseVariant(value, VARIANT_NONE, nullptr)) {
     AppendValue(eCSSProperty_grid_template_columns, value);
     if (ExpectSymbol('/', true)) {
@@ -7277,15 +8162,40 @@ CSSParserImpl::ParseGridTemplate()
     return true;
   }
 
-  // TODO (bug 983175): add parsing for subgrid
-  // as part of <'grid-template-columns'>
+  // 'subgrid' can appear either by itself,
+  // or as the beginning of <'grid-template-columns'> / <'grid-template-rows'>
+  nsSubstring* ident = NextIdent();
+  if (ident) {
+    if (ident->LowerCaseEqualsLiteral("subgrid")) {
+      if (!ParseOptionalLineNameListAfterSubgrid(value)) {
+        return false;
+      }
+      AppendValue(eCSSProperty_grid_template_columns, value);
+      if (ExpectSymbol('/', true)) {
+        return ParseGridTemplateAfterSlash(/* aColumnsIsTrackList = */ false);
+      }
+      if (value.GetListValue()->mNext) {
+        // Non-empty <line-name-list> after 'subgrid'.
+        // This is only valid as part of <'grid-template-columns'>,
+        // which must be followed by a slash.
+        return false;
+      }
+      // 'subgrid' by itself sets both grid-template-columns
+      // and grid-template-rows.
+      AppendValue(eCSSProperty_grid_template_rows, value);
+      value.SetNoneValue();
+      AppendValue(eCSSProperty_grid_template_areas, value);
+      return true;
+    }
+    UngetToken();
+  }
 
   // [ <line-names>? ] here is ambiguous:
   // it can be either the start of a <track-list>,
   // or the start of [ <line-names>? <string> <track-size>? <line-names>? ]+
   nsCSSValue firstLineNames;
-  if (!(ParseGridLineNames(firstLineNames) &&
-        GetToken(true))) {
+  if (ParseGridLineNames(firstLineNames) == CSSParseResult::Error ||
+      !GetToken(true)) {
     return false;
   }
   if (mToken.mType == eCSSToken_String) {
@@ -7306,34 +8216,61 @@ CSSParserImpl::ParseGridTemplate()
 }
 
 // Helper for parsing the 'grid-template' shorthand
+//
+// NOTE: This parses the portion after the slash, for *one* of the
+// following types of expressions:
+// - <'grid-template-columns'> / <'grid-template-rows'>
+// - <track-list> / [ <line-names>? <string> <track-size>? <line-names>? ]+
+//
+// We don't know which type of expression we've got until we've parsed the
+// second half, since the pre-slash part is ambiguous. The various return
+// clauses below are labeled with the type of expression they're completing.
 bool
 CSSParserImpl::ParseGridTemplateAfterSlash(bool aColumnsIsTrackList)
 {
   nsCSSValue rowsValue;
-  if (!ParseVariant(rowsValue, VARIANT_NONE, nullptr)) {
-    // TODO (bug 983175): add parsing for subgrid
-    // as part of <'grid-template-rows'>
+  if (ParseVariant(rowsValue, VARIANT_NONE, nullptr)) {
+    // <'grid-template-columns'> / <'grid-template-rows'>
+    AppendValue(eCSSProperty_grid_template_rows, rowsValue);
+    nsCSSValue areasValue(eCSSUnit_None);  // implied
+    AppendValue(eCSSProperty_grid_template_areas, areasValue);
+    return true;
+  }
 
-    nsCSSValue firstLineNames;
-    if (!(ParseGridLineNames(firstLineNames) &&
-          GetToken(true))) {
-      return false;
-    }
-    if (aColumnsIsTrackList && mToken.mType == eCSSToken_String) {
-      return ParseGridTemplateAfterString(firstLineNames);
+  nsSubstring* ident = NextIdent();
+  if (ident) {
+    if (ident->LowerCaseEqualsLiteral("subgrid")) {
+      if (!ParseOptionalLineNameListAfterSubgrid(rowsValue)) {
+        return false;
+      }
+      // <'grid-template-columns'> / <'grid-template-rows'>
+      AppendValue(eCSSProperty_grid_template_rows, rowsValue);
+      nsCSSValue areasValue(eCSSUnit_None);  // implied
+      AppendValue(eCSSProperty_grid_template_areas, areasValue);
+      return true;
     }
     UngetToken();
-
-    if (!ParseGridTrackListWithFirstLineNames(rowsValue, firstLineNames)) {
-      return false;
-    }
   }
+
+  nsCSSValue firstLineNames;
+  if (ParseGridLineNames(firstLineNames) == CSSParseResult::Error ||
+      !GetToken(true)) {
+    return false;
+  }
+  if (aColumnsIsTrackList && mToken.mType == eCSSToken_String) {
+    // [ <track-list> / ]? [ <line-names>? <string> <track-size>? <line-names>? ]+
+    return ParseGridTemplateAfterString(firstLineNames);
+  }
+  UngetToken();
+
+  if (!ParseGridTrackListWithFirstLineNames(rowsValue, firstLineNames)) {
+    return false;
+  }
+
   // <'grid-template-columns'> / <'grid-template-rows'>
-  // rowsValue is set by either ParseVariant
-  // or ParseGridTrackListWithFirstLineNames
+  AppendValue(eCSSProperty_grid_template_rows, rowsValue);
   nsCSSValue areasValue(eCSSUnit_None);  // implied
   AppendValue(eCSSProperty_grid_template_areas, areasValue);
-  AppendValue(eCSSProperty_grid_template_rows, rowsValue);
   return true;
 }
 
@@ -7361,33 +8298,48 @@ CSSParserImpl::ParseGridTemplateAfterString(const nsCSSValue& aFirstLineNames)
 
     rowsItem->mNext = new nsCSSValueList;
     rowsItem = rowsItem->mNext;
-    // TODO: add repeat()
-    nsParsingStatus result = ParseGridTrackSize(rowsItem->mValue);
-    if (result == nsParsingStatus::Error) {
+    CSSParseResult result = ParseGridTrackSize(rowsItem->mValue);
+    if (result == CSSParseResult::Error) {
       return false;
     }
-    if (result == nsParsingStatus::NotFound) {
+    if (result == CSSParseResult::NotFound) {
       rowsItem->mValue.SetAutoValue();
     }
 
     rowsItem->mNext = new nsCSSValueList;
     rowsItem = rowsItem->mNext;
-    if (!ParseGridLineNames(rowsItem->mValue)) {
+    result = ParseGridLineNames(rowsItem->mValue);
+    if (result == CSSParseResult::Error) {
       return false;
     }
+    if (result == CSSParseResult::Ok) {
+      // Append to the same list as the previous call to ParseGridLineNames.
+      result = ParseGridLineNames(rowsItem->mValue);
+      if (result == CSSParseResult::Error) {
+        return false;
+      }
+      if (result == CSSParseResult::Ok) {
+        // Parsed <line-name> twice.
+        // The property value can not end here, we expect a string next.
+        if (!GetToken(true)) {
+          return false;
+        }
+        if (eCSSToken_String != mToken.mType) {
+          UngetToken();
+          return false;
+        }
+        continue;
+      }
+    }
 
-    if (CheckEndProperty()) {
+    // Did not find a <line-names>.
+    // Next, we expect either a string or the end of the property value.
+    if (!GetToken(true)) {
       break;
-    }
-
-    // Append to the same list as the previous call to ParseGridLineNames.
-    if (!(ParseGridLineNames(rowsItem->mValue) &&
-          GetToken(true))) {
-      return false;
     }
     if (eCSSToken_String != mToken.mType) {
       UngetToken();
-      return false;
+      break;
     }
   }
 
@@ -7411,37 +8363,17 @@ CSSParserImpl::ParseGrid()
     return true;
   }
 
-  // 'none' at the beginning could be a <'grid-auto-flow'>
-  // (which also covers 'none' by itself)
-  // or a <'grid-template-columns'> (as part of <'grid-template'>)
-  if (ParseVariant(value, VARIANT_NONE, nullptr)) {
-    if (ExpectSymbol('/', true)) {
-      AppendValue(eCSSProperty_grid_template_columns, value);
-
-      // Set grid-auto-* subproperties to their initial values.
-      value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
-      AppendValue(eCSSProperty_grid_auto_flow, value);
-      value.SetAutoValue();
-      AppendValue(eCSSProperty_grid_auto_columns, value);
-      AppendValue(eCSSProperty_grid_auto_rows, value);
-
-      return ParseGridTemplateAfterSlash(/* aColumnsIsTrackList = */ false);
-    }
-    value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
-    AppendValue(eCSSProperty_grid_auto_flow, value);
-    return ParseGridShorthandAutoProps();
-  }
-
   // An empty value is always invalid.
   if (!GetToken(true)) {
     return false;
   }
 
-  // If the value starts with a 'dense', 'column' or 'row' keyword,
-  // it can only start with a <'grid-auto-flow'>
+  // The values starts with a <'grid-auto-flow'> if and only if
+  // it starts with a 'stack', 'dense', 'column' or 'row' keyword.
   if (mToken.mType == eCSSToken_Ident) {
     nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(mToken.mIdent);
-    if (keyword == eCSSKeyword_dense ||
+    if (keyword == eCSSKeyword_stack ||
+        keyword == eCSSKeyword_dense ||
         keyword == eCSSKeyword_column ||
         keyword == eCSSKeyword_row) {
       UngetToken();
@@ -7452,7 +8384,7 @@ CSSParserImpl::ParseGrid()
 
   // Set other subproperties to their initial values
   // and parse <'grid-template'>.
-  value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_NONE, eCSSUnit_Enumerated);
+  value.SetIntValue(NS_STYLE_GRID_AUTO_FLOW_ROW, eCSSUnit_Enumerated);
   AppendValue(eCSSProperty_grid_auto_flow, value);
   value.SetAutoValue();
   AppendValue(eCSSProperty_grid_auto_columns, value);
@@ -7468,17 +8400,17 @@ CSSParserImpl::ParseGridShorthandAutoProps()
 {
   nsCSSValue autoColumnsValue;
   nsCSSValue autoRowsValue;
-  nsParsingStatus result = ParseGridTrackSize(autoColumnsValue);
-  if (result == nsParsingStatus::Error) {
+  CSSParseResult result = ParseGridTrackSize(autoColumnsValue);
+  if (result == CSSParseResult::Error) {
     return false;
   }
-  if (result == nsParsingStatus::NotFound) {
+  if (result == CSSParseResult::NotFound) {
     autoColumnsValue.SetAutoValue();
     autoRowsValue.SetAutoValue();
   } else {
     if (!ExpectSymbol('/', true)) {
       autoRowsValue.SetAutoValue();
-    } else if (ParseGridTrackSize(autoRowsValue) != nsParsingStatus::Ok) {
+    } else if (ParseGridTrackSize(autoRowsValue) != CSSParseResult::Ok) {
       return false;
     }
   }
@@ -7594,26 +8526,6 @@ CSSParserImpl::ParseGridLine(nsCSSValue& aValue)
     item->mValue = ident;
   }
   return true;
-}
-
-bool
-CSSParserImpl::ParseGridAutoPosition()
-{
-  nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    AppendValue(eCSSProperty_grid_auto_position, value);
-    return true;
-  }
-  nsCSSValue columnStartValue;
-  nsCSSValue rowStartValue;
-  if (ParseGridLine(columnStartValue) &&
-      ExpectSymbol('/', true) &&
-      ParseGridLine(rowStartValue)) {
-    value.SetPairValue(columnStartValue, rowStartValue);
-    AppendValue(eCSSProperty_grid_auto_position, value);
-    return true;
-  }
-  return false;
 }
 
 bool
@@ -8180,7 +9092,7 @@ CSSParserImpl::ParseBoxProperties(const nsCSSProperty aPropIDs[])
     }
     count++;
   }
-  if ((count == 0) || (false == ExpectEndProperty())) {
+  if (count == 0) {
     return false;
   }
 
@@ -8253,9 +9165,9 @@ CSSParserImpl::ParseDirectionalBoxProperty(nsCSSProperty aProperty,
   NS_ASSERTION(subprops[3] == eCSSProperty_UNKNOWN,
                "not box property with physical vs. logical cascading");
   nsCSSValue value;
-  if (!ParseSingleValueProperty(value, subprops[0]) ||
-      !ExpectEndProperty())
+  if (!ParseSingleValueProperty(value, subprops[0])) {
     return false;
+  }
 
   AppendValue(subprops[0], value);
   nsCSSValue typeVal(aSourceType, eCSSUnit_Enumerated);
@@ -8319,8 +9231,6 @@ CSSParserImpl::ParseBoxCornerRadii(const nsCSSProperty aPropIDs[])
     if (countY == 0)
       return false;
   }
-  if (!ExpectEndProperty())
-    return false;
 
   // if 'initial', 'inherit' or 'unset' was used, it must be the only value
   if (countX > 1 || countY > 0) {
@@ -8455,11 +9365,8 @@ CSSParserImpl::ParseProperty(nsCSSProperty aPropID)
       result = false;
       nsCSSValue value;
       if (ParseSingleValueProperty(value, aPropID)) {
-        if (ExpectEndProperty()) {
-          AppendValue(aPropID, value);
-          result = true;
-        }
-        // XXX Report errors?
+        AppendValue(aPropID, value);
+        result = true;
       }
       // XXX Report errors?
       break;
@@ -8475,6 +9382,24 @@ CSSParserImpl::ParseProperty(nsCSSProperty aPropID)
                         "Property's flags field in nsCSSPropList.h is missing "
                         "one of the CSS_PROPERTY_PARSE_* constants");
       break;
+    }
+  }
+
+  if (result) {
+    // We need to call ExpectEndProperty() to decide whether to reparse
+    // with variables.  This is needed because the property parsing may
+    // have stopped upon finding a variable (e.g., 'margin: 1px var(a)')
+    // in a way that future variable substitutions will be valid, or
+    // because it parsed everything that's possible but we still want to
+    // act as though the property contains variables even though we know
+    // the substitution will never work (e.g., for 'margin: 1px 2px 3px
+    // 4px 5px var(a)').
+    //
+    // It would be nice to find a better solution here
+    // (and for the SkipUntilOneOf below), though, that doesn't depend
+    // on using what we don't accept for doing parsing correctly.
+    if (!ExpectEndProperty()) {
+      result = false;
     }
   }
 
@@ -8752,8 +9677,6 @@ CSSParserImpl::ParsePropertyByFunction(nsCSSProperty aPropID)
     return ParseGridTemplate();
   case eCSSProperty_grid:
     return ParseGrid();
-  case eCSSProperty_grid_auto_position:
-    return ParseGridAutoPosition();
   case eCSSProperty_grid_column_start:
   case eCSSProperty_grid_column_end:
   case eCSSProperty_grid_row_start:
@@ -8890,6 +9813,8 @@ CSSParserImpl::ParseSingleValueProperty(nsCSSValue& aValue,
         return ParseFontWeight(aValue);
       case eCSSProperty_image_orientation:
         return ParseImageOrientation(aValue);
+      case eCSSProperty_list_style_type:
+        return ParseListStyleType(aValue);
       case eCSSProperty_marks:
         return ParseMarks(aValue);
       case eCSSProperty_text_align:
@@ -8898,8 +9823,8 @@ CSSParserImpl::ParseSingleValueProperty(nsCSSValue& aValue,
         return ParseTextAlignLast(aValue);
       case eCSSProperty_text_decoration_line:
         return ParseTextDecorationLine(aValue);
-      case eCSSProperty_text_combine_horizontal:
-        return ParseTextCombineHorizontal(aValue);
+      case eCSSProperty_text_combine_upright:
+        return ParseTextCombineUpright(aValue);
       case eCSSProperty_text_overflow:
         return ParseTextOverflow(aValue);
       case eCSSProperty_touch_action:
@@ -8938,28 +9863,6 @@ CSSParserImpl::ParseSingleValueProperty(nsCSSValue& aValue,
   }
 }
 
-// nsFont::EnumerateFamilies callback for ParseFontDescriptorValue
-struct MOZ_STACK_CLASS ExtractFirstFamilyData {
-  nsAutoString mFamilyName;
-  bool mGood;
-  ExtractFirstFamilyData() : mFamilyName(), mGood(false) {}
-};
-
-static bool
-ExtractFirstFamily(const nsString& aFamily,
-                   bool aGeneric,
-                   void* aData)
-{
-  ExtractFirstFamilyData* realData = (ExtractFirstFamilyData*) aData;
-  if (aGeneric || realData->mFamilyName.Length() > 0) {
-    realData->mGood = false;
-    return false;
-  }
-  realData->mFamilyName.Assign(aFamily);
-  realData->mGood = true;
-  return true;
-}
-
 // font-descriptor: descriptor ':' value ';'
 // caller has advanced mToken to point at the descriptor
 bool
@@ -8970,22 +9873,20 @@ CSSParserImpl::ParseFontDescriptorValue(nsCSSFontDesc aDescID,
     // These four are similar to the properties of the same name,
     // possibly with more restrictions on the values they can take.
   case eCSSFontDesc_Family: {
-    if (!ParseFamily(aValue) ||
-        aValue.GetUnit() != eCSSUnit_Families)
+    nsCSSValue value;
+    if (!ParseFamily(value) ||
+        value.GetUnit() != eCSSUnit_FontFamilyList)
       return false;
 
-    // the style parameters to the nsFont constructor are ignored,
-    // because it's only being used to call EnumerateFamilies
-    nsAutoString valueStr;
-    aValue.GetStringValue(valueStr);
-    nsFont font(valueStr, 0, 0, 0, 0, 0, 0);
-    ExtractFirstFamilyData dat;
+    // name can only be a single, non-generic name
+    const FontFamilyList* f = value.GetFontFamilyListValue();
+    const nsTArray<FontFamilyName>& fontlist = f->GetFontlist();
 
-    font.EnumerateFamilies(ExtractFirstFamily, (void*) &dat);
-    if (!dat.mGood)
+    if (fontlist.Length() != 1 || !fontlist[0].IsNamed()) {
       return false;
+    }
 
-    aValue.SetStringValue(dat.mFamilyName, eCSSUnit_String);
+    aValue.SetStringValue(fontlist[0].mName, eCSSUnit_String);
     return true;
   }
 
@@ -9075,9 +9976,6 @@ CSSParserImpl::ParseBackground()
   // Check first for inherit/initial/unset.
   if (ParseVariant(color, VARIANT_INHERIT, nullptr)) {
     // must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
     for (const nsCSSProperty* subprops =
            nsCSSProps::SubpropertyEntryFor(eCSSProperty_background);
          *subprops != eCSSProperty_UNKNOWN; ++subprops) {
@@ -9097,17 +9995,13 @@ CSSParserImpl::ParseBackground()
     if (!ParseBackgroundItem(state)) {
       return false;
     }
-    if (CheckEndProperty()) {
-      break;
-    }
     // If we saw a color, this must be the last item.
     if (color.GetUnit() != eCSSUnit_Null) {
-      REPORT_UNEXPECTED_TOKEN(PEExpectEndValue);
-      return false;
+      break;
     }
-    // Otherwise, a comma is mandatory.
+    // If there's a comma, expect another item.
     if (!ExpectSymbol(',', true)) {
-      return false;
+      break;
     }
     // Chain another entry on all the lists.
     state.mImage->mNext = new nsCSSValueList;
@@ -9345,22 +10239,15 @@ CSSParserImpl::ParseValueList(nsCSSProperty aPropID)
 {
   // aPropID is a single value prop-id
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
+  if (!ParseVariant(value, VARIANT_INHERIT, nullptr)) {
     nsCSSValueList* item = value.SetListValue();
     for (;;) {
       if (!ParseSingleValueProperty(item->mValue, aPropID)) {
         return false;
       }
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        return false;
+        break;
       }
       item->mNext = new nsCSSValueList;
       item = item->mNext;
@@ -9374,12 +10261,8 @@ bool
 CSSParserImpl::ParseBackgroundRepeat()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
+  if (!ParseVariant(value, VARIANT_INHERIT, nullptr)) {
     nsCSSValuePair valuePair;
     if (!ParseBackgroundRepeatValues(valuePair)) {
       return false;
@@ -9388,11 +10271,8 @@ CSSParserImpl::ParseBackgroundRepeat()
     for (;;) {
       item->mXValue = valuePair.mXValue;
       item->mYValue = valuePair.mYValue;
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        return false;
+        break;
       }
       if (!ParseBackgroundRepeatValues(valuePair)) {
         return false;
@@ -9433,12 +10313,8 @@ bool
 CSSParserImpl::ParseBackgroundPosition()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
+  if (!ParseVariant(value, VARIANT_INHERIT, nullptr)) {
     nsCSSValue itemValue;
     if (!ParseBackgroundPositionValues(itemValue, false)) {
       return false;
@@ -9446,11 +10322,8 @@ CSSParserImpl::ParseBackgroundPosition()
     nsCSSValueList* item = value.SetListValue();
     for (;;) {
       item->mValue = itemValue;
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        return false;
+        break;
       }
       if (!ParseBackgroundPositionValues(itemValue, false)) {
         return false;
@@ -9753,12 +10626,8 @@ bool
 CSSParserImpl::ParseBackgroundSize()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'initial', 'inherit' and 'unset' stand alone, no list permitted.
+  if (!ParseVariant(value, VARIANT_INHERIT, nullptr)) {
     nsCSSValuePair valuePair;
     if (!ParseBackgroundSizeValues(valuePair)) {
       return false;
@@ -9767,11 +10636,8 @@ CSSParserImpl::ParseBackgroundSize()
     for (;;) {
       item->mXValue = valuePair.mXValue;
       item->mYValue = valuePair.mYValue;
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        return false;
+        break;
       }
       if (!ParseBackgroundSizeValues(valuePair)) {
         return false;
@@ -10108,10 +10974,6 @@ CSSParserImpl::ParseBorderSpacing()
     ParseNonNegativeVariant(yValue, VARIANT_LENGTH | VARIANT_CALC, nullptr);
   }
 
-  if (!ExpectEndProperty()) {
-    return false;
-  }
-
   if (yValue == xValue || yValue.GetUnit() == eCSSUnit_Null) {
     AppendValue(eCSSProperty_border_spacing, xValue);
   } else {
@@ -10130,7 +10992,7 @@ CSSParserImpl::ParseBorderSide(const nsCSSProperty aPropIDs[],
   nsCSSValue  values[numProps];
 
   int32_t found = ParseChoice(values, aPropIDs, numProps);
-  if ((found < 1) || (false == ExpectEndProperty())) {
+  if (found < 1) {
     return false;
   }
 
@@ -10219,7 +11081,7 @@ CSSParserImpl::ParseDirectionalBorderSide(const nsCSSProperty aPropIDs[],
   nsCSSValue  values[numProps];
 
   int32_t found = ParseChoice(values, aPropIDs, numProps);
-  if ((found < 1) || (false == ExpectEndProperty())) {
+  if (found < 1) {
     return false;
   }
 
@@ -10281,12 +11143,8 @@ bool
 CSSParserImpl::ParseBorderColors(nsCSSProperty aProperty)
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    // 'inherit', 'initial', 'unset' and 'none' are only allowed on their own
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' are only allowed on their own
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
     nsCSSValueList *cur = value.SetListValue();
     for (;;) {
       if (!ParseVariant(cur->mValue, VARIANT_COLOR | VARIANT_KEYWORD,
@@ -10569,48 +11427,18 @@ CSSParserImpl::RequireWhitespace()
 bool
 CSSParserImpl::ParseRect(nsCSSProperty aPropID)
 {
+  nsCSSValue val;
+  if (ParseVariant(val, VARIANT_INHERIT | VARIANT_AUTO, nullptr)) {
+    AppendValue(aPropID, val);
+    return true;
+  }
+
   if (! GetToken(true)) {
     return false;
   }
 
-  nsCSSValue val;
-
-  if (mToken.mType == eCSSToken_Ident) {
-    nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(mToken.mIdent);
-    switch (keyword) {
-      case eCSSKeyword_auto:
-        if (!ExpectEndProperty()) {
-          return false;
-        }
-        val.SetAutoValue();
-        break;
-      case eCSSKeyword_inherit:
-        if (!ExpectEndProperty()) {
-          return false;
-        }
-        val.SetInheritValue();
-        break;
-      case eCSSKeyword_initial:
-        if (!ExpectEndProperty()) {
-          return false;
-        }
-        val.SetInitialValue();
-        break;
-      case eCSSKeyword_unset:
-        if (nsLayoutUtils::UnsetValueEnabled()) {
-          if (!ExpectEndProperty()) {
-            return false;
-          }
-          val.SetUnsetValue();
-          break;
-        }
-        // fall through
-      default:
-        UngetToken();
-        return false;
-    }
-  } else if (mToken.mType == eCSSToken_Function &&
-             mToken.mIdent.LowerCaseEqualsLiteral("rect")) {
+  if (mToken.mType == eCSSToken_Function &&
+      mToken.mIdent.LowerCaseEqualsLiteral("rect")) {
     nsCSSRect& rect = val.SetRectValue();
     bool useCommas;
     NS_FOR_CSS_SIDES(side) {
@@ -10629,9 +11457,6 @@ CSSParserImpl::ParseRect(nsCSSProperty aPropID)
       }
     }
     if (!ExpectSymbol(')', true)) {
-      return false;
-    }
-    if (!ExpectEndProperty()) {
       return false;
     }
   } else {
@@ -10660,7 +11485,7 @@ CSSParserImpl::ParseColumns()
 
   nsCSSValue values[numProps];
   int32_t found = ParseChoice(values, columnIDs, numProps);
-  if (found < 1 || !ExpectEndProperty()) {
+  if (found < 1) {
     return false;
   }
   if ((found & (1|2|4)) == (1|2|4) &&
@@ -10717,14 +11542,10 @@ CSSParserImpl::ParseContent()
                     "content keyword tables out of sync");
 
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_HMK | VARIANT_NONE,
-                   kContentSolitaryKWs)) {
-    // 'inherit', 'initial', 'unset', 'normal', 'none', and 'alt-content' must
-    // be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset', 'normal', 'none', and 'alt-content' must
+  // be alone
+  if (!ParseVariant(value, VARIANT_HMK | VARIANT_NONE,
+                    kContentSolitaryKWs)) {
     nsCSSValueList* cur = value.SetListValue();
     for (;;) {
       if (!ParseVariant(cur->mValue, VARIANT_CONTENT, kContentListKWs)) {
@@ -10750,7 +11571,11 @@ CSSParserImpl::ParseCounterData(nsCSSProperty aPropID)
   };
   nsCSSValue value;
   if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    if (!GetToken(true) || mToken.mType != eCSSToken_Ident) {
+    if (!GetToken(true)) {
+      return false;
+    }
+    if (mToken.mType != eCSSToken_Ident) {
+      UngetToken();
       return false;
     }
 
@@ -10767,11 +11592,12 @@ CSSParserImpl::ParseCounterData(nsCSSProperty aPropID)
       } else {
         UngetToken();
       }
-      if (CheckEndProperty()) {
+      if (!GetToken(true)) {
         break;
       }
-      if (!GetToken(true) || mToken.mType != eCSSToken_Ident) {
-        return false;
+      if (mToken.mType != eCSSToken_Ident) {
+        UngetToken();
+        break;
       }
       cur->mNext = new nsCSSValuePairList;
       cur = cur->mNext;
@@ -10785,22 +11611,15 @@ bool
 CSSParserImpl::ParseCursor()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT, nullptr)) {
-    // 'inherit', 'initial' and 'unset' must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial' and 'unset' must be alone
+  if (!ParseVariant(value, VARIANT_INHERIT, nullptr)) {
     nsCSSValueList* cur = value.SetListValue();
     for (;;) {
       if (!ParseVariant(cur->mValue, VARIANT_UK, nsCSSProps::kCursorKTable)) {
         return false;
       }
       if (cur->mValue.GetUnit() != eCSSUnit_URL) { // keyword must be last
-        if (ExpectEndProperty()) {
-          break;
-        }
-        return false;
+        break;
       }
 
       // We have a URL, so make a value array with three values.
@@ -10842,59 +11661,56 @@ CSSParserImpl::ParseFont()
     nsCSSProps::IsEnabled(eCSSProperty_font_variant_alternates);
   nsCSSValue  family;
   if (ParseVariant(family, VARIANT_HK, nsCSSProps::kFontKTable)) {
-    if (ExpectEndProperty()) {
-      if (eCSSUnit_Inherit == family.GetUnit() ||
-          eCSSUnit_Initial == family.GetUnit() ||
-          eCSSUnit_Unset == family.GetUnit()) {
-        AppendValue(eCSSProperty__x_system_font, nsCSSValue(eCSSUnit_None));
-        AppendValue(eCSSProperty_font_family, family);
-        AppendValue(eCSSProperty_font_style, family);
-        AppendValue(eCSSProperty_font_variant, family);
-        AppendValue(eCSSProperty_font_weight, family);
-        AppendValue(eCSSProperty_font_size, family);
-        AppendValue(eCSSProperty_line_height, family);
-        AppendValue(eCSSProperty_font_stretch, family);
-        AppendValue(eCSSProperty_font_size_adjust, family);
-        AppendValue(eCSSProperty_font_feature_settings, family);
-        AppendValue(eCSSProperty_font_language_override, family);
-        if (featuresEnabled) {
-          AppendValue(eCSSProperty_font_kerning, family);
-          AppendValue(eCSSProperty_font_synthesis, family);
-          AppendValue(eCSSProperty_font_variant_alternates, family);
-          AppendValue(eCSSProperty_font_variant_caps, family);
-          AppendValue(eCSSProperty_font_variant_east_asian, family);
-          AppendValue(eCSSProperty_font_variant_ligatures, family);
-          AppendValue(eCSSProperty_font_variant_numeric, family);
-          AppendValue(eCSSProperty_font_variant_position, family);
-        }
+    if (eCSSUnit_Inherit == family.GetUnit() ||
+        eCSSUnit_Initial == family.GetUnit() ||
+        eCSSUnit_Unset == family.GetUnit()) {
+      AppendValue(eCSSProperty__x_system_font, nsCSSValue(eCSSUnit_None));
+      AppendValue(eCSSProperty_font_family, family);
+      AppendValue(eCSSProperty_font_style, family);
+      AppendValue(eCSSProperty_font_variant, family);
+      AppendValue(eCSSProperty_font_weight, family);
+      AppendValue(eCSSProperty_font_size, family);
+      AppendValue(eCSSProperty_line_height, family);
+      AppendValue(eCSSProperty_font_stretch, family);
+      AppendValue(eCSSProperty_font_size_adjust, family);
+      AppendValue(eCSSProperty_font_feature_settings, family);
+      AppendValue(eCSSProperty_font_language_override, family);
+      if (featuresEnabled) {
+        AppendValue(eCSSProperty_font_kerning, family);
+        AppendValue(eCSSProperty_font_synthesis, family);
+        AppendValue(eCSSProperty_font_variant_alternates, family);
+        AppendValue(eCSSProperty_font_variant_caps, family);
+        AppendValue(eCSSProperty_font_variant_east_asian, family);
+        AppendValue(eCSSProperty_font_variant_ligatures, family);
+        AppendValue(eCSSProperty_font_variant_numeric, family);
+        AppendValue(eCSSProperty_font_variant_position, family);
       }
-      else {
-        AppendValue(eCSSProperty__x_system_font, family);
-        nsCSSValue systemFont(eCSSUnit_System_Font);
-        AppendValue(eCSSProperty_font_family, systemFont);
-        AppendValue(eCSSProperty_font_style, systemFont);
-        AppendValue(eCSSProperty_font_variant, systemFont);
-        AppendValue(eCSSProperty_font_weight, systemFont);
-        AppendValue(eCSSProperty_font_size, systemFont);
-        AppendValue(eCSSProperty_line_height, systemFont);
-        AppendValue(eCSSProperty_font_stretch, systemFont);
-        AppendValue(eCSSProperty_font_size_adjust, systemFont);
-        AppendValue(eCSSProperty_font_feature_settings, systemFont);
-        AppendValue(eCSSProperty_font_language_override, systemFont);
-        if (featuresEnabled) {
-          AppendValue(eCSSProperty_font_kerning, systemFont);
-          AppendValue(eCSSProperty_font_synthesis, systemFont);
-          AppendValue(eCSSProperty_font_variant_alternates, systemFont);
-          AppendValue(eCSSProperty_font_variant_caps, systemFont);
-          AppendValue(eCSSProperty_font_variant_east_asian, systemFont);
-          AppendValue(eCSSProperty_font_variant_ligatures, systemFont);
-          AppendValue(eCSSProperty_font_variant_numeric, systemFont);
-          AppendValue(eCSSProperty_font_variant_position, systemFont);
-        }
-      }
-      return true;
     }
-    return false;
+    else {
+      AppendValue(eCSSProperty__x_system_font, family);
+      nsCSSValue systemFont(eCSSUnit_System_Font);
+      AppendValue(eCSSProperty_font_family, systemFont);
+      AppendValue(eCSSProperty_font_style, systemFont);
+      AppendValue(eCSSProperty_font_variant, systemFont);
+      AppendValue(eCSSProperty_font_weight, systemFont);
+      AppendValue(eCSSProperty_font_size, systemFont);
+      AppendValue(eCSSProperty_line_height, systemFont);
+      AppendValue(eCSSProperty_font_stretch, systemFont);
+      AppendValue(eCSSProperty_font_size_adjust, systemFont);
+      AppendValue(eCSSProperty_font_feature_settings, systemFont);
+      AppendValue(eCSSProperty_font_language_override, systemFont);
+      if (featuresEnabled) {
+        AppendValue(eCSSProperty_font_kerning, systemFont);
+        AppendValue(eCSSProperty_font_synthesis, systemFont);
+        AppendValue(eCSSProperty_font_variant_alternates, systemFont);
+        AppendValue(eCSSProperty_font_variant_caps, systemFont);
+        AppendValue(eCSSProperty_font_variant_east_asian, systemFont);
+        AppendValue(eCSSProperty_font_variant_ligatures, systemFont);
+        AppendValue(eCSSProperty_font_variant_numeric, systemFont);
+        AppendValue(eCSSProperty_font_variant_position, systemFont);
+      }
+    }
+    return true;
   }
 
   // Get optional font-style, font-variant and font-weight (in any order)
@@ -10945,8 +11761,7 @@ CSSParserImpl::ParseFont()
   if (ParseFamily(family)) {
     if (eCSSUnit_Inherit != family.GetUnit() &&
         eCSSUnit_Initial != family.GetUnit() &&
-        eCSSUnit_Unset != family.GetUnit() &&
-        ExpectEndProperty()) {
+        eCSSUnit_Unset != family.GetUnit()) {
       AppendValue(eCSSProperty__x_system_font, nsCSSValue(eCSSUnit_None));
       AppendValue(eCSSProperty_font_family, family);
       AppendValue(eCSSProperty_font_style, values[0]);
@@ -11124,6 +11939,11 @@ CSSParserImpl::ParseFontVariantAlternates(nsCSSValue& aValue)
     }
   }
 
+  if (featureFlags == 0) {
+    // ParseSingleAlternate failed the first time through the loop.
+    return false;
+  }
+
   nsCSSValue featureValue;
   featureValue.SetIntValue(featureFlags, eCSSUnit_Enumerated);
   aValue.SetPairValue(featureValue, listValue);
@@ -11280,7 +12100,9 @@ CSSParserImpl::ParseFontWeight(nsCSSValue& aValue)
 }
 
 bool
-CSSParserImpl::ParseOneFamily(nsAString& aFamily, bool& aOneKeyword)
+CSSParserImpl::ParseOneFamily(nsAString& aFamily,
+                              bool& aOneKeyword,
+                              bool& aQuoted)
 {
   if (!GetToken(true))
     return false;
@@ -11288,6 +12110,7 @@ CSSParserImpl::ParseOneFamily(nsAString& aFamily, bool& aOneKeyword)
   nsCSSToken* tk = &mToken;
 
   aOneKeyword = false;
+  aQuoted = false;
   if (eCSSToken_Ident == tk->mType) {
     aOneKeyword = true;
     aFamily.Append(tk->mIdent);
@@ -11314,9 +12137,8 @@ CSSParserImpl::ParseOneFamily(nsAString& aFamily, bool& aOneKeyword)
     return true;
 
   } else if (eCSSToken_String == tk->mType) {
-    aFamily.Append(tk->mSymbol); // replace the quotes
+    aQuoted = true;
     aFamily.Append(tk->mIdent); // XXX What if it had escaped quotes?
-    aFamily.Append(tk->mSymbol);
     return true;
 
   } else {
@@ -11325,56 +12147,95 @@ CSSParserImpl::ParseOneFamily(nsAString& aFamily, bool& aOneKeyword)
   }
 }
 
+
+static bool
+AppendGeneric(nsCSSKeyword aKeyword, FontFamilyList *aFamilyList)
+{
+  switch (aKeyword) {
+    case eCSSKeyword_serif:
+      aFamilyList->Append(FontFamilyName(eFamily_serif));
+      return true;
+    case eCSSKeyword_sans_serif:
+      aFamilyList->Append(FontFamilyName(eFamily_sans_serif));
+      return true;
+    case eCSSKeyword_monospace:
+      aFamilyList->Append(FontFamilyName(eFamily_monospace));
+      return true;
+    case eCSSKeyword_cursive:
+      aFamilyList->Append(FontFamilyName(eFamily_cursive));
+      return true;
+    case eCSSKeyword_fantasy:
+      aFamilyList->Append(FontFamilyName(eFamily_fantasy));
+      return true;
+    case eCSSKeyword__moz_fixed:
+      aFamilyList->Append(FontFamilyName(eFamily_moz_fixed));
+      return true;
+    default:
+      break;
+  }
+
+  return false;
+}
+
 bool
 CSSParserImpl::ParseFamily(nsCSSValue& aValue)
 {
+  nsRefPtr<FontFamilyList> familyList = new FontFamilyList();
   nsAutoString family;
-  bool single;
+  bool single, quoted;
 
   // keywords only have meaning in the first position
-  if (!ParseOneFamily(family, single))
+  if (!ParseOneFamily(family, single, quoted))
     return false;
 
   // check for keywords, but only when keywords appear by themselves
   // i.e. not in compounds such as font-family: default blah;
+  bool foundGeneric = false;
   if (single) {
     nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(family);
-    if (keyword == eCSSKeyword_inherit) {
-      aValue.SetInheritValue();
-      return true;
+    switch (keyword) {
+      case eCSSKeyword_inherit:
+        aValue.SetInheritValue();
+        return true;
+      case eCSSKeyword_default:
+        // 605231 - don't parse unquoted 'default' reserved keyword
+        return false;
+      case eCSSKeyword_initial:
+        aValue.SetInitialValue();
+        return true;
+      case eCSSKeyword_unset:
+        if (nsLayoutUtils::UnsetValueEnabled()) {
+          aValue.SetUnsetValue();
+          return true;
+        }
+        break;
+      case eCSSKeyword__moz_use_system_font:
+        if (!IsParsingCompoundProperty()) {
+          aValue.SetSystemFontValue();
+          return true;
+        }
+        break;
+      default:
+        foundGeneric = AppendGeneric(keyword, familyList);
     }
-    // 605231 - don't parse unquoted 'default' reserved keyword
-    if (keyword == eCSSKeyword_default) {
-      return false;
-    }
-    if (keyword == eCSSKeyword_initial) {
-      aValue.SetInitialValue();
-      return true;
-    }
-    if (keyword == eCSSKeyword_unset &&
-        nsLayoutUtils::UnsetValueEnabled()) {
-      aValue.SetUnsetValue();
-      return true;
-    }
-    if (keyword == eCSSKeyword__moz_use_system_font &&
-        !IsParsingCompoundProperty()) {
-      aValue.SetSystemFontValue();
-      return true;
-    }
+  }
+
+  if (!foundGeneric) {
+    familyList->Append(
+      FontFamilyName(family, (quoted ? eQuotedName : eUnquotedName)));
   }
 
   for (;;) {
     if (!ExpectSymbol(',', true))
       break;
 
-    family.Append(char16_t(','));
-
     nsAutoString nextFamily;
-    if (!ParseOneFamily(nextFamily, single))
+    if (!ParseOneFamily(nextFamily, single, quoted))
       return false;
 
     // at this point unquoted keywords are not allowed
     // as font family names but can appear within names
+    foundGeneric = false;
     if (single) {
       nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(nextFamily);
       switch (keyword) {
@@ -11387,19 +12248,24 @@ CSSParserImpl::ParseFamily(nsCSSValue& aValue)
           if (nsLayoutUtils::UnsetValueEnabled()) {
             return false;
           }
-          // fall through
+          break;
         default:
+          foundGeneric = AppendGeneric(keyword, familyList);
           break;
       }
     }
 
-    family.Append(nextFamily);
+    if (!foundGeneric) {
+      familyList->Append(
+        FontFamilyName(nextFamily, (quoted ? eQuotedName : eUnquotedName)));
+    }
   }
 
-  if (family.IsEmpty()) {
+  if (familyList->IsEmpty()) {
     return false;
   }
-  aValue.SetStringValue(family, eCSSUnit_Families);
+
+  aValue.SetFontFamilyListValue(familyList);
   return true;
 }
 
@@ -11432,8 +12298,8 @@ CSSParserImpl::ParseFontSrc(nsCSSValue& aValue)
       // <family-name>, possibly surrounded by whitespace.
 
       nsAutoString family;
-      bool single;
-      if (!ParseOneFamily(family, single)) {
+      bool single, quoted;
+      if (!ParseOneFamily(family, single, quoted)) {
         SkipUntil(')');
         return false;
       }
@@ -11442,16 +12308,23 @@ CSSParserImpl::ParseFontSrc(nsCSSValue& aValue)
         return false;
       }
 
-      // the style parameters to the nsFont constructor are ignored,
-      // because it's only being used to call EnumerateFamilies
-      nsFont font(family, 0, 0, 0, 0, 0, 0);
-      ExtractFirstFamilyData dat;
+      // reject generics
+      if (single) {
+        nsCSSKeyword keyword = nsCSSKeywords::LookupKeyword(family);
+        switch (keyword) {
+          case eCSSKeyword_serif:
+          case eCSSKeyword_sans_serif:
+          case eCSSKeyword_monospace:
+          case eCSSKeyword_cursive:
+          case eCSSKeyword_fantasy:
+          case eCSSKeyword__moz_fixed:
+            return false;
+          default:
+            break;
+        }
+      }
 
-      font.EnumerateFamilies(ExtractFirstFamily, (void*) &dat);
-      if (!dat.mGood)
-        return false;
-
-      cur.SetStringValue(dat.mFamilyName, eCSSUnit_Local_Font);
+      cur.SetStringValue(family, eCSSUnit_Local_Font);
       values.AppendElement(cur);
     } else {
       // We don't know what to do with this token; unget it and error out
@@ -11642,25 +12515,27 @@ bool
 CSSParserImpl::ParseListStyle()
 {
   // 'list-style' can accept 'none' for two different subproperties,
-  // 'list-style-type' and 'list-style-position'.  In order to accept
+  // 'list-style-type' and 'list-style-image'.  In order to accept
   // 'none' as the value of either but still allow another value for
   // either, we need to ensure that the first 'none' we find gets
-  // allocated to a dummy property instead.
+  // allocated to a dummy property instead. Since parse function for
+  // 'list-style-type' could accept values for 'list-style-position',
+  // we put position in front of type.
   static const nsCSSProperty listStyleIDs[] = {
     eCSSPropertyExtra_x_none_value,
-    eCSSProperty_list_style_type,
     eCSSProperty_list_style_position,
+    eCSSProperty_list_style_type,
     eCSSProperty_list_style_image
   };
 
   nsCSSValue values[MOZ_ARRAY_LENGTH(listStyleIDs)];
   int32_t found =
     ParseChoice(values, listStyleIDs, ArrayLength(listStyleIDs));
-  if (found < 1 || !ExpectEndProperty()) {
+  if (found < 1) {
     return false;
   }
 
-  if ((found & (1|2|8)) == (1|2|8)) {
+  if ((found & (1|4|8)) == (1|4|8)) {
     if (values[0].GetUnit() == eCSSUnit_None) {
       // We found a 'none' plus another value for both of
       // 'list-style-type' and 'list-style-image'.  This is a parse
@@ -11673,17 +12548,15 @@ CSSParserImpl::ParseListStyle()
     }
   }
 
-  // Provide default values
   if ((found & 2) == 0) {
-    if (found & 1) {
-      values[1].SetIntValue(NS_STYLE_LIST_STYLE_NONE, eCSSUnit_Enumerated);
-    } else {
-      values[1].SetIntValue(NS_STYLE_LIST_STYLE_DISC, eCSSUnit_Enumerated);
-    }
+    values[1].SetIntValue(NS_STYLE_LIST_STYLE_POSITION_OUTSIDE,
+                          eCSSUnit_Enumerated);
   }
   if ((found & 4) == 0) {
-    values[2].SetIntValue(NS_STYLE_LIST_STYLE_POSITION_OUTSIDE,
-                          eCSSUnit_Enumerated);
+    // Provide default values
+    nsString type = (found & 1) ?
+      NS_LITERAL_STRING("none") : NS_LITERAL_STRING("disc");
+    values[2].SetStringValue(type, eCSSUnit_Ident);
   }
   if ((found & 8) == 0) {
     values[3].SetNoneValue();
@@ -11694,6 +12567,21 @@ CSSParserImpl::ParseListStyle()
     AppendValue(listStyleIDs[index], values[index]);
   }
   return true;
+}
+
+bool
+CSSParserImpl::ParseListStyleType(nsCSSValue& aValue)
+{
+  if (ParseVariant(aValue, VARIANT_INHERIT, nullptr)) {
+    return true;
+  }
+
+  nsString name;
+  if (ParseCounterStyleName(name, false)) {
+    aValue.SetStringValue(name, eCSSUnit_Ident);
+    return true;
+  }
+  return false;
 }
 
 bool
@@ -11754,7 +12642,7 @@ CSSParserImpl::ParseOutline()
 
   nsCSSValue  values[numProps];
   int32_t found = ParseChoice(values, kOutlineIDs, numProps);
-  if ((found < 1) || (false == ExpectEndProperty())) {
+  if (found < 1) {
     return false;
   }
 
@@ -11780,10 +12668,9 @@ bool
 CSSParserImpl::ParseOverflow()
 {
   nsCSSValue overflow;
-  if (!ParseVariant(overflow, VARIANT_HK,
-                    nsCSSProps::kOverflowKTable) ||
-      !ExpectEndProperty())
+  if (!ParseVariant(overflow, VARIANT_HK, nsCSSProps::kOverflowKTable)) {
     return false;
+  }
 
   nsCSSValue overflowX(overflow);
   nsCSSValue overflowY(overflow);
@@ -11832,11 +12719,7 @@ CSSParserImpl::ParseQuotes()
   if (!ParseVariant(value, VARIANT_HOS, nullptr)) {
     return false;
   }
-  if (value.GetUnit() != eCSSUnit_String) {
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  if (value.GetUnit() == eCSSUnit_String) {
     nsCSSValue open = value;
     nsCSSValuePairList* quotes = value.SetPairListValue();
     for (;;) {
@@ -11845,12 +12728,9 @@ CSSParserImpl::ParseQuotes()
       if (!ParseVariant(quotes->mYValue, VARIANT_STRING, nullptr)) {
         return false;
       }
-      if (CheckEndProperty()) {
-        break;
-      }
       // look for another open
       if (!ParseVariant(open, VARIANT_STRING, nullptr)) {
-        return false;
+        break;
       }
       quotes->mNext = new nsCSSValuePairList;
       quotes = quotes->mNext;
@@ -11869,9 +12749,6 @@ CSSParserImpl::ParseSize()
   }
   if (width.IsLengthUnit()) {
     ParseVariant(height, VARIANT_LENGTH, nullptr);
-  }
-  if (!ExpectEndProperty()) {
-    return false;
   }
 
   if (width == height || height.GetUnit() == eCSSUnit_Null) {
@@ -12073,8 +12950,10 @@ CSSParserImpl::ParseTextOverflow(nsCSSValue& aValue)
 bool
 CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
 {
-  if (!ParseVariant(aValue, VARIANT_HK | VARIANT_NONE | VARIANT_AUTO,
-                    nsCSSProps::kTouchActionKTable)) {
+  // Avaliable values of property touch-action:
+  // auto | none | [pan-x || pan-y] | manipulation
+
+  if (!ParseVariant(aValue, VARIANT_HK, nsCSSProps::kTouchActionKTable)) {
     return false;
   }
 
@@ -12094,6 +12973,13 @@ CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
       return false;
     }
 
+    // Auto and None and Manipulation is not allowed in conjunction with others.
+    if ((intValue | nextIntValue) & (NS_STYLE_TOUCH_ACTION_NONE |
+                                     NS_STYLE_TOUCH_ACTION_AUTO |
+                                     NS_STYLE_TOUCH_ACTION_MANIPULATION)) {
+      return false;
+    }
+
     aValue.SetIntValue(nextIntValue | intValue, eCSSUnit_Enumerated);
   }
 
@@ -12101,16 +12987,16 @@ CSSParserImpl::ParseTouchAction(nsCSSValue& aValue)
 }
 
 bool
-CSSParserImpl::ParseTextCombineHorizontal(nsCSSValue& aValue)
+CSSParserImpl::ParseTextCombineUpright(nsCSSValue& aValue)
 {
   if (!ParseVariant(aValue, VARIANT_HK,
-                    nsCSSProps::kTextCombineHorizontalKTable)) {
+                    nsCSSProps::kTextCombineUprightKTable)) {
     return false;
   }
 
   // if 'digits', need to check for an explicit number [2, 3, 4]
   if (eCSSUnit_Enumerated == aValue.GetUnit() &&
-      aValue.GetIntValue() == NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_2) {
+      aValue.GetIntValue() == NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_2) {
     if (!GetToken(true)) {
       return true;
     }
@@ -12119,11 +13005,11 @@ CSSParserImpl::ParseTextCombineHorizontal(nsCSSValue& aValue)
         case 2:  // already set, nothing to do
           break;
         case 3:
-          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_3,
+          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_3,
                              eCSSUnit_Enumerated);
           break;
         case 4:
-          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_HORIZ_DIGITS_4,
+          aValue.SetIntValue(NS_STYLE_TEXT_COMBINE_UPRIGHT_DIGITS_4,
                              eCSSUnit_Enumerated);
           break;
         default:
@@ -12222,8 +13108,13 @@ CSSParserImpl::ParseFunction(nsCSSKeyword aFunction,
 
   /* Read in a list of values as an array, failing if we can't or if
    * it's out of bounds.
+   *
+   * We reserve 16 entries in the foundValues array in order to avoid
+   * having to resize the array dynamically when parsing some well-formed
+   * functions.  The number 16 is coming from the number of arguments that
+   * matrix3d() accepts.
    */
-  InfallibleTArray<nsCSSValue> foundValues;
+  AutoInfallibleTArray<nsCSSValue, 16> foundValues;
   if (!ParseFunctionInternals(aAllowedTypes, aAllowedTypesAll, aMinElems,
                               aMaxElems, foundValues)) {
     return false;
@@ -12472,12 +13363,8 @@ bool CSSParserImpl::ParseWillChange()
 
     currentListValue->mValue = value;
 
-    if (CheckEndProperty()) {
-      break;
-    }
     if (!ExpectSymbol(',', true)) {
-      REPORT_UNEXPECTED_TOKEN(PEExpectedComma);
-      return false;
+      break;
     }
     currentListValue->mNext = new nsCSSValueList;
     currentListValue = currentListValue->mNext;
@@ -12519,12 +13406,8 @@ CSSParserImpl::ParseSingleTransform(bool aIsPrefixed, nsCSSValue& aValue)
 bool CSSParserImpl::ParseTransform(bool aIsPrefixed)
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    // 'inherit', 'initial', 'unset' and 'none' must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' must be alone
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
     nsCSSValueSharedList* list = new nsCSSValueSharedList;
     value.SetSharedListValue(list);
     list->mHead = new nsCSSValueList;
@@ -12552,9 +13435,6 @@ bool CSSParserImpl::ParseTransformOrigin(bool aPerspective)
 
   nsCSSProperty prop = eCSSProperty_transform_origin;
   if (aPerspective) {
-    if (!ExpectEndProperty()) {
-      return false;
-    }
     prop = eCSSProperty_perspective_origin;
   }
 
@@ -12737,12 +13617,8 @@ bool
 CSSParserImpl::ParseFilter()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    // 'inherit', 'initial', 'unset' and 'none' must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' must be alone
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
     nsCSSValueList* cur = value.SetListValue();
     while (cur) {
       if (!ParseSingleFilter(&cur->mValue)) {
@@ -12769,12 +13645,8 @@ bool
 CSSParserImpl::ParseTransitionProperty()
 {
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    // 'inherit', 'initial', 'unset' and 'none' must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' must be alone
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
     // Accept a list of arbitrary identifiers.  They should be
     // CSS properties, but we want to accept any so that we
     // accept properties that we don't know about yet, e.g.
@@ -12796,12 +13668,8 @@ CSSParserImpl::ParseTransitionProperty()
           return false;
         }
       }
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        REPORT_UNEXPECTED_TOKEN(PEExpectedComma);
-        return false;
+        break;
       }
       cur->mNext = new nsCSSValueList;
       cur = cur->mNext;
@@ -12953,6 +13821,7 @@ CSSParserImpl::ParseAnimationOrTransitionShorthand(
   for (;;) { // loop over comma-separated transitions or animations
     // whether a particular subproperty was specified for this
     // transition or animation
+    bool haveAnyProperty = false;
     for (size_t i = 0; i < aNumProperties; ++i) {
       parsedProperty[i] = false;
     }
@@ -12976,6 +13845,7 @@ CSSParserImpl::ParseAnimationOrTransitionShorthand(
             parsedProperty[i] = true;
             cur[i] = AppendValueToList(aValues[i], cur[i], tempValue);
             foundProperty = true;
+            haveAnyProperty = true;
             break; // out of inner loop; continue looking for next sub-property
           }
         }
@@ -12985,6 +13855,11 @@ CSSParserImpl::ParseAnimationOrTransitionShorthand(
         // parse any of the sub-properties, so the declaration is invalid.
         return eParseAnimationOrTransitionShorthand_Error;
       }
+    }
+
+    if (!haveAnyProperty) {
+      // Got an empty item.
+      return eParseAnimationOrTransitionShorthand_Error;
     }
 
     // We hit the end of the property or the end of one transition
@@ -13223,22 +14098,15 @@ CSSParserImpl::ParseShadowList(nsCSSProperty aProperty)
   bool isBoxShadow = aProperty == eCSSProperty_box_shadow;
 
   nsCSSValue value;
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
-    // 'inherit', 'initial', 'unset' and 'none' must be alone
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' must be alone
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE, nullptr)) {
     nsCSSValueList* cur = value.SetListValue();
     for (;;) {
       if (!ParseShadowItem(cur->mValue, isBoxShadow)) {
         return false;
       }
-      if (CheckEndProperty()) {
-        break;
-      }
       if (!ExpectSymbol(',', true)) {
-        return false;
+        break;
       }
       cur->mNext = new nsCSSValueList;
       cur = cur->mNext;
@@ -13298,8 +14166,6 @@ CSSParserImpl::ParsePaint(nsCSSProperty aPropID)
     if (!ParseVariant(y, VARIANT_COLOR | VARIANT_NONE, nullptr))
       y.SetNoneValue();
   }
-  if (!ExpectEndProperty())
-    return false;
 
   if (!canHaveFallback) {
     AppendValue(aPropID, x);
@@ -13316,14 +14182,10 @@ CSSParserImpl::ParseDasharray()
 {
   nsCSSValue value;
 
-  if (ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE |
-                          VARIANT_OPENTYPE_SVG_KEYWORD,
-                   nsCSSProps::kStrokeContextValueKTable)) {
-    // 'inherit', 'initial', 'unset' and 'none' are only allowed on their own
-    if (!ExpectEndProperty()) {
-      return false;
-    }
-  } else {
+  // 'inherit', 'initial', 'unset' and 'none' are only allowed on their own
+  if (!ParseVariant(value, VARIANT_INHERIT | VARIANT_NONE |
+                           VARIANT_OPENTYPE_SVG_KEYWORD,
+                    nsCSSProps::kStrokeContextValueKTable)) {
     nsCSSValueList *cur = value.SetListValue();
     for (;;) {
       if (!ParseNonNegativeVariant(cur->mValue, VARIANT_LPN, nullptr)) {
@@ -13348,12 +14210,10 @@ CSSParserImpl::ParseMarker()
 {
   nsCSSValue marker;
   if (ParseSingleValueProperty(marker, eCSSProperty_marker_end)) {
-    if (ExpectEndProperty()) {
-      AppendValue(eCSSProperty_marker_end, marker);
-      AppendValue(eCSSProperty_marker_mid, marker);
-      AppendValue(eCSSProperty_marker_start, marker);
-      return true;
-    }
+    AppendValue(eCSSProperty_marker_end, marker);
+    AppendValue(eCSSProperty_marker_mid, marker);
+    AppendValue(eCSSProperty_marker_start, marker);
+    return true;
   }
   return false;
 }
@@ -13435,10 +14295,6 @@ CSSParserImpl::ParsePaintOrder()
     static_assert(NS_STYLE_PAINT_ORDER_NORMAL == 0,
                   "unexpected value for NS_STYLE_PAINT_ORDER_NORMAL");
     value.SetIntValue(static_cast<int32_t>(order), eCSSUnit_Enumerated);
-  }
-
-  if (!ExpectEndProperty()) {
-    return false;
   }
 
   AppendValue(eCSSProperty_paint_order, value);
@@ -13549,12 +14405,12 @@ CSSParserImpl::ParseValueWithVariables(CSSVariableDeclarations::Type* aType,
   // If the property is a custom property (i.e. a variable declaration), then
   // it is also invalid if it consists of no tokens, such as:
   //
-  //   var-invalid:;
+  //   --invalid:;
   //
   // Note that is valid for a custom property to have a value that consists
   // solely of white space, such as:
   //
-  //   var-valid: ;
+  //   --valid: ;
 
   // Stack of closing characters for currently open constructs.
   StopSymbolCharStack stack;
@@ -13685,8 +14541,10 @@ CSSParserImpl::ParseValueWithVariables(CSSVariableDeclarations::Type* aType,
             REPORT_UNEXPECTED_EOF(PEExpectedVariableNameEOF);
             return false;
           }
-          if (mToken.mType != eCSSToken_Ident) {
-            // There must be an identifier directly after the "var(".
+          if (mToken.mType != eCSSToken_Ident ||
+              !nsCSSProps::IsCustomPropertyName(mToken.mIdent)) {
+            // There must be an identifier directly after the "var(" and
+            // it must be a custom property name.
             UngetToken();
             REPORT_UNEXPECTED_TOKEN(PEExpectedVariableName);
             SkipUntil(')');
@@ -13694,7 +14552,13 @@ CSSParserImpl::ParseValueWithVariables(CSSVariableDeclarations::Type* aType,
             return false;
           }
           if (aFunc) {
-            aFunc(mToken.mIdent, aData);
+            MOZ_ASSERT(Substring(mToken.mIdent, 0,
+                                 CSS_CUSTOM_NAME_PREFIX_LENGTH).
+                         EqualsLiteral("--"));
+            // remove '--'
+            const nsDependentSubstring varName =
+              Substring(mToken.mIdent, CSS_CUSTOM_NAME_PREFIX_LENGTH);
+            aFunc(varName, aData);
           }
           if (!GetToken(true)) {
             // EOF right after "var(<ident>".
@@ -13757,7 +14621,7 @@ CSSParserImpl::ParseValueWithVariables(CSSVariableDeclarations::Type* aType,
 static CSSParserImpl* gFreeList = nullptr;
 
 nsCSSParser::nsCSSParser(mozilla::css::Loader* aLoader,
-                         nsCSSStyleSheet* aSheet)
+                         CSSStyleSheet* aSheet)
 {
   CSSParserImpl *impl = gFreeList;
   if (impl) {
@@ -13803,7 +14667,7 @@ nsCSSParser::Shutdown()
 // Wrapper methods
 
 nsresult
-nsCSSParser::SetStyleSheet(nsCSSStyleSheet* aSheet)
+nsCSSParser::SetStyleSheet(CSSStyleSheet* aSheet)
 {
   return static_cast<CSSParserImpl*>(mImpl)->
     SetStyleSheet(aSheet);
@@ -13916,6 +14780,29 @@ nsCSSParser::ParseMediaList(const nsSubstring& aBuffer,
 }
 
 bool
+nsCSSParser::ParseSourceSizeList(const nsAString& aBuffer,
+                                 nsIURI* aURI,
+                                 uint32_t aLineNumber,
+                                 InfallibleTArray< nsAutoPtr<nsMediaQuery> >& aQueries,
+                                 InfallibleTArray<nsCSSValue>& aValues,
+                                 bool aHTMLMode)
+{
+  return static_cast<CSSParserImpl*>(mImpl)->
+    ParseSourceSizeList(aBuffer, aURI, aLineNumber, aQueries, aValues,
+                        aHTMLMode);
+}
+
+bool
+nsCSSParser::ParseFontFamilyListString(const nsSubstring& aBuffer,
+                                       nsIURI*            aURI,
+                                       uint32_t           aLineNumber,
+                                       nsCSSValue&        aValue)
+{
+  return static_cast<CSSParserImpl*>(mImpl)->
+    ParseFontFamilyListString(aBuffer, aURI, aLineNumber, aValue);
+}
+
+bool
 nsCSSParser::ParseColorString(const nsSubstring& aBuffer,
                               nsIURI*            aURI,
                               uint32_t           aLineNumber,
@@ -14008,7 +14895,7 @@ nsCSSParser::ParsePropertyWithVariableReferences(
                                             nsIURI* aDocURL,
                                             nsIURI* aBaseURL,
                                             nsIPrincipal* aDocPrincipal,
-                                            nsCSSStyleSheet* aSheet,
+                                            CSSStyleSheet* aSheet,
                                             uint32_t aLineNumber,
                                             uint32_t aLineOffset)
 {
@@ -14017,4 +14904,26 @@ nsCSSParser::ParsePropertyWithVariableReferences(
                                         aValue, aVariables, aRuleData, aDocURL,
                                         aBaseURL, aDocPrincipal, aSheet,
                                         aLineNumber, aLineOffset);
+}
+
+bool
+nsCSSParser::ParseCounterStyleName(const nsAString& aBuffer,
+                                   nsIURI* aURL,
+                                   nsAString& aName)
+{
+  return static_cast<CSSParserImpl*>(mImpl)->
+    ParseCounterStyleName(aBuffer, aURL, aName);
+}
+
+bool
+nsCSSParser::ParseCounterDescriptor(nsCSSCounterDesc aDescID,
+                                    const nsAString& aBuffer,
+                                    nsIURI* aSheetURL,
+                                    nsIURI* aBaseURL,
+                                    nsIPrincipal* aSheetPrincipal,
+                                    nsCSSValue& aValue)
+{
+  return static_cast<CSSParserImpl*>(mImpl)->
+    ParseCounterDescriptor(aDescID, aBuffer,
+                           aSheetURL, aBaseURL, aSheetPrincipal, aValue);
 }

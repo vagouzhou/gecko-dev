@@ -6,13 +6,14 @@
 
 #include "AudioProcessingEvent.h"
 #include "mozilla/dom/AudioProcessingEventBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "AudioContext.h"
 
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_3(AudioProcessingEvent, Event,
-                                     mInputBuffer, mOutputBuffer, mNode)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(AudioProcessingEvent, Event,
+                                   mInputBuffer, mOutputBuffer, mNode)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(AudioProcessingEvent)
 NS_INTERFACE_MAP_END_INHERITING(Event)
@@ -31,20 +32,28 @@ AudioProcessingEvent::AudioProcessingEvent(ScriptProcessorNode* aOwner,
 }
 
 JSObject*
-AudioProcessingEvent::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+AudioProcessingEvent::WrapObject(JSContext* aCx)
 {
-  return AudioProcessingEventBinding::Wrap(aCx, aScope, this);
+  return AudioProcessingEventBinding::Wrap(aCx, this);
 }
 
-void
-AudioProcessingEvent::LazilyCreateBuffer(nsRefPtr<AudioBuffer>& aBuffer,
-                                         uint32_t aNumberOfChannels)
+already_AddRefed<AudioBuffer>
+AudioProcessingEvent::LazilyCreateBuffer(uint32_t aNumberOfChannels,
+                                         ErrorResult& aRv)
 {
-  AutoPushJSContext cx(mNode->Context()->GetJSContext());
+  AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.Init(mNode->GetOwner()))) {
+    aRv.Throw(NS_ERROR_UNEXPECTED);
+    return nullptr;
+  }
+  JSContext* cx = jsapi.cx();
 
-  aBuffer = new AudioBuffer(mNode->Context(), mNode->BufferSize(),
-                            mNode->Context()->SampleRate());
-  aBuffer->InitializeBuffers(aNumberOfChannels, cx);
+  nsRefPtr<AudioBuffer> buffer =
+    AudioBuffer::Create(mNode->Context(), aNumberOfChannels,
+                        mNode->BufferSize(),
+                        mNode->Context()->SampleRate(), cx, aRv);
+  MOZ_ASSERT(buffer || aRv.ErrorCode() == NS_ERROR_OUT_OF_MEMORY);
+  return buffer.forget();
 }
 
 }

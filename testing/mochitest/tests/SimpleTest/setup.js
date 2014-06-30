@@ -1,4 +1,4 @@
-/* -*- js-indent-level: 2; tab-width: 2; indent-tabs-mode: nil -*- */
+/* -*- js-indent-level: 2; indent-tabs-mode: nil -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -133,6 +133,10 @@ if (params.dumpAboutMemoryAfterTest) {
 
 if (params.dumpDMDAfterTest) {
   TestRunner.dumpDMDAfterTest = true;
+}
+
+if (params.quiet) {
+  TestRunner.quiet = true;
 }
 
 // Log things to the console if appropriate.

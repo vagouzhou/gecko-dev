@@ -7,8 +7,8 @@
 #include "TelephonyCallGroup.h"
 #include "mozilla/dom/TelephonyCallGroupBinding.h"
 
-#include "CallEvent.h"
 #include "CallsList.h"
+#include "mozilla/dom/CallEvent.h"
 #include "mozilla/dom/CallGroupErrorEvent.h"
 #include "Telephony.h"
 
@@ -16,8 +16,8 @@ using namespace mozilla::dom;
 using mozilla::ErrorResult;
 
 TelephonyCallGroup::TelephonyCallGroup(nsPIDOMWindow* aOwner)
-  : nsDOMEventTargetHelper(aOwner)
-  , mCallState(nsITelephonyProvider::CALL_STATE_UNKNOWN)
+  : DOMEventTargetHelper(aOwner)
+  , mCallState(nsITelephonyService::CALL_STATE_UNKNOWN)
 {
 }
 
@@ -41,9 +41,9 @@ TelephonyCallGroup::Create(Telephony* aTelephony)
 }
 
 JSObject*
-TelephonyCallGroup::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+TelephonyCallGroup::WrapObject(JSContext* aCx)
 {
-  return TelephonyCallGroupBinding::Wrap(aCx, aScope, this);
+  return TelephonyCallGroupBinding::Wrap(aCx, this);
 }
 
 void
@@ -88,18 +88,18 @@ TelephonyCallGroup::ChangeState(uint16_t aCallState)
 
   nsString stateString;
   switch (aCallState) {
-    case nsITelephonyProvider::CALL_STATE_UNKNOWN:
+    case nsITelephonyService::CALL_STATE_UNKNOWN:
       break;
-    case nsITelephonyProvider::CALL_STATE_CONNECTED:
+    case nsITelephonyService::CALL_STATE_CONNECTED:
       stateString.AssignLiteral("connected");
       break;
-    case nsITelephonyProvider::CALL_STATE_HOLDING:
+    case nsITelephonyService::CALL_STATE_HOLDING:
       stateString.AssignLiteral("holding");
       break;
-    case nsITelephonyProvider::CALL_STATE_HELD:
+    case nsITelephonyService::CALL_STATE_HELD:
       stateString.AssignLiteral("held");
       break;
-    case nsITelephonyProvider::CALL_STATE_RESUMING:
+    case nsITelephonyService::CALL_STATE_RESUMING:
       stateString.AssignLiteral("resuming");
       break;
     default:
@@ -142,7 +142,12 @@ nsresult
 TelephonyCallGroup::DispatchCallEvent(const nsAString& aType,
                                       TelephonyCall* aCall)
 {
-  nsRefPtr<CallEvent> event = CallEvent::Create(this, aType, aCall, false, false);
+  CallEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mCall = aCall;
+
+  nsRefPtr<CallEvent> event = CallEvent::Constructor(this, aType, init);
   return DispatchTrustedEvent(event);
 }
 
@@ -157,13 +162,13 @@ TelephonyCallGroup::CanConference(const TelephonyCall& aCall,
   if (!aSecondCall) {
     MOZ_ASSERT(!mCalls.IsEmpty());
 
-    return (mCallState == nsITelephonyProvider::CALL_STATE_CONNECTED &&
-            aCall.CallState() == nsITelephonyProvider::CALL_STATE_HELD) ||
-           (mCallState == nsITelephonyProvider::CALL_STATE_HELD &&
-            aCall.CallState() == nsITelephonyProvider::CALL_STATE_CONNECTED);
+    return (mCallState == nsITelephonyService::CALL_STATE_CONNECTED &&
+            aCall.CallState() == nsITelephonyService::CALL_STATE_HELD) ||
+           (mCallState == nsITelephonyService::CALL_STATE_HELD &&
+            aCall.CallState() == nsITelephonyService::CALL_STATE_CONNECTED);
   }
 
-  MOZ_ASSERT(mCallState == nsITelephonyProvider::CALL_STATE_UNKNOWN);
+  MOZ_ASSERT(mCallState == nsITelephonyService::CALL_STATE_UNKNOWN);
 
   if (aCall.ServiceId() != aSecondCall->ServiceId()) {
     return false;
@@ -173,10 +178,10 @@ TelephonyCallGroup::CanConference(const TelephonyCall& aCall,
     return false;
   }
 
-  return (aCall.CallState() == nsITelephonyProvider::CALL_STATE_CONNECTED &&
-          aSecondCall->CallState() == nsITelephonyProvider::CALL_STATE_HELD) ||
-         (aCall.CallState() == nsITelephonyProvider::CALL_STATE_HELD &&
-          aSecondCall->CallState() == nsITelephonyProvider::CALL_STATE_CONNECTED);
+  return (aCall.CallState() == nsITelephonyService::CALL_STATE_CONNECTED &&
+          aSecondCall->CallState() == nsITelephonyService::CALL_STATE_HELD) ||
+         (aCall.CallState() == nsITelephonyService::CALL_STATE_HELD &&
+          aSecondCall->CallState() == nsITelephonyService::CALL_STATE_CONNECTED);
 }
 
 already_AddRefed<TelephonyCall>
@@ -199,24 +204,24 @@ TelephonyCallGroup::GetCall(uint32_t aServiceId, uint32_t aCallIndex)
 NS_IMPL_CYCLE_COLLECTION_CLASS(TelephonyCallGroup)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(TelephonyCallGroup,
-                                                  nsDOMEventTargetHelper)
+                                                  DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCalls)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCallsList)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTelephony)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(TelephonyCallGroup,
-                                                nsDOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCalls)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCallsList)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mTelephony)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(TelephonyCallGroup)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(TelephonyCallGroup, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(TelephonyCallGroup, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(TelephonyCallGroup, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(TelephonyCallGroup, DOMEventTargetHelper)
 
 // WebIDL
 already_AddRefed<CallsList>
@@ -235,7 +240,7 @@ TelephonyCallGroup::Add(TelephonyCall& aCall,
     return;
   }
 
-  aRv = mTelephony->Provider()->ConferenceCall(aCall.ServiceId());
+  aRv = mTelephony->Service()->ConferenceCall(aCall.ServiceId());
 }
 
 void
@@ -248,13 +253,13 @@ TelephonyCallGroup::Add(TelephonyCall& aCall,
     return;
   }
 
-  aRv = mTelephony->Provider()->ConferenceCall(aCall.ServiceId());
+  aRv = mTelephony->Service()->ConferenceCall(aCall.ServiceId());
 }
 
 void
 TelephonyCallGroup::Remove(TelephonyCall& aCall, ErrorResult& aRv)
 {
-  if (mCallState != nsITelephonyProvider::CALL_STATE_CONNECTED) {
+  if (mCallState != nsITelephonyService::CALL_STATE_CONNECTED) {
     NS_WARNING("Remove call from a non-connected call group. Ignore!");
     return;
   }
@@ -266,7 +271,7 @@ TelephonyCallGroup::Remove(TelephonyCall& aCall, ErrorResult& aRv)
 
   call = GetCall(serviceId, callIndex);
   if (call) {
-    aRv = mTelephony->Provider()->SeparateCall(serviceId, callIndex);
+    aRv = mTelephony->Service()->SeparateCall(serviceId, callIndex);
   } else {
     NS_WARNING("Didn't have this call. Ignore!");
   }
@@ -275,37 +280,37 @@ TelephonyCallGroup::Remove(TelephonyCall& aCall, ErrorResult& aRv)
 void
 TelephonyCallGroup::Hold(ErrorResult& aRv)
 {
-  if (mCallState != nsITelephonyProvider::CALL_STATE_CONNECTED) {
+  if (mCallState != nsITelephonyService::CALL_STATE_CONNECTED) {
     NS_WARNING("Hold non-connected call ignored!");
     return;
   }
 
   MOZ_ASSERT(!mCalls.IsEmpty());
 
-  nsresult rv = mTelephony->Provider()->HoldConference(mCalls[0]->ServiceId());
+  nsresult rv = mTelephony->Service()->HoldConference(mCalls[0]->ServiceId());
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
     return;
   }
 
-  ChangeState(nsITelephonyProvider::CALL_STATE_HOLDING);
+  ChangeState(nsITelephonyService::CALL_STATE_HOLDING);
 }
 
 void
 TelephonyCallGroup::Resume(ErrorResult& aRv)
 {
-  if (mCallState != nsITelephonyProvider::CALL_STATE_HELD) {
+  if (mCallState != nsITelephonyService::CALL_STATE_HELD) {
     NS_WARNING("Resume non-held call ignored!");
     return;
   }
 
   MOZ_ASSERT(!mCalls.IsEmpty());
 
-  nsresult rv = mTelephony->Provider()->ResumeConference(mCalls[0]->ServiceId());
+  nsresult rv = mTelephony->Service()->ResumeConference(mCalls[0]->ServiceId());
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
     return;
   }
 
-  ChangeState(nsITelephonyProvider::CALL_STATE_RESUMING);
+  ChangeState(nsITelephonyService::CALL_STATE_RESUMING);
 }

@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- /
+/* -*- indent-tabs-mode: nil; js-indent-level: 4 -*- /
 /* vim: set shiftwidth=4 tabstop=8 autoindent cindent expandtab: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -41,6 +41,7 @@ var gLoadTimeout = 0;
 var gTimeoutHook = null;
 var gRemote = false;
 var gIgnoreWindowSize = false;
+var gShuffle = false;
 var gTotalChunks = 0;
 var gThisChunk = 0;
 var gContainingWindow = null;
@@ -260,7 +261,7 @@ this.OnRefTestLoad = function OnRefTestLoad(win)
     if (gBrowserIsIframe) {
       gBrowser = gContainingWindow.document.createElementNS(XHTML_NS, "iframe");
       gBrowser.setAttribute("mozbrowser", "");
-      gBrowser.setAttribute("mozapp", prefs.getCharPref("browser.manifestURL"));
+      gBrowser.setAttribute("mozapp", prefs.getCharPref("b2g.system_manifest_url"));
     } else {
       gBrowser = gContainingWindow.document.createElementNS(XUL_NS, "xul:browser");
     }
@@ -270,7 +271,7 @@ this.OnRefTestLoad = function OnRefTestLoad(win)
     gBrowser.setAttribute("mozasyncpanzoom", "true");
     // Make sure the browser element is exactly 800x1000, no matter
     // what size our window is
-    gBrowser.setAttribute("style", "min-width: 800px; min-height: 1000px; max-width: 800px; max-height: 1000px");
+    gBrowser.setAttribute("style", "padding: 0px; margin: 0px; border:none; min-width: 800px; min-height: 1000px; max-width: 800px; max-height: 1000px");
 
 #ifdef BOOTSTRAP
 #ifdef REFTEST_B2G
@@ -432,6 +433,17 @@ function StartHTTPServer()
     gHttpServerPort = gServer.identity.primaryPort;
 }
 
+// Perform a Fisher-Yates shuffle of the array.
+function Shuffle(array)
+{
+    for (var i = array.length - 1; i > 0; i--) {
+        var j = Math.floor(Math.random() * (i + 1));
+        var temp = array[i];
+        array[i] = array[j];
+        array[j] = temp;
+    }
+}
+
 function StartTests()
 {
     var uri;
@@ -448,6 +460,12 @@ function StartTests()
         gNoCanvasCache = prefs.getIntPref("reftest.nocache");
     } catch(e) {
         gNoCanvasCache = false;
+    }
+
+    try {
+      gShuffle = prefs.getBoolPref("reftest.shuffle");
+    } catch (e) {
+      gShuffle = false;
     }
 
     try {
@@ -484,6 +502,11 @@ function StartTests()
         DoneTests();
     }
 #endif
+
+    if (gShuffle) {
+        gNoCanvasCache = true;
+    }
+
     try {
         ReadTopManifest(uri);
         BuildUseCounts();
@@ -522,6 +545,11 @@ function StartTests()
             gDumpLog("REFTEST INFO | Running chunk " + gThisChunk + " out of " + gTotalChunks + " chunks.  ");
             gDumpLog("tests " + (start+1) + "-" + end + "/" + gURLs.length + "\n");
         }
+
+        if (gShuffle) {
+            Shuffle(gURLs);
+        }
+
         gTotalTests = gURLs.length;
 
         if (!gTotalTests)
@@ -597,6 +625,7 @@ function BuildConditionSandbox(aURL) {
     var info = gfxInfo.getInfo();
     sandbox.azureQuartz = info.AzureCanvasBackend == "quartz";
     sandbox.azureSkia = info.AzureCanvasBackend == "skia";
+    sandbox.skiaContent = info.AzureContentBackend == "skia";
     sandbox.azureSkiaGL = info.AzureSkiaAccelerated; // FIXME: assumes GL right now
     // true if we are using the same Azure backend for rendering canvas and content
     sandbox.contentSameGfxBackendAsCanvas = info.AzureContentBackend == info.AzureCanvasBackend
@@ -630,6 +659,12 @@ function BuildConditionSandbox(aURL) {
     sandbox.AddressSanitizer = true;
 #else
     sandbox.AddressSanitizer = false;
+#endif
+
+#if MOZ_WEBRTC
+    sandbox.webrtc = true;
+#else
+    sandbox.webrtc = false;
 #endif
 
     var hh = CC[NS_NETWORK_PROTOCOL_CONTRACTID_PREFIX + "http"].
@@ -1665,7 +1700,7 @@ function RecordResult(testRunTime, errorMsg, scriptResults)
                 gDumpLog(result);
             }
 
-            if (!test_passed && expected == EXPECTED_PASS) {
+            if ((!test_passed && expected == EXPECTED_PASS) || (test_passed && expected == EXPECTED_FAIL)) {
                 FlushTestLog();
             }
 
@@ -1687,6 +1722,11 @@ function RecordResult(testRunTime, errorMsg, scriptResults)
 function LoadFailed(why)
 {
     ++gTestResults.FailedLoad;
+    // Once bug 896840 is fixed, this can go away, but for now it will give log
+    // output that is TBPL starable for bug 789751 and bug 720452.
+    if (!why) {
+        gDumpLog("REFTEST TEST-UNEXPECTED-FAIL | load failed with unknown reason\n");
+    }
     gDumpLog("REFTEST TEST-UNEXPECTED-FAIL | " +
          gURLs[0]["url" + gState].spec + " | load failed: " + why + "\n");
     FlushTestLog();

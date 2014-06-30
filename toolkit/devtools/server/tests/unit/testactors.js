@@ -1,7 +1,10 @@
 /* Any copyright is dedicated to the Public Domain.
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js", {}).Promise;
+const { ActorPool, appendExtraActors, createExtraActors } = require("devtools/server/actors/common");
+const { RootActor } = require("devtools/server/actors/root");
+const { ThreadActor } = require("devtools/server/actors/script");
+const { DebuggerServer } = require("devtools/server/main");
 
 var gTestGlobals = [];
 DebuggerServer.addTestGlobal = function(aGlobal) {
@@ -41,7 +44,7 @@ function TestTabList(aConnection) {
 TestTabList.prototype = {
   constructor: TestTabList,
   getList: function () {
-    return promise.resolve([tabActor for (tabActor of this._tabActors)]);
+    return Promise.resolve([tabActor for (tabActor of this._tabActors)]);
   }
 };
 
@@ -109,11 +112,19 @@ TestTabActor.prototype = {
   },
 
   /* Support for DebuggerServer.addTabActor. */
-  _createExtraActors: CommonCreateExtraActors,
-  _appendExtraActors: CommonAppendExtraActors
+  _createExtraActors: createExtraActors,
+  _appendExtraActors: appendExtraActors
 };
 
 TestTabActor.prototype.requestTypes = {
   "attach": TestTabActor.prototype.onAttach,
   "detach": TestTabActor.prototype.onDetach
+};
+
+exports.register = function(handle) {
+  handle.setRootActor(createRootActor);
+};
+
+exports.unregister = function(handle) {
+  handle.setRootActor(null);
 };

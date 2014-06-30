@@ -54,6 +54,8 @@
  **************************************************************
  **************************************************************/
 
+#include "gfx2DGlue.h"
+#include "gfxPlatform.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
@@ -61,11 +63,13 @@
 
 #include "mozilla/ipc/MessageChannel.h"
 #include <algorithm>
+#include <limits>
 
 #include "nsWindow.h"
 
 #include <shellapi.h>
 #include <windows.h>
+#include <wtsapi32.h>
 #include <process.h>
 #include <commctrl.h>
 #include <unknwn.h>
@@ -182,6 +186,7 @@
 
 using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::gfx;
 using namespace mozilla::layers;
 using namespace mozilla::widget;
 
@@ -250,6 +255,9 @@ const wchar_t* kOOPPPluginFocusEventId   = L"OOPP Plugin Focus Widget Event";
 uint32_t        nsWindow::sOOPPPluginFocusEvent   =
                   RegisterWindowMessageW(kOOPPPluginFocusEventId);
 
+DWORD           nsWindow::sFirstEventTime = 0;
+TimeStamp       nsWindow::sFirstEventTimeStamp = TimeStamp();
+
 /**************************************************************
  *
  * SECTION: globals variables
@@ -299,6 +307,10 @@ static bool gIsPointerEventsEnabled = false;
 // to DOM target conversions for these, we cache responses for a given
 // coordinate this many milliseconds:
 #define HITTEST_CACHE_LIFETIME_MS 50
+
+// Times attached to messages wrap when they overflow
+static const DWORD kEventTimeRange = std::numeric_limits<DWORD>::max();
+static const DWORD kEventTimeHalfRange = kEventTimeRange / 2;
 
 
 /**************************************************************
@@ -494,7 +506,8 @@ nsWindow::Create(nsIWidget *aParent,
       parent = nullptr;
     }
 
-    if (IsVistaOrLater() && !IsWin8OrLater()) {
+    if (IsVistaOrLater() && !IsWin8OrLater() &&
+        HasBogusPopupsDropShadowOnMultiMonitor()) {
       extendedStyle |= WS_EX_COMPOSITED;
     }
 
@@ -604,6 +617,14 @@ nsWindow::Create(nsIWidget *aParent,
   }
 
   SubclassWindow(TRUE);
+
+  // Starting with Windows XP, a process always runs within a terminal services
+  // session. In order to play nicely with RDP, fast user switching, and the
+  // lock screen, we should be handling WM_WTSSESSION_CHANGE. We must register
+  // our HWND in order to receive this message.
+  DebugOnly<BOOL> wtsRegistered = ::WTSRegisterSessionNotification(mWnd,
+                                                       NOTIFY_FOR_THIS_SESSION);
+  NS_ASSERTION(wtsRegistered, "WTSRegisterSessionNotification failed!\n");
 
   IMEHandler::InitInputContext(this, mInputContext);
 
@@ -1813,7 +1834,8 @@ NS_METHOD nsWindow::SetFocus(bool aRaise)
  *
  * SECTION: Bounds
  *
- * GetBounds, GetClientBounds, GetScreenBounds, GetClientOffset
+ * GetBounds, GetClientBounds, GetScreenBounds,
+ * GetRestoredBounds, GetClientOffset
  * SetDrawsInTitlebar, GetNonClientMargins, SetNonClientMargins
  *
  * Bound calculations.
@@ -1923,6 +1945,32 @@ NS_METHOD nsWindow::GetScreenBounds(nsIntRect &aRect)
   } else
     aRect = mBounds;
 
+  return NS_OK;
+}
+
+NS_METHOD nsWindow::GetRestoredBounds(nsIntRect &aRect)
+{
+  if (SizeMode() == nsSizeMode_Normal) {
+    return GetScreenBounds(aRect);
+  }
+  if (!mWnd) {
+    return NS_ERROR_FAILURE;
+  }
+
+  WINDOWPLACEMENT pl = { sizeof(WINDOWPLACEMENT) };
+  VERIFY(::GetWindowPlacement(mWnd, &pl));
+  const RECT& r = pl.rcNormalPosition;
+
+  HMONITOR monitor = ::MonitorFromWindow(mWnd, MONITOR_DEFAULTTONULL);
+  if (!monitor) {
+    return NS_ERROR_FAILURE;
+  }
+  MONITORINFO mi = { sizeof(MONITORINFO) };
+  VERIFY(::GetMonitorInfo(monitor, &mi));
+
+  aRect.SetRect(r.left, r.top, r.right - r.left, r.bottom - r.top);
+  aRect.MoveBy(mi.rcWork.left - mi.rcMonitor.left,
+               mi.rcWork.top - mi.rcMonitor.top);
   return NS_OK;
 }
 
@@ -2247,10 +2295,16 @@ nsWindow::SetNonClientMargins(nsIntMargin &margins)
       margins.right == -1 && margins.bottom == -1) {
     mCustomNonClient = false;
     mNonClientMargins = margins;
-    RemovePropW(mWnd, kManageWindowInfoProperty);
     // Force a reflow of content based on the new client
     // dimensions.
     ResetLayout();
+
+    int windowStatus =
+      reinterpret_cast<LONG_PTR>(GetPropW(mWnd, kManageWindowInfoProperty));
+    if (windowStatus) {
+      ::SendMessageW(mWnd, WM_NCACTIVATE, 1 != windowStatus, 0);
+    }
+
     return NS_OK;
   }
 
@@ -3338,26 +3392,6 @@ nsWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
 
 /**************************************************************
  *
- * SECTION: nsIWidget::GetThebesSurface
- *
- * Get the Thebes surface associated with this widget.
- *
- **************************************************************/
-
-gfxASurface *nsWindow::GetThebesSurface()
-{
-  if (mPaintDC)
-    return (new gfxWindowsSurface(mPaintDC));
-
-  uint32_t flags = gfxWindowsSurface::FLAG_TAKE_DC;
-  if (mTransparencyMode != eTransparencyOpaque) {
-      flags |= gfxWindowsSurface::FLAG_IS_TRANSPARENT;
-  }
-  return (new gfxWindowsSurface(mWnd, flags));
-}
-
-/**************************************************************
- *
  * SECTION: nsIWidget::OnDefaultButtonLoaded
  *
  * Called after the dialog is loaded and it has a default button.
@@ -3573,6 +3607,15 @@ nsWindow::UpdateThemeGeometries(const nsTArray<ThemeGeometry>& aThemeGeometries)
   }
 }
 
+uint32_t
+nsWindow::GetMaxTouchPoints() const
+{
+  if (IsWin7OrLater()) {
+    return GetSystemMetrics(SM_MAXIMUMTOUCHES);
+  }
+  return 0;
+}
+
 /**************************************************************
  **************************************************************
  **
@@ -3619,6 +3662,7 @@ void nsWindow::InitEvent(WidgetGUIEvent& event, nsIntPoint* aPoint)
   }
 
   event.time = ::GetMessageTime();
+  event.timeStamp = GetMessageTimeStamp(event.time);
 }
 
 /**************************************************************
@@ -4562,6 +4606,21 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     }
     break;
 
+    case WM_WTSSESSION_CHANGE:
+    {
+      switch (wParam) {
+        case WTS_CONSOLE_CONNECT:
+        case WTS_REMOTE_CONNECT:
+        case WTS_SESSION_UNLOCK:
+          // When a session becomes visible, we should invalidate.
+          Invalidate(true, true, true);
+          break;
+        default:
+          break;
+      }
+    }
+    break;
+
     case WM_FONTCHANGE:
     {
       // We only handle this message for the hidden window,
@@ -4670,6 +4729,7 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
        * WM_NCACTIVATE paints nc areas. Avoid this and re-route painting
        * through WM_NCPAINT via InvalidateNonClientRegion.
        */
+      UpdateGetWindowInfoCaptionStatus(FALSE != wParam);
 
       if (!mCustomNonClient)
         break;
@@ -4682,7 +4742,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // going active
         *aRetValue = FALSE; // ignored
         result = true;
-        UpdateGetWindowInfoCaptionStatus(true);
         // invalidate to trigger a paint
         InvalidateNonClientRegion();
         break;
@@ -4690,7 +4749,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
         // going inactive
         *aRetValue = TRUE; // go ahead and deactive
         result = true;
-        UpdateGetWindowInfoCaptionStatus(false);
         // invalidate to trigger a paint
         InvalidateNonClientRegion();
         break;
@@ -5204,7 +5262,6 @@ nsWindow::ProcessMessage(UINT msg, WPARAM& wParam, LPARAM& lParam,
     nsUXThemeData::CheckForCompositor(true);
 
     UpdateNonClientMargins();
-    RemovePropW(mWnd, kManageWindowInfoProperty);
     BroadcastMsg(mWnd, WM_DWMCOMPOSITIONCHANGED);
     NotifyThemeChanged();
     UpdateGlass();
@@ -5590,6 +5647,107 @@ nsWindow::ClientMarginHitTestPoint(int32_t mx, int32_t my)
   }
 
   return testResult;
+}
+
+TimeStamp
+nsWindow::GetMessageTimeStamp(LONG aEventTime)
+{
+  // Conversion from native event time to timestamp is complicated by the fact
+  // that native event time wraps. Also, for consistency's sake we avoid calling
+  // ::GetTickCount() each time and for performance reasons we only use the
+  // TimeStamp::NowLoRes except when recording the first event's time.
+
+  // We currently require the event time to be passed in. This is an interim
+  // measure to avoid calling GetMessageTime twice for each event--once when
+  // storing the time directly and once when converting to a timestamp.
+  //
+  // Once we no longer store both a time and a timestamp on each event we can
+  // perform the call to GetMessageTime here instead.
+  DWORD eventTime = static_cast<DWORD>(aEventTime);
+
+  // Record first event time
+  if (sFirstEventTimeStamp.IsNull()) {
+    nsWindow::UpdateFirstEventTime(eventTime);
+  }
+  TimeStamp roughlyNow = TimeStamp::NowLoRes();
+
+  // If the event time is before the first event time there are two
+  // possibilities:
+  //
+  //   a) Event time has wrapped
+  //   b) The initial events were not delivered strictly in time order
+  //
+  // I'm not sure if (b) ever happens but even if it doesn't currently occur,
+  // it could come about if we change the way we fetch events.
+  //
+  // We can tell we have (b) if the event time is a little bit before the first
+  // event (i.e. less than half the range) and the timestamp is only a little
+  // bit past the first event timestamp (again less than half the range).
+  // In that case we should adjust the first event time so it really is the
+  // first event time.
+  if (eventTime < sFirstEventTime &&
+      sFirstEventTime - eventTime < kEventTimeHalfRange &&
+      roughlyNow - sFirstEventTimeStamp <
+        TimeDuration::FromMilliseconds(kEventTimeHalfRange)) {
+    UpdateFirstEventTime(eventTime);
+  }
+
+  double timeSinceFirstEvent =
+    sFirstEventTime <= eventTime
+      ? eventTime - sFirstEventTime
+      : static_cast<double>(kEventTimeRange) + eventTime - sFirstEventTime;
+  TimeStamp eventTimeStamp =
+    sFirstEventTimeStamp + TimeDuration::FromMilliseconds(timeSinceFirstEvent);
+
+  // Event time may have wrapped several times since we recorded the first
+  // event time (it wraps every ~50 days) so we extend eventTimeStamp as
+  // needed.
+  double timesWrapped =
+    (roughlyNow - sFirstEventTimeStamp).ToMilliseconds() / kEventTimeRange;
+  int32_t cyclesToAdd = static_cast<int32_t>(timesWrapped); // floor
+
+  // There is some imprecision in the above calculation since we are using
+  // TimeStamp::NowLoRes and sFirstEventTime and sFirstEventTimeStamp may not
+  // be *exactly* the same moment. It is possible we think that time
+  // has *just* wrapped based on comparing timestamps, but actually the
+  // event time is *just about* to wrap; or vice versa.
+  // In the following, we detect this situation and adjust cyclesToAdd as
+  // necessary.
+  double intervalFraction = fmod(timesWrapped, 1.0);
+
+  // If our rough calculation of how many times we've wrapped based on comparing
+  // timestamps says we've just wrapped (specifically, less 10% past the wrap
+  // point), but the event time is just before the wrap point (again, within
+  // 10%), then we need to reduce the number of wraps by 1.
+  if (intervalFraction < 0.1 && timeSinceFirstEvent > kEventTimeRange * 0.9) {
+    cyclesToAdd--;
+  // Likewise, if our rough calculation says we've just wrapped but actually the
+  // event time is just after the wrap point, we need to add an extra wrap.
+  } else if (intervalFraction > 0.9 &&
+             timeSinceFirstEvent < kEventTimeRange * 0.1) {
+    cyclesToAdd++;
+  }
+
+  if (cyclesToAdd > 0) {
+    eventTimeStamp +=
+      TimeDuration::FromMilliseconds(kEventTimeRange * cyclesToAdd);
+  }
+
+  return eventTimeStamp;
+}
+
+void
+nsWindow::UpdateFirstEventTime(DWORD aEventTime)
+{
+  sFirstEventTime = aEventTime;
+  DWORD currentTime = ::GetTickCount();
+  TimeStamp currentTimeStamp = TimeStamp::Now();
+  double timeSinceFirstEvent =
+    aEventTime <= currentTime
+      ? currentTime - aEventTime
+      : static_cast<double>(kEventTimeRange) + currentTime - aEventTime;
+  sFirstEventTimeStamp =
+    currentTimeStamp - TimeDuration::FromMilliseconds(timeSinceFirstEvent);
 }
 
 void nsWindow::PostSleepWakeNotification(const bool aIsSleepMode)
@@ -6044,6 +6202,8 @@ bool nsWindow::OnTouch(WPARAM wParam, LPARAM lParam)
         if (!touchEventToSend) {
           touchEventToSend = new WidgetTouchEvent(true, NS_TOUCH_MOVE, this);
           touchEventToSend->time = ::GetMessageTime();
+          touchEventToSend->timeStamp =
+            GetMessageTimeStamp(touchEventToSend->time);
           ModifierKeyState modifierKeyState;
           modifierKeyState.InitInputEvent(*touchEventToSend);
         }
@@ -6062,6 +6222,8 @@ bool nsWindow::OnTouch(WPARAM wParam, LPARAM lParam)
         if (!touchEndEventToSend) {
           touchEndEventToSend = new WidgetTouchEvent(true, NS_TOUCH_END, this);
           touchEndEventToSend->time = ::GetMessageTime();
+          touchEndEventToSend->timeStamp =
+            GetMessageTimeStamp(touchEndEventToSend->time);
           ModifierKeyState modifierKeyState;
           modifierKeyState.InitInputEvent(*touchEndEventToSend);
         }
@@ -6142,6 +6304,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam)
 
     wheelEvent.button      = 0;
     wheelEvent.time        = ::GetMessageTime();
+    wheelEvent.timeStamp   = GetMessageTimeStamp(wheelEvent.time);
     wheelEvent.inputSource = nsIDOMMouseEvent::MOZ_SOURCE_TOUCH;
 
     bool endFeedback = true;
@@ -6176,6 +6339,7 @@ bool nsWindow::OnGesture(WPARAM wParam, LPARAM lParam)
   modifierKeyState.InitInputEvent(event);
   event.button    = 0;
   event.time      = ::GetMessageTime();
+  event.timeStamp = GetMessageTimeStamp(event.time);
   event.inputSource = nsIDOMMouseEvent::MOZ_SOURCE_TOUCH;
 
   nsEventStatus status;
@@ -6395,6 +6559,9 @@ void nsWindow::OnDestroy()
   // Prevent the widget from sending additional events.
   mWidgetListener = nullptr;
   mAttachedWidgetListener = nullptr;
+
+  // Unregister notifications from terminal services
+  ::WTSUnRegisterSessionNotification(mWnd);
 
   // Free our subclass and clear |this| stored in the window props. We will no longer
   // receive events from Windows after this point.
@@ -6838,9 +7005,10 @@ void nsWindow::SetupTranslucentWindowMemoryBitmap(nsTransparencyMode aMode)
 void nsWindow::ClearTranslucentWindow()
 {
   if (mTransparentSurface) {
-    nsRefPtr<gfxContext> thebesContext = new gfxContext(mTransparentSurface);
-    thebesContext->SetOperator(gfxContext::OPERATOR_CLEAR);
-    thebesContext->Paint();
+    IntSize size = ToIntSize(mTransparentSurface->GetSize());
+    RefPtr<DrawTarget> drawTarget = gfxPlatform::GetPlatform()->
+      CreateDrawTargetForSurface(mTransparentSurface, size);
+    drawTarget->ClearRect(Rect(0, 0, size.width, size.height));
     UpdateTranslucentWindow();
  }
 }
@@ -7287,6 +7455,13 @@ nsWindow::DealWithPopups(HWND aWnd, UINT aMessage,
           if (deactiveWindow && deactiveWindow->IsPopup()) {
             return false;
           }
+        }
+      } else if (LOWORD(aWParam) == WA_CLICKACTIVE) {
+        // If the WM_ACTIVATE message is caused by a click in a popup,
+        // we should not rollup any popups.
+        if (EventIsInsideWindow(popupWindow) ||
+            !GetPopupsToRollup(rollupListener, &popupsToRollup)) {
+          return false;
         }
       }
       break;

@@ -67,6 +67,7 @@ protected:
   virtual void UpdateReferenceSet(int32_t delta);
   virtual void IncrementReferenceSetIndices();
   virtual void MakeRoom(uint32_t amount) = 0;
+  virtual void DumpState();
 
   nsAutoTArray<uint32_t, 64> mReferenceSet; // list of indicies
 
@@ -91,6 +92,8 @@ protected:
   uint32_t mMaxBuffer;
 };
 
+class Http2Compressor;
+
 class Http2Decompressor MOZ_FINAL : public Http2BaseCompressor
 {
 public:
@@ -106,6 +109,7 @@ public:
   void GetScheme(nsACString &hdr) { hdr = mHeaderScheme; }
   void GetPath(nsACString &hdr) { hdr = mHeaderPath; }
   void GetMethod(nsACString &hdr) { hdr = mHeaderMethod; }
+  void SetCompressor(Http2Compressor *compressor) { mCompressor = compressor; }
 
 protected:
   virtual void MakeRoom(uint32_t amount) MOZ_OVERRIDE;
@@ -114,7 +118,9 @@ private:
   nsresult DoIndexed();
   nsresult DoLiteralWithoutIndex();
   nsresult DoLiteralWithIncremental();
-  nsresult DoLiteralInternal(nsACString &, nsACString &);
+  nsresult DoLiteralInternal(nsACString &, nsACString &, uint32_t);
+  nsresult DoLiteralNeverIndexed();
+  nsresult DoContextUpdate();
 
   nsresult DecodeInteger(uint32_t prefixLen, uint32_t &result);
   nsresult OutputHeader(uint32_t index);
@@ -122,11 +128,14 @@ private:
 
   nsresult CopyHeaderString(uint32_t index, nsACString &name);
   nsresult CopyStringFromInput(uint32_t index, nsACString &val);
+  uint8_t ExtractByte(uint8_t bitsLeft, uint32_t &bytesConsumed);
   nsresult CopyHuffmanStringFromInput(uint32_t index, nsACString &val);
   nsresult DecodeHuffmanCharacter(HuffmanIncomingTable *table, uint8_t &c,
                                   uint32_t &bytesConsumed, uint8_t &bitsLeft);
   nsresult DecodeFinalHuffmanCharacter(HuffmanIncomingTable *table, uint8_t &c,
                                        uint8_t &bitsLeft);
+
+  Http2Compressor *mCompressor;
 
   nsCString mHeaderStatus;
   nsCString mHeaderHost;
@@ -144,7 +153,11 @@ private:
 class Http2Compressor MOZ_FINAL : public Http2BaseCompressor
 {
 public:
-  Http2Compressor() : mParsedContentLength(-1) { };
+  Http2Compressor() : mParsedContentLength(-1),
+                      mMaxBufferSetting(kDefaultMaxBuffer),
+                      mBufferSizeChangeWaiting(false),
+                      mLowestBufferSizeWaiting(0)
+  { };
   virtual ~Http2Compressor() { }
 
   // HTTP/1 formatted header block as input - HTTP/2 formatted
@@ -152,20 +165,23 @@ public:
   nsresult EncodeHeaderBlock(const nsCString &nvInput,
                              const nsACString &method, const nsACString &path,
                              const nsACString &host, const nsACString &scheme,
-                             nsACString &output);
+                             bool connectForm, nsACString &output);
 
   int64_t GetParsedContentLength() { return mParsedContentLength; } // -1 on not found
 
   void SetMaxBufferSize(uint32_t maxBufferSize);
+  nsresult SetMaxBufferSizeInternal(uint32_t maxBufferSize);
 
 protected:
   virtual void ClearHeaderTable() MOZ_OVERRIDE;
   virtual void UpdateReferenceSet(int32_t delta) MOZ_OVERRIDE;
   virtual void IncrementReferenceSetIndices() MOZ_OVERRIDE;
   virtual void MakeRoom(uint32_t amount) MOZ_OVERRIDE;
+  virtual void DumpState() MOZ_OVERRIDE;
 
 private:
   enum outputCode {
+    kNeverIndexedLiteral,
     kPlainLiteral,
     kIndexedLiteral,
     kToggleOff,
@@ -176,10 +192,15 @@ private:
   void DoOutput(Http2Compressor::outputCode code,
                 const class nvPair *pair, uint32_t index);
   void EncodeInteger(uint32_t prefixLen, uint32_t val);
-  void ProcessHeader(const nvPair inputPair);
+  void ProcessHeader(const nvPair inputPair, bool noLocalIndex,
+                     bool neverIndex);
   void HuffmanAppend(const nsCString &value);
+  void EncodeTableSizeChange(uint32_t newMaxSize);
 
   int64_t mParsedContentLength;
+  uint32_t mMaxBufferSetting;
+  bool mBufferSizeChangeWaiting;
+  uint32_t mLowestBufferSizeWaiting;
 
   nsAutoTArray<uint32_t, 64> mImpliedReferenceSet;
 };

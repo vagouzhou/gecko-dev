@@ -7,7 +7,7 @@
 #ifndef AudioNode_h_
 #define AudioNode_h_
 
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/AudioNodeBinding.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsAutoPtr.h"
@@ -15,6 +15,8 @@
 #include "AudioContext.h"
 #include "MediaStreamGraph.h"
 #include "WebAudioUtils.h"
+#include "mozilla/MemoryReporting.h"
+#include "nsWeakReference.h"
 
 namespace mozilla {
 
@@ -81,7 +83,8 @@ private:
  * still alive, and will still be alive when it receives a message from the
  * engine.
  */
-class AudioNode : public nsDOMEventTargetHelper
+class AudioNode : public DOMEventTargetHelper,
+                  public nsSupportsWeakReference
 {
 protected:
   // You can only use refcounting to delete this object
@@ -98,7 +101,7 @@ public:
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(AudioNode,
-                                           nsDOMEventTargetHelper)
+                                           DOMEventTargetHelper)
 
   virtual AudioBufferSourceNode* AsAudioBufferSourceNode() {
     return nullptr;
@@ -131,6 +134,8 @@ public:
   // constant for the lifetime of the node. Both default to 1.
   virtual uint16_t NumberOfInputs() const { return 1; }
   virtual uint16_t NumberOfOutputs() const { return 1; }
+
+  uint32_t Id() const { return mId; }
 
   uint32_t ChannelCount() const { return mChannelCount; }
   virtual void SetChannelCount(uint32_t aChannelCount, ErrorResult& aRv)
@@ -170,6 +175,16 @@ public:
       }
     }
 
+    size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+    {
+      size_t amount = 0;
+      if (mStreamPort) {
+        amount += mStreamPort->SizeOfIncludingThis(aMallocSizeOf);
+      }
+
+      return amount;
+    }
+
     // Weak reference.
     AudioNode* mInputNode;
     nsRefPtr<MediaInputPort> mStreamPort;
@@ -207,6 +222,11 @@ public:
   // called, then the node is already inactive.
   // MarkInactive() may delete |this|.
   void MarkInactive() { Context()->UnregisterActiveNode(this); }
+
+  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const;
+  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
+
+  virtual const char* NodeType() const = 0;
 
 private:
   friend class AudioBufferSourceNode;
@@ -250,6 +270,12 @@ private:
   uint32_t mChannelCount;
   ChannelCountMode mChannelCountMode;
   ChannelInterpretation mChannelInterpretation;
+  const uint32_t mId;
+#ifdef DEBUG
+  // In debug builds, check to make sure that the node demise notification has
+  // been properly sent before the node is destroyed.
+  bool mDemiseNotified;
+#endif
 };
 
 }

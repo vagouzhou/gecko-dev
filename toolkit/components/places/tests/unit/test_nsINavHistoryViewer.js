@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -97,7 +97,6 @@ add_test(function check_history_query() {
   var root = result.root;
   root.containerOpen = true;
 
-  // nsINavHistoryResultObserver.containerOpened
   do_check_neq(resultObserver.openedContainer, null);
 
   // nsINavHistoryResultObserver.nodeInserted
@@ -148,7 +147,6 @@ add_test(function check_history_query() {
         }, null);
         do_check_false(resultObserver.inBatchMode);
 
-        // nsINavHistoryResultObserver.containerClosed
         root.containerOpen = false;
         do_check_eq(resultObserver.closedContainer, resultObserver.openedContainer);
         result.removeObserver(resultObserver);
@@ -168,7 +166,6 @@ add_test(function check_bookmarks_query() {
   var root = result.root;
   root.containerOpen = true;
 
-  // nsINavHistoryResultObserver.containerOpened
   do_check_neq(resultObserver.openedContainer, null);
 
   // nsINavHistoryResultObserver.nodeInserted
@@ -217,7 +214,6 @@ add_test(function check_bookmarks_query() {
   }, null);
   do_check_false(resultObserver.inBatchMode);
 
-  // nsINavHistoryResultObserver.containerClosed
   root.containerOpen = false;
   do_check_eq(resultObserver.closedContainer, resultObserver.openedContainer);
   result.removeObserver(resultObserver);
@@ -234,7 +230,6 @@ add_test(function check_mixed_query() {
   var root = result.root;
   root.containerOpen = true;
 
-  // nsINavHistoryResultObserver.containerOpened
   do_check_neq(resultObserver.openedContainer, null);
 
   // nsINavHistoryResultObserver.batching
@@ -252,7 +247,6 @@ add_test(function check_mixed_query() {
   }, null);
   do_check_false(resultObserver.inBatchMode);
 
-  // nsINavHistoryResultObserver.containerClosed
   root.containerOpen = false;
   do_check_eq(resultObserver.closedContainer, resultObserver.openedContainer);
   result.removeObserver(resultObserver);

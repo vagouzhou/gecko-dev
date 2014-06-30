@@ -30,7 +30,7 @@ SVGMatrixTearoffTable()
 
 //----------------------------------------------------------------------
 
-// We could use NS_IMPL_CYCLE_COLLECTION_1, except that in Unlink() we need to
+// We could use NS_IMPL_CYCLE_COLLECTION(, except that in Unlink() we need to
 // clear our list's weak ref to us to be safe. (The other option would be to
 // not unlink and rely on the breaking of the other edges in the cycle, as
 // NS_SVG_VAL_IMPL_CYCLE_COLLECTION does.)
@@ -61,9 +61,9 @@ NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(SVGTransform, AddRef)
 NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(SVGTransform, Release)
 
 JSObject*
-SVGTransform::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SVGTransform::WrapObject(JSContext* aCx)
 {
-  return SVGTransformBinding::Wrap(aCx, aScope, this);
+  return SVGTransformBinding::Wrap(aCx, this);
 }
 
 //----------------------------------------------------------------------
@@ -206,7 +206,7 @@ SVGTransform::SetTranslate(float tx, float ty, ErrorResult& rv)
   }
 
   if (Transform().Type() == SVG_TRANSFORM_TRANSLATE &&
-      Matrixgfx().x0 == tx && Matrixgfx().y0 == ty) {
+      Matrixgfx()._31 == tx && Matrixgfx()._32 == ty) {
     return;
   }
 
@@ -223,7 +223,7 @@ SVGTransform::SetScale(float sx, float sy, ErrorResult& rv)
   }
 
   if (Transform().Type() == SVG_TRANSFORM_SCALE &&
-      Matrixgfx().xx == sx && Matrixgfx().yy == sy) {
+      Matrixgfx()._11 == sx && Matrixgfx()._22 == sy) {
     return;
   }
   AutoChangeTransformNotifier notifier(this);

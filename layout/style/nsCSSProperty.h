@@ -58,7 +58,7 @@ enum nsCSSProperty {
   eCSSPropertyExtra_x_none_value,
   eCSSPropertyExtra_x_auto_value,
 
-  // Extra value to represent custom properties (var-*).
+  // Extra value to represent custom properties (--*).
   eCSSPropertyExtra_variable
 };
 
@@ -70,6 +70,16 @@ enum nsCSSFontDesc {
 #include "nsCSSFontDescList.h"
 #undef CSS_FONT_DESC
   eCSSFontDesc_COUNT
+};
+
+// The "descriptors" that can appear in a @counter-style rule.
+// They have the syntax of properties but different value rules.
+enum nsCSSCounterDesc {
+  eCSSCounterDesc_UNKNOWN = -1,
+#define CSS_COUNTER_DESC(name_, method_) eCSSCounterDesc_##method_,
+#include "nsCSSCounterDescList.h"
+#undef CSS_COUNTER_DESC
+  eCSSCounterDesc_COUNT
 };
 
 #endif /* nsCSSProperty_h___ */

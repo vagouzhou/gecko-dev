@@ -13,7 +13,7 @@ interface nsIASN1Object;
 /**
  * This represents a X.509 certificate.
  */
-[scriptable, uuid(45b24b0a-6189-4b05-af0b-8d4d66d57c59)]
+[scriptable, uuid(891d2009-b9ba-4a0d-bebe-6b3a30e33191)]
 interface nsIX509Cert : nsISupports {
 
   /**
@@ -68,16 +68,16 @@ interface nsIX509Cert : nsISupports {
   readonly attribute AString organizationalUnit;
 
   /**
-   *  The fingerprint of the certificate's public key,
+   *  The fingerprint of the certificate's DER encoding,
+   *  calculated using the SHA-256 algorithm.
+   */
+  readonly attribute AString sha256Fingerprint;
+
+  /**
+   *  The fingerprint of the certificate's DER encoding,
    *  calculated using the SHA1 algorithm.
    */
   readonly attribute AString sha1Fingerprint;
-
-  /**
-   *  The fingerprint of the certificate's public key,
-   *  calculated using the MD5 algorithm.
-   */
-  readonly attribute AString md5Fingerprint;
 
   /**
    *  A human readable name identifying the hardware or
@@ -128,7 +128,7 @@ interface nsIX509Cert : nsISupports {
   /**
    *  A human readable identifier to label this certificate.
    */
-  readonly attribute string windowTitle;
+  readonly attribute AString windowTitle;
 
   /**
    *  Constants to classify the type of a certificate.
@@ -230,4 +230,10 @@ interface nsIX509Cert : nsISupports {
    *  @return Whether the certificates are equal
    */
   boolean equals(in nsIX509Cert other);
+
+  /**
+   * The base64 encoding of the DER encoded public key info using the specified
+   * digest.
+   */
+  readonly attribute ACString sha256SubjectPublicKeyInfoDigest;
 };

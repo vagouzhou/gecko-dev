@@ -5,10 +5,11 @@
 "use strict";
 
 /* General utilities used throughout devtools. */
-const { Ci, Cu } = require("chrome");
 
-let { Promise: promise } = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js", {});
-let { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
+// hasChrome is provided as a global by the loader. It is true if we are running
+// on the main thread, and false if we are running on a worker thread.
+var { Ci, Cu } = require("chrome");
+var Services = require("Services");
 
 /**
  * Turn the error |aError| into a string, without fail.
@@ -28,6 +29,8 @@ exports.safeErrorString = function safeErrorString(aError) {
         }
       } catch (ee) { }
 
+      // Append additional line and column number information to the output,
+      // since it might not be part of the stringified error.
       if (typeof aError.lineNumber == "number" && typeof aError.columnNumber == "number") {
         errorString += "Line: " + aError.lineNumber + ", column: " + aError.columnNumber;
       }
@@ -114,10 +117,43 @@ exports.zip = function zip(a, b) {
   return pairs;
 };
 
-const executeSoon = aFn => {
-  Services.tm.mainThread.dispatch({
-    run: exports.makeInfallible(aFn)
-  }, Ci.nsIThread.DISPATCH_NORMAL);
+/**
+ * Waits for the next tick in the event loop to execute a callback.
+ */
+exports.executeSoon = function executeSoon(aFn) {
+  if (isWorker) {
+    setTimeout(aFn, 0);
+  } else {
+    Services.tm.mainThread.dispatch({
+      run: exports.makeInfallible(aFn)
+    }, Ci.nsIThread.DISPATCH_NORMAL);
+  }
+};
+
+/**
+ * Waits for the next tick in the event loop.
+ *
+ * @return Promise
+ *         A promise that is resolved after the next tick in the event loop.
+ */
+exports.waitForTick = function waitForTick() {
+  let deferred = promise.defer();
+  exports.executeSoon(deferred.resolve);
+  return deferred.promise;
+};
+
+/**
+ * Waits for the specified amount of time to pass.
+ *
+ * @param number aDelay
+ *        The amount of time to wait, in milliseconds.
+ * @return Promise
+ *         A promise that is resolved after the specified amount of time passes.
+ */
+exports.waitForTime = function waitForTime(aDelay) {
+  let deferred = promise.defer();
+  setTimeout(deferred.resolve, aDelay);
+  return deferred.promise;
 };
 
 /**
@@ -128,16 +164,19 @@ const executeSoon = aFn => {
  * @param Array aArray
  *        The array being iterated over.
  * @param Function aFn
- *        The function called on each item in the array.
+ *        The function called on each item in the array. If a promise is
+ *        returned by this function, iterating over the array will be paused
+ *        until the respective promise is resolved.
  * @returns Promise
  *          A promise that is resolved once the whole array has been iterated
- *          over.
+ *          over, and all promises returned by the aFn callback are resolved.
  */
 exports.yieldingEach = function yieldingEach(aArray, aFn) {
   const deferred = promise.defer();
 
   let i = 0;
   let len = aArray.length;
+  let outstanding = [deferred.promise];
 
   (function loop() {
     const start = Date.now();
@@ -148,12 +187,12 @@ exports.yieldingEach = function yieldingEach(aArray, aFn) {
       // aren't including time spent in non-JS here, but this is Good
       // Enough(tm).
       if (Date.now() - start > 16) {
-        executeSoon(loop);
+        exports.executeSoon(loop);
         return;
       }
 
       try {
-        aFn(aArray[i++]);
+        outstanding.push(aFn(aArray[i], i++));
       } catch (e) {
         deferred.reject(e);
         return;
@@ -163,9 +202,8 @@ exports.yieldingEach = function yieldingEach(aArray, aFn) {
     deferred.resolve();
   }());
 
-  return deferred.promise;
+  return promise.all(outstanding);
 }
-
 
 /**
  * Like XPCOMUtils.defineLazyGetter, but with a |this| sensitive getter that
@@ -255,12 +293,18 @@ exports.hasSafeGetter = function hasSafeGetter(aDesc) {
  *         True if it is safe to read properties from aObj, or false otherwise.
  */
 exports.isSafeJSObject = function isSafeJSObject(aObj) {
+  // If we are running on a worker thread, Cu is not available. In this case,
+  // we always return false, just to be on the safe side.
+  if (isWorker) {
+    return false;
+  }
+
   if (Cu.getGlobalForObject(aObj) ==
       Cu.getGlobalForObject(exports.isSafeJSObject)) {
     return true; // aObj is not a cross-compartment wrapper.
   }
 
-  let principal = Services.scriptSecurityManager.getObjectPrincipal(aObj);
+  let principal = Cu.getObjectPrincipal(aObj);
   if (Services.scriptSecurityManager.isSystemPrincipal(principal)) {
     return true; // allow chrome objects
   }
@@ -268,3 +312,98 @@ exports.isSafeJSObject = function isSafeJSObject(aObj) {
   return Cu.isXrayWrapper(aObj);
 };
 
+exports.dumpn = function dumpn(str) {
+  if (exports.dumpn.wantLogging) {
+    dump("DBG-SERVER: " + str + "\n");
+  }
+}
+
+// We want wantLogging to be writable. The exports object is frozen by the
+// loader, so define it on dumpn instead.
+exports.dumpn.wantLogging = false;
+
+/**
+ * A verbose logger for low-level tracing.
+ */
+exports.dumpv = function(msg) {
+  if (exports.dumpv.wantVerbose) {
+    exports.dumpn(msg);
+  }
+};
+
+// We want wantLogging to be writable. The exports object is frozen by the
+// loader, so define it on dumpn instead.
+exports.dumpv.wantVerbose = false;
+
+exports.dbg_assert = function dbg_assert(cond, e) {
+  if (!cond) {
+    return e;
+  }
+}
+
+
+/**
+ * Utility function for updating an object with the properties of another
+ * object.
+ *
+ * @param aTarget Object
+ *        The object being updated.
+ * @param aNewAttrs Object
+ *        The new attributes being set on the target.
+ */
+exports.update = function update(aTarget, aNewAttrs) {
+  for (let key in aNewAttrs) {
+    let desc = Object.getOwnPropertyDescriptor(aNewAttrs, key);
+
+    if (desc) {
+      Object.defineProperty(aTarget, key, desc);
+    }
+  }
+}
+
+/**
+ * Defines a getter on a specified object that will be created upon first use.
+ *
+ * @param aObject
+ *        The object to define the lazy getter on.
+ * @param aName
+ *        The name of the getter to define on aObject.
+ * @param aLambda
+ *        A function that returns what the getter should return.  This will
+ *        only ever be called once.
+ */
+exports.defineLazyGetter = function defineLazyGetter(aObject, aName, aLambda) {
+  Object.defineProperty(aObject, aName, {
+    get: function () {
+      delete aObject[aName];
+      return aObject[aName] = aLambda.apply(aObject);
+    },
+    configurable: true,
+    enumerable: true
+  });
+};
+
+/**
+ * Defines a getter on a specified object for a module.  The module will not
+ * be imported until first use.
+ *
+ * @param aObject
+ *        The object to define the lazy getter on.
+ * @param aName
+ *        The name of the getter to define on aObject for the module.
+ * @param aResource
+ *        The URL used to obtain the module.
+ * @param aSymbol
+ *        The name of the symbol exported by the module.
+ *        This parameter is optional and defaults to aName.
+ */
+exports.defineLazyModuleGetter = function defineLazyModuleGetter(aObject, aName,
+                                                                 aResource,
+                                                                 aSymbol)
+{
+  this.defineLazyGetter(aObject, aName, function XPCU_moduleLambda() {
+    var temp = {};
+    Cu.import(aResource, temp);
+    return temp[aSymbol || aName];
+  });
+};

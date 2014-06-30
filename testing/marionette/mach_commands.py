@@ -16,13 +16,6 @@ from mach.decorators import (
     Command,
 )
 
-MARIONETTE_DISABLED = '''
-The %s command requires a Marionette-enabled build.
-
-Add 'ENABLE_MARIONETTE=1' to your mozconfig file and re-build the application.
-Your currently active mozconfig is %s.
-'''.lstrip()
-
 MARIONETTE_DISABLED_B2G = '''
 The %s command requires a Marionette-enabled build.
 
@@ -76,16 +69,18 @@ class B2GCommands(MachCommandBase):
     @Command('marionette-webapi', category='testing',
         description='Run a Marionette webapi test',
         conditions=[conditions.is_b2g])
-    @CommandArgument('--emulator', choices=['x86', 'arm'],
-        help='Run an emulator of the specified architecture.')
     @CommandArgument('--type', dest='testtype',
         help='Test type, usually one of: browser, b2g, b2g-qemu.',
         default='b2g')
     @CommandArgument('tests', nargs='*', metavar='TESTS',
         help='Path to test(s) to run.')
-    def run_marionette_webapi(self, tests, emulator=None, testtype=None):
-        if not emulator and self.device_name in ('emulator', 'emulator-jb'):
-            emulator='arm'
+    def run_marionette_webapi(self, tests, testtype=None):
+        emulator = None
+        if self.device_name:
+            if self.device_name.startswith('emulator'):
+                emulator = 'arm'
+                if 'x86' in self.device_name:
+                    emulator = 'x86'
 
         if self.substs.get('ENABLE_MARIONETTE') != '1':
             print(MARIONETTE_DISABLED_B2G % 'marionette-webapi')
@@ -108,11 +103,6 @@ class MachCommands(MachCommandBase):
     @CommandArgument('tests', nargs='*', metavar='TESTS',
         help='Path to test(s) to run.')
     def run_marionette_test(self, tests, address=None, testtype=None):
-        if self.substs.get('ENABLE_MARIONETTE') != '1':
-            print(MARIONETTE_DISABLED % ('marionette-test',
-                                         self.mozconfig['path']))
-            return 1
-
         bin = self.get_binary_path('app')
         return run_marionette(tests, bin=bin, testtype=testtype,
             topsrcdir=self.topsrcdir, address=address)

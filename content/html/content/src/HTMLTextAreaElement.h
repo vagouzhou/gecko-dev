@@ -13,7 +13,6 @@
 #include "nsIDOMNSEditableElement.h"
 #include "nsCOMPtr.h"
 #include "nsGenericHTMLElement.h"
-#include "nsEventStates.h"
 #include "nsStubMutationObserver.h"
 #include "nsIConstraintValidation.h"
 #include "mozilla/dom/HTMLFormElement.h"
@@ -32,6 +31,7 @@ namespace mozilla {
 
 class EventChainPostVisitor;
 class EventChainPreVisitor;
+class EventStates;
 
 namespace dom {
 
@@ -45,7 +45,7 @@ class HTMLTextAreaElement MOZ_FINAL : public nsGenericHTMLFormElementWithState,
 public:
   using nsIConstraintValidation::GetValidationMessage;
 
-  HTMLTextAreaElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+  HTMLTextAreaElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                       FromParser aFromParser = NOT_FROM_PARSER);
 
   // nsISupports
@@ -73,7 +73,7 @@ public:
 
   virtual void FieldSetDisabledChanged(bool aNotify) MOZ_OVERRIDE;
 
-  virtual nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  virtual EventStates IntrinsicState() const MOZ_OVERRIDE;
 
   // nsITextControlElemet
   NS_IMETHOD SetValueChanged(bool aValueChanged) MOZ_OVERRIDE;
@@ -126,7 +126,7 @@ public:
   virtual void DoneAddingChildren(bool aHaveNotified) MOZ_OVERRIDE;
   virtual bool IsDoneAddingChildren() MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   nsresult CopyInnerTo(Element* aDest);
 
@@ -278,8 +278,7 @@ protected:
   // get rid of the compiler warning
   using nsGenericHTMLFormElementWithState::IsSingleLineTextControl;
 
-  virtual JSObject* WrapNode(JSContext *aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
   nsCOMPtr<nsIControllers> mControllers;
   /** Whether or not the value has changed since its default value was given. */

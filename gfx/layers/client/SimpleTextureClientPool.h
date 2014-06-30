@@ -19,20 +19,20 @@ namespace layers {
 
 class ISurfaceAllocator;
 
-class SimpleTextureClientPool : public RefCounted<SimpleTextureClientPool>
+class SimpleTextureClientPool
 {
-public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(SimpleTextureClientPool)
-
-  SimpleTextureClientPool(gfx::SurfaceFormat aFormat, gfx::IntSize aSize,
-                          ISurfaceAllocator *aAllocator);
-
   ~SimpleTextureClientPool()
   {
     for (auto it = mOutstandingTextureClients.begin(); it != mOutstandingTextureClients.end(); ++it) {
       (*it)->ClearRecycleCallback();
     }
   }
+
+public:
+  NS_INLINE_DECL_REFCOUNTING(SimpleTextureClientPool)
+
+  SimpleTextureClientPool(gfx::SurfaceFormat aFormat, gfx::IntSize aSize,
+                          ISurfaceAllocator *aAllocator);
 
   /**
    * If a TextureClient is AutoRecycled, when the last reference is
@@ -79,6 +79,9 @@ private:
   //   when we shrink this list, we use pop(), but should use pop_back() to
   //   nuke the oldest.
   // We may need to switch to a std::deque
+  // On b2g gonk, std::queue might be a better choice.
+  // On ICS, fence wait happens implicitly before drawing.
+  // Since JB, fence wait happens explicitly when fetching a client from the pool.
   std::stack<RefPtr<TextureClient> > mAvailableTextureClients;
   std::list<RefPtr<TextureClient> > mOutstandingTextureClients;
 

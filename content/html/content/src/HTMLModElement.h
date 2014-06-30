@@ -16,10 +16,10 @@ namespace dom {
 class HTMLModElement MOZ_FINAL : public nsGenericHTMLElement
 {
 public:
-  HTMLModElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLModElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLModElement();
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   void GetCite(nsString& aCite)
   {
@@ -38,8 +38,7 @@ public:
     SetHTMLAttr(nsGkAtoms::datetime, aDateTime, aRv);
   }
 
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 };
 
 } // namespace dom

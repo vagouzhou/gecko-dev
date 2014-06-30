@@ -69,7 +69,6 @@ class nsIIOService;
 class nsIJSRuntimeService;
 class nsILineBreaker;
 class nsNameSpaceManager;
-class nsINodeInfo;
 class nsIObserver;
 class nsIParser;
 class nsIParserService;
@@ -109,33 +108,22 @@ template<class T> class nsReadingIterator;
 namespace mozilla {
 class ErrorResult;
 class EventListenerManager;
-class Selection;
 
 namespace dom {
 class DocumentFragment;
 class Element;
 class EventTarget;
+class NodeInfo;
+class Selection;
 } // namespace dom
 
 namespace layers {
 class LayerManager;
 } // namespace layers
 
-// Called back from DeferredFinalize.  Should add 'thing' to the array of smart
-// pointers in 'pointers', creating the array if 'pointers' is null, and return
-// the array.
-typedef void* (*DeferredFinalizeAppendFunction)(void* pointers, void* thing);
-
-// Called to finalize a number of objects. Slice is the number of objects
-// to finalize, or if it's UINT32_MAX, all objects should be finalized.
-// Return value indicates whether it finalized all objects in the buffer.
-typedef bool (*DeferredFinalizeFunction)(uint32_t slice, void* data);
-
 } // namespace mozilla
 
-#ifdef IBMBIDI
 class nsIBidiKeyboard;
-#endif
 
 extern const char kLoadAsData[];
 
@@ -190,7 +178,7 @@ public:
 
   static bool     IsCallerChrome();
   static bool     ThreadsafeIsCallerChrome();
-  static bool     IsCallerXBL();
+  static bool     IsCallerContentXBL();
 
   static bool     IsImageSrcSetDisabled();
 
@@ -369,6 +357,19 @@ public:
    */
   static bool IsHTMLVoid(nsIAtom* aLocalName);
 
+  enum ParseHTMLIntegerResultFlags {
+    eParseHTMLInteger_NoFlags               = 0,
+    eParseHTMLInteger_IsPercent             = 1 << 0,
+    eParseHTMLInteger_NonStandard           = 1 << 1,
+    eParseHTMLInteger_DidNotConsumeAllInput = 1 << 2,
+    // Set if one or more error flags were set.
+    eParseHTMLInteger_Error                 = 1 << 3,
+    eParseHTMLInteger_ErrorNoValue          = 1 << 4,
+    eParseHTMLInteger_ErrorOverflow         = 1 << 5
+  };
+  static int32_t ParseHTMLInteger(const nsAString& aValue,
+                                  ParseHTMLIntegerResultFlags *aResult);
+
   /**
    * Parse a margin string of format 'top, right, bottom, left' into
    * an nsIntMargin.
@@ -461,10 +462,8 @@ public:
     return sIOService;
   }
 
-#ifdef IBMBIDI
   static nsIBidiKeyboard* GetBidiKeyboard();
-#endif
-  
+
   /**
    * Get the cache security manager service. Can return null if the layout
    * module has been shut down.
@@ -482,14 +481,11 @@ public:
 
   // Returns the subject principal. Guaranteed to return non-null. May only
   // be called when nsContentUtils is initialized.
-  static nsIPrincipal* GetSubjectPrincipal();
+  static nsIPrincipal* SubjectPrincipal();
 
-  // Returns the principal of the given JS object. This should never be null
-  // for any object in the XPConnect runtime.
-  //
-  // In general, being interested in the principal of an object is enough to
-  // guarantee that the return value is non-null.
-  static nsIPrincipal* GetObjectPrincipal(JSObject* aObj);
+  // Returns the prinipal of the given JS object. This may only be called on
+  // the main thread for objects from the main thread's JSRuntime.
+  static nsIPrincipal* ObjectPrincipal(JSObject* aObj);
 
   static nsresult GenerateStateKey(nsIContent* aContent,
                                    const nsIDocument* aDocument,
@@ -545,7 +541,7 @@ public:
                                        const nsAString& aQualifiedName,
                                        nsNodeInfoManager* aNodeInfoManager,
                                        uint16_t aNodeType,
-                                       nsINodeInfo** aNodeInfo);
+                                       mozilla::dom::NodeInfo** aNodeInfo);
 
   static void SplitExpatName(const char16_t *aExpatName, nsIAtom **aPrefix,
                              nsIAtom **aTagName, int32_t *aNameSpaceID);
@@ -654,6 +650,7 @@ public:
                             nsIURI* aReferrer,
                             imgINotificationObserver* aObserver,
                             int32_t aLoadFlags,
+                            const nsAString& initiatorType,
                             imgRequestProxy** aRequest);
 
   /**
@@ -710,16 +707,17 @@ public:
    * Convenience method to create a new nodeinfo that differs only by name
    * from aNodeInfo.
    */
-  static nsresult NameChanged(nsINodeInfo* aNodeInfo, nsIAtom* aName,
-                              nsINodeInfo** aResult);
+  static nsresult NameChanged(mozilla::dom::NodeInfo* aNodeInfo, nsIAtom* aName,
+                              mozilla::dom::NodeInfo** aResult);
 
   /**
    * Returns the appropriate event argument names for the specified
    * namespace and event name.  Added because we need to switch between
    * SVG's "evt" and the rest of the world's "event", and because onerror
-   * takes 3 args.
+   * on window takes 5 args.
    */
   static void GetEventArgNames(int32_t aNameSpaceID, nsIAtom *aEventName,
+                               bool aIsForWindow,
                                uint32_t *aArgCount, const char*** aArgNames);
 
   /**
@@ -827,6 +825,8 @@ public:
                                   uint32_t aLineNumber = 0,
                                   uint32_t aColumnNumber = 0);
 
+  static void LogMessageToConsole(const char* aMsg, ...);
+  
   /**
    * Get the localized string named |aKey| in properties file |aFile|.
    */
@@ -1270,11 +1270,6 @@ public:
   static void DestroyAnonymousContent(nsCOMPtr<nsIContent>* aContent);
   static void DestroyAnonymousContent(nsCOMPtr<Element>* aElement);
 
-  static void DeferredFinalize(nsISupports* aSupports);
-  static void DeferredFinalize(mozilla::DeferredFinalizeAppendFunction aAppendFunc,
-                               mozilla::DeferredFinalizeFunction aFunc,
-                               void* aThing);
-
   /*
    * Notify when the first XUL menu is opened and when the all XUL menus are
    * closed. At opening, aInstalling should be TRUE, otherwise, it should be
@@ -1325,9 +1320,23 @@ public:
   static bool IsExpandedPrincipal(nsIPrincipal* aPrincipal);
 
   /**
+   * Returns true if aPrincipal is the system or an nsExpandedPrincipal.
+   */
+  static bool IsSystemOrExpandedPrincipal(nsIPrincipal* aPrincipal)
+  {
+    return IsSystemPrincipal(aPrincipal) || IsExpandedPrincipal(aPrincipal);
+  }
+
+  /**
    * Gets the system principal from the security manager.
    */
   static nsIPrincipal* GetSystemPrincipal();
+
+  /**
+   * Gets the null subject principal singleton. This is only useful for
+   * assertions.
+   */
+  static nsIPrincipal* GetNullSubjectPrincipal() { return sNullSubjectPrincipal; }
 
   /**
    * *aResourcePrincipal is a principal describing who may access the contents
@@ -1634,8 +1643,8 @@ public:
    *
    * @return the document associated with the script context
    */
-  static already_AddRefed<nsIDocument>
-  GetDocumentFromScriptContext(nsIScriptContext *aScriptContext);
+  static nsIDocument*
+  GetDocumentFromScriptContext(nsIScriptContext* aScriptContext);
 
   static bool CheckMayLoad(nsIPrincipal* aPrincipal, nsIChannel* aChannel, bool aAllowIfInheritsPrincipal);
 
@@ -1647,29 +1656,29 @@ public:
   static bool CanAccessNativeAnon();
 
   MOZ_WARN_UNUSED_RESULT
-  static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
-                             nsISupports *native, const nsIID* aIID,
-                             JS::MutableHandle<JS::Value> vp)
+  static nsresult WrapNative(JSContext *cx, nsISupports *native,
+                             const nsIID* aIID, JS::MutableHandle<JS::Value> vp,
+                             bool aAllowWrapping = true)
   {
-    return WrapNative(cx, scope, native, nullptr, aIID, vp, true);
+    return WrapNative(cx, native, nullptr, aIID, vp, aAllowWrapping);
   }
 
   // Same as the WrapNative above, but use this one if aIID is nsISupports' IID.
   MOZ_WARN_UNUSED_RESULT
-  static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
-                             nsISupports *native, JS::MutableHandle<JS::Value> vp,
-                             bool aAllowWrapping = true)
-  {
-    return WrapNative(cx, scope, native, nullptr, nullptr, vp, aAllowWrapping);
-  }
-
-  MOZ_WARN_UNUSED_RESULT
-  static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
-                             nsISupports *native, nsWrapperCache *cache,
+  static nsresult WrapNative(JSContext *cx, nsISupports *native,
                              JS::MutableHandle<JS::Value> vp,
                              bool aAllowWrapping = true)
   {
-    return WrapNative(cx, scope, native, cache, nullptr, vp, aAllowWrapping);
+    return WrapNative(cx, native, nullptr, nullptr, vp, aAllowWrapping);
+  }
+
+  MOZ_WARN_UNUSED_RESULT
+  static nsresult WrapNative(JSContext *cx, nsISupports *native,
+                             nsWrapperCache *cache,
+                             JS::MutableHandle<JS::Value> vp,
+                             bool aAllowWrapping = true)
+  {
+    return WrapNative(cx, native, cache, nullptr, vp, aAllowWrapping);
   }
 
   /**
@@ -1824,11 +1833,6 @@ public:
    */
   static bool IsFullscreenApiContentOnly();
 
-  /**
-   * Returns true if the idle observers API is enabled.
-   */
-  static bool IsIdleObserverAPIEnabled() { return sIsIdleObserverAPIEnabled; }
-
   /*
    * Returns true if the performance timing APIs are enabled.
    */
@@ -1837,6 +1841,14 @@ public:
     return sIsPerformanceTimingEnabled;
   }
   
+  /*
+   * Returns true if the performance timing APIs are enabled.
+   */
+  static bool IsResourceTimingEnabled()
+  {
+    return sIsResourceTimingEnabled;
+  }
+
   /**
    * Returns true if the doc tree branch which contains aDoc contains any
    * plugins which we don't control event dispatch for, i.e. do any plugins
@@ -1881,7 +1893,7 @@ public:
 
   /**
    * Returns the time limit on handling user input before
-   * nsEventStateManager::IsHandlingUserInput() stops returning true.
+   * EventStateManager::IsHandlingUserInput() stops returning true.
    * This enables us to detect long running user-generated event handlers.
    */
   static TimeDuration HandlingUserInputTimeout();
@@ -2013,6 +2025,22 @@ public:
    */
   static bool IsAutocompleteEnabled(nsIDOMHTMLInputElement* aInput);
 
+  enum AutocompleteAttrState MOZ_ENUM_TYPE(uint8_t)
+  {
+    eAutocompleteAttrState_Unknown = 1,
+    eAutocompleteAttrState_Invalid,
+    eAutocompleteAttrState_Valid,
+  };
+  /**
+   * Parses the value of the autocomplete attribute into aResult, ensuring it's
+   * composed of valid tokens, otherwise the value "" is used.
+   * Note that this method is used for form fields, not on a <form> itself.
+   *
+   * @return whether aAttr was valid and can be cached.
+   */
+  static AutocompleteAttrState SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
+                                                          nsAString& aResult);
+
   /**
    * This will parse aSource, to extract the value of the pseudo attribute
    * with the name specified in aName. See
@@ -2071,7 +2099,7 @@ public:
    * @param aOutStartOffset Output start offset
    * @param aOutEndOffset   Output end offset
    */
-  static void GetSelectionInTextControl(mozilla::Selection* aSelection,
+  static void GetSelectionInTextControl(mozilla::dom::Selection* aSelection,
                                         Element* aRoot,
                                         int32_t& aOutStartOffset,
                                         int32_t& aOutEndOffset);
@@ -2129,9 +2157,9 @@ private:
   static bool CanCallerAccess(nsIPrincipal* aSubjectPrincipal,
                                 nsIPrincipal* aPrincipal);
 
-  static nsresult WrapNative(JSContext *cx, JS::Handle<JSObject*> scope,
-                             nsISupports *native, nsWrapperCache *cache,
-                             const nsIID* aIID, JS::MutableHandle<JS::Value> vp,
+  static nsresult WrapNative(JSContext *cx, nsISupports *native,
+                             nsWrapperCache *cache, const nsIID* aIID,
+                             JS::MutableHandle<JS::Value> vp,
                              bool aAllowWrapping);
 
   static nsresult DispatchEvent(nsIDocument* aDoc,
@@ -2152,9 +2180,14 @@ private:
   static void* AllocClassMatchingInfo(nsINode* aRootNode,
                                       const nsString* aClasses);
 
+  static AutocompleteAttrState InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrVal,
+                                                                  nsAString& aResult);
+
   static nsIXPConnect *sXPConnect;
 
   static nsIScriptSecurityManager *sSecurityManager;
+  static nsIPrincipal *sSystemPrincipal;
+  static nsIPrincipal *sNullSubjectPrincipal;
 
   static nsIParserService *sParserService;
 
@@ -2186,9 +2219,7 @@ private:
   static nsILineBreaker* sLineBreaker;
   static nsIWordBreaker* sWordBreaker;
 
-#ifdef IBMBIDI
   static nsIBidiKeyboard* sBidiKeyboard;
-#endif
 
   static bool sInitialized;
   static uint32_t sScriptBlockerCount;
@@ -2209,8 +2240,9 @@ private:
   static bool sTrustedFullScreenOnly;
   static bool sFullscreenApiIsContentOnly;
   static uint32_t sHandlingInputTimeout;
-  static bool sIsIdleObserverAPIEnabled;
   static bool sIsPerformanceTimingEnabled;
+  static bool sIsResourceTimingEnabled;
+  static bool sIsExperimentalAutocompleteEnabled;
 
   static nsHtml5StringParser* sHTMLFragmentParser;
   static nsIParser* sXMLFragmentParser;

@@ -29,10 +29,8 @@ class DOMStorageDBBridge;
 class DOMStorageCacheBridge
 {
 public:
-  NS_IMETHOD_(nsrefcnt) AddRef(void);
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void);
   NS_IMETHOD_(void) Release(void);
-
-  virtual ~DOMStorageCacheBridge() {}
 
   // The scope (origin) in the database usage format (reversed)
   virtual const nsCString& Scope() const = 0;
@@ -56,6 +54,8 @@ public:
   virtual void LoadWait() = 0;
 
 protected:
+  virtual ~DOMStorageCacheBridge() {}
+
   ThreadSafeAutoRefCnt mRefCnt;
   NS_DECL_OWNINGTHREAD
 };
@@ -225,6 +225,9 @@ private:
   // DOMStorageDBThread on the parent or single process,
   // DOMStorageDBChild on the child process.
   static DOMStorageDBBridge* sDatabase;
+
+  // False until we shut the database down.
+  static bool sDatabaseDown;
 };
 
 // DOMStorageUsage
@@ -234,10 +237,12 @@ class DOMStorageUsageBridge
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DOMStorageUsageBridge)
 
-  virtual ~DOMStorageUsageBridge() {}
-
   virtual const nsCString& Scope() = 0;
   virtual void LoadUsage(const int64_t aUsage) = 0;
+
+protected:
+  // Protected destructor, to discourage deletion outside of Release():
+  virtual ~DOMStorageUsageBridge() {}
 };
 
 class DOMStorageUsage : public DOMStorageUsageBridge

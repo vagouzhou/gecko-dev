@@ -17,7 +17,6 @@
 #include "nsIProtocolProxyCallback.h"
 #include "nsIHttpAuthenticableChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
-#include "nsITimedChannel.h"
 #include "nsIThreadRetargetableRequest.h"
 #include "nsIThreadRetargetableStreamListener.h"
 #include "nsWeakReference.h"
@@ -30,6 +29,7 @@ class nsICacheEntryDescriptor;
 class nsICancelable;
 class nsIHttpChannelAuthProvider;
 class nsInputStreamPump;
+class nsPerformance;
 
 namespace mozilla { namespace net {
 
@@ -47,7 +47,6 @@ class nsHttpChannel : public HttpBaseChannel
                     , public nsIHttpAuthenticableChannel
                     , public nsIApplicationCacheChannel
                     , public nsIAsyncVerifyRedirectCallback
-                    , public nsITimedChannel
                     , public nsIThreadRetargetableRequest
                     , public nsIThreadRetargetableStreamListener
                     , public nsIDNSListener
@@ -67,7 +66,6 @@ public:
     NS_DECL_NSIAPPLICATIONCACHECONTAINER
     NS_DECL_NSIAPPLICATIONCACHECHANNEL
     NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
-    NS_DECL_NSITIMEDCHANNEL
     NS_DECL_NSITHREADRETARGETABLEREQUEST
     NS_DECL_NSIDNSLISTENER
 
@@ -105,7 +103,6 @@ public:
     NS_IMETHOD Cancel(nsresult status);
     NS_IMETHOD Suspend();
     NS_IMETHOD Resume();
-    NS_IMETHOD IsPending(bool *aIsPending);
     // nsIChannel
     NS_IMETHOD GetSecurityInfo(nsISupports **aSecurityInfo);
     NS_IMETHOD AsyncOpen(nsIStreamListener *listener, nsISupports *aContext);
@@ -118,6 +115,14 @@ public:
 
     NS_IMETHOD SetNotificationCallbacks(nsIInterfaceRequestor *aCallbacks);
     NS_IMETHOD SetLoadGroup(nsILoadGroup *aLoadGroup);
+    // nsITimedChannel
+    NS_IMETHOD GetDomainLookupStart(mozilla::TimeStamp *aDomainLookupStart);
+    NS_IMETHOD GetDomainLookupEnd(mozilla::TimeStamp *aDomainLookupEnd);
+    NS_IMETHOD GetConnectStart(mozilla::TimeStamp *aConnectStart);
+    NS_IMETHOD GetConnectEnd(mozilla::TimeStamp *aConnectEnd);
+    NS_IMETHOD GetRequestStart(mozilla::TimeStamp *aRequestStart);
+    NS_IMETHOD GetResponseStart(mozilla::TimeStamp *aResponseStart);
+    NS_IMETHOD GetResponseEnd(mozilla::TimeStamp *aResponseEnd);
 
 public: /* internal necko use only */
 
@@ -183,8 +188,6 @@ public: /* internal necko use only */
       uint32_t mKeep : 2;
     };
 
-    void ForcePending(bool aForcePending);
-
 private:
     typedef nsresult (nsHttpChannel::*nsContinueRedirectionFunc)(nsresult result);
 
@@ -225,7 +228,7 @@ private:
     void     HandleAsyncFallback();
     nsresult ContinueHandleAsyncFallback(nsresult);
     nsresult PromptTempRedirect();
-    nsresult StartRedirectChannelToURI(nsIURI *);
+    nsresult StartRedirectChannelToURI(nsIURI *, uint32_t);
     virtual  nsresult SetupReplacementChannel(nsIURI *, nsIChannel *, bool preserveMethod);
 
     // proxy specific methods
@@ -403,14 +406,6 @@ private:
 
     nsTArray<nsContinueRedirectionFunc> mRedirectFuncStack;
 
-    PRTime                            mChannelCreationTime;
-    TimeStamp                         mChannelCreationTimestamp;
-    TimeStamp                         mAsyncOpenTime;
-    TimeStamp                         mCacheReadStart;
-    TimeStamp                         mCacheReadEnd;
-    // copied from the transaction before we null out mTransaction
-    // so that the timing can still be queried from OnStopRequest
-    TimingStruct                      mTransactionTimings;
     // Needed for accurate DNS timing
     nsRefPtr<nsDNSPrefetch>           mDNSPrefetch;
 
@@ -420,14 +415,10 @@ private:
 
 protected:
     virtual void DoNotifyListenerCleanup();
+    nsPerformance* GetPerformance();
 
 private: // cache telemetry
     bool mDidReval;
-
-private:
-    nsIPrincipal *GetPrincipal();
-    nsCOMPtr<nsIPrincipal> mPrincipal;
-    bool mForcePending;
 };
 
 } } // namespace mozilla::net

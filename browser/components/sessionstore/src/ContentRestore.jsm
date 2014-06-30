@@ -176,7 +176,7 @@ ContentRestoreInternal.prototype = {
       // Call resetRestore to reset the state back to normal. The data needed
       // for restoreDocument (which hasn't happened yet) will remain in
       // _restoringDocument.
-      this.resetRestore(this.docShell);
+      this.resetRestore();
 
       finishCallback();
     });
@@ -361,7 +361,10 @@ HistoryListener.prototype = {
   ]),
 
   uninstall: function () {
-    this.webNavigation.sessionHistory.removeSHistoryListener(this);
+    let shistory = this.webNavigation.sessionHistory;
+    if (shistory) {
+      shistory.removeSHistoryListener(this);
+    }
   },
 
   OnHistoryNewEntry: function(newURI) {},
@@ -369,6 +372,7 @@ HistoryListener.prototype = {
   OnHistoryGoForward: function(forwardURI) { return true; },
   OnHistoryGotoIndex: function(index, gotoURI) { return true; },
   OnHistoryPurge: function(numEntries) { return true; },
+  OnHistoryReplaceEntry: function(index) {},
 
   OnHistoryReload: function(reloadURI, reloadFlags) {
     this.callback();

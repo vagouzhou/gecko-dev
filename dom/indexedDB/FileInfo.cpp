@@ -14,6 +14,8 @@ namespace {
 
 class CleanupFileRunnable MOZ_FINAL : public nsIRunnable
 {
+  ~CleanupFileRunnable() {}
+
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
@@ -133,8 +135,8 @@ CleanupFileRunnable::CleanupFileRunnable(FileManager* aFileManager,
 {
 }
 
-NS_IMPL_ISUPPORTS1(CleanupFileRunnable,
-                   nsIRunnable)
+NS_IMPL_ISUPPORTS(CleanupFileRunnable,
+                  nsIRunnable)
 
 NS_IMETHODIMP
 CleanupFileRunnable::Run()

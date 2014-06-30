@@ -20,8 +20,9 @@
 #include "nsPoint.h"                    // for nsIntPoint
 #include "nsString.h"                   // for nsAutoCString
 
-using namespace mozilla;
-using namespace mozilla::layers;
+namespace mozilla {
+namespace layers {
+
 using namespace mozilla::gfx;
 
 CanvasLayerComposite::CanvasLayerComposite(LayerManagerComposite* aManager)
@@ -44,9 +45,9 @@ bool
 CanvasLayerComposite::SetCompositableHost(CompositableHost* aHost)
 {
   switch (aHost->GetType()) {
-    case BUFFER_IMAGE_SINGLE:
-    case BUFFER_IMAGE_BUFFERED:
-    case COMPOSITABLE_IMAGE:
+    case CompositableType::BUFFER_IMAGE_SINGLE:
+    case CompositableType::BUFFER_IMAGE_BUFFERED:
+    case CompositableType::IMAGE:
       mImageHost = aHost;
       return true;
     default:
@@ -99,6 +100,7 @@ CanvasLayerComposite::RenderLayer(const nsIntRect& aClipRect)
 #endif
 
   EffectChain effectChain(this);
+  AddBlendModeEffect(effectChain);
 
   LayerManagerComposite::AutoAddMaskEffect autoMaskEffect(mMaskLayer, effectChain);
   gfx::Rect clipRect(aClipRect.x, aClipRect.y, aClipRect.width, aClipRect.height);
@@ -108,6 +110,7 @@ CanvasLayerComposite::RenderLayer(const nsIntRect& aClipRect)
                         GetEffectiveTransform(),
                         gfx::ToFilter(filter),
                         clipRect);
+  mImageHost->BumpFlashCounter();
 }
 
 CompositableHost*
@@ -129,16 +132,17 @@ CanvasLayerComposite::CleanupResources()
   mImageHost = nullptr;
 }
 
-nsACString&
-CanvasLayerComposite::PrintInfo(nsACString& aTo, const char* aPrefix)
+void
+CanvasLayerComposite::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 {
-  CanvasLayer::PrintInfo(aTo, aPrefix);
-  aTo += "\n";
+  CanvasLayer::PrintInfo(aStream, aPrefix);
+  aStream << "\n";
   if (mImageHost && mImageHost->IsAttached()) {
     nsAutoCString pfx(aPrefix);
     pfx += "  ";
-    mImageHost->PrintInfo(aTo, pfx.get());
+    mImageHost->PrintInfo(aStream, pfx.get());
   }
-  return aTo;
 }
 
+}
+}

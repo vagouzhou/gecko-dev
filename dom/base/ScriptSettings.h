@@ -16,7 +16,8 @@
 
 #include "mozilla/Maybe.h"
 
-class nsIGlobalObject;
+class nsPIDOMWindow;
+class nsGlobalWindow;
 
 namespace mozilla {
 namespace dom {
@@ -66,59 +67,152 @@ inline JSObject& IncumbentJSGlobal()
 }
 
 class ScriptSettingsStack;
-struct ScriptSettingsStackEntry {
+class ScriptSettingsStackEntry {
+  friend class ScriptSettingsStack;
+
+public:
+  ScriptSettingsStackEntry(nsIGlobalObject *aGlobal, bool aCandidate);
+  ~ScriptSettingsStackEntry();
+
+  bool NoJSAPI() { return !mGlobalObject; }
+
+protected:
   nsCOMPtr<nsIGlobalObject> mGlobalObject;
   bool mIsCandidateEntryPoint;
 
-  ScriptSettingsStackEntry(nsIGlobalObject *aGlobal, bool aCandidate)
-    : mGlobalObject(aGlobal)
-    , mIsCandidateEntryPoint(aCandidate)
-  {
-    MOZ_ASSERT(mGlobalObject);
-    MOZ_ASSERT(mGlobalObject->GetGlobalJSObject(),
-               "Must have an actual JS global for the duration on the stack");
-    MOZ_ASSERT(JS_IsGlobalObject(mGlobalObject->GetGlobalJSObject()),
-               "No outer windows allowed");
+private:
+  // This constructor is only for use by AutoNoJSAPI.
+  friend class AutoNoJSAPI;
+  ScriptSettingsStackEntry();
+
+  ScriptSettingsStackEntry *mOlder;
+};
+
+/*
+ * For any interaction with JSAPI, an AutoJSAPI (or one of its subclasses)
+ * must be on the stack.
+ *
+ * This base class should be instantiated as-is when the caller wants to use
+ * JSAPI but doesn't expect to run script. The caller must then call one of its
+ * Init functions before being able to access the JSContext through cx().
+ * Its current duties are as-follows (see individual Init comments for details):
+ *
+ * * Grabbing an appropriate JSContext, and, on the main thread, pushing it onto
+ *   the JSContext stack.
+ * * Entering an initial (possibly null) compartment, to ensure that the
+ *   previously entered compartment for that JSContext is not used by mistake.
+ *
+ * Additionally, the following duties are planned, but not yet implemented:
+ *
+ * * De-poisoning the JSRuntime to allow manipulation of JSAPI. We can't
+ *   actually implement this poisoning until all the JSContext pushing in the
+ *   system goes through AutoJSAPI (see bug 951991). For now, this de-poisoning
+ *   effectively corresponds to having a non-null cx on the stack.
+ * * Reporting any exceptions left on the JSRuntime, unless the caller steals
+ *   or silences them.
+ * * Entering a JSAutoRequest. At present, this is handled by the cx pushing
+ *   on the main thread, and by other code on workers. Depending on the order
+ *   in which various cleanup lands, this may never be necessary, because
+ *   JSAutoRequests may go away.
+ *
+ * In situations where the consumer expects to run script, AutoEntryScript
+ * should be used, which does additional manipulation of the script settings
+ * stack. In bug 991758, we'll add hard invariants to SpiderMonkey, such that
+ * any attempt to run script without an AutoEntryScript on the stack will
+ * fail. This prevents system code from accidentally triggering script
+ * execution at inopportune moments via surreptitious getters and proxies.
+ */
+class AutoJSAPI {
+public:
+  // Trivial constructor. One of the Init functions must be called before
+  // accessing the JSContext through cx().
+  AutoJSAPI();
+
+  // This uses the SafeJSContext (or worker equivalent), and enters a null
+  // compartment, so that the consumer is forced to select a compartment to
+  // enter before manipulating objects.
+  void Init();
+
+  // This uses the SafeJSContext (or worker equivalent), and enters the
+  // compartment of aGlobalObject.
+  // If aGlobalObject or its associated JS global are null then it returns
+  // false and use of cx() will cause an assertion.
+  bool Init(nsIGlobalObject* aGlobalObject);
+
+  // Unsurprisingly, this uses aCx and enters the compartment of aGlobalObject.
+  // If aGlobalObject or its associated JS global are null then it returns
+  // false and use of cx() will cause an assertion.
+  // If aCx is null it will cause an assertion.
+  bool Init(nsIGlobalObject* aGlobalObject, JSContext* aCx);
+
+  // This may only be used on the main thread.
+  // This attempts to use the JSContext associated with aGlobalObject, otherwise
+  // it uses the SafeJSContext. It then enters the compartment of aGlobalObject.
+  // This means that existing error reporting mechanisms that use the JSContext
+  // to find the JSErrorReporter should still work as before.
+  // We should be able to remove this around bug 981198.
+  // If aGlobalObject or its associated JS global are null then it returns
+  // false and use of cx() will cause an assertion.
+  bool InitWithLegacyErrorReporting(nsIGlobalObject* aGlobalObject);
+
+  // Convenience functions to take an nsPIDOMWindow* or nsGlobalWindow*,
+  // when it is more easily available than an nsIGlobalObject.
+  bool Init(nsPIDOMWindow* aWindow);
+  bool Init(nsPIDOMWindow* aWindow, JSContext* aCx);
+
+  bool Init(nsGlobalWindow* aWindow);
+  bool Init(nsGlobalWindow* aWindow, JSContext* aCx);
+
+  bool InitWithLegacyErrorReporting(nsPIDOMWindow* aWindow);
+  bool InitWithLegacyErrorReporting(nsGlobalWindow* aWindow);
+
+  JSContext* cx() const {
+    MOZ_ASSERT(mCx, "Must call Init before using an AutoJSAPI");
+    return mCx;
   }
 
-  ~ScriptSettingsStackEntry() {
-    // We must have an actual JS global for the entire time this is on the stack.
-    MOZ_ASSERT_IF(mGlobalObject, mGlobalObject->GetGlobalJSObject());
-  }
+  bool CxPusherIsStackTop() { return mCxPusher.ref().IsStackTop(); }
 
-  bool IsSystemSingleton() { return this == &SystemSingleton; }
-  static ScriptSettingsStackEntry SystemSingleton;
+protected:
+  // Protected constructor, allowing subclasses to specify a particular cx to
+  // be used. This constructor initialises the AutoJSAPI, so Init must NOT be
+  // called on subclasses that use this.
+  // If aGlobalObject, its associated JS global or aCx are null this will cause
+  // an assertion, as will setting aIsMainThread incorrectly.
+  AutoJSAPI(nsIGlobalObject* aGlobalObject, bool aIsMainThread, JSContext* aCx);
 
 private:
-  ScriptSettingsStackEntry() : mGlobalObject(nullptr)
-                             , mIsCandidateEntryPoint(true)
-  {}
+  mozilla::Maybe<AutoCxPusher> mCxPusher;
+  mozilla::Maybe<JSAutoNullableCompartment> mAutoNullableCompartment;
+  JSContext *mCx;
+
+  void InitInternal(JSObject* aGlobal, JSContext* aCx, bool aIsMainThread);
 };
 
 /*
  * A class that represents a new script entry point.
  */
-class AutoEntryScript : protected ScriptSettingsStackEntry {
+class AutoEntryScript : public AutoJSAPI,
+                        protected ScriptSettingsStackEntry {
 public:
   AutoEntryScript(nsIGlobalObject* aGlobalObject,
                   bool aIsMainThread = NS_IsMainThread(),
                   // Note: aCx is mandatory off-main-thread.
                   JSContext* aCx = nullptr);
-  ~AutoEntryScript();
 
   void SetWebIDLCallerPrincipal(nsIPrincipal *aPrincipal) {
     mWebIDLCallerPrincipal = aPrincipal;
   }
 
-  JSContext* cx() const { return mCx; }
-
 private:
-  dom::ScriptSettingsStack& mStack;
-  nsCOMPtr<nsIPrincipal> mWebIDLCallerPrincipal;
-  JSContext *mCx;
-  mozilla::Maybe<AutoCxPusher> mCxPusher;
-  mozilla::Maybe<JSAutoCompartment> mAc; // This can de-Maybe-fy when mCxPusher
-                                         // goes away.
+  // It's safe to make this a weak pointer, since it's the subject principal
+  // when we go on the stack, so can't go away until after we're gone.  In
+  // particular, this is only used from the CallSetup constructor, and only in
+  // the aIsJSImplementedWebIDL case.  And in that case, the subject principal
+  // is the principal of the callee function that is part of the CallArgs just a
+  // bit up the stack, and which will outlive us.  So we know the principal
+  // can't go away until then either.
+  nsIPrincipal* mWebIDLCallerPrincipal;
   friend nsIPrincipal* GetWebIDLCallerPrincipal();
 };
 
@@ -128,23 +222,22 @@ private:
 class AutoIncumbentScript : protected ScriptSettingsStackEntry {
 public:
   AutoIncumbentScript(nsIGlobalObject* aGlobalObject);
-  ~AutoIncumbentScript();
 private:
-  dom::ScriptSettingsStack& mStack;
   JS::AutoHideScriptedCaller mCallerOverride;
 };
 
 /*
- * A class used for C++ to indicate that existing entry and incumbent scripts
- * should not apply to anything in scope, and that callees should act as if
- * they were invoked "from C++".
+ * A class to put the JS engine in an unusable state. The subject principal
+ * will become System, the information on the script settings stack is
+ * rendered inaccessible, and JSAPI may not be manipulated until the class is
+ * either popped or an AutoJSAPI instance is subsequently pushed.
+ *
+ * This class may not be instantiated if an exception is pending.
  */
-class AutoSystemCaller {
+class AutoNoJSAPI : protected ScriptSettingsStackEntry {
 public:
-  AutoSystemCaller(bool aIsMainThread = NS_IsMainThread());
-  ~AutoSystemCaller();
+  AutoNoJSAPI(bool aIsMainThread = NS_IsMainThread());
 private:
-  dom::ScriptSettingsStack& mStack;
   mozilla::Maybe<AutoCxPusher> mCxPusher;
 };
 

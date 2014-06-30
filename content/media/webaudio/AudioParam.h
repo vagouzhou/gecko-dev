@@ -23,16 +23,17 @@ namespace dom {
 class AudioParam MOZ_FINAL : public nsWrapperCache,
                              public AudioParamTimeline
 {
+  virtual ~AudioParam();
+
 public:
   typedef void (*CallbackType)(AudioNode*);
 
   AudioParam(AudioNode* aNode,
              CallbackType aCallback,
              float aDefaultValue);
-  virtual ~AudioParam();
 
-  NS_IMETHOD_(nsrefcnt) AddRef(void);
-  NS_IMETHOD_(nsrefcnt) Release(void);
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void);
+  NS_IMETHOD_(MozExternalRefCountType) Release(void);
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(AudioParam)
 
   AudioContext* GetParentObject() const
@@ -45,8 +46,7 @@ public:
     return mNode->Context()->DOMTimeToStreamTime(aTime);
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // We override SetValueCurveAtTime to convert the Float32Array to the wrapper
   // object.
@@ -56,6 +56,7 @@ public:
       aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
       return;
     }
+    aValues.ComputeLengthAndData();
     AudioParamTimeline::SetValueCurveAtTime(aValues.Data(), aValues.Length(),
                                             DOMTimeToStreamTime(aStartTime), aDuration, aRv);
     mCallback(mNode);
@@ -110,10 +111,6 @@ public:
     AudioParamTimeline::SetTargetAtTime(aTarget, DOMTimeToStreamTime(aStartTime), aTimeConstant, aRv);
     mCallback(mNode);
   }
-  void SetTargetValueAtTime(float aTarget, double aStartTime, double aTimeConstant, ErrorResult& aRv)
-  {
-    SetTargetAtTime(aTarget, aStartTime, aTimeConstant, aRv);
-  }
   void CancelScheduledValues(double aStartTime, ErrorResult& aRv)
   {
     if (!WebAudioUtils::IsTimeValid(aStartTime)) {
@@ -153,6 +150,27 @@ public:
 
   // May create the stream if it doesn't exist
   MediaStream* Stream();
+
+  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const MOZ_OVERRIDE
+  {
+    size_t amount = AudioParamTimeline::SizeOfExcludingThis(aMallocSizeOf);
+    // Not owned:
+    // - mNode
+
+    // Just count the array, actual nodes are counted in mNode.
+    amount += mInputNodes.SizeOfExcludingThis(aMallocSizeOf);
+
+    if (mNodeStreamPort) {
+      amount += mNodeStreamPort->SizeOfIncludingThis(aMallocSizeOf);
+    }
+
+    return amount;
+  }
+
+  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const MOZ_OVERRIDE
+  {
+    return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+  }
 
 protected:
   nsCycleCollectingAutoRefCnt mRefCnt;

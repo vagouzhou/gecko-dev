@@ -17,7 +17,6 @@
 #include "nsNameSpaceManager.h"
 #include "nsIScriptContext.h"
 #include "nsIDocument.h"
-#include "nsIJSEventListener.h"
 #include "nsIController.h"
 #include "nsIControllers.h"
 #include "nsIDOMXULElement.h"
@@ -36,6 +35,7 @@
 #include "nsGkAtoms.h"
 #include "nsIXPConnect.h"
 #include "nsIDOMScriptObjectFactory.h"
+#include "mozilla/AddonPathService.h"
 #include "nsDOMCID.h"
 #include "nsUnicharUtils.h"
 #include "nsCRT.h"
@@ -43,6 +43,7 @@
 #include "nsXBLSerialize.h"
 #include "nsJSUtils.h"
 #include "mozilla/BasicEvents.h"
+#include "mozilla/JSEventHandler.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/EventHandlerBinding.h"
 
@@ -52,7 +53,6 @@ using namespace mozilla::dom;
 uint32_t nsXBLPrototypeHandler::gRefCnt = 0;
 
 int32_t nsXBLPrototypeHandler::kMenuAccessKey = -1;
-int32_t nsXBLPrototypeHandler::kAccelKey = -1;
 
 const int32_t nsXBLPrototypeHandler::cShift = (1<<0);
 const int32_t nsXBLPrototypeHandler::cAlt = (1<<1);
@@ -160,23 +160,21 @@ nsXBLPrototypeHandler::AppendHandlerText(const nsAString& aText)
 void
 nsXBLPrototypeHandler::InitAccessKeys()
 {
-  if (kAccelKey >= 0 && kMenuAccessKey >= 0)
+  if (kMenuAccessKey >= 0) {
     return;
+  }
 
   // Compiled-in defaults, in case we can't get the pref --
   // mac doesn't have menu shortcuts, other platforms use alt.
 #ifdef XP_MACOSX
   kMenuAccessKey = 0;
-  kAccelKey = nsIDOMKeyEvent::DOM_VK_META;
 #else
   kMenuAccessKey = nsIDOMKeyEvent::DOM_VK_ALT;
-  kAccelKey = nsIDOMKeyEvent::DOM_VK_CONTROL;
 #endif
 
   // Get the menu access key value from prefs, overriding the default:
   kMenuAccessKey =
     Preferences::GetInt("ui.key.menuAccessKey", kMenuAccessKey);
-  kAccelKey = Preferences::GetInt("ui.key.accelKey", kAccelKey);
 }
 
 nsresult
@@ -273,7 +271,7 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
     scriptTarget = aTarget;
   }
 
-  // We're about to create a new nsJSEventListener, which means that we're
+  // We're about to create a new JSEventHandler, which means that we're
   // responsible for pushing the context of the event target. See the similar
   // comment in nsEventManagerListener.cpp.
   nsCxPusher pusher;
@@ -285,8 +283,10 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
   rv = EnsureEventHandler(boundGlobal, boundContext, onEventAtom, &handler);
   NS_ENSURE_SUCCESS(rv, rv);
 
+  JSAddonId* addonId = MapURIToAddonID(mPrototypeBinding->DocURI());
+
   JS::Rooted<JSObject*> globalObject(cx, boundGlobal->GetGlobalJSObject());
-  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetXBLScopeOrGlobal(cx, globalObject));
+  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetScopeForXBLExecution(cx, globalObject, addonId));
   NS_ENSURE_TRUE(scopeObject, NS_ERROR_OUT_OF_MEMORY);
 
   // Bind it to the bound element. Note that if we're using a separate XBL scope,
@@ -305,7 +305,7 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
   // scope if one doesn't already exist, and potentially wraps it cross-
   // compartment into our scope (via aAllowWrapping=true).
   JS::Rooted<JS::Value> targetV(cx, JS::UndefinedValue());
-  rv = nsContentUtils::WrapNative(cx, scopeObject, scriptTarget, &targetV);
+  rv = nsContentUtils::WrapNative(cx, scriptTarget, &targetV);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Next, clone the generic handler to be parented to the target.
@@ -322,18 +322,18 @@ nsXBLPrototypeHandler::ExecuteHandler(EventTarget* aTarget,
   nsRefPtr<EventHandlerNonNull> handlerCallback =
     new EventHandlerNonNull(bound, /* aIncumbentGlobal = */ nullptr);
 
-  nsEventHandler eventHandler(handlerCallback);
+  TypedEventHandler typedHandler(handlerCallback);
 
   // Execute it.
-  nsCOMPtr<nsIJSEventListener> eventListener;
-  rv = NS_NewJSEventListener(scriptTarget, onEventAtom,
-                             eventHandler,
-                             getter_AddRefs(eventListener));
+  nsCOMPtr<JSEventHandler> jsEventHandler;
+  rv = NS_NewJSEventHandler(scriptTarget, onEventAtom,
+                            typedHandler,
+                            getter_AddRefs(jsEventHandler));
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Handle the event.
-  eventListener->HandleEvent(aEvent);
-  eventListener->Disconnect();
+  jsEventHandler->HandleEvent(aEvent);
+  jsEventHandler->Disconnect();
   return NS_OK;
 }
 
@@ -361,8 +361,10 @@ nsXBLPrototypeHandler::EnsureEventHandler(nsIScriptGlobalObject* aGlobal,
   nsDependentString handlerText(mHandlerText);
   NS_ENSURE_TRUE(!handlerText.IsEmpty(), NS_ERROR_FAILURE);
 
+  JSAddonId* addonId = MapURIToAddonID(mPrototypeBinding->DocURI());
+
   JS::Rooted<JSObject*> globalObject(cx, aGlobal->GetGlobalJSObject());
-  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetXBLScopeOrGlobal(cx, globalObject));
+  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetScopeForXBLExecution(cx, globalObject, addonId));
   NS_ENSURE_TRUE(scopeObject, NS_ERROR_OUT_OF_MEMORY);
 
   nsAutoCString bindingURI;
@@ -370,7 +372,7 @@ nsXBLPrototypeHandler::EnsureEventHandler(nsIScriptGlobalObject* aGlobal,
 
   uint32_t argCount;
   const char **argNames;
-  nsContentUtils::GetEventArgNames(kNameSpaceID_XBL, aName, &argCount,
+  nsContentUtils::GetEventArgNames(kNameSpaceID_XBL, aName, false, &argCount,
                                    &argNames);
 
   // Compile the event handler in the xbl scope.
@@ -667,7 +669,7 @@ static const keyCodeData gKeyCodes[] = {
 
 #define NS_DEFINE_VK(aDOMKeyName, aDOMKeyCode) \
   { #aDOMKeyName, sizeof(#aDOMKeyName) - 1, aDOMKeyCode }
-#include "nsVKList.h"
+#include "mozilla/VirtualKeyCodeList.h"
 #undef NS_DEFINE_VK
 };
 
@@ -706,6 +708,25 @@ int32_t nsXBLPrototypeHandler::KeyToMask(int32_t key)
       return cControl | cControlMask;
   }
   return cControl | cControlMask;  // for warning avoidance
+}
+
+// static
+int32_t
+nsXBLPrototypeHandler::AccelKeyMask()
+{
+  switch (WidgetInputEvent::AccelModifier()) {
+    case MODIFIER_ALT:
+      return KeyToMask(nsIDOMKeyEvent::DOM_VK_ALT);
+    case MODIFIER_CONTROL:
+      return KeyToMask(nsIDOMKeyEvent::DOM_VK_CONTROL);
+    case MODIFIER_META:
+      return KeyToMask(nsIDOMKeyEvent::DOM_VK_META);
+    case MODIFIER_OS:
+      return KeyToMask(nsIDOMKeyEvent::DOM_VK_WIN);
+    default:
+      MOZ_CRASH("Handle the new result of WidgetInputEvent::AccelModifier()");
+      return 0;
+  }
 }
 
 void
@@ -811,7 +832,7 @@ nsXBLPrototypeHandler::ConstructPrototype(nsIContent* aKeyElement,
       else if (PL_strcmp(token, "control") == 0)
         mKeyMask |= cControl | cControlMask;
       else if (PL_strcmp(token, "accel") == 0)
-        mKeyMask |= KeyToMask(kAccelKey);
+        mKeyMask |= AccelKeyMask();
       else if (PL_strcmp(token, "access") == 0)
         mKeyMask |= KeyToMask(kMenuAccessKey);
       else if (PL_strcmp(token, "any") == 0)

@@ -2,16 +2,19 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const PREF_NEWTAB_ENABLED = "browser.newtabpage.enabled";
+const PREF_NEWTAB_DIRECTORYSOURCE = "browser.newtabpage.directory.source";
 
 Services.prefs.setBoolPref(PREF_NEWTAB_ENABLED, true);
 
 let tmp = {};
 Cu.import("resource://gre/modules/Promise.jsm", tmp);
 Cu.import("resource://gre/modules/NewTabUtils.jsm", tmp);
+Cu.import("resource://gre/modules/DirectoryLinksProvider.jsm", tmp);
 Cc["@mozilla.org/moz/jssubscript-loader;1"]
   .getService(Ci.mozIJSSubScriptLoader)
   .loadSubScript("chrome://browser/content/sanitize.js", tmp);
-let {Promise, NewTabUtils, Sanitizer} = tmp;
+Cu.import("resource://gre/modules/Timer.jsm", tmp);
+let {Promise, NewTabUtils, Sanitizer, clearTimeout, DirectoryLinksProvider} = tmp;
 
 let uri = Services.io.newURI("about:newtab", null, null);
 let principal = Services.scriptSecurityManager.getNoAppCodebasePrincipal(uri);
@@ -21,18 +24,84 @@ let isLinux = ("@mozilla.org/gnome-gconf-service;1" in Cc);
 let isWindows = ("@mozilla.org/windows-registry-key;1" in Cc);
 let gWindow = window;
 
+// Default to empty directory links
+let gDirectorySource = "data:application/json,{}";
+
+// The tests assume all three rows of sites are shown, but the window may be too
+// short to actually show three rows.  Resize it if necessary.
+let requiredInnerHeight =
+  40 + 32 + // undo container + bottom margin
+  44 + 32 + // search bar + bottom margin
+  (3 * (150 + 32)) + // 3 rows * (tile height + title and bottom margin)
+  100; // breathing room
+
+let oldInnerHeight = null;
+if (gBrowser.contentWindow.innerHeight < requiredInnerHeight) {
+  oldInnerHeight = gBrowser.contentWindow.innerHeight;
+  info("Changing browser inner height from " + oldInnerHeight + " to " +
+       requiredInnerHeight);
+  gBrowser.contentWindow.innerHeight = requiredInnerHeight;
+  let screenHeight = {};
+  Cc["@mozilla.org/gfx/screenmanager;1"].
+    getService(Ci.nsIScreenManager).
+    primaryScreen.
+    GetAvailRectDisplayPix({}, {}, {}, screenHeight);
+  screenHeight = screenHeight.value;
+  if (screenHeight < gBrowser.contentWindow.outerHeight) {
+    info("Warning: Browser outer height is now " +
+         gBrowser.contentWindow.outerHeight + ", which is larger than the " +
+         "available screen height, " + screenHeight +
+         ". That may cause problems.");
+  }
+}
+
 registerCleanupFunction(function () {
   while (gWindow.gBrowser.tabs.length > 1)
     gWindow.gBrowser.removeTab(gWindow.gBrowser.tabs[1]);
 
+  if (oldInnerHeight)
+    gBrowser.contentWindow.innerHeight = oldInnerHeight;
+
+  // Stop any update timers to prevent unexpected updates in later tests
+  let timer = NewTabUtils.allPages._scheduleUpdateTimeout;
+  if (timer) {
+    clearTimeout(timer);
+    delete NewTabUtils.allPages._scheduleUpdateTimeout;
+  }
+
   Services.prefs.clearUserPref(PREF_NEWTAB_ENABLED);
+  Services.prefs.clearUserPref(PREF_NEWTAB_DIRECTORYSOURCE);
+
+  return watchLinksChangeOnce();
 });
+
+/**
+ * Resolves promise when directory links are downloaded and written to disk
+ */
+function watchLinksChangeOnce() {
+  let deferred = Promise.defer();
+  let observer = {
+    onManyLinksChanged: () => {
+      DirectoryLinksProvider.removeObserver(observer);
+      deferred.resolve();
+    }
+  };
+  observer.onDownloadFail = observer.onManyLinksChanged;
+  DirectoryLinksProvider.addObserver(observer);
+  return deferred.promise;
+};
 
 /**
  * Provide the default test function to start our test runner.
  */
 function test() {
-  TestRunner.run();
+  waitForExplicitFinish();
+  // start TestRunner.run() after directory links is downloaded and written to disk
+  watchLinksChangeOnce().then(() => {
+    // Wait for hidden page to update with the desired links
+    whenPagesUpdated(() => TestRunner.run(), true);
+  });
+  Services.prefs.setCharPref(PREF_NEWTAB_DIRECTORYSOURCE, gDirectorySource);
 }
 
 /**
@@ -43,8 +112,6 @@ let TestRunner = {
    * Starts the test runner.
    */
   run: function () {
-    waitForExplicitFinish();
-
     this._iter = runTests();
     this.next();
   },
@@ -159,20 +226,34 @@ function clearHistory(aCallback) {
 
 function fillHistory(aLinks, aCallback) {
   let numLinks = aLinks.length;
+  if (!numLinks) {
+    if (aCallback)
+      executeSoon(aCallback);
+    return;
+  }
+
   let transitionLink = Ci.nsINavHistoryService.TRANSITION_LINK;
 
-  for (let link of aLinks.reverse()) {
+  // Important: To avoid test failures due to clock jitter on Windows XP, call
+  // Date.now() once here, not each time through the loop.
+  let now = Date.now() * 1000;
+
+  for (let i = 0; i < aLinks.length; i++) {
+    let link = aLinks[i];
     let place = {
       uri: makeURI(link.url),
       title: link.title,
-      visits: [{visitDate: Date.now() * 1000, transitionType: transitionLink}]
+      // Links are secondarily sorted by visit date descending, so decrease the
+      // visit date as we progress through the array so that links appear in the
+      // grid in the order they're present in the array.
+      visits: [{visitDate: now - i, transitionType: transitionLink}]
     };
 
     PlacesUtils.asyncHistory.updatePlaces(place, {
       handleError: function () ok(false, "couldn't add visit to history"),
       handleResult: function () {},
       handleCompletion: function () {
-        if (--numLinks == 0)
+        if (--numLinks == 0 && aCallback)
           aCallback();
       }
     });
@@ -227,7 +308,7 @@ function addNewTabPageTab() {
     if (NewTabUtils.allPages.enabled) {
       // Continue when the link cache has been populated.
       NewTabUtils.links.populateCache(function () {
-        executeSoon(TestRunner.next);
+        whenSearchInitDone();
       });
     } else {
       // It's important that we call next() asynchronously.
@@ -503,17 +584,40 @@ function createDragEvent(aEventType, aData) {
 
 /**
  * Resumes testing when all pages have been updated.
+ * @param aCallback Called when done. If not specified, TestRunner.next is used.
+ * @param aOnlyIfHidden If true, this resumes testing only when an update that
+ *                      applies to pre-loaded, hidden pages is observed.  If
+ *                      false, this resumes testing when any update is observed.
  */
-function whenPagesUpdated(aCallback) {
+function whenPagesUpdated(aCallback, aOnlyIfHidden=false) {
   let page = {
-    update: function () {
-      NewTabUtils.allPages.unregister(this);
-      executeSoon(aCallback || TestRunner.next);
+    update: function (onlyIfHidden=false) {
+      if (onlyIfHidden == aOnlyIfHidden) {
+        NewTabUtils.allPages.unregister(this);
+        executeSoon(aCallback || TestRunner.next);
+      }
     }
   };
 
   NewTabUtils.allPages.register(page);
   registerCleanupFunction(function () {
     NewTabUtils.allPages.unregister(page);
+  });
+}
+
+/**
+ * Waits for the response to the page's initial search state request.
+ */
+function whenSearchInitDone() {
+  if (getContentWindow().gSearch._initialStateReceived) {
+    executeSoon(TestRunner.next);
+    return;
+  }
+  let eventName = "ContentSearchService";
+  getContentWindow().addEventListener(eventName, function onEvent(event) {
+    if (event.detail.type == "State") {
+      getContentWindow().removeEventListener(eventName, onEvent);
+      TestRunner.next();
+    }
   });
 }

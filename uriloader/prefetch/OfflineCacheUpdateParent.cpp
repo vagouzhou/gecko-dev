@@ -43,9 +43,9 @@ namespace docshell {
 // OfflineCacheUpdateParent::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS2(OfflineCacheUpdateParent,
-                   nsIOfflineCacheUpdateObserver,
-                   nsILoadContext)
+NS_IMPL_ISUPPORTS(OfflineCacheUpdateParent,
+                  nsIOfflineCacheUpdateObserver,
+                  nsILoadContext)
 
 //-----------------------------------------------------------------------------
 // OfflineCacheUpdateParent <public>
@@ -200,6 +200,12 @@ OfflineCacheUpdateParent::GetTopWindow(nsIDOMWindow * *aTopWindow)
 
 NS_IMETHODIMP
 OfflineCacheUpdateParent::GetTopFrameElement(nsIDOMElement** aElement)
+{
+    return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+OfflineCacheUpdateParent::GetNestedFrameId(uint64_t* aId)
 {
     return NS_ERROR_NOT_IMPLEMENTED;
 }

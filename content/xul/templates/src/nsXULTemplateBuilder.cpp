@@ -1388,17 +1388,16 @@ nsXULTemplateBuilder::InitHTMLTemplateRoot()
     AutoEntryScript entryScript(innerWin, true);
     JSContext* jscontext = entryScript.cx();
 
-    JS::Rooted<JSObject*> scope(jscontext, global->GetGlobalJSObject());
     JS::Rooted<JS::Value> v(jscontext);
-    rv = nsContentUtils::WrapNative(jscontext, scope, mRoot, mRoot, &v);
+    rv = nsContentUtils::WrapNative(jscontext, mRoot, mRoot, &v);
     NS_ENSURE_SUCCESS(rv, rv);
 
-    JS::Rooted<JSObject*> jselement(jscontext, JSVAL_TO_OBJECT(v));
+    JS::Rooted<JSObject*> jselement(jscontext, v.toObjectOrNull());
 
     if (mDB) {
         // database
         JS::Rooted<JS::Value> jsdatabase(jscontext);
-        rv = nsContentUtils::WrapNative(jscontext, scope, mDB,
+        rv = nsContentUtils::WrapNative(jscontext, mDB,
                                         &NS_GET_IID(nsIRDFCompositeDataSource),
                                         &jsdatabase);
         NS_ENSURE_SUCCESS(rv, rv);
@@ -1412,7 +1411,7 @@ nsXULTemplateBuilder::InitHTMLTemplateRoot()
     {
         // builder
         JS::Rooted<JS::Value> jsbuilder(jscontext);
-        rv = nsContentUtils::WrapNative(jscontext, jselement,
+        rv = nsContentUtils::WrapNative(jscontext,
                                         static_cast<nsIXULTemplateBuilder*>(this),
                                         &NS_GET_IID(nsIXULTemplateBuilder),
                                         &jsbuilder);
@@ -1797,7 +1796,7 @@ nsXULTemplateBuilder::CompileTemplate(nsIContent* aTemplate,
          rulenode;
          rulenode = rulenode->GetNextSibling()) {
 
-        nsINodeInfo *ni = rulenode->NodeInfo();
+        mozilla::dom::NodeInfo *ni = rulenode->NodeInfo();
 
         // don't allow more queries than can be supported
         if (*aPriority == INT16_MAX)

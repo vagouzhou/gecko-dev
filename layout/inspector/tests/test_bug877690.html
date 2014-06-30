@@ -60,7 +60,7 @@ function do_test() {
       "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin", "navajowhite",
       "navy", "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "palegoldenrod", "palegreen",
       "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "pink", "plum", "powderblue",
-      "purple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen",
+      "purple", "rebeccapurple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen",
       "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey", "snow", "springgreen",
       "steelblue", "tan", "teal", "thistle", "tomato", "transparent", "turquoise", "violet", "wheat",
       "white", "whitesmoke", "yellow", "yellowgreen", "rgb", "hsl", "rgba", "hsla" ];
@@ -85,13 +85,15 @@ function do_test() {
       "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin",
       "navajowhite", "navy", "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "palegoldenrod",
       "palegreen", "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "pink", "plum",
-      "powderblue", "purple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown",
+      "powderblue", "purple", "rebeccapurple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown",
       "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey",
       "snow", "springgreen", "steelblue", "tan", "teal", "thistle", "tomato", "transparent", "turquoise",
       "violet", "wheat", "white", "whitesmoke", "yellow", "yellowgreen", "no-repeat", "repeat",
       "repeat-x", "repeat-y", "fixed", "scroll", "local", "center", "top", "bottom", "left", "right",
       "border-box", "padding-box", "content-box", "border-box", "padding-box", "content-box", "contain",
-      "cover", "rgb", "hsl", "rgba", "hsla", "none", "-moz-element", "-moz-image-rect", "url" ];
+      "cover", "rgb", "hsl", "rgba", "hsla", "none", "-moz-element", "-moz-image-rect", "url", "linear-gradient",
+      "radial-gradient", "repeating-linear-gradient", "repeating-radial-gradient", "-moz-linear-gradient",
+      "-moz-radial-gradient", "-moz-repeating-linear-gradient", "-moz-repeating-radial-gradient" ];
   ok(testValues(values, expected), "Shorthand property values.");
 
   var prop = "border";
@@ -113,11 +115,13 @@ function do_test() {
       "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin", "navajowhite", "navy", "none",
       "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "outset", "palegoldenrod", "palegreen",
       "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "physical", "pink", "plum", "powderblue",
-      "purple", "red", "repeat", "rgb", "rgba", "ridge", "rosybrown", "round", "royalblue", "saddlebrown", "salmon",
-      "sandybrown", "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey",
+      "purple", "rebeccapurple", "red", "repeat", "rgb", "rgba", "ridge", "rosybrown", "round", "royalblue", "saddlebrown",
+      "salmon", "sandybrown", "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey",
       "snow", "solid", "springgreen", "steelblue", "stretch", "tan", "teal", "thick", "thin", "thistle", "tomato",
       "transparent", "turquoise", "-moz-element", "-moz-image-rect", "url", "violet", "wheat", "white", "whitesmoke",
-      "yellow", "yellowgreen" ]
+      "yellow", "yellowgreen", "linear-gradient", "radial-gradient", "repeating-linear-gradient",
+      "repeating-radial-gradient", "-moz-linear-gradient", "-moz-radial-gradient", "-moz-repeating-linear-gradient",
+      "-moz-repeating-radial-gradient" ]
   ok(testValues(values, expected), "Shorthand property values.");
 
   // test keywords only
@@ -141,10 +145,10 @@ function do_test() {
       "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin", "navajowhite",
       "navy", "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "palegoldenrod", "palegreen",
       "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "pink", "plum", "powderblue",
-      "purple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen", "seashell",
-      "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey", "snow", "springgreen", "steelblue",
-      "tan", "teal", "thistle", "tomato", "transparent", "turquoise", "violet", "wheat", "white", "whitesmoke",
-      "yellow", "yellowgreen", "calc", "-moz-calc", "rgb", "hsl", "rgba", "hsla" ];
+      "purple", "rebeccapurple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen",
+      "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey", "snow", "springgreen",
+      "steelblue", "tan", "teal", "thistle", "tomato", "transparent", "turquoise", "violet", "wheat", "white",
+      "whitesmoke", "yellow", "yellowgreen", "calc", "-moz-calc", "rgb", "hsl", "rgba", "hsla" ];
   ok(testValues(values, expected), "property border-top's values.");
 
   // tests no keywords or colors
@@ -198,6 +202,35 @@ function do_test() {
   catch(e) {
     // test passed
   }
+
+  // test border-image propery, for bug 973345
+  var prop = "border-image";
+  var values = utils.getCSSValuesForProperty(prop);
+  var expected = [ "-moz-calc", "initial", "unset", "-moz-use-text-color", "aliceblue",
+      "antiquewhite", "aqua", "aquamarine", "azure", "beige", "bisque", "black", "blanchedalmond", "blue", "blueviolet",
+      "brown", "burlywood", "cadetblue", "calc", "chartreuse", "chocolate", "coral", "cornflowerblue", "cornsilk",
+      "crimson", "cyan", "darkblue", "darkcyan", "darkgoldenrod", "darkgray", "darkgreen", "darkgrey", "darkkhaki",
+      "darkmagenta", "darkolivegreen", "darkorange", "darkorchid", "darkred", "darksalmon", "darkseagreen",
+      "darkslateblue", "darkslategray", "darkslategrey", "darkturquoise", "darkviolet", "dashed", "deeppink",
+      "deepskyblue", "dimgray", "dimgrey", "dodgerblue", "dotted", "double", "fill", "firebrick", "floralwhite",
+      "forestgreen", "fuchsia", "gainsboro", "ghostwhite", "gold", "goldenrod", "gray", "grey", "green", "greenyellow",
+      "groove", "hidden", "honeydew", "hotpink", "hsl", "hsla", "indianred", "indigo", "inherit", "inset", "ivory",
+      "khaki", "lavender", "lavenderblush", "lawngreen", "lemonchiffon", "lightblue", "lightcoral", "lightcyan",
+      "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightsalmon", "lightseagreen",
+      "lightskyblue", "lightslategray", "lightslategrey", "lightsteelblue", "lightyellow", "lime", "limegreen",
+      "linen", "logical", "magenta", "maroon", "medium", "mediumaquamarine", "mediumblue", "mediumorchid",
+      "mediumpurple", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise",
+      "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin", "navajowhite", "navy", "none",
+      "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "outset", "palegoldenrod", "palegreen",
+      "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "physical", "pink", "plum", "powderblue",
+      "purple", "rebeccapurple", "red", "repeat", "rgb", "rgba", "ridge", "rosybrown", "round", "royalblue", "saddlebrown",
+      "salmon", "sandybrown", "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey",
+      "snow", "solid", "springgreen", "steelblue", "stretch", "tan", "teal", "thick", "thin", "thistle", "tomato",
+      "transparent", "turquoise", "-moz-element", "-moz-image-rect", "url", "violet", "wheat", "white", "whitesmoke",
+      "yellow", "yellowgreen", "linear-gradient", "radial-gradient", "repeating-linear-gradient",
+      "repeating-radial-gradient", "-moz-linear-gradient", "-moz-radial-gradient", "-moz-repeating-linear-gradient",
+      "-moz-repeating-radial-gradient" ]
+  ok(testValues(values, expected), "property border-image's values.");
 
   SimpleTest.finish();
 }

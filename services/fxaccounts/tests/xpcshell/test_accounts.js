@@ -41,6 +41,7 @@ function run_test() {
 function MockFxAccountsClient() {
   this._email = "nobody@example.com";
   this._verified = false;
+  this._deletedOnServer = false; // for testing accountStatus
 
   // mock calls up to the auth server to determine whether the
   // user account has been verified
@@ -54,6 +55,12 @@ function MockFxAccountsClient() {
     };
     deferred.resolve(response);
 
+    return deferred.promise;
+  };
+
+  this.accountStatus = function(uid) {
+    let deferred = Promise.defer();
+    deferred.resolve(!!uid && (!this._deletedOnServer));
     return deferred.promise;
   };
 
@@ -76,6 +83,8 @@ function MockFxAccountsClient() {
   };
 
   this.signCertificate = function() { throw "no" };
+
+  this.signOut = function() { return Promise.resolve(); };
 
   FxAccountsClient.apply(this);
 }
@@ -167,7 +176,8 @@ add_task(function test_get_signed_in_user_initially_unset() {
   do_check_eq(result.kB, credentials.kB);
 
   // sign out
-  yield account.signOut();
+  let localOnly = true;
+  yield account.signOut(localOnly);
 
   // user should be undefined after sign out
   let result = yield account.getSignedInUser();
@@ -284,8 +294,9 @@ add_test(function test_getKeys() {
       // Before getKeys, we have no keys
       do_check_eq(!!user.kA, false);
       do_check_eq(!!user.kB, false);
-      // And we still have a key-fetch token to use
+      // And we still have a key-fetch token and unwrapBKey to use
       do_check_eq(!!user.keyFetchToken, true);
+      do_check_eq(!!user.unwrapBKey, true);
 
       fxa.internal.getKeys().then(() => {
         fxa.getSignedInUser().then((user) => {
@@ -295,6 +306,7 @@ add_test(function test_getKeys() {
           do_check_eq(user.kA, expandHex("11"));
           do_check_eq(user.kB, expandHex("66"));
           do_check_eq(user.keyFetchToken, undefined);
+          do_check_eq(user.unwrapBKey, undefined);
           do_test_finished();
           run_next_test();
         });
@@ -303,8 +315,8 @@ add_test(function test_getKeys() {
   });
 });
 
-// getKeys with no keyFetchToken should trigger signOut
-add_test(function test_getKeys_no_token() {
+//  fetchAndUnwrapKeys with no keyFetchToken should trigger signOut
+add_test(function test_fetchAndUnwrapKeys_no_token() {
   do_test_pending();
 
   let fxa = new MockFxAccounts();
@@ -312,16 +324,23 @@ add_test(function test_getKeys_no_token() {
   delete user.keyFetchToken
 
   makeObserver(ONLOGOUT_NOTIFICATION, function() {
-    log.debug("test_getKeys_no_token observed logout");
+    log.debug("test_fetchAndUnwrapKeys_no_token observed logout");
     fxa.internal.getUserAccountData().then(user => {
       do_test_finished();
       run_next_test();
     });
   });
 
-  fxa.setSignedInUser(user).then((user) => {
-    fxa.internal.getKeys();
-  });
+  fxa.setSignedInUser(user).then(
+    user => {
+      return fxa.internal.fetchAndUnwrapKeys();
+    }
+  ).then(
+    null,
+    error => {
+      log.info("setSignedInUser correctly rejected");
+    }
+  )
 });
 
 // Alice (User A) signs up but never verifies her email.  Then Bob (User B)
@@ -496,6 +515,39 @@ add_task(function test_resend_email_not_signed_in() {
   do_throw("Should not be able to resend email when nobody is signed in");
 });
 
+add_test(function test_accountStatus() {
+  let fxa = new MockFxAccounts();
+  let alice = getTestUser("alice");
+
+  // If we have no user, we have no account server-side
+  fxa.accountStatus().then(
+    (result) => {
+      do_check_false(result);
+    }
+  ).then(
+    () => {
+      fxa.setSignedInUser(alice).then(
+        () => {
+          fxa.accountStatus().then(
+            (result) => {
+               // FxAccounts.accountStatus() should match Client.accountStatus()
+               do_check_true(result);
+               fxa.internal.fxAccountsClient._deletedOnServer = true;
+               fxa.accountStatus().then(
+                 (result) => {
+                   do_check_false(result);
+                   fxa.internal.fxAccountsClient._deletedOnServer = false;
+                   run_next_test();
+                 }
+               );
+            }
+          )
+        }
+      );
+    }
+  );
+});
+
 add_test(function test_resend_email() {
   let fxa = new MockFxAccounts();
   let alice = getTestUser("alice");
@@ -535,6 +587,45 @@ add_test(function test_resend_email() {
       });
     });
   });
+});
+
+add_test(function test_sign_out() {
+  do_test_pending();
+  let fxa = new MockFxAccounts();
+  let remoteSignOutCalled = false;
+  let client = fxa.internal.fxAccountsClient;
+  client.signOut = function() { remoteSignOutCalled = true; return Promise.resolve(); };
+  makeObserver(ONLOGOUT_NOTIFICATION, function() {
+    log.debug("test_sign_out_with_remote_error observed onlogout");
+    // user should be undefined after sign out
+    fxa.internal.getUserAccountData().then(user => {
+      do_check_eq(user, null);
+      do_check_true(remoteSignOutCalled);
+      do_test_finished();
+      run_next_test();
+    });
+  });
+  fxa.signOut();
+});
+
+add_test(function test_sign_out_with_remote_error() {
+  do_test_pending();
+  let fxa = new MockFxAccounts();
+  let client = fxa.internal.fxAccountsClient;
+  let remoteSignOutCalled = false;
+  // Force remote sign out to trigger an error
+  client.signOut = function() { remoteSignOutCalled = true; throw "Remote sign out error"; };
+  makeObserver(ONLOGOUT_NOTIFICATION, function() {
+    log.debug("test_sign_out_with_remote_error observed onlogout");
+    // user should be undefined after sign out
+    fxa.internal.getUserAccountData().then(user => {
+      do_check_eq(user, null);
+      do_check_true(remoteSignOutCalled);
+      do_test_finished();
+      run_next_test();
+    });
+  });
+  fxa.signOut();
 });
 
 /*

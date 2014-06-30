@@ -3,6 +3,7 @@
  * file, You can obtain one at http:mozilla.org/MPL/2.0/. */
 
 #include "mozilla/dom/NetDashboardBinding.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "mozilla/net/Dashboard.h"
 #include "mozilla/net/HttpInfo.h"
 #include "nsCxPusher.h"
@@ -13,12 +14,14 @@
 #include "nsIInputStream.h"
 #include "nsISocketTransport.h"
 #include "nsIThread.h"
+#include "nsProxyRelease.h"
 #include "nsSocketTransportService2.h"
 #include "nsThreadUtils.h"
 #include "nsURLHelper.h"
 
 using mozilla::AutoSafeJSContext;
 using mozilla::dom::Sequence;
+using mozilla::dom::ToJSValue;
 
 namespace mozilla {
 namespace net {
@@ -36,15 +39,16 @@ public:
         mThread = nullptr;
     }
 
-    virtual ~SocketData()
-    {
-    }
-
     uint64_t mTotalSent;
     uint64_t mTotalRecv;
     nsTArray<SocketInfo> mData;
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
+
+private:
+    virtual ~SocketData()
+    {
+    }
 };
 
 NS_IMPL_ISUPPORTS0(SocketData)
@@ -53,6 +57,10 @@ NS_IMPL_ISUPPORTS0(SocketData)
 class HttpData
     : public nsISupports
 {
+    virtual ~HttpData()
+    {
+    }
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -61,12 +69,8 @@ public:
         mThread = nullptr;
     }
 
-    virtual ~HttpData()
-    {
-    }
-
     nsTArray<HttpRetParams> mData;
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
 };
 
@@ -76,6 +80,10 @@ NS_IMPL_ISUPPORTS0(HttpData)
 class WebSocketRequest
     : public nsISupports
 {
+    virtual ~WebSocketRequest()
+    {
+    }
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -84,11 +92,7 @@ public:
         mThread = nullptr;
     }
 
-    virtual ~WebSocketRequest()
-    {
-    }
-
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
 };
 
@@ -98,6 +102,10 @@ NS_IMPL_ISUPPORTS0(WebSocketRequest)
 class DnsData
     : public nsISupports
 {
+    virtual ~DnsData()
+    {
+    }
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -106,12 +114,8 @@ public:
         mThread = nullptr;
     }
 
-    virtual ~DnsData()
-    {
-    }
-
     nsTArray<DNSCacheEntries> mData;
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
 };
 
@@ -122,6 +126,13 @@ class ConnectionData
     : public nsITransportEventSink
     , public nsITimerCallback
 {
+    virtual ~ConnectionData()
+    {
+        if (mTimer) {
+            mTimer->Cancel();
+        }
+    }
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSITRANSPORTEVENTSINK
@@ -136,17 +147,10 @@ public:
         mDashboard = target;
     }
 
-    virtual ~ConnectionData()
-    {
-        if (mTimer) {
-            mTimer->Cancel();
-        }
-    }
-
     nsCOMPtr<nsISocketTransport> mSocket;
     nsCOMPtr<nsIInputStream> mStreamIn;
     nsCOMPtr<nsITimer> mTimer;
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
     Dashboard *mDashboard;
 
@@ -158,7 +162,7 @@ public:
     nsString mStatus;
 };
 
-NS_IMPL_ISUPPORTS2(ConnectionData, nsITransportEventSink, nsITimerCallback)
+NS_IMPL_ISUPPORTS(ConnectionData, nsITransportEventSink, nsITimerCallback)
 
 NS_IMETHODIMP
 ConnectionData::OnTransportStatus(nsITransport *aTransport, nsresult aStatus,
@@ -190,7 +194,7 @@ ConnectionData::Notify(nsITimer *aTimer)
 
     mTimer = nullptr;
 
-    mStatus.Assign(NS_LITERAL_STRING("NS_ERROR_NET_TIMEOUT"));
+    mStatus.AssignLiteral(MOZ_UTF16("NS_ERROR_NET_TIMEOUT"));
     nsCOMPtr<nsIRunnable> event =
         NS_NewRunnableMethodWithArg<nsRefPtr<ConnectionData> >
         (mDashboard, &Dashboard::GetConnectionStatus, this);
@@ -225,6 +229,10 @@ class LookupHelper;
 class LookupArgument
     : public nsISupports
 {
+    virtual ~LookupArgument()
+    {
+    }
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -232,10 +240,6 @@ public:
     {
         mRecord = aRecord;
         mHelper = aHelper;
-    }
-
-    virtual ~LookupArgument()
-    {
     }
 
     nsCOMPtr<nsIDNSRecord> mRecord;
@@ -248,13 +252,6 @@ NS_IMPL_ISUPPORTS0(LookupArgument)
 class LookupHelper
     : public nsIDNSListener
 {
-public:
-    NS_DECL_THREADSAFE_ISUPPORTS
-    NS_DECL_NSIDNSLISTENER
-
-    LookupHelper() {
-    }
-
     virtual ~LookupHelper()
     {
         if (mCancel) {
@@ -262,15 +259,22 @@ public:
         }
     }
 
+public:
+    NS_DECL_THREADSAFE_ISUPPORTS
+    NS_DECL_NSIDNSLISTENER
+
+    LookupHelper() {
+    }
+
     nsresult ConstructAnswer(LookupArgument *aArgument);
 public:
     nsCOMPtr<nsICancelable> mCancel;
-    nsCOMPtr<NetDashboardCallback> mCallback;
+    nsMainThreadPtrHandle<NetDashboardCallback> mCallback;
     nsIThread *mThread;
     nsresult mStatus;
 };
 
-NS_IMPL_ISUPPORTS1(LookupHelper, nsIDNSListener)
+NS_IMPL_ISUPPORTS(LookupHelper, nsIDNSListener)
 
 NS_IMETHODIMP
 LookupHelper::OnLookupComplete(nsICancelable *aRequest,
@@ -317,7 +321,7 @@ LookupHelper::ConstructAnswer(LookupArgument *aArgument)
     }
 
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val)) {
+    if (!ToJSValue(cx, dict, &val)) {
         return NS_ERROR_FAILURE;
     }
 
@@ -326,7 +330,7 @@ LookupHelper::ConstructAnswer(LookupArgument *aArgument)
     return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS2(Dashboard, nsIDashboard, nsIDashboardEventNotifier)
+NS_IMPL_ISUPPORTS(Dashboard, nsIDashboard, nsIDashboardEventNotifier)
 
 Dashboard::Dashboard()
 {
@@ -341,7 +345,8 @@ NS_IMETHODIMP
 Dashboard::RequestSockets(NetDashboardCallback *aCallback)
 {
     nsRefPtr<SocketData> socketData = new SocketData();
-    socketData->mCallback = aCallback;
+    socketData->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
     socketData->mThread = NS_GetCurrentThread();
     nsCOMPtr<nsIRunnable> event =
         NS_NewRunnableMethodWithArg<nsRefPtr<SocketData> >
@@ -400,7 +405,7 @@ Dashboard::GetSockets(SocketData *aSocketData)
     dict.mSent += socketData->mTotalSent;
     dict.mReceived += socketData->mTotalRecv;
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val))
+    if (!ToJSValue(cx, dict, &val))
         return NS_ERROR_FAILURE;
     socketData->mCallback->OnDashboardDataAvailable(val);
 
@@ -411,7 +416,8 @@ NS_IMETHODIMP
 Dashboard::RequestHttpConnections(NetDashboardCallback *aCallback)
 {
     nsRefPtr<HttpData> httpData = new HttpData();
-    httpData->mCallback = aCallback;
+    httpData->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
     httpData->mThread = NS_GetCurrentThread();
 
     nsCOMPtr<nsIRunnable> event =
@@ -450,8 +456,6 @@ Dashboard::GetHttpConnections(HttpData *aHttpData)
 
     uint32_t length = httpData->mData.Length();
     if (!connections.SetCapacity(length)) {
-            httpData->mCallback = nullptr;
-            httpData->mData.Clear();
             JS_ReportOutOfMemory(cx);
             return NS_ERROR_OUT_OF_MEMORY;
     }
@@ -475,8 +479,6 @@ Dashboard::GetHttpConnections(HttpData *aHttpData)
         if (!active.SetCapacity(httpData->mData[i].active.Length()) ||
             !idle.SetCapacity(httpData->mData[i].idle.Length()) ||
             !halfOpens.SetCapacity(httpData->mData[i].halfOpens.Length())) {
-                httpData->mCallback = nullptr;
-                httpData->mData.Clear();
                 JS_ReportOutOfMemory(cx);
                 return NS_ERROR_OUT_OF_MEMORY;
         }
@@ -503,7 +505,7 @@ Dashboard::GetHttpConnections(HttpData *aHttpData)
     }
 
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val)) {
+    if (!ToJSValue(cx, dict, &val)) {
         return NS_ERROR_FAILURE;
     }
 
@@ -591,7 +593,8 @@ NS_IMETHODIMP
 Dashboard::RequestWebsocketConnections(NetDashboardCallback *aCallback)
 {
     nsRefPtr<WebSocketRequest> wsRequest = new WebSocketRequest();
-    wsRequest->mCallback = aCallback;
+    wsRequest->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
     wsRequest->mThread = NS_GetCurrentThread();
 
     nsCOMPtr<nsIRunnable> event =
@@ -630,7 +633,7 @@ Dashboard::GetWebSocketConnections(WebSocketRequest *aWsRequest)
     }
 
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val)) {
+    if (!ToJSValue(cx, dict, &val)) {
         return NS_ERROR_FAILURE;
     }
     wsRequest->mCallback->OnDashboardDataAvailable(val);
@@ -642,7 +645,8 @@ NS_IMETHODIMP
 Dashboard::RequestDNSInfo(NetDashboardCallback *aCallback)
 {
     nsRefPtr<DnsData> dnsData = new DnsData();
-    dnsData->mCallback = aCallback;
+    dnsData->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
 
     nsresult rv;
     dnsData->mData.Clear();
@@ -717,7 +721,7 @@ Dashboard::GetDNSCacheEntries(DnsData *dnsData)
     }
 
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val)) {
+    if (!ToJSValue(cx, dict, &val)) {
         return NS_ERROR_FAILURE;
     }
     dnsData->mCallback->OnDashboardDataAvailable(val);
@@ -727,7 +731,7 @@ Dashboard::GetDNSCacheEntries(DnsData *dnsData)
 
 NS_IMETHODIMP
 Dashboard::RequestDNSLookup(const nsACString &aHost,
-                            NetDashboardCallback *mCallback)
+                            NetDashboardCallback *aCallback)
 {
     nsresult rv;
 
@@ -739,7 +743,8 @@ Dashboard::RequestDNSLookup(const nsACString &aHost,
     }
 
     nsRefPtr<LookupHelper> helper = new LookupHelper();
-    helper->mCallback = mCallback;
+    helper->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
     helper->mThread = NS_GetCurrentThread();
     rv = mDnsService->AsyncResolve(aHost, 0, helper.get(),
                                    NS_GetCurrentThread(),
@@ -752,19 +757,19 @@ HttpConnInfo::SetHTTP1ProtocolVersion(uint8_t pv)
 {
     switch (pv) {
     case NS_HTTP_VERSION_0_9:
-        protocolVersion.Assign(NS_LITERAL_STRING("http/0.9"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("http/0.9"));
         break;
     case NS_HTTP_VERSION_1_0:
-        protocolVersion.Assign(NS_LITERAL_STRING("http/1.0"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("http/1.0"));
         break;
     case NS_HTTP_VERSION_1_1:
-        protocolVersion.Assign(NS_LITERAL_STRING("http/1.1"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("http/1.1"));
         break;
     case NS_HTTP_VERSION_2_0:
-        protocolVersion.Assign(NS_LITERAL_STRING("http/2.0"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("http/2.0"));
         break;
     default:
-        protocolVersion.Assign(NS_LITERAL_STRING("unknown protocol version"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("unknown protocol version"));
     }
 }
 
@@ -772,9 +777,9 @@ void
 HttpConnInfo::SetHTTP2ProtocolVersion(uint8_t pv)
 {
     if (pv == SPDY_VERSION_3) {
-        protocolVersion.Assign(NS_LITERAL_STRING("spdy/3"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("spdy/3"));
     } else if (pv == SPDY_VERSION_31) {
-        protocolVersion.Assign(NS_LITERAL_STRING("spdy/3.1"));
+        protocolVersion.AssignLiteral(MOZ_UTF16("spdy/3.1"));
     } else {
         MOZ_ASSERT (pv == NS_HTTP2_DRAFT_VERSION);
         protocolVersion.Assign(NS_LITERAL_STRING(NS_HTTP2_DRAFT_TOKEN));
@@ -793,7 +798,8 @@ Dashboard::RequestConnection(const nsACString& aHost, uint32_t aPort,
     connectionData->mProtocol = aProtocol;
     connectionData->mTimeout = aTimeout;
 
-    connectionData->mCallback = aCallback;
+    connectionData->mCallback =
+        new nsMainThreadPtrHolder<NetDashboardCallback>(aCallback, true);
     connectionData->mThread = NS_GetCurrentThread();
 
     rv = TestNewConnection(connectionData);
@@ -819,7 +825,7 @@ Dashboard::GetConnectionStatus(ConnectionData *aConnectionData)
     dict.mStatus = connectionData->mStatus;
 
     JS::RootedValue val(cx);
-    if (!dict.ToObject(cx, JS::NullPtr(), &val))
+    if (!ToJSValue(cx, dict, &val))
         return NS_ERROR_FAILURE;
 
     connectionData->mCallback->OnDashboardDataAvailable(val);

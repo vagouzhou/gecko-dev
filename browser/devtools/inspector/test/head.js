@@ -13,6 +13,12 @@ const Cc = Components.classes;
 
 //Services.prefs.setBoolPref("devtools.dump.emit", true);
 
+const { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
+const require = Cu.import("resource://gre/modules/devtools/Loader.jsm", {}).devtools.require;
+
+// All test are asynchronous
+waitForExplicitFinish();
+
 let tempScope = {};
 Cu.import("resource://gre/modules/devtools/LayoutHelpers.jsm", tempScope);
 let LayoutHelpers = tempScope.LayoutHelpers;
@@ -41,12 +47,181 @@ SimpleTest.registerCleanupFunction(() => {
   Services.prefs.clearUserPref("devtools.inspector.activeSidebar");
 });
 
-function openInspector(callback)
-{
+/**
+ * Define an async test based on a generator function
+ */
+function asyncTest(generator) {
+  return () => Task.spawn(generator).then(null, ok.bind(null, false)).then(finish);
+}
+
+/**
+ * Add a new test tab in the browser and load the given url.
+ * @param {String} url The url to be loaded in the new tab
+ * @return a promise that resolves to the tab object when the url is loaded
+ */
+function addTab(url) {
+  let def = promise.defer();
+
+  let tab = gBrowser.selectedTab = gBrowser.addTab();
+  gBrowser.selectedBrowser.addEventListener("load", function onload() {
+    gBrowser.selectedBrowser.removeEventListener("load", onload, true);
+    info("URL " + url + " loading complete into new test tab");
+    waitForFocus(() => {
+      def.resolve(tab);
+    }, content);
+  }, true);
+  content.location = url;
+
+  return def.promise;
+}
+
+/**
+ * Simple DOM node accesor function that takes either a node or a string css
+ * selector as argument and returns the corresponding node
+ * @param {String|DOMNode} nodeOrSelector
+ * @return {DOMNode}
+ */
+function getNode(nodeOrSelector) {
+  return typeof nodeOrSelector === "string" ?
+    content.document.querySelector(nodeOrSelector) :
+    nodeOrSelector;
+}
+
+/**
+ * Set the inspector's current selection to a node or to the first match of the
+ * given css selector
+ * @param {InspectorPanel} inspector The instance of InspectorPanel currently
+ * loaded in the toolbox
+ * @param {String} reason Defaults to "test" which instructs the inspector not
+ * to highlight the node upon selection
+ * @param {String} reason Defaults to "test" which instructs the inspector not
+ * to highlight the node upon selection
+ * @return a promise that resolves when the inspector is updated with the new
+ * node
+ */
+function selectNode(nodeOrSelector, inspector, reason="test") {
+  info("Selecting the node " + nodeOrSelector);
+  let node = getNode(nodeOrSelector);
+  let updated = inspector.once("inspector-updated");
+  inspector.selection.setNode(node, reason);
+  return updated;
+}
+
+/**
+ * Open the toolbox, with the inspector tool visible.
+ * @param {Function} cb Optional callback, if you don't want to use the returned
+ * promise
+ * @return a promise that resolves when the inspector is ready
+ */
+let openInspector = Task.async(function*(cb) {
+  info("Opening the inspector");
   let target = TargetFactory.forTab(gBrowser.selectedTab);
-  gDevTools.showToolbox(target, "inspector").then(function(toolbox) {
-    callback(toolbox.getCurrentPanel(), toolbox);
-  }).then(null, console.error);
+
+  let inspector, toolbox;
+
+  // Checking if the toolbox and the inspector are already loaded
+  // The inspector-updated event should only be waited for if the inspector
+  // isn't loaded yet
+  toolbox = gDevTools.getToolbox(target);
+  if (toolbox) {
+    inspector = toolbox.getPanel("inspector");
+    if (inspector) {
+      info("Toolbox and inspector already open");
+      if (cb) {
+        return cb(inspector, toolbox);
+      } else {
+        return {
+          toolbox: toolbox,
+          inspector: inspector
+        };
+      }
+    }
+  }
+
+  info("Opening the toolbox");
+  toolbox = yield gDevTools.showToolbox(target, "inspector");
+  yield waitForToolboxFrameFocus(toolbox);
+  inspector = toolbox.getPanel("inspector");
+
+  info("Waiting for the inspector to update");
+  yield inspector.once("inspector-updated");
+
+  if (cb) {
+    return cb(inspector, toolbox);
+  } else {
+    return {
+      toolbox: toolbox,
+      inspector: inspector
+    };
+  }
+});
+
+/**
+ * Wait for the toolbox frame to receive focus after it loads
+ * @param {Toolbox} toolbox
+ * @return a promise that resolves when focus has been received
+ */
+function waitForToolboxFrameFocus(toolbox) {
+  info("Making sure that the toolbox's frame is focused");
+  let def = promise.defer();
+  let win = toolbox.frame.contentWindow;
+  waitForFocus(def.resolve, win);
+  return def.promise;
+}
+
+/**
+ * Open the toolbox, with the inspector tool visible, and the sidebar that
+ * corresponds to the given id selected
+ * @return a promise that resolves when the inspector is ready and the sidebar
+ * view is visible and ready
+ */
+let openInspectorSideBar = Task.async(function*(id) {
+  let {toolbox, inspector} = yield openInspector();
+
+  if (!hasSideBarTab(inspector, id)) {
+    info("Waiting for the " + id + " sidebar to be ready");
+    yield inspector.sidebar.once(id + "-ready");
+  }
+
+  info("Selecting the " + id + " sidebar");
+  inspector.sidebar.select(id);
+
+  return {
+    toolbox: toolbox,
+    inspector: inspector,
+    view: inspector.sidebar.getWindowForTab(id)[id].view
+  };
+});
+
+/**
+ * Open the toolbox, with the inspector tool visible, and the computed-view
+ * sidebar tab selected.
+ * @return a promise that resolves when the inspector is ready and the computed
+ * view is visible and ready
+ */
+function openComputedView() {
+  return openInspectorSideBar("computedview");
+}
+
+/**
+ * Open the toolbox, with the inspector tool visible, and the rule-view
+ * sidebar tab selected.
+ * @return a promise that resolves when the inspector is ready and the rule
+ * view is visible and ready
+ */
+function openRuleView() {
+  return openInspectorSideBar("ruleview");
+}
+
+/**
+ * Checks whether the inspector's sidebar corresponding to the given id already
+ * exists
+ * @param {InspectorPanel}
+ * @param {String}
+ * @return {Boolean}
+ */
+function hasSideBarTab(inspector, id) {
+  return !!inspector.sidebar.getWindowForTab(id);
 }
 
 function getActiveInspector()
@@ -166,6 +341,26 @@ function isHighlighting()
   return !root.hasAttribute("hidden");
 }
 
+/**
+ * Observes mutation changes on the box-model highlighter and returns a promise
+ * that resolves when one of the attributes changes.
+ * If an attribute changes in the box-model, it means its position/dimensions
+ * got updated
+ */
+function waitForBoxModelUpdate() {
+  let def = promise.defer();
+
+  let root = getBoxModelRoot();
+  let polygon = root.querySelector(".box-model-content");
+  let observer = new polygon.ownerDocument.defaultView.MutationObserver(() => {
+    observer.disconnect();
+    def.resolve();
+  });
+  observer.observe(polygon, {attributes: true});
+
+  return def.promise;
+}
+
 function getHighlitNode()
 {
   if (isHighlighting()) {
@@ -260,7 +455,7 @@ function focusSearchBoxUsingShortcut(panelWin, callback) {
     altKey: modifiersAttr.match("alt"),
     metaKey: modifiersAttr.match("meta"),
     accelKey: modifiersAttr.match("accel")
-  }
+  };
 
   let searchBox = panelWin.document.getElementById("inspector-searchbox");
   searchBox.addEventListener("focus", function onFocus() {
@@ -285,6 +480,26 @@ function getComputedPropertyValue(aName)
   }
 }
 
+function isNodeCorrectlyHighlighted(node, prefix="") {
+  let boxModel = getBoxModelStatus();
+  let helper = new LayoutHelpers(window.content);
+
+  prefix += (prefix ? " " : "") + node.nodeName;
+  prefix += (node.id ? "#" + node.id : "");
+  prefix += (node.classList.length ? "." + [...node.classList].join(".") : "");
+  prefix += " ";
+
+  for (let boxType of ["content", "padding", "border", "margin"]) {
+    let quads = helper.getAdjustedQuads(node, boxType);
+    for (let point in boxModel[boxType].points) {
+      is(boxModel[boxType].points[point].x, quads[point].x,
+        prefix + boxType + " point " + point + " x coordinate is correct");
+      is(boxModel[boxType].points[point].y, quads[point].y,
+        prefix + boxType + " point " + point + " y coordinate is correct");
+    }
+  }
+}
+
 function getContainerForRawNode(markupView, rawNode)
 {
   let front = markupView.walker.frontForRawNode(rawNode);
@@ -296,3 +511,32 @@ SimpleTest.registerCleanupFunction(function () {
   let target = TargetFactory.forTab(gBrowser.selectedTab);
   gDevTools.closeToolbox(target);
 });
+
+/**
+ * Define an async test based on a generator function
+ */
+function asyncTest(generator) {
+  return () => Task.spawn(generator).then(null, ok.bind(null, false)).then(finish);
+}
+
+/**
+ * Add a new test tab in the browser and load the given url.
+ * @param {String} url The url to be loaded in the new tab
+ * @return a promise that resolves to the tab object when the url is loaded
+ */
+function addTab(url) {
+  info("Adding a new tab with URL: '" + url + "'");
+  let def = promise.defer();
+
+  let tab = gBrowser.selectedTab = gBrowser.addTab();
+  gBrowser.selectedBrowser.addEventListener("load", function onload() {
+    gBrowser.selectedBrowser.removeEventListener("load", onload, true);
+    info("URL '" + url + "' loading complete");
+    waitForFocus(() => {
+      def.resolve(tab);
+    }, content);
+  }, true);
+  content.location = url;
+
+  return def.promise;
+}

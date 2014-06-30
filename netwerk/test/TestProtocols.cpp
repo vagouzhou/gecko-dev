@@ -166,14 +166,14 @@ void PrintTimingInformation(nsITimedChannel* channel) {
 
 class HeaderVisitor : public nsIHttpHeaderVisitor
 {
+  virtual ~HeaderVisitor() {}
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIHTTPHEADERVISITOR
 
   HeaderVisitor() { }
-  virtual ~HeaderVisitor() {}
 };
-NS_IMPL_ISUPPORTS1(HeaderVisitor, nsIHttpHeaderVisitor)
+NS_IMPL_ISUPPORTS(HeaderVisitor, nsIHttpHeaderVisitor)
 
 NS_IMETHODIMP
 HeaderVisitor::VisitHeader(const nsACString &header, const nsACString &value)
@@ -190,10 +190,11 @@ HeaderVisitor::VisitHeader(const nsACString &header, const nsACString &value)
 
 class URLLoadInfo : public nsISupports
 {
+  virtual ~URLLoadInfo();
+
 public:
 
   URLLoadInfo(const char* aUrl);
-  virtual ~URLLoadInfo();
 
   // ISupports interface...
   NS_DECL_THREADSAFE_ISUPPORTS
@@ -224,12 +225,13 @@ NS_IMPL_ISUPPORTS0(URLLoadInfo)
 
 class TestChannelEventSink : public nsIChannelEventSink
 {
+  virtual ~TestChannelEventSink();
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICHANNELEVENTSINK
 
   TestChannelEventSink();
-  virtual ~TestChannelEventSink();
 };
 
 TestChannelEventSink::TestChannelEventSink()
@@ -241,7 +243,7 @@ TestChannelEventSink::~TestChannelEventSink()
 }
 
 
-NS_IMPL_ISUPPORTS1(TestChannelEventSink, nsIChannelEventSink)
+NS_IMPL_ISUPPORTS(TestChannelEventSink, nsIChannelEventSink)
 
 NS_IMETHODIMP
 TestChannelEventSink::AsyncOnChannelRedirect(nsIChannel *channel,
@@ -261,15 +263,16 @@ TestChannelEventSink::AsyncOnChannelRedirect(nsIChannel *channel,
 
 class TestAuthPrompt : public nsIAuthPrompt
 {
+  virtual ~TestAuthPrompt();
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSIAUTHPROMPT
 
   TestAuthPrompt();
-  virtual ~TestAuthPrompt();
 };
 
-NS_IMPL_ISUPPORTS1(TestAuthPrompt, nsIAuthPrompt)
+NS_IMPL_ISUPPORTS(TestAuthPrompt, nsIAuthPrompt)
 
 TestAuthPrompt::TestAuthPrompt()
 {
@@ -352,10 +355,11 @@ TestAuthPrompt::PromptPassword(const char16_t *dialogTitle,
 
 class InputTestConsumer : public nsIStreamListener
 {
+  virtual ~InputTestConsumer();
+
 public:
 
   InputTestConsumer();
-  virtual ~InputTestConsumer();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
@@ -370,7 +374,7 @@ InputTestConsumer::~InputTestConsumer()
 {
 }
 
-NS_IMPL_ISUPPORTS2(InputTestConsumer, nsIStreamListener, nsIRequestObserver)
+NS_IMPL_ISUPPORTS(InputTestConsumer, nsIStreamListener, nsIRequestObserver)
 
 NS_IMETHODIMP
 InputTestConsumer::OnStartRequest(nsIRequest *request, nsISupports* context)
@@ -561,6 +565,9 @@ InputTestConsumer::OnStopRequest(nsIRequest *request, nsISupports* context,
 //-----------------------------------------------------------------------------
 
 class NotificationCallbacks MOZ_FINAL : public nsIInterfaceRequestor {
+
+    ~NotificationCallbacks() {}
+
 public:
     NS_DECL_ISUPPORTS
 
@@ -595,7 +602,7 @@ public:
     }
 };
 
-NS_IMPL_ISUPPORTS1(NotificationCallbacks, nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(NotificationCallbacks, nsIInterfaceRequestor)
 
 //-----------------------------------------------------------------------------
 // helpers...

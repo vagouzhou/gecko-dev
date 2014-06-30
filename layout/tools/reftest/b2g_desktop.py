@@ -22,16 +22,19 @@ import mozlog
 log = mozlog.getLogger('REFTEST')
 
 class B2GDesktopReftest(RefTest):
-    def __init__(self, marionette):
+    marionette = None
+
+    def __init__(self, marionette_args):
         RefTest.__init__(self)
         self.last_test = os.path.basename(__file__)
-        self.marionette = marionette
+        self.marionette_args = marionette_args
         self.profile = None
         self.runner = None
         self.test_script = os.path.join(here, 'b2g_start_script.js')
         self.timeout = None
 
     def run_marionette_script(self):
+        self.marionette = Marionette(**self.marionette_args)
         assert(self.marionette.wait_for_port())
         self.marionette.start_session()
         self.marionette.set_context(self.marionette.CONTEXT_CHROME)
@@ -64,14 +67,15 @@ class B2GDesktopReftest(RefTest):
 
         log.info("%s | Running tests: start.", os.path.basename(__file__))
         cmd, args = self.build_command_line(options.app,
-                            ignore_window_size=options.ignoreWindowSize)
+                            ignore_window_size=options.ignoreWindowSize,
+                            browser_arg=options.browser_arg)
         self.runner = FirefoxRunner(profile=self.profile,
                                     binary=cmd,
                                     cmdargs=args,
                                     env=env,
                                     process_class=ProcessHandler,
-                                    symbols_path=options.symbolsPath,
-                                    kp_kwargs=kp_kwargs)
+                                    process_args=kp_kwargs,
+                                    symbols_path=options.symbolsPath)
 
         status = 0
         try:
@@ -104,8 +108,8 @@ class B2GDesktopReftest(RefTest):
         prefs = {}
         # Turn off the locale picker screen
         prefs["browser.firstrun.show.localepicker"] = False
-        prefs["browser.homescreenURL"] = "app://test-container.gaiamobile.org/index.html"
-        prefs["browser.manifestURL"] = "app://test-container.gaiamobile.org/manifest.webapp"
+        prefs["b2g.system_startup_url"] = "app://test-container.gaiamobile.org/index.html"
+        prefs["b2g.system_manifest_url"] = "app://test-container.gaiamobile.org/manifest.webapp"
         prefs["browser.tabs.remote"] = False
         prefs["dom.ipc.tabs.disabled"] = False
         prefs["dom.mozBrowserFramesEnabled"] = True
@@ -123,9 +127,13 @@ class B2GDesktopReftest(RefTest):
         profile.set_preferences(prefs)
         return profile
 
-    def build_command_line(self, app, ignore_window_size=False):
+    def build_command_line(self, app, ignore_window_size=False,
+                           browser_arg=None):
         cmd = os.path.abspath(app)
-        args = []
+        args = ['-marionette']
+
+        if browser_arg:
+            args += [browser_arg]
 
         if not ignore_window_size:
             args.extend(['--screen', '800x1000'])
@@ -146,14 +154,13 @@ class B2GDesktopReftest(RefTest):
 
 
 def run_desktop_reftests(parser, options, args):
-    kwargs = {}
+    marionette_args = {}
     if options.marionette:
         host, port = options.marionette.split(':')
-        kwargs['host'] = host
-        kwargs['port'] = int(port)
-    marionette = Marionette.getMarionetteOrExit(**kwargs)
+        marionette_args['host'] = host
+        marionette_args['port'] = int(port)
 
-    reftest = B2GDesktopReftest(marionette)
+    reftest = B2GDesktopReftest(marionette_args)
 
     options = ReftestOptions.verifyCommonOptions(parser, options, reftest)
     if options == None:

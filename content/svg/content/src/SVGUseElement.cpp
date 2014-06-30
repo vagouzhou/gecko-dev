@@ -21,9 +21,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGUseElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGUseElement::WrapNode(JSContext *aCx)
 {
-  return SVGUseElementBinding::Wrap(aCx, aScope, this);
+  return SVGUseElementBinding::Wrap(aCx, this);
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -65,13 +65,13 @@ NS_IMPL_ADDREF_INHERITED(SVGUseElement,SVGUseElementBase)
 NS_IMPL_RELEASE_INHERITED(SVGUseElement,SVGUseElementBase)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGUseElement)
-  NS_INTERFACE_TABLE_INHERITED1(SVGUseElement, nsIMutationObserver)
+  NS_INTERFACE_TABLE_INHERITED(SVGUseElement, nsIMutationObserver)
 NS_INTERFACE_TABLE_TAIL_INHERITING(SVGUseElementBase)
 
 //----------------------------------------------------------------------
 // Implementation
 
-SVGUseElement::SVGUseElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+SVGUseElement::SVGUseElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : SVGUseElementBase(aNodeInfo), mSource(MOZ_THIS_IN_INITIALIZER_LIST())
 {
 }
@@ -85,10 +85,10 @@ SVGUseElement::~SVGUseElement()
 // nsIDOMNode methods
 
 nsresult
-SVGUseElement::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+SVGUseElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   *aResult = nullptr;
-  already_AddRefed<nsINodeInfo> ni = nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
   SVGUseElement *it = new SVGUseElement(ni);
 
   nsCOMPtr<nsINode> kungFuDeathGrip(it);
@@ -277,7 +277,7 @@ SVGUseElement::CreateAnonymousContent()
     if (!nodeInfoManager)
       return nullptr;
 
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
     nodeInfo = nodeInfoManager->GetNodeInfo(nsGkAtoms::svg, nullptr,
                                             kNameSpaceID_SVG,
                                             nsIDOMNode::ELEMENT_NODE);

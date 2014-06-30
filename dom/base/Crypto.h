@@ -15,6 +15,7 @@ class CRMFObject;
 }
 #endif
 
+#include "mozilla/dom/SubtleCrypto.h"
 #include "nsPIDOMWindow.h"
 
 #include "nsWrapperCache.h"
@@ -31,18 +32,24 @@ namespace dom {
 class Crypto : public nsIDOMCrypto,
                public nsWrapperCache
 {
+protected:
+  virtual ~Crypto();
+
 public:
   Crypto();
-  virtual ~Crypto();
 
   NS_DECL_NSIDOMCRYPTO
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Crypto)
 
-  JSObject *
+  void
   GetRandomValues(JSContext* aCx, const ArrayBufferView& aArray,
+		  JS::MutableHandle<JSObject*> aRetval,
 		  ErrorResult& aRv);
+
+  SubtleCrypto*
+  Subtle();
 
 #ifndef MOZ_DISABLE_CRYPTOLEGACY
   virtual bool EnableSmartCardEvents();
@@ -66,12 +73,6 @@ public:
                                       nsAString& aReturn,
                                       ErrorResult& aRv);
 
-  virtual void PopChallengeResponse(const nsAString& aChallenge,
-                                    nsAString& aReturn,
-                                    ErrorResult& aRv);
-
-  virtual void Random(int32_t aNumBytes, nsAString& aReturn, ErrorResult& aRv);
-
   virtual void SignText(JSContext* aContext,
                         const nsAString& aStringToSign,
                         const nsAString& aCaOption,
@@ -80,7 +81,6 @@ public:
 
   virtual void Logout(ErrorResult& aRv);
 
-  virtual void DisableRightClick(ErrorResult& aRv);
 #endif
 
   // WebIDL
@@ -92,13 +92,14 @@ public:
   }
 
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static uint8_t*
   GetRandomValues(uint32_t aLength);
 
 private:
   nsCOMPtr<nsPIDOMWindow> mWindow;
+  nsRefPtr<SubtleCrypto> mSubtle;
 };
 
 } // namespace dom

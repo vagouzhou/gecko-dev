@@ -6,9 +6,15 @@
 #include "nsServiceManagerUtils.h"
 #include "mozilla/ModuleUtils.h"
 #include "mozilla/ClearOnShutdown.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "nsXULAppAPI.h"
 #include "WifiUtils.h"
 #include "nsCxPusher.h"
+
+#ifdef MOZ_TASK_TRACER
+#include "GeckoTaskTracer.h"
+using namespace mozilla::tasktracer;
+#endif
 
 #define NS_WIFIPROXYSERVICE_CID \
   { 0xc6c9be7e, 0x744f, 0x4222, {0xb2, 0x03, 0xcd, 0x55, 0xdf, 0xc8, 0xbc, 0x12} }
@@ -63,6 +69,12 @@ public:
     nsAutoString event;
     gWpaSupplicant->WaitForEvent(event, mInterface);
     if (!event.IsEmpty()) {
+#ifdef MOZ_TASK_TRACER
+      // Make wifi initialization events to be the source events of TaskTracer,
+      // and originate the rest correlation tasks from here.
+      AutoSourceEvent taskTracerEvent(SourceEventType::WIFI);
+      AddLabel("%s %s", mInterface.get(), NS_ConvertUTF16toUTF8(event).get());
+#endif
       nsCOMPtr<nsIRunnable> runnable = new WifiEventDispatcher(event, mInterface);
       NS_DispatchToMainThread(runnable);
     }
@@ -94,7 +106,6 @@ public:
     COPY_FIELD(mValue)
     COPY_FIELD(mIpaddr_str)
     COPY_FIELD(mGateway_str)
-    COPY_FIELD(mBroadcast_str)
     COPY_FIELD(mDns1_str)
     COPY_FIELD(mDns2_str)
     COPY_FIELD(mMask_str)
@@ -148,7 +159,7 @@ private:
    nsCString mInterface;
 };
 
-NS_IMPL_ISUPPORTS1(WifiProxyService, nsIWifiProxyService)
+NS_IMPL_ISUPPORTS(WifiProxyService, nsIWifiProxyService)
 
 WifiProxyService::WifiProxyService()
 {
@@ -281,7 +292,7 @@ WifiProxyService::DispatchWifiResult(const WifiResultOptions& aOptions, const ns
   mozilla::AutoSafeJSContext cx;
   JS::Rooted<JS::Value> val(cx);
 
-  if (!aOptions.ToObject(cx, JS::NullPtr(), &val)) {
+  if (!ToJSValue(cx, aOptions, &val)) {
     return;
   }
 

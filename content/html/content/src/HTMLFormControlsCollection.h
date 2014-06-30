@@ -21,14 +21,13 @@ namespace dom {
 class HTMLFormElement;
 class HTMLImageElement;
 class OwningNodeListOrElement;
-template<typename> class Nullable;
+template<typename> struct Nullable;
 
 class HTMLFormControlsCollection : public nsIHTMLCollection
                                  , public nsWrapperCache
 {
 public:
   HTMLFormControlsCollection(HTMLFormElement* aForm);
-  virtual ~HTMLFormControlsCollection();
 
   void DropFormReference();
 
@@ -54,7 +53,8 @@ public:
     bool dummy;
     NamedGetter(aName, dummy, aResult);
   }
-  virtual void GetSupportedNames(nsTArray<nsString>& aNames);
+  virtual void GetSupportedNames(unsigned aFlags,
+                                 nsTArray<nsString>& aNames) MOZ_OVERRIDE;
 
   nsresult AddElementToTable(nsGenericHTMLFormElement* aChild,
                              const nsAString& aName);
@@ -80,9 +80,9 @@ public:
 
   // nsWrapperCache
   using nsWrapperCache::GetWrapperPreserveColor;
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 protected:
+  virtual ~HTMLFormControlsCollection();
   virtual JSObject* GetWrapperPreserveColorInternal() MOZ_OVERRIDE
   {
     return nsWrapperCache::GetWrapperPreserveColor();

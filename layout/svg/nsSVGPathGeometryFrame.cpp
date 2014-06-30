@@ -104,9 +104,9 @@ nsDisplaySVGPathGeometry::Paint(nsDisplayListBuilder* aBuilder,
 // nsIFrame methods
 
 void
-nsSVGPathGeometryFrame::Init(nsIContent* aContent,
-                             nsIFrame* aParent,
-                             nsIFrame* aPrevInFlow)
+nsSVGPathGeometryFrame::Init(nsIContent*       aContent,
+                             nsContainerFrame* aParent,
+                             nsIFrame*         aPrevInFlow)
 {
   AddStateBits(aParent->GetStateBits() & NS_STATE_SVG_CLIPPATH_CHILD);
   nsSVGPathGeometryFrameBase::Init(aContent, aParent, aPrevInFlow);
@@ -518,9 +518,9 @@ nsSVGPathGeometryFrame::GetCanvasTM(uint32_t aFor, nsIFrame* aTransformRoot)
     }
   }
 
-  NS_ASSERTION(mParent, "null parent");
+  NS_ASSERTION(GetParent(), "null parent");
 
-  nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+  nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
   dom::SVGGraphicsElement *content = static_cast<dom::SVGGraphicsElement*>(mContent);
 
   return content->PrependLocalTransformsTo(
@@ -611,9 +611,11 @@ nsSVGPathGeometryFrame::Render(nsRenderingContext *aContext,
     // is actually okay, since we know that doesn't matter in the
     // SVGAutoRenderState::CLIP case (at least for the current implementation).
     gfxContextMatrixAutoSaveRestore autoSaveRestore;
-    if (renderMode != SVGAutoRenderState::CLIP) {
+    // For now revent back to doing the save even for CLIP to fix bug 959128.
+    // Undo in bug 987193.
+    //if (renderMode != SVGAutoRenderState::CLIP) {
       autoSaveRestore.SetContext(gfx);
-    }
+    //}
 
     GeneratePath(gfx, ToMatrix(GetCanvasTM(FOR_PAINTING, aTransformRoot)));
 

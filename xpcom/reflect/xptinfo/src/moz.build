@@ -5,17 +5,17 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 UNIFIED_SOURCES += [
+    'ShimInterfaceInfo.cpp',
     'xptiInterfaceInfo.cpp',
     'xptiInterfaceInfoManager.cpp',
     'xptiTypelibGuts.cpp',
     'xptiWorkingSet.cpp',
 ]
 
-MSVC_ENABLE_PGO = True
-
-# For nsManifestLineReader class.
 LOCAL_INCLUDES += [
-    '/xpcom/ds',
+    '/dom/base',
 ]
+
+MSVC_ENABLE_PGO = True
 
 FINAL_LIBRARY = 'xpcom_core'

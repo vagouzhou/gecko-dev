@@ -10,6 +10,7 @@
 #include "mozilla/Mutex.h"
 #include "nsIOutputStream.h"
 #include "nsAutoPtr.h"
+#include "nsCycleCollectionParticipant.h"
 
 //-----------------------------------------------------------------------------
 
@@ -32,15 +33,22 @@ public:
 
   nsUDPSocket();
 
-  // This must be public to support older compilers (xlC_r on AIX)
+private:
   virtual ~nsUDPSocket();
 
-private:
   void OnMsgClose();
   void OnMsgAttach();
 
   // try attaching our socket (mFD) to the STS's poll list.
   nsresult TryAttach();
+
+  friend class SetSocketOptionRunnable;
+  nsresult SetSocketOption(const PRSocketOptionData& aOpt);
+  nsresult JoinMulticastInternal(const PRNetAddr& aAddr,
+                                 const PRNetAddr& aIface);
+  nsresult LeaveMulticastInternal(const PRNetAddr& aAddr,
+                                  const PRNetAddr& aIface);
+  nsresult SetMulticastInterfaceInternal(const PRNetAddr& aIface);
 
   // lock protects access to mListener;
   // so mListener is not cleared while being used/locked.
@@ -61,19 +69,21 @@ private:
 class nsUDPMessage : public nsIUDPMessage
 {
 public:
-  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsUDPMessage)
   NS_DECL_NSIUDPMESSAGE
 
-  nsUDPMessage(PRNetAddr* aAddr,
+  nsUDPMessage(mozilla::net::NetAddr* aAddr,
                nsIOutputStream* aOutputStream,
-               const nsACString& aData);
+               FallibleTArray<uint8_t>& aData);
 
 private:
   virtual ~nsUDPMessage();
 
-  PRNetAddr mAddr;
+  mozilla::net::NetAddr mAddr;
   nsCOMPtr<nsIOutputStream> mOutputStream;
-  nsCString mData;
+  FallibleTArray<uint8_t> mData;
+  JS::Heap<JSObject*> mJsobj;
 };
 
 
@@ -88,9 +98,10 @@ public:
   nsUDPOutputStream(nsUDPSocket* aSocket,
                     PRFileDesc* aFD,
                     PRNetAddr& aPrClientAddr);
-  virtual ~nsUDPOutputStream();
 
 private:
+  virtual ~nsUDPOutputStream();
+
   nsRefPtr<nsUDPSocket>       mSocket;
   PRFileDesc                  *mFD;
   PRNetAddr                   mPrClientAddr;

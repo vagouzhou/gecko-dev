@@ -8,6 +8,7 @@
 #include "mozilla/InternalMutationEvent.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
+#include "mozilla/Preferences.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/TouchEvents.h"
 
@@ -218,7 +219,7 @@ WidgetEvent::IsAllowedToDispatchDOMEvent() const
     case NS_MOUSE_EVENT:
     case NS_POINTER_EVENT:
       // We want synthesized mouse moves to cause mouseover and mouseout
-      // DOM events (nsEventStateManager::PreHandleEvent), but not mousemove
+      // DOM events (EventStateManager::PreHandleEvent), but not mousemove
       // DOM events.
       // Synthesized button up events also do not cause DOM events because they
       // do not have a reliable refPoint.
@@ -232,9 +233,51 @@ WidgetEvent::IsAllowedToDispatchDOMEvent() const
              wheelEvent->deltaZ != 0.0;
     }
 
+    // Following events are handled in EventStateManager, so, we don't need to
+    // dispatch DOM event for them into the DOM tree.
+    case NS_QUERY_CONTENT_EVENT:
+    case NS_SELECTION_EVENT:
+    case NS_CONTENT_COMMAND_EVENT:
+      return false;
+
     default:
       return true;
   }
+}
+
+/******************************************************************************
+ * mozilla::WidgetInputEvent
+ ******************************************************************************/
+
+/* static */
+Modifier
+WidgetInputEvent::AccelModifier()
+{
+  static Modifier sAccelModifier = MODIFIER_NONE;
+  if (sAccelModifier == MODIFIER_NONE) {
+    switch (Preferences::GetInt("ui.key.accelKey", 0)) {
+      case nsIDOMKeyEvent::DOM_VK_META:
+        sAccelModifier = MODIFIER_META;
+        break;
+      case nsIDOMKeyEvent::DOM_VK_WIN:
+        sAccelModifier = MODIFIER_OS;
+        break;
+      case nsIDOMKeyEvent::DOM_VK_ALT:
+        sAccelModifier = MODIFIER_ALT;
+        break;
+      case nsIDOMKeyEvent::DOM_VK_CONTROL:
+        sAccelModifier = MODIFIER_CONTROL;
+        break;
+      default:
+#ifdef XP_MACOSX
+        sAccelModifier = MODIFIER_META;
+#else
+        sAccelModifier = MODIFIER_CONTROL;
+#endif
+        break;
+    }
+  }
+  return sAccelModifier;
 }
 
 /******************************************************************************
@@ -258,27 +301,27 @@ WidgetKeyboardEvent::GetDOMKeyName(KeyNameIndex aKeyNameIndex,
 #define NS_DEFINE_KEYNAME(aCPPName, aDOMKeyName)                      \
   static_assert(sizeof(aDOMKeyName) == MOZ_ARRAY_LENGTH(aDOMKeyName), \
                 "Invalid DOM key name");
-#include "nsDOMKeyNameList.h"
+#include "mozilla/KeyNameList.h"
 #undef NS_DEFINE_KEYNAME
 
   struct KeyNameTable
   {
 #define NS_DEFINE_KEYNAME(aCPPName, aDOMKeyName)          \
     char16_t KEY_STR_NUM(__LINE__)[sizeof(aDOMKeyName)];
-#include "nsDOMKeyNameList.h"
+#include "mozilla/KeyNameList.h"
 #undef NS_DEFINE_KEYNAME
   };
 
   static const KeyNameTable kKeyNameTable = {
 #define NS_DEFINE_KEYNAME(aCPPName, aDOMKeyName) MOZ_UTF16(aDOMKeyName),
-#include "nsDOMKeyNameList.h"
+#include "mozilla/KeyNameList.h"
 #undef NS_DEFINE_KEYNAME
   };
 
   static const uint16_t kKeyNameOffsets[] = {
 #define NS_DEFINE_KEYNAME(aCPPName, aDOMKeyName)          \
     offsetof(struct KeyNameTable, KEY_STR_NUM(__LINE__)) / sizeof(char16_t),
-#include "nsDOMKeyNameList.h"
+#include "mozilla/KeyNameList.h"
 #undef NS_DEFINE_KEYNAME
     // Include this entry so we can compute lengths easily.
     sizeof(kKeyNameTable)
@@ -305,6 +348,29 @@ WidgetKeyboardEvent::GetDOMKeyName(KeyNameIndex aKeyNameIndex,
 
 #undef KEY_STR_NUM
 #undef KEY_STR_NUM_INTERNAL
+}
+
+/*static*/ void
+WidgetKeyboardEvent::GetDOMCodeName(CodeNameIndex aCodeNameIndex,
+                                    nsAString& aCodeName)
+{
+  if (aCodeNameIndex >= CODE_NAME_INDEX_USE_STRING) {
+    aCodeName.Truncate();
+    return;
+  }
+
+#define NS_DEFINE_PHYSICAL_KEY_CODE_NAME(aCPPName, aDOMCodeName) \
+    MOZ_UTF16(aDOMCodeName),
+  static const char16_t* kCodeNames[] = {
+#include "mozilla/PhysicalKeyCodeNameList.h"
+    MOZ_UTF16("")
+  };
+#undef NS_DEFINE_PHYSICAL_KEY_CODE_NAME
+
+  MOZ_RELEASE_ASSERT(static_cast<size_t>(aCodeNameIndex) <
+                       ArrayLength(kCodeNames),
+                     "Illegal physical code enumeration value");
+  aCodeName = kCodeNames[aCodeNameIndex];
 }
 
 /* static */ const char*

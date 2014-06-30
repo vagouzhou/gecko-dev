@@ -26,11 +26,16 @@ const BUTTON_POSITION_DONT_SAVE  = 2;
 const BUTTON_POSITION_REVERT     = 0;
 const EVAL_FUNCTION_TIMEOUT      = 1000; // milliseconds
 
+const MAXIMUM_FONT_SIZE = 96;
+const MINIMUM_FONT_SIZE = 6;
+const NORMAL_FONT_SIZE = 12;
+
 const SCRATCHPAD_L10N = "chrome://browser/locale/devtools/scratchpad.properties";
 const DEVTOOLS_CHROME_ENABLED = "devtools.chrome.enabled";
 const PREF_RECENT_FILES_MAX = "devtools.scratchpad.recentFilesMax";
 const SHOW_TRAILING_SPACE = "devtools.scratchpad.showTrailingSpace";
 const ENABLE_CODE_FOLDING = "devtools.scratchpad.enableCodeFolding";
+const ENABLE_AUTOCOMPLETION = "devtools.scratchpad.enableAutocompletion";
 
 const VARIABLES_VIEW_URL = "chrome://browser/content/devtools/widgets/VariablesView.xul";
 
@@ -64,9 +69,6 @@ XPCOMUtils.defineLazyModuleGetter(this, "EnvironmentClient",
 XPCOMUtils.defineLazyModuleGetter(this, "ObjectClient",
   "resource://gre/modules/devtools/dbg-client.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "WebConsoleUtils",
-  "resource://gre/modules/devtools/WebConsoleUtils.jsm");
-
 XPCOMUtils.defineLazyModuleGetter(this, "DebuggerServer",
   "resource://gre/modules/devtools/dbg-server.jsm");
 
@@ -86,6 +88,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Reflect",
 // to do so here.
 let telemetry = new Telemetry();
 telemetry.toolOpened("scratchpad");
+
+let WebConsoleUtils = require("devtools/toolkit/webconsole/utils").Utils;
 
 /**
  * The scratchpad object handles the Scratchpad window functionality.
@@ -212,7 +216,25 @@ var Scratchpad = {
       },
       "sp-cmd-hideSidebar": () => {
         Scratchpad.sidebar.hide();
-      }
+      },
+      "sp-cmd-line-numbers": () => {
+        Scratchpad.toggleEditorOption('lineNumbers');
+      },
+      "sp-cmd-wrap-text": () => {
+        Scratchpad.toggleEditorOption('lineWrapping');
+      },
+      "sp-cmd-highlight-trailing-space": () => {
+        Scratchpad.toggleEditorOption('showTrailingSpace');
+      },
+      "sp-cmd-larger-font": () => {
+        Scratchpad.increaseFontSize();
+      },
+      "sp-cmd-smaller-font": () => {
+        Scratchpad.decreaseFontSize();
+      },
+      "sp-cmd-normal-font": () => {
+        Scratchpad.normalFontSize();
+      },
     }
 
     for (let command in commands) {
@@ -471,6 +493,7 @@ var Scratchpad = {
    */
   execute: function SP_execute()
   {
+    WebConsoleUtils.usageCount++;
     let selection = this.editor.getSelection() || this.getText();
     return this.evaluate(selection);
   },
@@ -504,8 +527,7 @@ var Scratchpad = {
 
   /**
    * Execute the selected text (if any) or the entire editor content in the
-   * current context. If the result is primitive then it is written as a
-   * comment. Otherwise, the resulting object is inspected up in the sidebar.
+   * current context. The resulting object is inspected up in the sidebar.
    *
    * @return Promise
    *         The promise for the script evaluation result.
@@ -520,9 +542,6 @@ var Scratchpad = {
 
       if (aError) {
         this.writeAsErrorComment(aError.exception).then(resolve, reject);
-      }
-      else if (VariablesView.isPrimitive({ value: aResult })) {
-        this._writePrimitiveAsComment(aResult).then(resolve, reject);
       }
       else {
         this.editor.dropSelection();
@@ -1583,16 +1602,23 @@ var Scratchpad = {
       mode: Editor.modes.js,
       value: initialText,
       lineNumbers: true,
+      contextMenu: "scratchpad-text-popup",
       showTrailingSpace: Services.prefs.getBoolPref(SHOW_TRAILING_SPACE),
       enableCodeFolding: Services.prefs.getBoolPref(ENABLE_CODE_FOLDING),
-      contextMenu: "scratchpad-text-popup"
+      autocomplete: Services.prefs.getBoolPref(ENABLE_AUTOCOMPLETION),
     };
 
     this.editor = new Editor(config);
-    this.editor.appendTo(document.querySelector("#scratchpad-editor")).then(() => {
+    let editorElement = document.querySelector("#scratchpad-editor");
+    this.editor.appendTo(editorElement).then(() => {
       var lines = initialText.split("\n");
 
+      this.editor.setupAutoCompletion();
       this.editor.on("change", this._onChanged);
+      this._onPaste = WebConsoleUtils.pasteHandlerGen(this.editor.container.contentDocument.body,
+                                                      document.querySelector('#scratchpad-notificationbox'));
+      editorElement.addEventListener("paste", this._onPaste);
+      editorElement.addEventListener("drop", this._onPaste);
       this.editor.on("save", () => this.saveFile());
       this.editor.focus();
       this.editor.setCursor({ line: lines.length, ch: lines.pop().length });
@@ -1605,7 +1631,7 @@ var Scratchpad = {
       this.populateRecentFilesMenu();
       PreferenceObserver.init();
       CloseObserver.init();
-    }).then(null, (err) => console.log(err.message));
+    }).then(null, (err) => console.error(err));
     this._setupCommandListeners();
     this._setupPopupShowingListeners();
   },
@@ -1664,7 +1690,12 @@ var Scratchpad = {
 
     PreferenceObserver.uninit();
     CloseObserver.uninit();
-
+    if (this._onPaste) {
+      let editorElement = document.querySelector("#scratchpad-editor");
+      editorElement.removeEventListener("paste", this._onPaste);
+      editorElement.removeEventListener("drop", this._onPaste);
+      this._onPaste = null;
+    }
     this.editor.off("change", this._onChanged);
     this.editor.destroy();
     this.editor = null;
@@ -1779,6 +1810,47 @@ var Scratchpad = {
     return shouldClose;
   },
 
+  /**
+   * Toggle a editor's boolean option.
+   */
+  toggleEditorOption: function SP_toggleEditorOption(optionName)
+  {
+    let newOptionValue = !this.editor.getOption(optionName);
+    this.editor.setOption(optionName, newOptionValue);
+  },
+
+  /**
+   * Increase the editor's font size by 1 px.
+   */
+  increaseFontSize: function SP_increaseFontSize()
+  {
+    let size = this.editor.getFontSize();
+
+    if (size < MAXIMUM_FONT_SIZE) {
+      this.editor.setFontSize(size + 1);
+    }
+  },
+
+  /**
+   * Decrease the editor's font size by 1 px.
+   */
+  decreaseFontSize: function SP_decreaseFontSize()
+  {
+    let size = this.editor.getFontSize();
+
+    if (size > MINIMUM_FONT_SIZE) {
+      this.editor.setFontSize(size - 1);
+    }
+  },
+
+  /**
+   * Restore the editor's original font size.
+   */
+  normalFontSize: function SP_normalFontSize()
+  {
+    this.editor.setFontSize(NORMAL_FONT_SIZE);
+  },
+
   _observers: [],
 
   /**
@@ -1882,7 +1954,7 @@ ScratchpadTab.consoleFor = function consoleFor(aSubject)
   if (!scratchpadTargets.has(aSubject)) {
     scratchpadTargets.set(aSubject, new this(aSubject));
   }
-  return scratchpadTargets.get(aSubject).connect();
+  return scratchpadTargets.get(aSubject).connect(aSubject);
 };
 
 
@@ -1895,10 +1967,12 @@ ScratchpadTab.prototype = {
   /**
    * Initialize a debugger client and connect it to the debugger server.
    *
+ * @param object aSubject
+ *        The tab or window to obtain the connection for.
    * @return Promise
    *         The promise for the result of connecting to this tab or window.
    */
-  connect: function ST_connect()
+  connect: function ST_connect(aSubject)
   {
     if (this._connector) {
       return this._connector;
@@ -1916,7 +1990,7 @@ ScratchpadTab.prototype = {
 
     deferred.promise.then(() => clearTimeout(connectTimer));
 
-    this._attach().then(aTarget => {
+    this._attach(aSubject).then(aTarget => {
       let consoleActor = aTarget.form.consoleActor;
       let client = aTarget.client;
       client.attachConsole(consoleActor, [], (aResponse, aWebConsoleClient) => {
@@ -1939,12 +2013,19 @@ ScratchpadTab.prototype = {
   /**
    * Attach to this tab.
    *
+ * @param object aSubject
+ *        The tab or window to obtain the connection for.
    * @return Promise
    *         The promise for the TabTarget for this tab.
    */
-  _attach: function ST__attach()
+  _attach: function ST__attach(aSubject)
   {
     let target = TargetFactory.forTab(this._tab);
+    target.once("close", () => {
+      if (scratchpadTargets) {
+        scratchpadTargets.delete(aSubject);
+      }
+    });
     return target.makeRemote().then(() => target);
   },
 };
@@ -2138,15 +2219,23 @@ ScratchpadSidebar.prototype = {
   /**
    * Update the object currently inspected by the sidebar.
    *
-   * @param object aObject
-   *        The object to inspect in the sidebar.
+   * @param any aValue
+   *        The JS value to inspect in the sidebar.
    * @return Promise
    *         A promise that resolves when the update completes.
    */
-  _update: function SS__update(aObject)
+  _update: function SS__update(aValue)
   {
-    let options = { objectActor: aObject };
+    let options, onlyEnumVisible;
+    if (VariablesView.isPrimitive({ value: aValue })) {
+      options = { rawObject: { value: aValue } };
+      onlyEnumVisible = true;
+    } else {
+      options = { objectActor: aValue };
+      onlyEnumVisible = false;
+    }
     let view = this.variablesView;
+    view.onlyEnumVisible = onlyEnumVisible;
     view.empty();
     return view.controller.setSingleVariable(options).expanded;
   }

@@ -9,6 +9,8 @@
 #include "jit/LIR.h"
 #include "jit/MIR.h"
 
+#include "vm/Symbol.h"
+
 using namespace js;
 using namespace jit;
 
@@ -23,6 +25,8 @@ LIRGeneratorShared::visitConstant(MConstant *ins)
         return define(new(alloc()) LInteger(v.toInt32()), ins);
       case MIRType_String:
         return define(new(alloc()) LPointer(v.toString()), ins);
+      case MIRType_Symbol:
+        return define(new(alloc()) LPointer(v.toSymbol()), ins);
       case MIRType_Object:
         return define(new(alloc()) LPointer(&v.toObject()), ins);
       default:
@@ -56,53 +60,92 @@ LIRGeneratorShared::lowerTypedPhiInput(MPhi *phi, uint32_t inputPosition, LBlock
     lir->setOperand(inputPosition, LUse(operand->virtualRegister(), LUse::ANY));
 }
 
+LRecoverInfo *
+LIRGeneratorShared::getRecoverInfo(MResumePoint *rp)
+{
+    if (cachedRecoverInfo_ && cachedRecoverInfo_->mir() == rp)
+        return cachedRecoverInfo_;
+
+    LRecoverInfo *recoverInfo = LRecoverInfo::New(gen, rp);
+    if (!recoverInfo)
+        return nullptr;
+
+    cachedRecoverInfo_ = recoverInfo;
+    return recoverInfo;
+}
+
+#ifdef DEBUG
+bool
+LRecoverInfo::OperandIter::canOptimizeOutIfUnused()
+{
+    MDefinition *ins = **this;
+
+    // We check ins->type() in addition to ins->isUnused() because
+    // EliminateDeadResumePointOperands may replace nodes with the constant
+    // MagicValue(JS_OPTIMIZED_OUT).
+    if ((ins->isUnused() || ins->type() == MIRType_MagicOptimizedOut) &&
+        (*it_)->isResumePoint())
+    {
+        return !(*it_)->toResumePoint()->isObservableOperand(op_);
+    }
+
+    return true;
+}
+#endif
+
 #ifdef JS_NUNBOX32
 LSnapshot *
 LIRGeneratorShared::buildSnapshot(LInstruction *ins, MResumePoint *rp, BailoutKind kind)
 {
-    LSnapshot *snapshot = LSnapshot::New(gen, rp, kind);
+    LRecoverInfo *recoverInfo = getRecoverInfo(rp);
+    if (!recoverInfo)
+        return nullptr;
+
+    LSnapshot *snapshot = LSnapshot::New(gen, recoverInfo, kind);
     if (!snapshot)
         return nullptr;
 
-    FlattenedMResumePointIter iter(rp);
-    if (!iter.init())
-        return nullptr;
+    size_t index = 0;
+    LRecoverInfo::OperandIter it(recoverInfo->begin());
+    LRecoverInfo::OperandIter end(recoverInfo->end());
+    for (; it != end; ++it) {
+        // Check that optimized out operands are in eliminable slots.
+        MOZ_ASSERT(it.canOptimizeOutIfUnused());
 
-    size_t i = 0;
-    for (MResumePoint **it = iter.begin(), **end = iter.end(); it != end; ++it) {
-        MResumePoint *mir = *it;
-        for (size_t j = 0, e = mir->numOperands(); j < e; ++i, ++j) {
-            MDefinition *ins = mir->getOperand(j);
+        MDefinition *ins = *it;
 
-            LAllocation *type = snapshot->typeOfSlot(i);
-            LAllocation *payload = snapshot->payloadOfSlot(i);
+        if (ins->isRecoveredOnBailout())
+            continue;
 
-            if (ins->isBox())
-                ins = ins->toBox()->getOperand(0);
+        LAllocation *type = snapshot->typeOfSlot(index);
+        LAllocation *payload = snapshot->payloadOfSlot(index);
+        ++index;
 
-            // Guards should never be eliminated.
-            JS_ASSERT_IF(ins->isUnused(), !ins->isGuard());
+        if (ins->isBox())
+            ins = ins->toBox()->getOperand(0);
 
-            // Snapshot operands other than constants should never be
-            // emitted-at-uses. Try-catch support depends on there being no
-            // code between an instruction and the LOsiPoint that follows it.
-            JS_ASSERT_IF(!ins->isConstant(), !ins->isEmittedAtUses());
+        // Guards should never be eliminated.
+        MOZ_ASSERT_IF(ins->isUnused(), !ins->isGuard());
 
-            // The register allocation will fill these fields in with actual
-            // register/stack assignments. During code generation, we can restore
-            // interpreter state with the given information. Note that for
-            // constants, including known types, we record a dummy placeholder,
-            // since we can recover the same information, much cleaner, from MIR.
-            if (ins->isConstant() || ins->isUnused()) {
-                *type = LConstantIndex::Bogus();
-                *payload = LConstantIndex::Bogus();
-            } else if (ins->type() != MIRType_Value) {
-                *type = LConstantIndex::Bogus();
-                *payload = use(ins, LUse::KEEPALIVE);
-            } else {
-                *type = useType(ins, LUse::KEEPALIVE);
-                *payload = usePayload(ins, LUse::KEEPALIVE);
-            }
+        // Snapshot operands other than constants should never be
+        // emitted-at-uses. Try-catch support depends on there being no
+        // code between an instruction and the LOsiPoint that follows it.
+        MOZ_ASSERT_IF(!ins->isConstant(), !ins->isEmittedAtUses());
+
+        // The register allocation will fill these fields in with actual
+        // register/stack assignments. During code generation, we can restore
+        // interpreter state with the given information. Note that for
+        // constants, including known types, we record a dummy placeholder,
+        // since we can recover the same information, much cleaner, from MIR.
+        if (ins->isConstant() || ins->isUnused()) {
+            *type = LConstantIndex::Bogus();
+            *payload = LConstantIndex::Bogus();
+        } else if (ins->type() != MIRType_Value) {
+            *type = LConstantIndex::Bogus();
+            *payload = use(ins, LUse(LUse::KEEPALIVE));
+        } else {
+            *type = useType(ins, LUse::KEEPALIVE);
+            *payload = usePayload(ins, LUse::KEEPALIVE);
         }
     }
 
@@ -114,40 +157,45 @@ LIRGeneratorShared::buildSnapshot(LInstruction *ins, MResumePoint *rp, BailoutKi
 LSnapshot *
 LIRGeneratorShared::buildSnapshot(LInstruction *ins, MResumePoint *rp, BailoutKind kind)
 {
-    LSnapshot *snapshot = LSnapshot::New(gen, rp, kind);
+    LRecoverInfo *recoverInfo = getRecoverInfo(rp);
+    if (!recoverInfo)
+        return nullptr;
+
+    LSnapshot *snapshot = LSnapshot::New(gen, recoverInfo, kind);
     if (!snapshot)
         return nullptr;
 
-    FlattenedMResumePointIter iter(rp);
-    if (!iter.init())
-        return nullptr;
+    size_t index = 0;
+    LRecoverInfo::OperandIter it(recoverInfo->begin());
+    LRecoverInfo::OperandIter end(recoverInfo->end());
+    for (; it != end; ++it) {
+        // Check that optimized out operands are in eliminable slots.
+        MOZ_ASSERT(it.canOptimizeOutIfUnused());
 
-    size_t i = 0;
-    for (MResumePoint **it = iter.begin(), **end = iter.end(); it != end; ++it) {
-        MResumePoint *mir = *it;
-        for (size_t j = 0, e = mir->numOperands(); j < e; ++i, ++j) {
-            MDefinition *def = mir->getOperand(j);
+        MDefinition *def = *it;
 
-            if (def->isBox())
-                def = def->toBox()->getOperand(0);
+        if (def->isRecoveredOnBailout())
+            continue;
 
-            // Guards should never be eliminated.
-            JS_ASSERT_IF(def->isUnused(), !def->isGuard());
+        if (def->isBox())
+            def = def->toBox()->getOperand(0);
 
-            // Snapshot operands other than constants should never be
-            // emitted-at-uses. Try-catch support depends on there being no
-            // code between an instruction and the LOsiPoint that follows it.
-            JS_ASSERT_IF(!def->isConstant(), !def->isEmittedAtUses());
+        // Guards should never be eliminated.
+        MOZ_ASSERT_IF(def->isUnused(), !def->isGuard());
 
-            LAllocation *a = snapshot->getEntry(i);
+        // Snapshot operands other than constants should never be
+        // emitted-at-uses. Try-catch support depends on there being no
+        // code between an instruction and the LOsiPoint that follows it.
+        MOZ_ASSERT_IF(!def->isConstant(), !def->isEmittedAtUses());
 
-            if (def->isUnused()) {
-                *a = LConstantIndex::Bogus();
-                continue;
-            }
+        LAllocation *a = snapshot->getEntry(index++);
 
-            *a = useKeepaliveOrConstant(def);
+        if (def->isUnused()) {
+            *a = LConstantIndex::Bogus();
+            continue;
         }
+
+        *a = useKeepaliveOrConstant(def);
     }
 
     return snapshot;
@@ -170,7 +218,7 @@ LIRGeneratorShared::assignSnapshot(LInstruction *ins, BailoutKind kind)
 }
 
 bool
-LIRGeneratorShared::assignSafepoint(LInstruction *ins, MInstruction *mir)
+LIRGeneratorShared::assignSafepoint(LInstruction *ins, MInstruction *mir, BailoutKind kind)
 {
     JS_ASSERT(!osiPoint_);
     JS_ASSERT(!ins->safepoint());
@@ -178,7 +226,7 @@ LIRGeneratorShared::assignSafepoint(LInstruction *ins, MInstruction *mir)
     ins->initSafepoint(alloc());
 
     MResumePoint *mrp = mir->resumePoint() ? mir->resumePoint() : lastResumePoint_;
-    LSnapshot *postSnapshot = buildSnapshot(ins, mrp, Bailout_Normal);
+    LSnapshot *postSnapshot = buildSnapshot(ins, mrp, kind);
     if (!postSnapshot)
         return false;
 

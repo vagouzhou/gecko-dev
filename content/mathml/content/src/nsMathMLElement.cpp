@@ -9,12 +9,13 @@
 #include "mozilla/ArrayUtils.h"
 #include "nsGkAtoms.h"
 #include "nsCRT.h"
+#include "nsLayoutStylesheetCache.h"
 #include "nsRuleData.h"
 #include "nsCSSValue.h"
+#include "nsCSSParser.h"
 #include "nsMappedAttributes.h"
 #include "nsStyleConsts.h"
 #include "nsIDocument.h"
-#include "nsEventStates.h"
 #include "nsIPresShell.h"
 #include "nsPresContext.h"
 #include "mozAutoDocUpdate.h"
@@ -23,6 +24,7 @@
 #include "nsIURI.h"
 
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/dom/ElementBinding.h"
 
 using namespace mozilla;
@@ -31,8 +33,8 @@ using namespace mozilla::dom;
 //----------------------------------------------------------------------
 // nsISupports methods:
 
-NS_IMPL_ISUPPORTS_INHERITED3(nsMathMLElement, nsMathMLElementBase,
-                             nsIDOMElement, nsIDOMNode, Link)
+NS_IMPL_ISUPPORTS_INHERITED(nsMathMLElement, nsMathMLElementBase,
+                            nsIDOMElement, nsIDOMNode, Link)
 
 static nsresult
 WarnDeprecated(const char16_t* aDeprecatedAttribute, 
@@ -72,14 +74,14 @@ ReportParseErrorNoTag(const nsString& aValue,
                          "AttributeParsingErrorNoTag", argv, 2);
 }
 
-nsMathMLElement::nsMathMLElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+nsMathMLElement::nsMathMLElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
 : nsMathMLElementBase(aNodeInfo),
   ALLOW_THIS_IN_INITIALIZER_LIST(Link(this)),
   mIncrementScriptLevel(false)
 {
 }
 
-nsMathMLElement::nsMathMLElement(already_AddRefed<nsINodeInfo>&& aNodeInfo)
+nsMathMLElement::nsMathMLElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
 : nsMathMLElementBase(aNodeInfo),
   ALLOW_THIS_IN_INITIALIZER_LIST(Link(this)),
   mIncrementScriptLevel(false)
@@ -91,8 +93,6 @@ nsMathMLElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                             nsIContent* aBindingParent,
                             bool aCompileEventHandlers)
 {
-  static const char kMathMLStyleSheetURI[] = "resource://gre-resources/mathml.css";
-
   Link::ResetLinkState(false, Link::ElementHasHref());
 
   nsresult rv = nsMathMLElementBase::BindToTree(aDocument, aParent,
@@ -108,7 +108,8 @@ nsMathMLElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
       // construction, because we could move a MathML element from the document
       // that created it to another document.
       aDocument->SetMathMLEnabled();
-      aDocument->EnsureCatalogStyleSheet(kMathMLStyleSheetURI);
+      aDocument->
+        EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::MathMLSheet());
 
       // Rebuild style data for the presshell, because style system
       // optimizations may have taken place assuming MathML was disabled.
@@ -652,7 +653,9 @@ nsMathMLElement::MapMathMLAttributesInto(const nsMappedAttributes* aAttributes,
     }
     if (value && value->Type() == nsAttrValue::eString &&
         fontFamily->GetUnit() == eCSSUnit_Null) {
-      fontFamily->SetStringValue(value->GetStringValue(), eCSSUnit_Families);
+      nsCSSParser parser;
+      parser.ParseFontFamilyListString(value->GetStringValue(),
+                                       nullptr, 0, *fontFamily);
     }
 
     // fontstyle
@@ -914,11 +917,12 @@ nsMathMLElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
 
 NS_IMPL_ELEMENT_CLONE(nsMathMLElement)
 
-nsEventStates
+EventStates
 nsMathMLElement::IntrinsicState() const
 {
   return Link::LinkState() | nsMathMLElementBase::IntrinsicState() |
-    (mIncrementScriptLevel ? NS_EVENT_STATE_INCREMENT_SCRIPT_LEVEL : nsEventStates());
+    (mIncrementScriptLevel ?
+       NS_EVENT_STATE_INCREMENT_SCRIPT_LEVEL : EventStates());
 }
 
 bool
@@ -1114,7 +1118,7 @@ nsMathMLElement::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttr,
 }
 
 JSObject*
-nsMathMLElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+nsMathMLElement::WrapNode(JSContext *aCx)
 {
-  return ElementBinding::Wrap(aCx, aScope, this);
+  return ElementBinding::Wrap(aCx, this);
 }

@@ -1,84 +1,85 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
 package org.mozilla.gecko.tests;
 
-import com.jayway.android.robotium.solo.Condition;
-import com.jayway.android.robotium.solo.Solo;
-
-import org.mozilla.gecko.*;
-import org.mozilla.gecko.GeckoThread.LaunchState;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.util.ArrayList;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.Driver;
+import org.mozilla.gecko.Element;
+import org.mozilla.gecko.FennecNativeActions;
+import org.mozilla.gecko.FennecNativeDriver;
+import org.mozilla.gecko.GeckoAppShell;
+import org.mozilla.gecko.GeckoEvent;
+import org.mozilla.gecko.GeckoProfile;
+import org.mozilla.gecko.GeckoThread;
+import org.mozilla.gecko.GeckoThread.LaunchState;
+import org.mozilla.gecko.R;
+import org.mozilla.gecko.RobocopUtils;
+import org.mozilla.gecko.Tab;
+import org.mozilla.gecko.Tabs;
 
 import android.app.Activity;
-import android.app.Instrumentation;
-import android.content.ContentResolver;
 import android.content.ContentValues;
-import android.content.ContentUris;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.res.AssetManager;
 import android.database.Cursor;
-import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentActivity;
 import android.support.v4.app.FragmentManager;
-import android.text.InputType;
 import android.text.TextUtils;
-import android.test.ActivityInstrumentationTestCase2;
 import android.util.DisplayMetrics;
-import android.view.inputmethod.InputMethodManager;
-import android.view.KeyEvent;
 import android.view.View;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ListAdapter;
-import android.widget.ListView;
 import android.widget.TextView;
 
-import java.io.File;
-import java.io.InputStream;
-import java.io.IOException;
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.util.ArrayList;
-import java.util.HashMap;
+import com.jayway.android.robotium.solo.Condition;
+import com.jayway.android.robotium.solo.Solo;
 
 /**
  *  A convenient base class suitable for most Robocop tests.
  */
-abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
-    public static final int TEST_MOCHITEST = 0;
-    public static final int TEST_TALOS = 1;
-
-    private static final String TARGET_PACKAGE_ID = "org.mozilla.gecko";
-    private static final String LAUNCH_ACTIVITY_FULL_CLASSNAME = TestConstants.ANDROID_PACKAGE_NAME + ".App";
+@SuppressWarnings("unchecked")
+abstract class BaseTest extends BaseRobocopTest {
     private static final int VERIFY_URL_TIMEOUT = 2000;
-    private static final int MAX_LIST_ATTEMPTS = 3;
     private static final int MAX_WAIT_ENABLED_TEXT_MS = 10000;
     private static final int MAX_WAIT_HOME_PAGER_HIDDEN_MS = 15000;
+    private static final int MAX_WAIT_VERIFY_PAGE_TITLE_MS = 15000;
     public static final int MAX_WAIT_MS = 4500;
     public static final int LONG_PRESS_TIME = 6000;
     private static final int GECKO_READY_WAIT_MS = 180000;
     public static final int MAX_WAIT_BLOCK_FOR_EVENT_DATA_MS = 90000;
 
-    private static Class<Activity> mLauncherActivityClass;
     private Activity mActivity;
     private int mPreferenceRequestID = 0;
     protected Solo mSolo;
     protected Driver mDriver;
-    protected Assert mAsserter;
     protected Actions mActions;
     protected String mBaseUrl;
     protected String mRawBaseUrl;
-    private String mLogFile;
     protected String mProfile;
     public Device mDevice;
     protected DatabaseHelper mDatabaseHelper;
     protected StringHelper mStringHelper;
+    protected int mScreenMidWidth;
+    protected int mScreenMidHeight;
 
     protected void blockForGeckoReady() {
         try {
@@ -92,58 +93,47 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         }
     }
 
-    static {
-        try {
-            mLauncherActivityClass = (Class<Activity>)Class.forName(LAUNCH_ACTIVITY_FULL_CLASSNAME);
-        } catch (ClassNotFoundException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public BaseTest() {
-        super(TARGET_PACKAGE_ID, mLauncherActivityClass);
-    }
-
-    protected abstract int getTestType();
-
     @Override
-    protected void setUp() throws Exception {
-        // Load config file from root path (setup by python script)
-        String rootPath = FennecInstrumentationTestRunner.getFennecArguments().getString("deviceroot");
-        String configFile = FennecNativeDriver.getFile(rootPath + "/robotium.config");
-        HashMap config = FennecNativeDriver.convertTextToTable(configFile);
-        mLogFile = (String)config.get("logfile");
-        mBaseUrl = ((String)config.get("host")).replaceAll("(/$)", "");
-        mRawBaseUrl = ((String)config.get("rawhost")).replaceAll("(/$)", "");
-        // Initialize the asserter
-        if (getTestType() == TEST_TALOS) {
-            mAsserter = new FennecTalosAssert();
-        } else {
-            mAsserter = new FennecMochitestAssert();
-        }
-        mAsserter.setLogFile(mLogFile);
-        mAsserter.setTestName(this.getClass().getName());
+    public void setUp() throws Exception {
+        super.setUp();
+
         // Create the intent to be used with all the important arguments.
+        mBaseUrl = ((String) mConfig.get("host")).replaceAll("(/$)", "");
+        mRawBaseUrl = ((String) mConfig.get("rawhost")).replaceAll("(/$)", "");
         Intent i = new Intent(Intent.ACTION_MAIN);
-        mProfile = (String)config.get("profile");
+        mProfile = (String) mConfig.get("profile");
         i.putExtra("args", "-no-remote -profile " + mProfile);
-        String envString = (String)config.get("envvars");
+        String envString = (String) mConfig.get("envvars");
         if (envString != "") {
             String[] envStrings = envString.split(",");
             for (int iter = 0; iter < envStrings.length; iter++) {
                 i.putExtra("env" + iter, envStrings[iter]);
             }
         }
-        // Start the activity
+
+        // Start the activity.
         setActivityIntent(i);
         mActivity = getActivity();
         // Set up Robotium.solo and Driver objects
         mSolo = new Solo(getInstrumentation(), mActivity);
-        mDriver = new FennecNativeDriver(mActivity, mSolo, rootPath);
+        mDriver = new FennecNativeDriver(mActivity, mSolo, mRootPath);
         mActions = new FennecNativeActions(mActivity, mSolo, getInstrumentation(), mAsserter);
         mDevice = new Device();
         mDatabaseHelper = new DatabaseHelper(mActivity, mAsserter);
         mStringHelper = new StringHelper();
+    }
+
+    protected void initializeProfile() {
+        final GeckoProfile profile;
+        if (mProfile.startsWith("/")) {
+            profile = GeckoProfile.get(getActivity(), "default", mProfile);
+        } else {
+            profile = GeckoProfile.get(getActivity(), mProfile);
+        }
+
+        // In Robocop tests, we typically don't get initialized correctly, because
+        // GeckoProfile doesn't create the profile directory.
+        profile.enqueueInitialization();
     }
 
     @Override
@@ -167,6 +157,10 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
     public void tearDown() throws Exception {
         try {
             mAsserter.endTest();
+            // request a force quit of the browser and wait for it to take effect
+            GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Robocop:Quit", null));
+            mSolo.sleep(7000);
+            // if still running, finish activities as recommended by Robotium
             mSolo.finishOpenedActivities();
         } catch (Throwable e) {
             e.printStackTrace();
@@ -197,10 +191,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
                 EditText urlEditText = (EditText) mSolo.getView(R.id.url_edit_text);
                 if (urlEditText.isInputMethodTarget()) {
                     return true;
-                } else {
-                    mSolo.clickOnView(urlEditText);
-                    return false;
                 }
+                return false;
             }
         }, MAX_WAIT_ENABLED_TEXT_MS);
 
@@ -259,6 +251,12 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
             mAsserter.dumpLog("Exception in loadUrl", e);
             throw new RuntimeException(e);
         }
+    }
+
+    protected final void closeTab(int tabId) {
+        Tabs tabs = Tabs.getInstance();
+        Tab tab = tabs.getTab(tabId);
+        tabs.closeTab(tab);
     }
 
     public final void verifyUrl(String url) {
@@ -333,7 +331,6 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         public boolean test();
     }
 
-    @SuppressWarnings({"unchecked", "non-varargs"})
     public void SqliteCompare(String dbName, String sqlCommand, ContentValues[] cvs) {
         File profile = new File(mProfile);
         String dbPath = new File(profile, dbName).getPath();
@@ -342,27 +339,6 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         SqliteCompare(c, cvs);
     }
 
-    private boolean CursorMatches(Cursor c, String[] columns, ContentValues cv) {
-        for (int i = 0; i < columns.length; i++) {
-            String column = columns[i];
-            if (cv.containsKey(column)) {
-                mAsserter.info("Comparing", "Column values for: " + column);
-                Object value = cv.get(column);
-                if (value == null) {
-                    if (!c.isNull(i)) {
-                        return false;
-                    }
-                } else {
-                    if (c.isNull(i) || !value.toString().equals(c.getString(i))) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    @SuppressWarnings({"unchecked", "non-varargs"})
     public void SqliteCompare(Cursor c, ContentValues[] cvs) {
         mAsserter.is(c.getCount(), cvs.length, "List is correct length");
         if (c.moveToFirst()) {
@@ -374,7 +350,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
                     }
                 }
                 mAsserter.is(found, true, "Password was found");
-            } while(c.moveToNext());
+            } while (c.moveToNext());
         }
     }
 
@@ -411,6 +387,27 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
             mAsserter.dumpLog("waitForText timeout on "+text);
         }
         return rc;
+    }
+
+    // waitForText usually scrolls down in a view when text is not visible.
+    // For PreferenceScreens and dialogs, Solo.waitForText scrolling does not
+    // work, so we use this hack to do the same thing.
+    protected boolean waitForPreferencesText(String txt) {
+        boolean foundText = waitForText(txt);
+        if (!foundText) {
+            if ((mScreenMidWidth == 0) || (mScreenMidHeight == 0)) {
+                mScreenMidWidth = mDriver.getGeckoWidth()/2;
+                mScreenMidHeight = mDriver.getGeckoHeight()/2;
+            }
+
+            // If we don't see the item, scroll down once in case it's off-screen.
+            // Hacky way to scroll down.  solo.scroll* does not work in dialogs.
+            MotionEventHelper meh = new MotionEventHelper(getInstrumentation(), mDriver.getGeckoLeft(), mDriver.getGeckoTop());
+            meh.dragSync(mScreenMidWidth, mScreenMidHeight+100, mScreenMidWidth, mScreenMidHeight-100);
+
+            foundText = mSolo.waitForText(txt);
+        }
+        return foundText;
     }
 
     /**
@@ -464,9 +461,8 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         if (listLength > 1) {
             for (int i = 1; i < listLength; i++) {
                 String itemName = "^" + listItems[i] + "$";
-                if (!waitForEnabledText(itemName)) {
-                    mSolo.scrollDown();
-                }
+                mAsserter.ok(waitForPreferencesText(itemName), "Waiting for and scrolling once to find item " + itemName, itemName + " found");
+                mAsserter.ok(waitForEnabledText(itemName), "Waiting for enabled text " + itemName, itemName + " option is present and enabled");
                 mSolo.clickOnText(itemName);
             }
         }
@@ -510,7 +506,7 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
         if (urlBarTitle != null) {
             // Wait for the title to make sure it has been displayed in case the view
             // does not update fast enough
-            waitForCondition(new VerifyTextViewText(urlBarTitle, title), MAX_WAIT_MS);
+            waitForCondition(new VerifyTextViewText(urlBarTitle, title), MAX_WAIT_VERIFY_PAGE_TITLE_MS);
             pageTitle = urlBarTitle.getText().toString();
         }
         mAsserter.is(pageTitle, title, "Page title is correct");
@@ -558,7 +554,10 @@ abstract class BaseTest extends ActivityInstrumentationTestCase2<Activity> {
             }
         }, MAX_WAIT_MS);
         mAsserter.ok(success, "waiting for add tab view", "add tab view available");
+        Actions.EventExpecter pageShowExpecter = mActions.expectGeckoEvent("Content:PageShow");
         mSolo.clickOnView(mSolo.getView(R.id.add_tab));
+        pageShowExpecter.blockForEvent();
+        pageShowExpecter.unregisterListener();
     }
 
     public void addTab(String url) {

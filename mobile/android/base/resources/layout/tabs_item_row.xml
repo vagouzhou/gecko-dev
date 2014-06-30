@@ -7,14 +7,16 @@
                                  style="@style/TabsItem"
                                  android:focusable="true"
                                  android:id="@+id/info"
-                                 android:layout_width="fill_parent"
+                                 android:layout_width="match_parent"
                                  android:layout_height="wrap_content"
                                  android:paddingLeft="12dip"
                                  android:paddingTop="6dip"
                                  android:paddingBottom="6dip"
                                  android:background="@drawable/tab_row">
 
-    <LinearLayout android:layout_width="wrap_content"
+    <org.mozilla.gecko.widget.TabThumbnailWrapper 
+                  android:id="@+id/wrapper"
+	          android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
                   android:padding="4dip"
                   android:background="@drawable/tab_thumbnail"
@@ -25,11 +27,11 @@
                                                 android:layout_height="@dimen/tab_thumbnail_height"
                                                 android:src="@drawable/tab_thumbnail_default"/>
 
-    </LinearLayout>
+    </org.mozilla.gecko.widget.TabThumbnailWrapper>
 
     <TextView android:id="@+id/title"
               android:layout_width="0dip"
-              android:layout_height="fill_parent"
+              android:layout_height="match_parent"
               android:layout_weight="1.0"
               android:paddingTop="4dip"
               android:paddingLeft="8dip"
@@ -44,7 +46,7 @@
     <ImageButton android:id="@+id/close"
                  style="@style/TabsItemClose"
                  android:layout_width="34dip"
-                 android:layout_height="fill_parent"
+                 android:layout_height="match_parent"
                  android:background="@drawable/action_bar_button_inverse"
                  android:scaleType="center"
                  android:contentDescription="@string/close_tab"

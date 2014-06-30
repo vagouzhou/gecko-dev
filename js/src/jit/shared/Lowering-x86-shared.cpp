@@ -15,6 +15,7 @@
 using namespace js;
 using namespace js::jit;
 
+using mozilla::Abs;
 using mozilla::FloorLog2;
 
 LTableSwitch *
@@ -35,7 +36,7 @@ LIRGeneratorX86Shared::visitGuardShape(MGuardShape *ins)
 {
     JS_ASSERT(ins->obj()->type() == MIRType_Object);
 
-    LGuardShape *guard = new(alloc()) LGuardShape(useRegister(ins->obj()));
+    LGuardShape *guard = new(alloc()) LGuardShape(useRegisterAtStart(ins->obj()));
     if (!assignSnapshot(guard, ins->bailoutKind()))
         return false;
     if (!add(guard, ins))
@@ -48,8 +49,8 @@ LIRGeneratorX86Shared::visitGuardObjectType(MGuardObjectType *ins)
 {
     JS_ASSERT(ins->obj()->type() == MIRType_Object);
 
-    LGuardObjectType *guard = new(alloc()) LGuardObjectType(useRegister(ins->obj()));
-    if (!assignSnapshot(guard))
+    LGuardObjectType *guard = new(alloc()) LGuardObjectType(useRegisterAtStart(ins->obj()));
+    if (!assignSnapshot(guard, Bailout_ObjectIdentityOrTypeGuard))
         return false;
     if (!add(guard, ins))
         return false;
@@ -74,9 +75,9 @@ LIRGeneratorX86Shared::lowerForShift(LInstructionHelper<1, 2, 0> *ins, MDefiniti
     // shift operator should be constant or in register ecx
     // x86 can't shift a non-ecx register
     if (rhs->isConstant())
-        ins->setOperand(1, useOrConstant(rhs));
+        ins->setOperand(1, useOrConstantAtStart(rhs));
     else
-        ins->setOperand(1, useFixed(rhs, ecx));
+        ins->setOperand(1, lhs != rhs ? useFixed(rhs, ecx) : useFixedAtStart(rhs, ecx));
 
     return defineReuseInput(ins, mir, 0);
 }
@@ -94,7 +95,7 @@ LIRGeneratorX86Shared::lowerForALU(LInstructionHelper<1, 2, 0> *ins, MDefinition
                                    MDefinition *lhs, MDefinition *rhs)
 {
     ins->setOperand(0, useRegisterAtStart(lhs));
-    ins->setOperand(1, useOrConstant(rhs));
+    ins->setOperand(1, lhs != rhs ? useOrConstant(rhs) : useOrConstantAtStart(rhs));
     return defineReuseInput(ins, mir, 0);
 }
 
@@ -102,7 +103,7 @@ bool
 LIRGeneratorX86Shared::lowerForFPU(LInstructionHelper<1, 2, 0> *ins, MDefinition *mir, MDefinition *lhs, MDefinition *rhs)
 {
     ins->setOperand(0, useRegisterAtStart(lhs));
-    ins->setOperand(1, use(rhs));
+    ins->setOperand(1, lhs != rhs ? use(rhs) : useAtStart(rhs));
     return defineReuseInput(ins, mir, 0);
 }
 
@@ -121,7 +122,7 @@ LIRGeneratorX86Shared::lowerMulI(MMul *mul, MDefinition *lhs, MDefinition *rhs)
     // Note: lhs is used twice, so that we can restore the original value for the
     // negative zero check.
     LMulI *lir = new(alloc()) LMulI(useRegisterAtStart(lhs), useOrConstant(rhs), use(lhs));
-    if (mul->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+    if (mul->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
         return false;
     return defineReuseInput(lir, mul, 0);
 }
@@ -137,24 +138,21 @@ LIRGeneratorX86Shared::lowerDivI(MDiv *div)
     if (div->rhs()->isConstant()) {
         int32_t rhs = div->rhs()->toConstant()->value().toInt32();
 
-        // Check for division by a positive power of two, which is an easy and
-        // important case to optimize. Note that other optimizations are also
-        // possible; division by negative powers of two can be optimized in a
-        // similar manner as positive powers of two, and division by other
-        // constants can be optimized by a reciprocal multiplication technique.
-        int32_t shift = FloorLog2(rhs);
-        if (rhs > 0 && 1 << shift == rhs) {
+        // Division by powers of two can be done by shifting, and division by
+        // other numbers can be done by a reciprocal multiplication technique.
+        int32_t shift = FloorLog2(Abs(rhs));
+        if (rhs != 0 && uint32_t(1) << shift == Abs(rhs)) {
             LAllocation lhs = useRegisterAtStart(div->lhs());
             LDivPowTwoI *lir;
             if (!div->canBeNegativeDividend()) {
                 // Numerator is unsigned, so does not need adjusting.
-                lir = new(alloc()) LDivPowTwoI(lhs, lhs, shift);
+                lir = new(alloc()) LDivPowTwoI(lhs, lhs, shift, rhs < 0);
             } else {
                 // Numerator is signed, and needs adjusting, and an extra
                 // lhs copy register is needed.
-                lir = new(alloc()) LDivPowTwoI(lhs, useRegister(div->lhs()), shift);
+                lir = new(alloc()) LDivPowTwoI(lhs, useRegister(div->lhs()), shift, rhs < 0);
             }
-            if (div->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+            if (div->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
                 return false;
             return defineReuseInput(lir, div, 0);
         }
@@ -162,7 +160,7 @@ LIRGeneratorX86Shared::lowerDivI(MDiv *div)
 
     LDivI *lir = new(alloc()) LDivI(useRegister(div->lhs()), useRegister(div->rhs()),
                                     tempFixed(edx));
-    if (div->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+    if (div->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
         return false;
     return defineFixed(lir, div, LAllocation(AnyRegister(eax)));
 }
@@ -175,10 +173,10 @@ LIRGeneratorX86Shared::lowerModI(MMod *mod)
 
     if (mod->rhs()->isConstant()) {
         int32_t rhs = mod->rhs()->toConstant()->value().toInt32();
-        int32_t shift = FloorLog2(rhs);
-        if (rhs > 0 && 1 << shift == rhs) {
+        int32_t shift = FloorLog2(Abs(rhs));
+        if (rhs != 0 && uint32_t(1) << shift == Abs(rhs)) {
             LModPowTwoI *lir = new(alloc()) LModPowTwoI(useRegisterAtStart(mod->lhs()), shift);
-            if (mod->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+            if (mod->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
                 return false;
             return defineReuseInput(lir, mod, 0);
         }
@@ -187,7 +185,7 @@ LIRGeneratorX86Shared::lowerModI(MMod *mod)
     LModI *lir = new(alloc()) LModI(useRegister(mod->lhs()),
                                     useRegister(mod->rhs()),
                                     tempFixed(eax));
-    if (mod->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+    if (mod->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
         return false;
     return defineFixed(lir, mod, LAllocation(AnyRegister(edx)));
 }
@@ -211,7 +209,7 @@ LIRGeneratorX86Shared::lowerUDiv(MDiv *div)
     LUDivOrMod *lir = new(alloc()) LUDivOrMod(useRegister(div->lhs()),
                                               useRegister(div->rhs()),
                                               tempFixed(edx));
-    if (div->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+    if (div->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
         return false;
     return defineFixed(lir, div, LAllocation(AnyRegister(eax)));
 }
@@ -222,7 +220,7 @@ LIRGeneratorX86Shared::lowerUMod(MMod *mod)
     LUDivOrMod *lir = new(alloc()) LUDivOrMod(useRegister(mod->lhs()),
                                               useRegister(mod->rhs()),
                                               tempFixed(eax));
-    if (mod->fallible() && !assignSnapshot(lir, Bailout_BaselineInfo))
+    if (mod->fallible() && !assignSnapshot(lir, Bailout_DoubleOutput))
         return false;
     return defineFixed(lir, mod, LAllocation(AnyRegister(edx)));
 }

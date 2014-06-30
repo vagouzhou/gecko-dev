@@ -102,8 +102,6 @@ using namespace mozilla::places;
 // for repeating stuff.  These are milliseconds between "now" cache refreshes.
 #define RENEW_CACHED_NOW_TIMEOUT ((int32_t)3 * PR_MSEC_PER_SEC)
 
-static const int64_t USECS_PER_DAY = (int64_t)PR_USEC_PER_SEC * 60 * 60 * 24;
-
 // character-set annotation
 #define CHARSET_ANNO NS_LITERAL_CSTRING("URIProperties/characterSet")
 
@@ -177,11 +175,9 @@ NS_INTERFACE_MAP_BEGIN(nsNavHistory)
 NS_INTERFACE_MAP_END
 
 // We don't care about flattening everything
-NS_IMPL_CI_INTERFACE_GETTER2(
-  nsNavHistory
-, nsINavHistoryService
-, nsIBrowserHistory
-)
+NS_IMPL_CI_INTERFACE_GETTER(nsNavHistory,
+                            nsINavHistoryService,
+                            nsIBrowserHistory)
 
 namespace {
 
@@ -454,20 +450,7 @@ void
 nsNavHistory::LoadPrefs()
 {
   // History preferences.
-  // Check the old preference and migrate disabled state.
-  int32_t oldDaysPref = Preferences::GetInt("browser.history_expire_days", -1);
-  if (oldDaysPref >= 0) {
-    if (oldDaysPref == 0) {
-      // Preserve history disabled state, for privacy reasons.
-      Preferences::SetBool(PREF_HISTORY_ENABLED, false);
-      mHistoryEnabled = false;
-    }
-    // Clear the old pref, otherwise we will keep using it.
-    Preferences::ClearUser("browser.history_expire_days");
-  }
-  else {
-    mHistoryEnabled = Preferences::GetBool(PREF_HISTORY_ENABLED, true);
-  }
+  mHistoryEnabled = Preferences::GetBool(PREF_HISTORY_ENABLED, true);
 
   // Frecency preferences.
 #define FRECENCY_PREF(_prop, _pref) \
@@ -533,6 +516,82 @@ nsNavHistory::NotifyTitleChange(nsIURI* aURI,
   MOZ_ASSERT(!aGUID.IsEmpty());
   NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
                    nsINavHistoryObserver, OnTitleChanged(aURI, aTitle, aGUID));
+}
+
+void
+nsNavHistory::NotifyFrecencyChanged(nsIURI* aURI,
+                                    int32_t aNewFrecency,
+                                    const nsACString& aGUID,
+                                    bool aHidden,
+                                    PRTime aLastVisitDate)
+{
+  MOZ_ASSERT(!aGUID.IsEmpty());
+  NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
+                   nsINavHistoryObserver,
+                   OnFrecencyChanged(aURI, aNewFrecency, aGUID, aHidden,
+                                     aLastVisitDate));
+}
+
+void
+nsNavHistory::NotifyManyFrecenciesChanged()
+{
+  NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
+                   nsINavHistoryObserver,
+                   OnManyFrecenciesChanged());
+}
+
+namespace {
+
+class FrecencyNotification : public nsRunnable
+{
+public:
+  FrecencyNotification(const nsACString& aSpec,
+                       int32_t aNewFrecency,
+                       const nsACString& aGUID,
+                       bool aHidden,
+                       PRTime aLastVisitDate)
+    : mSpec(aSpec)
+    , mNewFrecency(aNewFrecency)
+    , mGUID(aGUID)
+    , mHidden(aHidden)
+    , mLastVisitDate(aLastVisitDate)
+  {
+  }
+
+  NS_IMETHOD Run()
+  {
+    MOZ_ASSERT(NS_IsMainThread(), "Must be called on the main thread");
+    nsNavHistory* navHistory = nsNavHistory::GetHistoryService();
+    if (navHistory) {
+      nsCOMPtr<nsIURI> uri;
+      (void)NS_NewURI(getter_AddRefs(uri), mSpec);
+      navHistory->NotifyFrecencyChanged(uri, mNewFrecency, mGUID, mHidden,
+                                        mLastVisitDate);
+    }
+    return NS_OK;
+  }
+
+private:
+  nsCString mSpec;
+  int32_t mNewFrecency;
+  nsCString mGUID;
+  bool mHidden;
+  PRTime mLastVisitDate;
+};
+
+} // anonymous namespace
+
+void
+nsNavHistory::DispatchFrecencyChangedNotification(const nsACString& aSpec,
+                                                  int32_t aNewFrecency,
+                                                  const nsACString& aGUID,
+                                                  bool aHidden,
+                                                  PRTime aLastVisitDate) const
+{
+  nsCOMPtr<nsIRunnable> notif = new FrecencyNotification(aSpec, aNewFrecency,
+                                                         aGUID, aHidden,
+                                                         aLastVisitDate);
+  (void)NS_DispatchToMainThread(notif);
 }
 
 int32_t
@@ -928,32 +987,68 @@ nsNavHistory::GetHasHistoryEntries(bool* aHasEntries)
 }
 
 
+namespace {
+
+class InvalidateAllFrecenciesCallback : public AsyncStatementCallback
+{
+public:
+  InvalidateAllFrecenciesCallback()
+  {
+  }
+
+  NS_IMETHOD HandleCompletion(uint16_t aReason)
+  {
+    if (aReason == REASON_FINISHED) {
+      nsNavHistory *navHistory = nsNavHistory::GetHistoryService();
+      NS_ENSURE_STATE(navHistory);
+      navHistory->NotifyManyFrecenciesChanged();
+    }
+    return NS_OK;
+  }
+};
+
+} // anonymous namespace
+
 nsresult
 nsNavHistory::invalidateFrecencies(const nsCString& aPlaceIdsQueryString)
 {
   // Exclude place: queries by setting their frecency to zero.
-  nsAutoCString invalideFrecenciesSQLFragment(
-    "UPDATE moz_places SET frecency = (CASE "
-      "WHEN url BETWEEN 'place:' AND 'place;' "
-      "THEN 0 "
-      "ELSE -1 "
-      "END) "
+  nsCString invalidFrecenciesSQLFragment(
+    "UPDATE moz_places SET frecency = "
+  );
+  if (!aPlaceIdsQueryString.IsEmpty())
+    invalidFrecenciesSQLFragment.AppendLiteral("NOTIFY_FRECENCY(");
+  invalidFrecenciesSQLFragment.AppendLiteral(
+      "(CASE "
+       "WHEN url BETWEEN 'place:' AND 'place;' "
+       "THEN 0 "
+       "ELSE -1 "
+       "END) "
+  );
+  if (!aPlaceIdsQueryString.IsEmpty()) {
+    invalidFrecenciesSQLFragment.AppendLiteral(
+      ", url, guid, hidden, last_visit_date) "
+    );
+  }
+  invalidFrecenciesSQLFragment.AppendLiteral(
     "WHERE frecency > 0 "
   );
-
   if (!aPlaceIdsQueryString.IsEmpty()) {
-    invalideFrecenciesSQLFragment.AppendLiteral("AND id IN(");
-    invalideFrecenciesSQLFragment.Append(aPlaceIdsQueryString);
-    invalideFrecenciesSQLFragment.AppendLiteral(")");
+    invalidFrecenciesSQLFragment.AppendLiteral("AND id IN(");
+    invalidFrecenciesSQLFragment.Append(aPlaceIdsQueryString);
+    invalidFrecenciesSQLFragment.Append(')');
   }
+  nsRefPtr<InvalidateAllFrecenciesCallback> cb =
+    aPlaceIdsQueryString.IsEmpty() ? new InvalidateAllFrecenciesCallback()
+                                   : nullptr;
 
   nsCOMPtr<mozIStorageAsyncStatement> stmt = mDB->GetAsyncStatement(
-    invalideFrecenciesSQLFragment
+    invalidFrecenciesSQLFragment
   );
   NS_ENSURE_STATE(stmt);
 
   nsCOMPtr<mozIStoragePendingStatement> ps;
-  nsresult rv = stmt->ExecuteAsync(nullptr, getter_AddRefs(ps));
+  nsresult rv = stmt->ExecuteAsync(cb, getter_AddRefs(ps));
   NS_ENSURE_SUCCESS(rv, rv);
 
   return NS_OK;
@@ -1677,10 +1772,10 @@ PlacesSQLQueryBuilder::SelectAsDay()
     mQueryString.Append(dayRange);
 
     if (i < HISTORY_DATE_CONT_NUM(daysOfHistory))
-      mQueryString.Append(NS_LITERAL_CSTRING(" UNION ALL "));
+      mQueryString.AppendLiteral(" UNION ALL ");
   }
 
-  mQueryString.Append(NS_LITERAL_CSTRING(") ")); // TOUTER END
+  mQueryString.AppendLiteral(") "); // TOUTER END
 
   return NS_OK;
 }
@@ -1801,7 +1896,7 @@ PlacesSQLQueryBuilder::Where()
     nsAutoCString tmp = additionalVisitsConditions;
     additionalVisitsConditions = "AND EXISTS (SELECT 1 FROM moz_historyvisits WHERE place_id = h.id ";
     additionalVisitsConditions.Append(tmp);
-    additionalVisitsConditions.Append("LIMIT 1)");
+    additionalVisitsConditions.AppendLiteral("LIMIT 1)");
   }
 
   mQueryString.ReplaceSubstring("{QUERY_OPTIONS_VISITS}",
@@ -1952,7 +2047,7 @@ PlacesSQLQueryBuilder::Limit()
   if (mUseLimit && mMaxResults > 0) {
     mQueryString += NS_LITERAL_CSTRING(" LIMIT ");
     mQueryString.AppendInt(mMaxResults);
-    mQueryString.AppendLiteral(" ");
+    mQueryString.Append(' ');
   }
   return NS_OK;
 }
@@ -2011,13 +2106,13 @@ nsNavHistory::ConstructQueryString(
           "{QUERY_OPTIONS} "
         );
 
-    queryString.Append(NS_LITERAL_CSTRING("ORDER BY "));
+    queryString.AppendLiteral("ORDER BY ");
     if (sortingMode == nsINavHistoryQueryOptions::SORT_BY_DATE_DESCENDING)
-      queryString.Append(NS_LITERAL_CSTRING("last_visit_date DESC "));
+      queryString.AppendLiteral("last_visit_date DESC ");
     else
-      queryString.Append(NS_LITERAL_CSTRING("visit_count DESC "));
+      queryString.AppendLiteral("visit_count DESC ");
 
-    queryString.Append(NS_LITERAL_CSTRING("LIMIT "));
+    queryString.AppendLiteral("LIMIT ");
     queryString.AppendInt(aOptions->MaxResults());
 
     nsAutoCString additionalQueryOptions;
@@ -2307,7 +2402,7 @@ nsNavHistory::CleanupPlacesOnVisitsDelete(const nsCString& aPlaceIdsQueryString)
     NS_ENSURE_SUCCESS(rv, rv);
     if (wholeEntry) {
       if (!filteredPlaceIds.IsEmpty()) {
-        filteredPlaceIds.AppendLiteral(",");
+        filteredPlaceIds.Append(',');
       }
       filteredPlaceIds.AppendInt(placeId);
       URIs.AppendObject(uri);
@@ -2372,7 +2467,7 @@ nsNavHistory::RemovePages(nsIURI **aURIs, uint32_t aLength)
     NS_ENSURE_SUCCESS(rv, rv);
     if (placeId != 0) {
       if (!deletePlaceIdsQueryString.IsEmpty())
-        deletePlaceIdsQueryString.AppendLiteral(",");
+        deletePlaceIdsQueryString.Append(',');
       deletePlaceIdsQueryString.AppendInt(placeId);
     }
   }
@@ -2465,7 +2560,7 @@ nsNavHistory::RemovePagesFromHost(const nsACString& aHost, bool aEntireDomain)
   NS_ASSERTION(revHostDot[revHostDot.Length() - 1] == '.', "Invalid rev. host");
   nsAutoString revHostSlash(revHostDot);
   revHostSlash.Truncate(revHostSlash.Length() - 1);
-  revHostSlash.Append(NS_LITERAL_STRING("/"));
+  revHostSlash.Append('/');
 
   // build condition string based on host selection type
   nsAutoCString conditionString;
@@ -2492,7 +2587,7 @@ nsNavHistory::RemovePagesFromHost(const nsACString& aHost, bool aEntireDomain)
   bool hasMore = false;
   while (NS_SUCCEEDED(statement->ExecuteStep(&hasMore)) && hasMore) {
     if (!hostPlaceIds.IsEmpty())
-      hostPlaceIds.AppendLiteral(",");
+      hostPlaceIds.Append(',');
     int64_t placeId;
     rv = statement->GetInt64(0, &placeId);
     NS_ENSURE_SUCCESS(rv, rv);
@@ -2552,7 +2647,7 @@ nsNavHistory::RemovePagesByTimeframe(PRTime aBeginTime, PRTime aEndTime)
     NS_ENSURE_SUCCESS(rv, rv);
     if (placeId != 0) {
       if (!deletePlaceIdsQueryString.IsEmpty())
-        deletePlaceIdsQueryString.AppendLiteral(",");
+        deletePlaceIdsQueryString.Append(',');
       deletePlaceIdsQueryString.AppendInt(placeId);
     }
   }
@@ -2620,7 +2715,7 @@ nsNavHistory::RemoveVisitsByTimeframe(PRTime aBeginTime, PRTime aEndTime)
       // placeId should not be <= 0, but be defensive.
       if (placeId > 0) {
         if (!deletePlaceIdsQueryString.IsEmpty())
-          deletePlaceIdsQueryString.AppendLiteral(",");
+          deletePlaceIdsQueryString.Append(',');
         deletePlaceIdsQueryString.AppendInt(placeId);
       }
     }
@@ -3078,6 +3173,30 @@ nsNavHistory::Observe(nsISupports *aSubject, const char *aTopic,
 }
 
 
+namespace {
+
+class DecayFrecencyCallback : public AsyncStatementTelemetryTimer
+{
+public:
+  DecayFrecencyCallback()
+    : AsyncStatementTelemetryTimer(Telemetry::PLACES_IDLE_FRECENCY_DECAY_TIME_MS)
+  {
+  }
+
+  NS_IMETHOD HandleCompletion(uint16_t aReason)
+  {
+    (void)AsyncStatementTelemetryTimer::HandleCompletion(aReason);
+    if (aReason == REASON_FINISHED) {
+      nsNavHistory *navHistory = nsNavHistory::GetHistoryService();
+      NS_ENSURE_STATE(navHistory);
+      navHistory->NotifyManyFrecenciesChanged();
+    }
+    return NS_OK;
+  }
+};
+
+} // anonymous namespace
+
 nsresult
 nsNavHistory::DecayFrecency()
 {
@@ -3115,8 +3234,7 @@ nsNavHistory::DecayFrecency()
     deleteAdaptive.get()
   };
   nsCOMPtr<mozIStoragePendingStatement> ps;
-  nsRefPtr<AsyncStatementTelemetryTimer> cb =
-    new AsyncStatementTelemetryTimer(Telemetry::PLACES_IDLE_FRECENCY_DECAY_TIME_MS);
+  nsRefPtr<DecayFrecencyCallback> cb = new DecayFrecencyCallback();
   rv = mDB->MainConn()->ExecuteAsync(stmts, ArrayLength(stmts), cb,
                                      getter_AddRefs(ps));
   NS_ENSURE_SUCCESS(rv, rv);
@@ -3540,14 +3658,14 @@ CreatePlacesPersistURN(nsNavHistoryQueryResultNode *aResultNode,
   nsresult rv = aResultNode->GetUri(uri);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  aURN.Assign(NS_LITERAL_CSTRING("urn:places-persist:"));
+  aURN.AssignLiteral("urn:places-persist:");
   aURN.Append(uri);
 
-  aURN.Append(NS_LITERAL_CSTRING(","));
+  aURN.Append(',');
   if (aValue != UNDEFINED_URN_VALUE)
     aURN.AppendInt(aValue);
 
-  aURN.Append(NS_LITERAL_CSTRING(","));
+  aURN.Append(',');
   if (!aTitle.IsEmpty()) {
     nsAutoCString escapedTitle;
     bool success = NS_Escape(aTitle, escapedTitle, url_XAlphas);
@@ -4312,7 +4430,9 @@ nsNavHistory::UpdateFrecency(int64_t aPlaceId)
 {
   nsCOMPtr<mozIStorageAsyncStatement> updateFrecencyStmt = mDB->GetAsyncStatement(
     "UPDATE moz_places "
-    "SET frecency = CALCULATE_FRECENCY(:page_id) "
+    "SET frecency = NOTIFY_FRECENCY("
+      "CALCULATE_FRECENCY(:page_id), url, guid, hidden, last_visit_date"
+    ") "
     "WHERE id = :page_id"
   );
   NS_ENSURE_STATE(updateFrecencyStmt);
@@ -4345,6 +4465,31 @@ nsNavHistory::UpdateFrecency(int64_t aPlaceId)
 }
 
 
+namespace {
+
+class FixInvalidFrecenciesCallback : public AsyncStatementCallbackNotifier
+{
+public:
+  FixInvalidFrecenciesCallback()
+    : AsyncStatementCallbackNotifier(TOPIC_FRECENCY_UPDATED)
+  {
+  }
+
+  NS_IMETHOD HandleCompletion(uint16_t aReason)
+  {
+    nsresult rv = AsyncStatementCallbackNotifier::HandleCompletion(aReason);
+    NS_ENSURE_SUCCESS(rv, rv);
+    if (aReason == REASON_FINISHED) {
+      nsNavHistory *navHistory = nsNavHistory::GetHistoryService();
+      NS_ENSURE_STATE(navHistory);
+      navHistory->NotifyManyFrecenciesChanged();
+    }
+    return NS_OK;
+  }
+};
+
+} // anonymous namespace
+
 nsresult
 nsNavHistory::FixInvalidFrecencies()
 {
@@ -4355,8 +4500,8 @@ nsNavHistory::FixInvalidFrecencies()
   );
   NS_ENSURE_STATE(stmt);
 
-  nsRefPtr<AsyncStatementCallbackNotifier> callback =
-    new AsyncStatementCallbackNotifier(TOPIC_FRECENCY_UPDATED);
+  nsRefPtr<FixInvalidFrecenciesCallback> callback =
+    new FixInvalidFrecenciesCallback();
   nsCOMPtr<mozIStoragePendingStatement> ps;
   (void)stmt->ExecuteAsync(callback, getter_AddRefs(ps));
 

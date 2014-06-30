@@ -102,6 +102,7 @@ nsDOMIdentity.prototype = {
    */
 
   watch: function nsDOMIdentity_watch(aOptions = {}) {
+    aOptions = Cu.waiveXrays(aOptions);
     if (this._rpWatcher) {
       // For the initial release of Firefox Accounts, we support callers who
       // invoke watch() either for Firefox Accounts, or Persona, but not both.
@@ -153,6 +154,7 @@ nsDOMIdentity.prototype = {
   },
 
   request: function nsDOMIdentity_request(aOptions = {}) {
+    aOptions = Cu.waiveXrays(aOptions);
     this._log("request: " + JSON.stringify(aOptions));
 
     // Has the caller called watch() before this?
@@ -169,14 +171,13 @@ nsDOMIdentity.prototype = {
     let message = this.DOMIdentityMessage(aOptions);
 
     // We permit calling of request() outside of a user input handler only when
-    // we are handling the (deprecated) get() or getVerifiedEmail() calls,
-    // which make use of an RP context marked as _internal, or when a certified
-    // app is calling.
-    //
-    // XXX Bug 982460 - grant the same privilege to packaged apps
+    // a certified or privileged app is calling, or when we are handling the
+    // (deprecated) get() or getVerifiedEmail() calls, which make use of an RP
+    // context marked as _internal.
 
     if (!aOptions._internal &&
-        this._appStatus !== Ci.nsIPrincipal.APP_STATUS_CERTIFIED) {
+        this._appStatus !== Ci.nsIPrincipal.APP_STATUS_CERTIFIED &&
+        this._appStatus !== Ci.nsIPrincipal.APP_STATUS_PRIVILEGED) {
 
       // If the caller is not special in one of those ways, see if the user has
       // preffed on 'syntheticEventsOk' (useful for testing); otherwise, if
@@ -524,7 +525,7 @@ nsDOMIdentity.prototype = {
         }
 
         if (this._rpWatcher.onerror) {
-          this._rpWatcher.onerror(msg.message);
+          this._rpWatcher.onerror(JSON.stringify({name: msg.message.error}));
         }
         break;
       case "Identity:IDP:CallBeginProvisioningCallback":

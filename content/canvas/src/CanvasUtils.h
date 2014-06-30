@@ -7,6 +7,7 @@
 #define _CANVASUTILS_H_
 
 #include "mozilla/CheckedInt.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "jsapi.h"
 
 class nsIPrincipal;
@@ -105,8 +106,8 @@ JSValToDashArray(JSContext* cx, const JS::Value& patternArray,
     // anybody...
     static const uint32_t MAX_NUM_DASHES = 1 << 14;
 
-    if (!JSVAL_IS_PRIMITIVE(patternArray)) {
-        JS::Rooted<JSObject*> obj(cx, JSVAL_TO_OBJECT(patternArray));
+    if (!patternArray.isPrimitive()) {
+        JS::Rooted<JSObject*> obj(cx, patternArray.toObjectOrNull());
         uint32_t length;
         if (!JS_GetArrayLength(cx, obj, &length)) {
             // Not an array-like thing
@@ -140,7 +141,7 @@ JSValToDashArray(JSContext* cx, const JS::Value& patternArray,
             // An all-zero pattern makes no sense.
             return NS_ERROR_ILLEGAL_VALUE;
         }
-    } else if (!(JSVAL_IS_VOID(patternArray) || JSVAL_IS_NULL(patternArray))) {
+    } else if (!(patternArray.isUndefined() || patternArray.isNull())) {
         // undefined and null mean "reset to no dash".  Any other
         // random garbage is a type error.
         return NS_ERROR_INVALID_ARG;
@@ -150,28 +151,20 @@ JSValToDashArray(JSContext* cx, const JS::Value& patternArray,
 }
 
 template<typename T>
-JS::Value
+void
 DashArrayToJSVal(FallibleTArray<T>& dashes,
-                 JSContext* cx, mozilla::ErrorResult& rv)
+                 JSContext* cx,
+                 JS::MutableHandle<JS::Value> retval,
+                 mozilla::ErrorResult& rv)
 {
     if (dashes.IsEmpty()) {
-        return JSVAL_NULL;
+        retval.setNull();
+        return;
     }
-    JS::Rooted<JSObject*> obj(cx,
-        JS_NewArrayObject(cx, dashes.Length()));
-    if (!obj) {
+    JS::Rooted<JS::Value> val(cx);
+    if (!mozilla::dom::ToJSValue(cx, dashes, retval)) {
         rv.Throw(NS_ERROR_OUT_OF_MEMORY);
-        return JSVAL_NULL;
     }
-    for (uint32_t i = 0; i < dashes.Length(); ++i) {
-        double d = dashes[i];
-        JS::Value elt = DOUBLE_TO_JSVAL(d);
-        if (!JS_DefineElement(cx, obj, i, elt, nullptr, nullptr, 0)) {
-            rv.Throw(NS_ERROR_FAILURE);
-            return JSVAL_NULL;
-        }
-    }
-    return OBJECT_TO_JSVAL(obj);
 }
 
 }

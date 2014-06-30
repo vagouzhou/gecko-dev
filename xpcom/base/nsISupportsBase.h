@@ -33,7 +33,8 @@
  * and a reference counted memory model (AddRef/Release). This is
  * modelled after the win32 IUnknown API.
  */
-class NS_NO_VTABLE nsISupports {
+class NS_NO_VTABLE nsISupports
+{
 public:
 
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_ISUPPORTS_IID)
@@ -61,7 +62,7 @@ public:
    *
    * @return The resulting reference count.
    */
-  NS_IMETHOD_(nsrefcnt) AddRef(void) = 0;
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void) = 0;
 
   /**
    * Decreases the reference count for this interface.
@@ -70,7 +71,7 @@ public:
    *
    * @return The resulting reference count.
    */
-  NS_IMETHOD_(nsrefcnt) Release(void) = 0;
+  NS_IMETHOD_(MozExternalRefCountType) Release(void) = 0;
 
   //@}
 };

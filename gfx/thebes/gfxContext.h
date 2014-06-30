@@ -37,7 +37,7 @@ template <typename T> class FallibleTArray;
  * Note that the gfxContext takes coordinates in device pixels,
  * as opposed to app units.
  */
-class gfxContext {
+class gfxContext MOZ_FINAL {
     NS_INLINE_DECL_REFCOUNTING(gfxContext)
 
 public:
@@ -53,8 +53,6 @@ public:
      */
     gfxContext(mozilla::gfx::DrawTarget *aTarget,
                const mozilla::gfx::Point& aDeviceOffset = mozilla::gfx::Point());
-
-    ~gfxContext();
 
     /**
      * Create a new gfxContext wrapping aTarget and preserving aTarget's
@@ -439,6 +437,8 @@ public:
      */
     void Mask(gfxASurface *surface, const gfxPoint& offset = gfxPoint(0.0, 0.0));
 
+    void Mask(mozilla::gfx::SourceSurface *surface, const mozilla::gfx::Point& offset = mozilla::gfx::Point());
+
     /**
      ** Shortcuts
      **/
@@ -655,6 +655,8 @@ public:
     gfxRect GetUserFillExtent();
     gfxRect GetUserStrokeExtent();
 
+    mozilla::gfx::Point GetDeviceOffset() const;
+
     /**
      ** Flags
      **/
@@ -705,17 +707,19 @@ public:
     /**
      * Write as a PNG encoded Data URL to stdout.
      */
-    void DumpAsDataURL();
+    void DumpAsDataURI();
 
     /**
      * Copy a PNG encoded Data URL to the clipboard.
      */
-    void CopyAsDataURL();
+    void CopyAsDataURI();
 #endif
 
     static mozilla::gfx::UserDataKey sDontUseAsSourceKey;
 
 private:
+    ~gfxContext();
+
   friend class GeneralPattern;
   friend struct GlyphBufferAzure;
 
@@ -818,9 +822,7 @@ public:
   }
 
   ~gfxContextAutoSaveRestore() {
-    if (mContext) {
-      mContext->Restore();
-    }
+    Restore();
   }
 
   void SetContext(gfxContext *aContext) {
@@ -829,14 +831,19 @@ public:
     mContext->Save();    
   }
 
-  void Reset(gfxContext *aContext) {
-    // Do the equivalent of destroying and re-creating this object.
-    NS_PRECONDITION(aContext, "must provide a context");
+  void EnsureSaved(gfxContext *aContext) {
+    MOZ_ASSERT(!mContext || mContext == aContext, "wrong context");
+    if (!mContext) {
+        mContext = aContext;
+        mContext->Save();
+    }
+  }
+
+  void Restore() {
     if (mContext) {
       mContext->Restore();
+      mContext = nullptr;
     }
-    mContext = aContext;
-    mContext->Save();
   }
 
 private:

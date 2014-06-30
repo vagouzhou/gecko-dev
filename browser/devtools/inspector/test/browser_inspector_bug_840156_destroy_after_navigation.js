@@ -1,13 +1,11 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-let promise = devtools.require("sdk/core/promise");
+let {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 let Toolbox = devtools.Toolbox;
 let TargetFactory = devtools.TargetFactory;
 
 function test() {
-  waitForExplicitFinish();
-
   const URL_1 = "data:text/plain;charset=UTF-8,abcde";
   const URL_2 = "data:text/plain;charset=UTF-8,12345";
 

@@ -9,6 +9,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLOptGroupElement.h"
 #include "mozilla/dom/HTMLOptionElement.h"
@@ -16,7 +17,6 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsContentList.h"
 #include "nsError.h"
-#include "nsEventStates.h"
 #include "nsFormSubmission.h"
 #include "nsGkAtoms.h"
 #include "nsIComboboxControlFrame.h"
@@ -40,8 +40,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT_CHECK_PARSER(Select)
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_ISUPPORTS1(SelectState, SelectState)
-NS_DEFINE_STATIC_IID_ACCESSOR(SelectState, NS_SELECT_STATE_IID)
+NS_IMPL_ISUPPORTS(SelectState, SelectState)
 
 //----------------------------------------------------------------------
 //
@@ -101,7 +100,7 @@ SafeOptionListMutation::~SafeOptionListMutation()
 // construction, destruction
 
 
-HTMLSelectElement::HTMLSelectElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+HTMLSelectElement::HTMLSelectElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                                      FromParser aFromParser)
   : nsGenericHTMLFormElementWithState(aNodeInfo),
     mOptions(new HTMLOptionsCollection(MOZ_THIS_IN_INITIALIZER_LIST())),
@@ -154,9 +153,9 @@ NS_IMPL_RELEASE_INHERITED(HTMLSelectElement, Element)
 
 // QueryInterface implementation for HTMLSelectElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLSelectElement)
-  NS_INTERFACE_TABLE_INHERITED2(HTMLSelectElement,
-                                nsIDOMHTMLSelectElement,
-                                nsIConstraintValidation)
+  NS_INTERFACE_TABLE_INHERITED(HTMLSelectElement,
+                               nsIDOMHTMLSelectElement,
+                               nsIConstraintValidation)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLFormElementWithState)
 
 
@@ -743,7 +742,7 @@ HTMLSelectElement::SetLength(uint32_t aLength, ErrorResult& aRv)
       return;
     }
 
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
 
     nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::option,
                                 getter_AddRefs(nodeInfo));
@@ -1512,10 +1511,10 @@ HTMLSelectElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
   return nsGenericHTMLFormElementWithState::PostHandleEvent(aVisitor);
 }
 
-nsEventStates
+EventStates
 HTMLSelectElement::IntrinsicState() const
 {
-  nsEventStates state = nsGenericHTMLFormElementWithState::IntrinsicState();
+  EventStates state = nsGenericHTMLFormElementWithState::IntrinsicState();
 
   if (IsCandidateForConstraintValidation()) {
     if (IsValid()) {
@@ -1909,9 +1908,9 @@ HTMLSelectElement::UpdateSelectedOptions()
 }
 
 JSObject*
-HTMLSelectElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLSelectElement::WrapNode(JSContext* aCx)
 {
-  return HTMLSelectElementBinding::Wrap(aCx, aScope, this);
+  return HTMLSelectElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

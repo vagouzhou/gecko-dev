@@ -1,7 +1,7 @@
 node-http2
 ==========
 
-An HTTP/2 ([draft-ietf-httpbis-http2-09](http://tools.ietf.org/html/draft-ietf-httpbis-http2-9))
+An HTTP/2 ([draft-ietf-httpbis-http2-13](http://tools.ietf.org/html/draft-ietf-httpbis-http2-13))
 client and server implementation for node.js.
 
 Installation
@@ -102,9 +102,9 @@ For pretty printing logs, you will also need a global install of bunyan (`npm in
 
 ### Developer documentation ###
 
-The developer documentation is located in the `doc` directory. The docs are usually updated only
-before releasing a new version. To regenerate them manually, run `npm run-script prepublish`.
-There's a hosted version which is located [here](http://molnarg.github.io/node-http2/doc/).
+The developer documentation is generated from the source code using docco and can be viewed online
+[here](http://molnarg.github.io/node-http2/doc/). If you'd like to have an offline copy, just run
+`npm run-script doc`.
 
 ### Running the tests ###
 
@@ -114,12 +114,12 @@ point to understand the code.
 ### Test coverage ###
 
 To generate a code coverage report, run `npm test --coverage` (which runs very slowly, be patient).
-Code coverage summary as of version 1.0.1:
+Code coverage summary as of version 2.5.3:
 ```
-Statements   : 93.26% ( 1563/1676 )
-Branches     : 84.85% ( 605/713 )
-Functions    : 94.81% ( 201/212 )
-Lines        : 93.23% ( 1557/1670 )
+Statements   : 92.64% ( 403/435 )
+Branches     : 79.41% ( 135/170 )
+Functions    : 92.31% ( 60/65 )
+Lines        : 92.64% ( 403/435 )
 ```
 
 There's a hosted version of the detailed (line-by-line) coverage report
@@ -153,6 +153,7 @@ Code contributions are always welcome! People who contributed to node-http2 so f
 
 * Nick Hurley
 * Mike Belshe
+* Yoshihiro Iwanaga
 
 Special thanks to Google for financing the development of this module as part of their [Summer of
 Code program](https://developers.google.com/open-source/soc/) (project: [HTTP/2 prototype server

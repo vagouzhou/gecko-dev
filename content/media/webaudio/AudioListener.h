@@ -37,8 +37,7 @@ public:
     return mContext;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   double DopplerFactor() const
   {
@@ -110,6 +109,8 @@ public:
   void UnregisterPannerNode(PannerNode* aPannerNode);
 
 private:
+  ~AudioListener() {}
+
   void SendDoubleParameterToStream(uint32_t aIndex, double aValue);
   void SendThreeDPointParameterToStream(uint32_t aIndex, const ThreeDPoint& aValue);
   void UpdatePannersVelocity();

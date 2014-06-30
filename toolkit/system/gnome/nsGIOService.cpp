@@ -47,13 +47,14 @@ public:
   NS_DECL_NSIGIOMIMEAPP
 
   nsGIOMimeApp(GAppInfo* aApp) : mApp(aApp) {}
-  ~nsGIOMimeApp() { g_object_unref(mApp); }
 
 private:
+  ~nsGIOMimeApp() { g_object_unref(mApp); }
+
   GAppInfo *mApp;
 };
 
-NS_IMPL_ISUPPORTS1(nsGIOMimeApp, nsIGIOMimeApp)
+NS_IMPL_ISUPPORTS(nsGIOMimeApp, nsIGIOMimeApp)
 
 NS_IMETHODIMP
 nsGIOMimeApp::GetId(nsACString& aId)
@@ -107,9 +108,10 @@ nsGIOMimeApp::Launch(const nsACString& aUri)
 
 class GIOUTF8StringEnumerator MOZ_FINAL : public nsIUTF8StringEnumerator
 {
+  ~GIOUTF8StringEnumerator() { }
+
 public:
   GIOUTF8StringEnumerator() : mIndex(0) { }
-  ~GIOUTF8StringEnumerator() { }
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIUTF8STRINGENUMERATOR
@@ -118,7 +120,7 @@ public:
   uint32_t            mIndex;
 };
 
-NS_IMPL_ISUPPORTS1(GIOUTF8StringEnumerator, nsIUTF8StringEnumerator)
+NS_IMPL_ISUPPORTS(GIOUTF8StringEnumerator, nsIUTF8StringEnumerator)
 
 NS_IMETHODIMP
 GIOUTF8StringEnumerator::HasMore(bool* aResult)
@@ -253,7 +255,7 @@ nsGIOMimeApp::SetAsDefaultForURIScheme(nsACString const& aURIScheme)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsGIOService, nsIGIOService)
+NS_IMPL_ISUPPORTS(nsGIOService, nsIGIOService)
 
 NS_IMETHODIMP
 nsGIOService::GetMimeTypeFromExtension(const nsACString& aExtension,

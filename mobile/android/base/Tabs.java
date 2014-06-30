@@ -11,7 +11,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.json.JSONException;
 import org.json.JSONObject;
+
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.favicons.Favicons;
 import org.mozilla.gecko.fxa.FirefoxAccounts;
@@ -82,28 +84,32 @@ public class Tabs implements GeckoEventListener {
     };
 
     private Tabs() {
-        registerEventListener("Session:RestoreEnd");
-        registerEventListener("SessionHistory:New");
-        registerEventListener("SessionHistory:Back");
-        registerEventListener("SessionHistory:Forward");
-        registerEventListener("SessionHistory:Goto");
-        registerEventListener("SessionHistory:Purge");
-        registerEventListener("Tab:Added");
-        registerEventListener("Tab:Close");
-        registerEventListener("Tab:Select");
-        registerEventListener("Content:LocationChange");
-        registerEventListener("Content:SecurityChange");
-        registerEventListener("Content:ReaderEnabled");
-        registerEventListener("Content:StateChange");
-        registerEventListener("Content:LoadError");
-        registerEventListener("Content:PageShow");
-        registerEventListener("DOMContentLoaded");
-        registerEventListener("DOMTitleChanged");
-        registerEventListener("Link:Favicon");
-        registerEventListener("Link:Feed");
-        registerEventListener("Link:OpenSearch");
-        registerEventListener("DesktopMode:Changed");
-        registerEventListener("Tab:ViewportMetadata");
+        EventDispatcher.getInstance().registerGeckoThreadListener(this,
+            "Session:RestoreEnd",
+            "SessionHistory:New",
+            "SessionHistory:Back",
+            "SessionHistory:Forward",
+            "SessionHistory:Goto",
+            "SessionHistory:Purge",
+            "Tab:Added",
+            "Tab:Close",
+            "Tab:Select",
+            "Content:LocationChange",
+            "Content:SecurityChange",
+            "Content:ReaderEnabled",
+            "Content:StateChange",
+            "Content:LoadError",
+            "Content:PageShow",
+            "DOMContentLoaded",
+            "DOMTitleChanged",
+            "Link:Favicon",
+            "Link:Feed",
+            "Link:OpenSearch",
+            "DesktopMode:Changed",
+            "Tab:ViewportMetadata",
+            "Tab:StreamStart",
+            "Tab:StreamStop");
+
     }
 
     public synchronized void attachToContext(Context context) {
@@ -182,13 +188,18 @@ public class Tabs implements GeckoEventListener {
         }
     }
 
-    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate) {
+    private Tab addTab(int id, String url, boolean external, int parentId, String title, boolean isPrivate, int tabIndex) {
         final Tab tab = isPrivate ? new PrivateTab(mAppContext, id, url, external, parentId, title) :
                                     new Tab(mAppContext, id, url, external, parentId, title);
         synchronized (this) {
             lazyRegisterBookmarkObserver();
             mTabs.put(id, tab);
-            mOrder.add(tab);
+
+            if (tabIndex > -1) {
+                mOrder.add(tabIndex, tab);
+            } else {
+                mOrder.add(tab);
+            }
         }
 
         // Suppress the ADDED event to prevent animation of tabs created via session restore.
@@ -280,6 +291,7 @@ public class Tabs implements GeckoEventListener {
         return selected != null && selected.getId() == tabId;
     }
 
+    @RobocopTarget
     public synchronized Tab getTab(int id) {
         if (id == -1)
             return null;
@@ -294,12 +306,21 @@ public class Tabs implements GeckoEventListener {
     }
 
     /** Close tab and then select the default next tab */
+    @RobocopTarget
     public synchronized void closeTab(Tab tab) {
         closeTab(tab, getNextTab(tab));
     }
 
+    public synchronized void closeTab(Tab tab, Tab nextTab) {
+        closeTab(tab, nextTab, false);
+    }
+
+    public synchronized void closeTab(Tab tab, boolean showUndoToast) {
+        closeTab(tab, getNextTab(tab), showUndoToast);
+    }
+
     /** Close tab and then select nextTab */
-    public synchronized void closeTab(final Tab tab, Tab nextTab) {
+    public synchronized void closeTab(final Tab tab, Tab nextTab, boolean showUndoToast) {
         if (tab == null)
             return;
 
@@ -314,8 +335,16 @@ public class Tabs implements GeckoEventListener {
 
         tab.onDestroy();
 
+        final JSONObject args = new JSONObject();
+        try {
+            args.put("tabId", String.valueOf(tabId));
+            args.put("showUndoToast", showUndoToast);
+        } catch (JSONException e) {
+            Log.e(LOGTAG, "Error building Tab:Closed arguments: " + e);
+        }
+
         // Pass a message to Gecko to update tab state in BrowserApp
-        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", String.valueOf(tabId)));
+        GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:Closed", args.toString()));
     }
 
     /** Return the tab that will be selected by default after this one is closed */
@@ -379,7 +408,6 @@ public class Tabs implements GeckoEventListener {
     }
 
     // GeckoEventListener implementation
-
     @Override
     public void handleMessage(String event, JSONObject message) {
         Log.d(LOGTAG, "handleMessage: " + event);
@@ -406,7 +434,8 @@ public class Tabs implements GeckoEventListener {
                     tab = addTab(id, url, message.getBoolean("external"),
                                           message.getInt("parentId"),
                                           message.getString("title"),
-                                          message.getBoolean("isPrivate"));
+                                          message.getBoolean("isPrivate"),
+                                          message.getInt("tabIndex"));
 
                     // If we added the tab as a stub, we should have already
                     // selected it, so ignore this flag for stubbed tabs.
@@ -486,7 +515,14 @@ public class Tabs implements GeckoEventListener {
                 tab.setZoomConstraints(new ZoomConstraints(message));
                 tab.setIsRTL(message.getBoolean("isRTL"));
                 notifyListeners(tab, TabEvents.VIEWPORT_CHANGE);
+            } else if (event.equals("Tab:StreamStart")) {
+                tab.setRecording(true);
+                notifyListeners(tab, TabEvents.RECORDING_CHANGE);
+            } else if (event.equals("Tab:StreamStop")) {
+                tab.setRecording(false);
+                notifyListeners(tab, TabEvents.RECORDING_CHANGE);
             }
+
         } catch (Exception e) {
             Log.w(LOGTAG, "handleMessage threw for " + event, e);
         }
@@ -557,7 +593,8 @@ public class Tabs implements GeckoEventListener {
         SECURITY_CHANGE,
         READER_ENABLED,
         DESKTOP_MODE_CHANGE,
-        VIEWPORT_CHANGE
+        VIEWPORT_CHANGE,
+        RECORDING_CHANGE
     }
 
     public void notifyListeners(Tab tab, TabEvents msg) {
@@ -626,10 +663,6 @@ public class Tabs implements GeckoEventListener {
         backgroundHandler.postDelayed(mPersistTabsRunnable, PERSIST_TABS_AFTER_MILLISECONDS);
     }
 
-    private void registerEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().registerEventListener(event, this);
-    }
-
     /**
      * Looks for an open tab with the given URL.
      * @param url       the URL of the tab we're looking for
@@ -661,12 +694,46 @@ public class Tabs implements GeckoEventListener {
             if (isPrivate != null && isPrivate != tab.isPrivate()) {
                 continue;
             }
+            if (url.equals(tab.getURL())) {
+                return tab;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Looks for a reader mode enabled open tab with the given URL and private
+     * state.
+     *
+     * @param url
+     *            The URL of the tab we're looking for. The url parameter can be
+     *            the actual article URL or the reader mode article URL.
+     * @param isPrivate
+     *            If true, only look for tabs that are private. If false, only
+     *            look for tabs that are not private.
+     *
+     * @return The first Tab with the given URL, or null if there is no such
+     *         tab.
+     */
+    public Tab getFirstReaderTabForUrl(String url, boolean isPrivate) {
+        if (url == null) {
+            return null;
+        }
+
+        if (AboutPages.isAboutReader(url)) {
+            url = ReaderModeUtils.getUrlFromAboutReader(url);
+        }
+        for (Tab tab : mOrder) {
+            if (isPrivate != tab.isPrivate()) {
+                continue;
+            }
             String tabUrl = tab.getURL();
             if (AboutPages.isAboutReader(tabUrl)) {
                 tabUrl = ReaderModeUtils.getUrlFromAboutReader(tabUrl);
-            }
-            if (url.equals(tabUrl)) {
-                return tab;
+                if (url.equals(tabUrl)) {
+                    return tab;
+                }
             }
         }
 
@@ -740,7 +807,10 @@ public class Tabs implements GeckoEventListener {
                 // long as it's a valid URI.
                 String tabUrl = (url != null && Uri.parse(url).getScheme() != null) ? url : null;
 
-                added = addTab(tabId, tabUrl, external, parentId, url, isPrivate);
+                // Add the new tab to the end of the tab order.
+                final int tabIndex = -1;
+
+                added = addTab(tabId, tabUrl, external, parentId, url, isPrivate, tabIndex);
                 added.setDesktopMode(desktopMode);
             }
         } catch (Exception e) {

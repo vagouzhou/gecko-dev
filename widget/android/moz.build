@@ -26,6 +26,8 @@ SOURCES += [
     'AndroidJNIWrapper.cpp',
     'GeneratedJNIWrappers.cpp',
     'GfxInfo.cpp',
+    'NativeJSContainer.cpp',
+    'nsAndroidProtocolHandler.cpp',
     'nsAppShell.cpp',
     'nsClipboard.cpp',
     'nsDeviceContextAndroid.cpp',
@@ -48,8 +50,9 @@ FINAL_LIBRARY = 'xul'
 
 LOCAL_INCLUDES += [
     '/docshell/base',
-    '/dom/events',
+    '/dom/base',
     '/dom/system/android',
+    '/netwerk/base/src',
     '/netwerk/cache',
     '/widget/android/android',
     '/widget/shared',

@@ -8,7 +8,7 @@ import org.mozilla.gecko.GeckoApplication;
 import org.mozilla.gecko.LightweightTheme;
 import org.mozilla.gecko.LightweightThemeDrawable;
 import org.mozilla.gecko.R;
-import org.mozilla.gecko.widget.GeckoImageButton;
+import org.mozilla.gecko.widget.ThemedImageButton;
 
 import android.content.Context;
 import android.content.res.TypedArray;
@@ -19,7 +19,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.StateListDrawable;
 import android.util.AttributeSet;
 
-public class ShapedButton extends GeckoImageButton
+public class ShapedButton extends ThemedImageButton
                           implements CanvasDelegate.DrawManager {
     protected final LightweightTheme mTheme;
 
@@ -53,14 +53,12 @@ public class ShapedButton extends GeckoImageButton
     }
 
     @Override
-    public void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+    protected void onSizeChanged(int width, int height, int oldWidth, int oldHeight) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight);
 
         if (mSide == CurveTowards.NONE)
             return;
 
-        final int width = getMeasuredWidth();
-        final int height = getMeasuredHeight();
         final int curve = (int) (height * 1.125f);
 
         mPath.reset();

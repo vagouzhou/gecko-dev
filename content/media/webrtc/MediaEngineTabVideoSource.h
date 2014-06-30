@@ -17,17 +17,17 @@ class MediaEngineTabVideoSource : public MediaEngineVideoSource, nsIDOMEventList
     NS_DECL_NSIDOMEVENTLISTENER
     NS_DECL_NSITIMERCALLBACK
     MediaEngineTabVideoSource();
-    ~MediaEngineTabVideoSource();
 
     virtual void GetName(nsAString_internal&);
     virtual void GetUUID(nsAString_internal&);
-    virtual nsresult Allocate(const mozilla::MediaEnginePrefs&);
+    virtual nsresult Allocate(const VideoTrackConstraintsN &,
+                              const mozilla::MediaEnginePrefs&);
     virtual nsresult Deallocate();
     virtual nsresult Start(mozilla::SourceMediaStream*, mozilla::TrackID);
     virtual nsresult Snapshot(uint32_t, nsIDOMFile**);
     virtual void NotifyPull(mozilla::MediaStreamGraph*, mozilla::SourceMediaStream*, mozilla::TrackID, mozilla::StreamTime, mozilla::TrackTicks&);
     virtual nsresult Stop(mozilla::SourceMediaStream*, mozilla::TrackID);
-    virtual nsresult Config(bool, uint32_t, bool, uint32_t, bool, uint32_t);
+    virtual nsresult Config(bool, uint32_t, bool, uint32_t, bool, uint32_t, int32_t);
     virtual bool IsFake();
     void Draw();
 
@@ -52,15 +52,17 @@ class MediaEngineTabVideoSource : public MediaEngineVideoSource, nsIDOMEventList
       nsRefPtr<MediaEngineTabVideoSource> mVideoSource;
     };
 
+protected:
+    ~MediaEngineTabVideoSource() {}
+
 private:
     int mBufW;
     int mBufH;
     int mTimePerFrame;
-    unsigned char *mData;
+    ScopedFreePtr<unsigned char> mData;
     nsCOMPtr<nsIDOMWindow> mWindow;
     nsRefPtr<layers::CairoImage> mImage;
     nsCOMPtr<nsITimer> mTimer;
-    nsAutoString mName, mUuid;
     Monitor mMonitor;
     nsCOMPtr<nsITabSource> mTabSource;
   };

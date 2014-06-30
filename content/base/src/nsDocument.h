@@ -23,13 +23,11 @@
 #include "nsIDOMXMLDocument.h"
 #include "nsIDOMDocumentXBL.h"
 #include "nsStubDocumentObserver.h"
-#include "nsIDOMStyleSheetList.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIContent.h"
 #include "nsIPrincipal.h"
 #include "nsIParser.h"
 #include "nsBindingManager.h"
-#include "nsINodeInfo.h"
 #include "nsInterfaceHashtable.h"
 #include "nsJSThingHashtable.h"
 #include "nsIBoxObject.h"
@@ -62,14 +60,17 @@
 #include "nsIChannelEventSink.h"
 #include "imgIRequest.h"
 #include "mozilla/EventListenerManager.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/DOMImplementation.h"
+#include "mozilla/dom/StyleSheetList.h"
 #include "nsIDOMTouchEvent.h"
 #include "nsDataHashtable.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Attributes.h"
 #include "nsIDOMXPathEvaluator.h"
 #include "jsfriendapi.h"
+#include "ImportManager.h"
 
 #define XML_DECLARATION_BITS_DECLARATION_EXISTS   (1 << 0)
 #define XML_DECLARATION_BITS_ENCODING_EXISTS      (1 << 1)
@@ -77,7 +78,6 @@
 #define XML_DECLARATION_BITS_STANDALONE_YES       (1 << 3)
 
 
-class nsDOMStyleSheetList;
 class nsDOMStyleSheetSetList;
 class nsIOutputStream;
 class nsDocument;
@@ -101,7 +101,7 @@ namespace mozilla {
 class EventChainPreVisitor;
 namespace dom {
 class UndoManager;
-class LifecycleCallbacks;
+struct LifecycleCallbacks;
 class CallbackFunction;
 }
 }
@@ -264,11 +264,11 @@ public:
   KeyType GetKey() const { return const_cast<KeyType>(this); }
   bool KeyEquals(const KeyTypePointer aKey) const
   {
-    MOZ_ASSERT(mNamespaceID != kNameSpaceID_None,
+    MOZ_ASSERT(mNamespaceID != kNameSpaceID_Unknown,
                "This equals method is not transitive, nor symmetric. "
-               "A key with a namespace of kNamespaceID_None should "
+               "A key with a namespace of kNamespaceID_Unknown should "
                "not be stored in a hashtable.");
-    return (kNameSpaceID_None == aKey->mNamespaceID ||
+    return (kNameSpaceID_Unknown == aKey->mNamespaceID ||
             mNamespaceID == aKey->mNamespaceID) &&
            aKey->mAtom == mAtom;
   }
@@ -385,6 +385,36 @@ struct CustomElementDefinition
   uint32_t mDocOrder;
 };
 
+class Registry : public nsISupports
+{
+public:
+  friend class ::nsDocument;
+
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Registry)
+
+  Registry();
+
+protected:
+  virtual ~Registry();
+
+  typedef nsClassHashtable<mozilla::dom::CustomElementHashKey,
+                           mozilla::dom::CustomElementDefinition>
+    DefinitionMap;
+  typedef nsClassHashtable<mozilla::dom::CustomElementHashKey,
+                           nsTArray<nsRefPtr<mozilla::dom::Element>>>
+    CandidateMap;
+
+  // Hashtable for custom element definitions in web components.
+  // Custom prototypes are in the document's compartment.
+  DefinitionMap mCustomDefinitions;
+
+  // The "upgrade candidates map" from the web components spec. Maps from a
+  // namespace id and local name to a list of elements to upgrade if that
+  // element is registered as a custom element.
+  CandidateMap mCandidatesMap;
+};
+
 } // namespace dom
 } // namespace mozilla
 
@@ -406,16 +436,14 @@ public:
   nsDocHeaderData*  mNext;
 };
 
-class nsDOMStyleSheetList : public nsIDOMStyleSheetList,
+class nsDOMStyleSheetList : public mozilla::dom::StyleSheetList,
                             public nsStubDocumentObserver
 {
 public:
   nsDOMStyleSheetList(nsIDocument *aDocument);
   virtual ~nsDOMStyleSheetList();
 
-  NS_DECL_ISUPPORTS
-
-  NS_DECL_NSIDOMSTYLESHEETLIST
+  NS_DECL_ISUPPORTS_INHERITED
 
   // nsIDocumentObserver
   NS_DECL_NSIDOCUMENTOBSERVER_STYLESHEETADDED
@@ -424,7 +452,14 @@ public:
   // nsIMutationObserver
   NS_DECL_NSIMUTATIONOBSERVER_NODEWILLBEDESTROYED
 
-  nsIStyleSheet* GetItemAt(uint32_t aIndex);
+  virtual nsINode* GetParentObject() const MOZ_OVERRIDE
+  {
+    return mDocument;
+  }
+
+  virtual uint32_t Length() MOZ_OVERRIDE;
+  virtual mozilla::CSSStyleSheet*
+  IndexedGetter(uint32_t aIndex, bool& aFound) MOZ_OVERRIDE;
 
 protected:
   int32_t       mLength;
@@ -504,6 +539,8 @@ protected:
   class PendingLoad : public ExternalResourceLoad,
                       public nsIStreamListener
   {
+    ~PendingLoad() {}
+
   public:
     PendingLoad(nsDocument* aDisplayDocument) :
       mDisplayDocument(aDisplayDocument)
@@ -535,6 +572,7 @@ protected:
 
   class LoadgroupCallbacks MOZ_FINAL : public nsIInterfaceRequestor
   {
+    ~LoadgroupCallbacks() {}
   public:
     LoadgroupCallbacks(nsIInterfaceRequestor* aOtherCallbacks)
       : mCallbacks(aOtherCallbacks)
@@ -557,6 +595,7 @@ protected:
     class _i##Shim MOZ_FINAL : public nsIInterfaceRequestor,                 \
                                public _i                                     \
     {                                                                        \
+      ~_i##Shim() {}                                                         \
     public:                                                                  \
       _i##Shim(nsIInterfaceRequestor* aIfreq, _i* aRealPtr)                  \
         : mIfReq(aIfreq), mRealPtr(aRealPtr)                                 \
@@ -638,6 +677,8 @@ class nsDocument : public nsIDocument,
                    public nsIObserver,
                    public nsIDOMXPathEvaluator
 {
+  friend class nsIDocument;
+
 public:
   typedef mozilla::dom::Element Element;
   using nsIDocument::GetElementsByTagName;
@@ -666,6 +707,10 @@ public:
   virtual void NotifyPossibleTitleChange(bool aBoundTitleElement) MOZ_OVERRIDE;
 
   virtual void SetDocumentURI(nsIURI* aURI) MOZ_OVERRIDE;
+
+  virtual void SetChromeXHRDocURI(nsIURI* aURI) MOZ_OVERRIDE;
+
+  virtual void SetChromeXHRDocBaseURI(nsIURI* aURI) MOZ_OVERRIDE;
 
   /**
    * Set the principal responsible for this document.
@@ -733,14 +778,18 @@ public:
 
   virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() MOZ_OVERRIDE;
 
+  virtual mozilla::dom::AnimationTimeline* Timeline() MOZ_OVERRIDE;
+
   virtual nsresult SetSubDocumentFor(Element* aContent,
                                      nsIDocument* aSubDoc) MOZ_OVERRIDE;
   virtual nsIDocument* GetSubDocumentFor(nsIContent* aContent) const MOZ_OVERRIDE;
   virtual Element* FindContentForSubDocument(nsIDocument *aDocument) const MOZ_OVERRIDE;
   virtual Element* GetRootElementInternal() const MOZ_OVERRIDE;
 
+  virtual void EnsureOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet) MOZ_OVERRIDE;
+
   /**
-   * Get the style sheets owned by this document.
+   * Get the (document) style sheets owned by this document.
    * These are ordered, highest priority last
    */
   virtual int32_t GetNumberOfStyleSheets() const MOZ_OVERRIDE;
@@ -758,17 +807,19 @@ public:
   virtual void SetStyleSheetApplicableState(nsIStyleSheet* aSheet,
                                             bool aApplicable) MOZ_OVERRIDE;
 
-  virtual int32_t GetNumberOfCatalogStyleSheets() const MOZ_OVERRIDE;
-  virtual nsIStyleSheet* GetCatalogStyleSheetAt(int32_t aIndex) const MOZ_OVERRIDE;
-  virtual void AddCatalogStyleSheet(nsCSSStyleSheet* aSheet) MOZ_OVERRIDE;
-  virtual void EnsureCatalogStyleSheet(const char *aStyleSheetURI) MOZ_OVERRIDE;
-
   virtual nsresult LoadAdditionalStyleSheet(additionalSheetType aType, nsIURI* aSheetURI) MOZ_OVERRIDE;
   virtual void RemoveAdditionalStyleSheet(additionalSheetType aType, nsIURI* sheetURI) MOZ_OVERRIDE;
   virtual nsIStyleSheet* FirstAdditionalAuthorSheet() MOZ_OVERRIDE;
 
   virtual nsIChannel* GetChannel() const MOZ_OVERRIDE {
     return mChannel;
+  }
+
+  virtual nsIChannel* GetFailedChannel() const MOZ_OVERRIDE {
+    return mFailedChannel;
+  }
+  virtual void SetFailedChannel(nsIChannel* aChannel) MOZ_OVERRIDE {
+    mFailedChannel = aChannel;
   }
 
   virtual void SetScriptGlobalObject(nsIScriptGlobalObject* aGlobalObject) MOZ_OVERRIDE;
@@ -813,8 +864,10 @@ public:
   virtual void SetReadyStateInternal(ReadyState rs) MOZ_OVERRIDE;
 
   virtual void ContentStateChanged(nsIContent* aContent,
-                                   nsEventStates aStateMask) MOZ_OVERRIDE;
-  virtual void DocumentStatesChanged(nsEventStates aStateMask) MOZ_OVERRIDE;
+                                   mozilla::EventStates aStateMask)
+                                     MOZ_OVERRIDE;
+  virtual void DocumentStatesChanged(
+                 mozilla::EventStates aStateMask) MOZ_OVERRIDE;
 
   virtual void StyleRuleChanged(nsIStyleSheet* aStyleSheet,
                                 nsIStyleRule* aOldStyleRule,
@@ -848,9 +901,8 @@ public:
   virtual uint32_t GetChildCount() const MOZ_OVERRIDE;
   virtual nsresult InsertChildAt(nsIContent* aKid, uint32_t aIndex,
                                  bool aNotify) MOZ_OVERRIDE;
-  virtual nsresult AppendChildTo(nsIContent* aKid, bool aNotify);
   virtual void RemoveChildAt(uint32_t aIndex, bool aNotify) MOZ_OVERRIDE;
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE
   {
     return NS_ERROR_NOT_IMPLEMENTED;
   }
@@ -886,6 +938,7 @@ public:
   virtual nsViewportInfo GetViewportInfo(const mozilla::ScreenIntSize& aDisplaySize) MOZ_OVERRIDE;
 
 private:
+  void AddOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet);
   nsRadioGroupStruct* GetRadioGroupInternal(const nsAString& aName) const;
   void SendToConsole(nsCOMArray<nsISecurityConsoleMessage>& aMessages);
 
@@ -927,53 +980,53 @@ public:
                               int32_t aNamespaceID,
                               nsIContent **aResult) MOZ_OVERRIDE;
 
-  virtual NS_HIDDEN_(void) Sanitize();
+  virtual void Sanitize();
 
-  virtual NS_HIDDEN_(void) EnumerateSubDocuments(nsSubDocEnumFunc aCallback,
+  virtual void EnumerateSubDocuments(nsSubDocEnumFunc aCallback,
                                                  void *aData);
 
-  virtual NS_HIDDEN_(bool) CanSavePresentation(nsIRequest *aNewRequest);
-  virtual NS_HIDDEN_(void) Destroy();
-  virtual NS_HIDDEN_(void) RemovedFromDocShell();
-  virtual NS_HIDDEN_(already_AddRefed<nsILayoutHistoryState>) GetLayoutHistoryState() const;
+  virtual bool CanSavePresentation(nsIRequest *aNewRequest);
+  virtual void Destroy();
+  virtual void RemovedFromDocShell();
+  virtual already_AddRefed<nsILayoutHistoryState> GetLayoutHistoryState() const;
 
-  virtual NS_HIDDEN_(void) BlockOnload();
-  virtual NS_HIDDEN_(void) UnblockOnload(bool aFireSync);
+  virtual void BlockOnload();
+  virtual void UnblockOnload(bool aFireSync);
 
-  virtual NS_HIDDEN_(void) AddStyleRelevantLink(mozilla::dom::Link* aLink);
-  virtual NS_HIDDEN_(void) ForgetLink(mozilla::dom::Link* aLink);
+  virtual void AddStyleRelevantLink(mozilla::dom::Link* aLink);
+  virtual void ForgetLink(mozilla::dom::Link* aLink);
 
-  NS_HIDDEN_(void) ClearBoxObjectFor(nsIContent* aContent);
+  void ClearBoxObjectFor(nsIContent* aContent);
   already_AddRefed<nsIBoxObject> GetBoxObjectFor(mozilla::dom::Element* aElement,
                                                  mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
 
-  virtual NS_HIDDEN_(Element*)
+  virtual Element*
     GetAnonymousElementByAttribute(nsIContent* aElement,
                                    nsIAtom* aAttrName,
                                    const nsAString& aAttrValue) const;
 
-  virtual NS_HIDDEN_(Element*) ElementFromPointHelper(float aX, float aY,
+  virtual Element* ElementFromPointHelper(float aX, float aY,
                                                       bool aIgnoreRootScrollFrame,
                                                       bool aFlushLayout);
 
-  virtual NS_HIDDEN_(nsresult) NodesFromRectHelper(float aX, float aY,
+  virtual nsresult NodesFromRectHelper(float aX, float aY,
                                                    float aTopSize, float aRightSize,
                                                    float aBottomSize, float aLeftSize,
                                                    bool aIgnoreRootScrollFrame,
                                                    bool aFlushLayout,
                                                    nsIDOMNodeList** aReturn);
 
-  virtual NS_HIDDEN_(void) FlushSkinBindings();
+  virtual void FlushSkinBindings();
 
-  virtual NS_HIDDEN_(nsresult) InitializeFrameLoader(nsFrameLoader* aLoader);
-  virtual NS_HIDDEN_(nsresult) FinalizeFrameLoader(nsFrameLoader* aLoader);
-  virtual NS_HIDDEN_(void) TryCancelFrameLoaderInitialization(nsIDocShell* aShell);
-  virtual NS_HIDDEN_(bool) FrameLoaderScheduledToBeFinalized(nsIDocShell* aShell);
-  virtual NS_HIDDEN_(nsIDocument*)
+  virtual nsresult InitializeFrameLoader(nsFrameLoader* aLoader);
+  virtual nsresult FinalizeFrameLoader(nsFrameLoader* aLoader);
+  virtual void TryCancelFrameLoaderInitialization(nsIDocShell* aShell);
+  virtual bool FrameLoaderScheduledToBeFinalized(nsIDocShell* aShell);
+  virtual nsIDocument*
     RequestExternalResource(nsIURI* aURI,
                             nsINode* aRequestingNode,
                             ExternalResourceLoad** aPendingLoad);
-  virtual NS_HIDDEN_(void)
+  virtual void
     EnumerateExternalResources(nsSubDocEnumFunc aCallback, void* aData);
 
   nsTArray<nsCString> mHostObjectURIs;
@@ -1033,11 +1086,11 @@ public:
                             const nsAString& aCrossOriginAttr) MOZ_OVERRIDE;
 
   virtual nsresult LoadChromeSheetSync(nsIURI* uri, bool isAgentSheet,
-                                       nsCSSStyleSheet** sheet) MOZ_OVERRIDE;
+                                       mozilla::CSSStyleSheet** sheet) MOZ_OVERRIDE;
 
   virtual nsISupports* GetCurrentContentSink() MOZ_OVERRIDE;
 
-  virtual nsEventStates GetDocumentState() MOZ_OVERRIDE;
+  virtual mozilla::EventStates GetDocumentState() MOZ_OVERRIDE;
 
   virtual void RegisterHostObjectUri(const nsACString& aUri) MOZ_OVERRIDE;
   virtual void UnregisterHostObjectUri(const nsACString& aUri) MOZ_OVERRIDE;
@@ -1057,9 +1110,9 @@ public:
   virtual void MozSetImageElement(const nsAString& aImageElementId,
                                   Element* aElement) MOZ_OVERRIDE;
 
-  virtual NS_HIDDEN_(nsresult) AddImage(imgIRequest* aImage);
-  virtual NS_HIDDEN_(nsresult) RemoveImage(imgIRequest* aImage, uint32_t aFlags);
-  virtual NS_HIDDEN_(nsresult) SetImageLockingState(bool aLocked);
+  virtual nsresult AddImage(imgIRequest* aImage);
+  virtual nsresult RemoveImage(imgIRequest* aImage, uint32_t aFlags);
+  virtual nsresult SetImageLockingState(bool aLocked);
 
   // AddPlugin adds a plugin-related element to mPlugins when the element is
   // added to the tree.
@@ -1077,13 +1130,6 @@ public:
   virtual nsresult SetNavigationTiming(nsDOMNavigationTiming* aTiming) MOZ_OVERRIDE;
 
   virtual Element* FindImageMap(const nsAString& aNormalizedMapName) MOZ_OVERRIDE;
-
-  virtual void NotifyAudioAvailableListener() MOZ_OVERRIDE;
-
-  bool HasAudioAvailableListeners() MOZ_OVERRIDE
-  {
-    return mHasAudioAvailableListener;
-  }
 
   virtual Element* GetFullScreenElement() MOZ_OVERRIDE;
   virtual void AsyncRequestFullScreen(Element* aElement) MOZ_OVERRIDE;
@@ -1192,11 +1238,12 @@ public:
   // WebIDL bits
   virtual mozilla::dom::DOMImplementation*
     GetImplementation(mozilla::ErrorResult& rv) MOZ_OVERRIDE;
-  virtual JSObject*
+  virtual void
     RegisterElement(JSContext* aCx, const nsAString& aName,
                     const mozilla::dom::ElementRegistrationOptions& aOptions,
+                    JS::MutableHandle<JSObject*> aRetval,
                     mozilla::ErrorResult& rv) MOZ_OVERRIDE;
-  virtual nsIDOMStyleSheetList* StyleSheets() MOZ_OVERRIDE;
+  virtual mozilla::dom::StyleSheetList* StyleSheets() MOZ_OVERRIDE;
   virtual void SetSelectedStyleSheetSet(const nsAString& aSheetSet) MOZ_OVERRIDE;
   virtual void GetLastStyleSheetSet(nsString& aSheetSet) MOZ_OVERRIDE;
   virtual mozilla::dom::DOMStringList* StyleSheetSets() MOZ_OVERRIDE;
@@ -1210,6 +1257,44 @@ public:
                                                     const nsAString& aQualifiedName,
                                                     const nsAString& aTypeExtension,
                                                     mozilla::ErrorResult& rv) MOZ_OVERRIDE;
+  virtual void UseRegistryFromDocument(nsIDocument* aDocument) MOZ_OVERRIDE;
+
+  virtual already_AddRefed<nsIDocument> MasterDocument()
+  {
+    return mMasterDocument ? (nsCOMPtr<nsIDocument>(mMasterDocument)).forget()
+                           : (nsCOMPtr<nsIDocument>(this)).forget();
+  }
+
+  virtual void SetMasterDocument(nsIDocument* master)
+  {
+    mMasterDocument = master;
+  }
+
+  virtual bool IsMasterDocument()
+  {
+    return !mMasterDocument;
+  }
+
+  virtual already_AddRefed<mozilla::dom::ImportManager> ImportManager()
+  {
+    if (mImportManager) {
+      MOZ_ASSERT(!mMasterDocument, "Only the master document has ImportManager set");
+      return nsRefPtr<mozilla::dom::ImportManager>(mImportManager).forget();
+    }
+
+    if (mMasterDocument) {
+      return mMasterDocument->ImportManager();
+    }
+
+    // ImportManager is created lazily.
+    // If the manager is not yet set it has to be the
+    // master document and this is the first import in it.
+    // Let's create a new manager.
+    mImportManager = new mozilla::dom::ImportManager();
+    return nsRefPtr<mozilla::dom::ImportManager>(mImportManager).forget();
+  }
+
+  virtual void UnblockDOMContentLoaded() MOZ_OVERRIDE;
 
 protected:
   friend class nsNodeUtils;
@@ -1350,7 +1435,7 @@ protected:
   nsWeakPtr mWeakSink;
 
   nsCOMArray<nsIStyleSheet> mStyleSheets;
-  nsCOMArray<nsIStyleSheet> mCatalogSheets;
+  nsCOMArray<nsIStyleSheet> mOnDemandBuiltInUASheets;
   nsCOMArray<nsIStyleSheet> mAdditionalSheets[SheetTypeCount];
 
   // Array of observers
@@ -1371,33 +1456,6 @@ protected:
   nsWeakPtr mFullscreenRoot;
 
 private:
-  struct Registry
-  {
-    NS_INLINE_DECL_REFCOUNTING(Registry)
-
-    typedef nsClassHashtable<mozilla::dom::CustomElementHashKey,
-                             mozilla::dom::CustomElementDefinition>
-      DefinitionMap;
-    typedef nsClassHashtable<mozilla::dom::CustomElementHashKey,
-                             nsTArray<nsRefPtr<mozilla::dom::Element>>>
-      CandidateMap;
-
-    // Hashtable for custom element definitions in web components.
-    // Custom prototypes are in the document's compartment.
-    DefinitionMap mCustomDefinitions;
-
-    // The "upgrade candidates map" from the web components spec. Maps from a
-    // namespace id and local name to a list of elements to upgrade if that
-    // element is registered as a custom element.
-    CandidateMap mCandidatesMap;
-
-    void Clear()
-    {
-      mCustomDefinitions.Clear();
-      mCandidatesMap.Clear();
-    }
-  };
-
   // Array representing the processing stack in the custom elements
   // specification. The processing stack is conceptually a stack of
   // element queues. Each queue is represented by a sequence of
@@ -1424,10 +1482,10 @@ public:
   static bool IsRegisterElementEnabled(JSContext* aCx, JSObject* aObject);
 
   // The "registry" from the web components spec.
-  nsRefPtr<Registry> mRegistry;
+  nsRefPtr<mozilla::dom::Registry> mRegistry;
 
   nsRefPtr<mozilla::EventListenerManager> mListenerManager;
-  nsCOMPtr<nsIDOMStyleSheetList> mDOMStyleSheets;
+  nsRefPtr<mozilla::dom::StyleSheetList> mDOMStyleSheets;
   nsRefPtr<nsDOMStyleSheetSetList> mStyleSheetSetList;
   nsRefPtr<nsScriptLoader> mScriptLoader;
   nsDocHeaderData* mHeaderData;
@@ -1467,10 +1525,6 @@ public:
 
   // Whether we currently require our images to animate
   bool mAnimatingImages:1;
-
-  // Whether some node in this document has a listener for the
-  // "mozaudioavailable" event.
-  bool mHasAudioAvailableListener:1;
 
   // Whether we're currently under a FlushPendingNotifications call to
   // our presshell.  This is used to handle flush reentry correctly.
@@ -1531,8 +1585,8 @@ public:
 
   nsCOMPtr<nsIContent> mFirstBaseNodeWithHref;
 
-  nsEventStates mDocumentState;
-  nsEventStates mGotDocumentState;
+  mozilla::EventStates mDocumentState;
+  mozilla::EventStates mGotDocumentState;
 
   nsRefPtr<nsDOMNavigationTiming> mTiming;
 private:
@@ -1631,6 +1685,8 @@ private:
 
   nsRefPtr<mozilla::dom::UndoManager> mUndoManager;
 
+  nsRefPtr<mozilla::dom::AnimationTimeline> mAnimationTimeline;
+
   enum ViewportType {
     DisplayWidthHeight,
     DisplayWidthHeightNoZoom,
@@ -1648,15 +1704,18 @@ private:
   mozilla::LayoutDeviceToScreenScale mScaleFloat;
   mozilla::CSSToLayoutDeviceScale mPixelRatio;
   bool mAutoSize, mAllowZoom, mAllowDoubleTapZoom, mValidScaleFloat, mValidMaxScale, mScaleStrEmpty, mWidthStrEmpty;
-  mozilla::CSSIntSize mViewportSize;
+  mozilla::CSSSize mViewportSize;
 
   nsrefcnt mStackRefCnt;
   bool mNeedsReleaseAfterStackRefCntRelease;
 
   CSPErrorQueue mCSPWebConsoleErrorQueue;
 
+  nsCOMPtr<nsIDocument> mMasterDocument;
+  nsRefPtr<mozilla::dom::ImportManager> mImportManager;
+
 #ifdef DEBUG
-protected:
+public:
   bool mWillReparent;
 #endif
 };

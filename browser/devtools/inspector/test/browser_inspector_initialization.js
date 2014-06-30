@@ -1,4 +1,4 @@
-/* -*- Mode: Javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -84,7 +84,7 @@ function _clickOnInspectMenuItem(node) {
   document.popupNode = node;
   var contentAreaContextMenu = document.getElementById("contentAreaContextMenu");
   var contextMenu = new nsContextMenu(contentAreaContextMenu);
-  var promise = devtools.require("sdk/core/promise");
+  var {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
   var deferred = promise.defer();
   contextMenu.inspectNode().then(() => {
     let i = getActiveInspector();
@@ -129,7 +129,6 @@ function finishInspectorTests(subject, topic, aWinIdString)
 
 function test()
 {
-  waitForExplicitFinish();
   gBrowser.selectedTab = gBrowser.addTab();
   gBrowser.selectedBrowser.addEventListener("load", function() {
     gBrowser.selectedBrowser.removeEventListener("load", arguments.callee, true);

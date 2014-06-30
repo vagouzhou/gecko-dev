@@ -41,6 +41,12 @@ struct ViewTransform {
       gfx3DMatrix::ScalingMatrix(mScale.scale, mScale.scale, 1);
   }
 
+  // For convenience, to avoid writing the cumbersome
+  // "gfx3dMatrix(a) * gfx3DMatrix(b)".
+  friend gfx3DMatrix operator*(const ViewTransform& a, const ViewTransform& b) {
+    return gfx3DMatrix(a) * gfx3DMatrix(b);
+  }
+
   bool operator==(const ViewTransform& rhs) const {
     return mTranslation == rhs.mTranslation && mScale == rhs.mScale;
   }
@@ -61,22 +67,21 @@ struct ViewTransform {
  * short circuit that stuff to directly affect layers as they are composited,
  * for example, off-main thread animation, async video, async pan/zoom.
  */
-class AsyncCompositionManager MOZ_FINAL : public RefCounted<AsyncCompositionManager>
+class AsyncCompositionManager MOZ_FINAL
 {
   friend class AutoResolveRefLayers;
+  ~AsyncCompositionManager()
+  {
+  }
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(AsyncCompositionManager)
+  NS_INLINE_DECL_REFCOUNTING(AsyncCompositionManager)
+
   AsyncCompositionManager(LayerManagerComposite* aManager)
     : mLayerManager(aManager)
     , mIsFirstPaint(false)
     , mLayersUpdated(false)
     , mReadyForCompose(true)
   {
-    MOZ_COUNT_CTOR(AsyncCompositionManager);
-  }
-  ~AsyncCompositionManager()
-  {
-    MOZ_COUNT_DTOR(AsyncCompositionManager);
   }
 
   /**
@@ -124,10 +129,10 @@ private:
   bool ApplyAsyncContentTransformToTree(TimeStamp aCurrentFrame, Layer* aLayer,
                                         bool* aWantNextFrame);
   /**
-   * Update the shadow trasnform for aLayer assuming that is a scrollbar,
+   * Update the shadow transform for aLayer assuming that is a scrollbar,
    * so that it stays in sync with the content that is being scrolled by APZ.
    */
-  void ApplyAsyncTransformToScrollbar(ContainerLayer* aLayer);
+  void ApplyAsyncTransformToScrollbar(TimeStamp aCurrentFrame, ContainerLayer* aLayer);
 
   void SetFirstPaintViewport(const LayerIntPoint& aOffset,
                              const CSSToLayerScale& aZoom,
@@ -156,14 +161,18 @@ private:
    * aTransformedSubtreeRoot. The translation is chosen so that the layer's
    * anchor point relative to aTransformedSubtreeRoot's parent layer is the same
    * as it was when aTransformedSubtreeRoot's GetLocalTransform() was
-   * aPreviousTransformForRoot. For sticky position layers, the translation is
-   * further intersected with the layer's sticky scroll ranges.
+   * aPreviousTransformForRoot. aCurrentTransformForRoot is
+   * aTransformedSubtreeRoot's current GetLocalTransform() modulo any
+   * overscroll-related transform, which we don't want to adjust for.
+   * For sticky position layers, the translation is further intersected with
+   * the layer's sticky scroll ranges.
    * This function will also adjust layers so that the given content document
    * fixed position margins will be respected during asynchronous panning and
    * zooming.
    */
   void AlignFixedAndStickyLayers(Layer* aLayer, Layer* aTransformedSubtreeRoot,
                                  const gfx::Matrix4x4& aPreviousTransformForRoot,
+                                 const gfx::Matrix4x4& aCurrentTransformForRoot,
                                  const LayerMargin& aFixedLayerMargins);
 
   /**

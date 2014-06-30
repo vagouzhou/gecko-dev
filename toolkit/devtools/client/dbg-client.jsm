@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -9,12 +9,14 @@ var Ci = Components.interfaces;
 var Cc = Components.classes;
 var Cu = Components.utils;
 var Cr = Components.results;
+var CC = Components.Constructor;
 // On B2G scope object misbehaves and we have to bind globals to `this`
 // in order to ensure theses variable to be visible in transport.js
 this.Ci = Ci;
 this.Cc = Cc;
 this.Cu = Cu;
 this.Cr = Cr;
+this.CC = CC;
 
 this.EXPORTED_SYMBOLS = ["DebuggerTransport",
                          "DebuggerClient",
@@ -28,17 +30,23 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
-Cu.import("resource://gre/modules/devtools/Console.jsm");
 
-let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js").Promise;
+let promise = Cu.import("resource://gre/modules/devtools/deprecated-sync-thenables.js").Promise;
 const { defer, resolve, reject } = promise;
 
 XPCOMUtils.defineLazyServiceGetter(this, "socketTransportService",
                                    "@mozilla.org/network/socket-transport-service;1",
                                    "nsISocketTransportService");
 
+XPCOMUtils.defineLazyModuleGetter(this, "console",
+                                  "resource://gre/modules/devtools/Console.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "devtools",
                                   "resource://gre/modules/devtools/Loader.jsm");
+
+XPCOMUtils.defineLazyGetter(this, "events", () => {
+  return devtools.require("sdk/event/core");
+});
 
 Object.defineProperty(this, "WebConsoleClient", {
   get: function () {
@@ -51,18 +59,28 @@ Object.defineProperty(this, "WebConsoleClient", {
 Components.utils.import("resource://gre/modules/devtools/DevToolsUtils.jsm");
 this.makeInfallible = DevToolsUtils.makeInfallible;
 
-let wantLogging = Services.prefs.getBoolPref("devtools.debugger.log");
+let LOG_PREF = "devtools.debugger.log";
+let VERBOSE_PREF = "devtools.debugger.log.verbose";
+let wantLogging = Services.prefs.getBoolPref(LOG_PREF);
+let wantVerbose =
+  Services.prefs.getPrefType(VERBOSE_PREF) !== Services.prefs.PREF_INVALID &&
+  Services.prefs.getBoolPref(VERBOSE_PREF);
 
-function dumpn(str)
-{
+function dumpn(str) {
   if (wantLogging) {
     dump("DBG-CLIENT: " + str + "\n");
   }
 }
 
+function dumpv(msg) {
+  if (wantVerbose) {
+    dumpn(msg);
+  }
+}
+
 let loader = Cc["@mozilla.org/moz/jssubscript-loader;1"]
   .getService(Ci.mozIJSSubScriptLoader);
-loader.loadSubScript("resource://gre/modules/devtools/server/transport.js", this);
+loader.loadSubScript("resource://gre/modules/devtools/transport/transport.js", this);
 
 /**
  * Add simple event notification to a prototype object. Any object that has
@@ -315,7 +333,7 @@ DebuggerClient.requester = function (aPacketSkeleton,
       outgoingPacket = before.call(this, outgoingPacket);
     }
 
-    this.request(outgoingPacket, DevToolsUtils.makeInfallible(function (aResponse) {
+    this.request(outgoingPacket, DevToolsUtils.makeInfallible((aResponse) => {
       if (after) {
         let { from } = aResponse;
         aResponse = after.call(this, aResponse);
@@ -333,7 +351,7 @@ DebuggerClient.requester = function (aPacketSkeleton,
       if (histogram) {
         histogram.add(+new Date - startTime);
       }
-    }.bind(this), "DebuggerClient.requester request callback"));
+    }, "DebuggerClient.requester request callback"));
 
   }, "DebuggerClient.requester");
 };
@@ -610,8 +628,43 @@ DebuggerClient.prototype = {
    * @param aRequest object
    *        A JSON packet to send to the debugging server.
    * @param aOnResponse function
-   *        If specified, will be called with the response packet when
+   *        If specified, will be called with the JSON response packet when
    *        debugging server responds.
+   * @return Request
+   *         This object emits a number of events to allow you to respond to
+   *         different parts of the request lifecycle.
+   *         Note: This return value can be ignored if you are using JSON alone,
+   *         because the callback provided in |aOnResponse| will be bound to the
+   *         "json-reply" event automatically.
+   *
+   *         Events emitted:
+   *         * json-reply: The server replied with a JSON packet, which is
+   *           passed as event data.
+   *         * bulk-reply: The server replied with bulk data, which you can read
+   *           using the event data object containing:
+   *           * actor:  Name of actor that received the packet
+   *           * type:   Name of actor's method that was called on receipt
+   *           * length: Size of the data to be read
+   *           * stream: This input stream should only be used directly if you
+   *                     can ensure that you will read exactly |length| bytes
+   *                     and will not close the stream when reading is complete
+   *           * done:   If you use the stream directly (instead of |copyTo|
+   *                     below), you must signal completion by resolving /
+   *                     rejecting this deferred.  If it's rejected, the
+   *                     transport will be closed.  If an Error is supplied as a
+   *                     rejection value, it will be logged via |dumpn|.  If you
+   *                     do use |copyTo|, resolving is taken care of for you
+   *                     when copying completes.
+   *           * copyTo: A helper function for getting your data out of the
+   *                     stream that meets the stream handling requirements
+   *                     above, and has the following signature:
+   *             @param  output nsIAsyncOutputStream
+   *                     The stream to copy to.
+   *             @return Promise
+   *                     The promise is resolved when copying completes or
+   *                     rejected if any (unexpected) errors occur.
+   *                     This object also emits "progress" events for each chunk
+   *                     that is copied.  See stream-utils.js.
    */
   request: function (aRequest, aOnResponse) {
     if (!this.mainRoot) {
@@ -622,10 +675,115 @@ DebuggerClient.prototype = {
       throw Error("'" + type + "' request packet has no destination.");
     }
 
-    this._pendingRequests.push({ to: aRequest.to,
-                                 request: aRequest,
-                                 onResponse: aOnResponse });
+    let request = new Request(aRequest);
+    request.format = "json";
+    if (aOnResponse) {
+      request.on("json-reply", aOnResponse);
+    }
+
+    this._pendingRequests.push(request);
     this._sendRequests();
+
+    return request;
+  },
+
+  /**
+   * Transmit streaming data via a bulk request.
+   *
+   * This method initiates the bulk send process by queuing up the header data.
+   * The caller receives eventual access to a stream for writing.
+   *
+   * Since this opens up more options for how the server might respond (it could
+   * send back either JSON or bulk data), and the returned Request object emits
+   * events for different stages of the request process that you may want to
+   * react to.
+   *
+   * @param request Object
+   *        This is modeled after the format of JSON packets above, but does not
+   *        actually contain the data, but is instead just a routing header:
+   *          * actor:  Name of actor that will receive the packet
+   *          * type:   Name of actor's method that should be called on receipt
+   *          * length: Size of the data to be sent
+   * @return Request
+   *         This object emits a number of events to allow you to respond to
+   *         different parts of the request lifecycle.
+   *
+   *         Events emitted:
+   *         * bulk-send-ready: Ready to send bulk data to the server, using the
+   *           event data object containing:
+   *           * stream:   This output stream should only be used directly if
+   *                       you can ensure that you will write exactly |length|
+   *                       bytes and will not close the stream when writing is
+   *                       complete
+   *           * done:     If you use the stream directly (instead of |copyFrom|
+   *                       below), you must signal completion by resolving /
+   *                       rejecting this deferred.  If it's rejected, the
+   *                       transport will be closed.  If an Error is supplied as
+   *                       a rejection value, it will be logged via |dumpn|.  If
+   *                       you do use |copyFrom|, resolving is taken care of for
+   *                       you when copying completes.
+   *           * copyFrom: A helper function for getting your data onto the
+   *                       stream that meets the stream handling requirements
+   *                       above, and has the following signature:
+   *             @param  input nsIAsyncInputStream
+   *                     The stream to copy from.
+   *             @return Promise
+   *                     The promise is resolved when copying completes or
+   *                     rejected if any (unexpected) errors occur.
+   *                     This object also emits "progress" events for each chunk
+   *                     that is copied.  See stream-utils.js.
+   *         * json-reply: The server replied with a JSON packet, which is
+   *           passed as event data.
+   *         * bulk-reply: The server replied with bulk data, which you can read
+   *           using the event data object containing:
+   *           * actor:  Name of actor that received the packet
+   *           * type:   Name of actor's method that was called on receipt
+   *           * length: Size of the data to be read
+   *           * stream: This input stream should only be used directly if you
+   *                     can ensure that you will read exactly |length| bytes
+   *                     and will not close the stream when reading is complete
+   *           * done:   If you use the stream directly (instead of |copyTo|
+   *                     below), you must signal completion by resolving /
+   *                     rejecting this deferred.  If it's rejected, the
+   *                     transport will be closed.  If an Error is supplied as a
+   *                     rejection value, it will be logged via |dumpn|.  If you
+   *                     do use |copyTo|, resolving is taken care of for you
+   *                     when copying completes.
+   *           * copyTo: A helper function for getting your data out of the
+   *                     stream that meets the stream handling requirements
+   *                     above, and has the following signature:
+   *             @param  output nsIAsyncOutputStream
+   *                     The stream to copy to.
+   *             @return Promise
+   *                     The promise is resolved when copying completes or
+   *                     rejected if any (unexpected) errors occur.
+   *                     This object also emits "progress" events for each chunk
+   *                     that is copied.  See stream-utils.js.
+   */
+  startBulkRequest: function(request) {
+    if (!this.traits.bulk) {
+      throw Error("Server doesn't support bulk transfers");
+    }
+    if (!this.mainRoot) {
+      throw Error("Have not yet received a hello packet from the server.");
+    }
+    if (!request.type) {
+      throw Error("Bulk packet is missing the required 'type' field.");
+    }
+    if (!request.actor) {
+      throw Error("'" + request.type + "' bulk packet has no destination.");
+    }
+    if (!request.length) {
+      throw Error("'" + request.type + "' bulk packet has no length.");
+    }
+
+    let request = new Request(request);
+    request.format = "bulk";
+
+    this._pendingRequests.push(request);
+    this._sendRequests();
+
+    return request;
   },
 
   /**
@@ -634,30 +792,50 @@ DebuggerClient.prototype = {
    */
   _sendRequests: function () {
     this._pendingRequests = this._pendingRequests.filter((request) => {
-      if (this._activeRequests.has(request.to)) {
+      let dest = request.actor;
+
+      if (this._activeRequests.has(dest)) {
         return true;
       }
 
-      this.expectReply(request.to, request.onResponse);
-      this._transport.send(request.request);
+      this.expectReply(dest, request);
+
+      if (request.format === "json") {
+        this._transport.send(request.request);
+        return false;
+      }
+
+      this._transport.startBulkSend(request.request).then((...args) => {
+        request.emit("bulk-send-ready", ...args);
+      });
 
       return false;
     });
   },
 
   /**
-   * Arrange to hand the next reply from |aActor| to |aHandler|.
+   * Arrange to hand the next reply from |aActor| to the handler bound to
+   * |aRequest|.
    *
-   * DebuggerClient.prototype.request usually takes care of establishing
-   * the handler for a given request, but in rare cases (well, greetings
-   * from new root actors, is the only case at the moment) we must be
+   * DebuggerClient.prototype.request / startBulkRequest usually takes care of
+   * establishing the handler for a given request, but in rare cases (well,
+   * greetings from new root actors, is the only case at the moment) we must be
    * prepared for a "reply" that doesn't correspond to any request we sent.
    */
-  expectReply: function (aActor, aHandler) {
+  expectReply: function (aActor, aRequest) {
     if (this._activeRequests.has(aActor)) {
       throw Error("clashing handlers for next reply from " + uneval(aActor));
     }
-    this._activeRequests.set(aActor, aHandler);
+
+    // If a handler is passed directly (as it is with the handler for the root
+    // actor greeting), create a dummy request to bind this to.
+    if (typeof aRequest === "function") {
+      let handler = aRequest;
+      aRequest = new Request();
+      aRequest.on("json-reply", handler);
+    }
+
+    this._activeRequests.set(aActor, aRequest);
   },
 
   // Transport hooks.
@@ -692,7 +870,7 @@ DebuggerClient.prototype = {
         return;
       }
 
-      let onResponse;
+      let activeRequest;
       // See if we have a handler function waiting for a reply from this
       // actor. (Don't count unsolicited notifications or pauses as
       // replies.)
@@ -700,7 +878,7 @@ DebuggerClient.prototype = {
           !(aPacket.type in UnsolicitedNotifications) &&
           !(aPacket.type == ThreadStateTypes.paused &&
             aPacket.why.type in UnsolicitedPauses)) {
-        onResponse = this._activeRequests.get(aPacket.from);
+        activeRequest = this._activeRequests.get(aPacket.from);
         this._activeRequests.delete(aPacket.from);
       }
 
@@ -725,12 +903,66 @@ DebuggerClient.prototype = {
         this.notify(aPacket.type, aPacket);
       }
 
-      if (onResponse) {
-        onResponse(aPacket);
+      if (activeRequest) {
+        activeRequest.emit("json-reply", aPacket);
       }
 
       this._sendRequests();
     }, ex => DevToolsUtils.reportException("onPacket handler", ex));
+  },
+
+  /**
+   * Called by the DebuggerTransport to dispatch incoming bulk packets as
+   * appropriate.
+   *
+   * @param packet object
+   *        The incoming packet, which contains:
+   *        * actor:  Name of actor that will receive the packet
+   *        * type:   Name of actor's method that should be called on receipt
+   *        * length: Size of the data to be read
+   *        * stream: This input stream should only be used directly if you can
+   *                  ensure that you will read exactly |length| bytes and will
+   *                  not close the stream when reading is complete
+   *        * done:   If you use the stream directly (instead of |copyTo|
+   *                  below), you must signal completion by resolving /
+   *                  rejecting this deferred.  If it's rejected, the transport
+   *                  will be closed.  If an Error is supplied as a rejection
+   *                  value, it will be logged via |dumpn|.  If you do use
+   *                  |copyTo|, resolving is taken care of for you when copying
+   *                  completes.
+   *        * copyTo: A helper function for getting your data out of the stream
+   *                  that meets the stream handling requirements above, and has
+   *                  the following signature:
+   *          @param  output nsIAsyncOutputStream
+   *                  The stream to copy to.
+   *          @return Promise
+   *                  The promise is resolved when copying completes or rejected
+   *                  if any (unexpected) errors occur.
+   *                  This object also emits "progress" events for each chunk
+   *                  that is copied.  See stream-utils.js.
+   */
+  onBulkPacket: function(packet) {
+    let { actor, type, length } = packet;
+
+    if (!actor) {
+      DevToolsUtils.reportException(
+        "onBulkPacket",
+        new Error("Server did not specify an actor, dropping bulk packet: " +
+                  JSON.stringify(packet)));
+      return;
+    }
+
+    // See if we have a handler function waiting for a reply from this
+    // actor.
+    if (!this._activeRequests.has(actor)) {
+      return;
+    }
+
+    let activeRequest = this._activeRequests.get(actor);
+    this._activeRequests.delete(actor);
+    activeRequest.emit("bulk-reply", packet);
+
+    this._sendRequests();
   },
 
   /**
@@ -781,6 +1013,32 @@ DebuggerClient.prototype = {
 }
 
 eventSource(DebuggerClient.prototype);
+
+function Request(request) {
+  this.request = request;
+}
+
+Request.prototype = {
+
+  on: function(type, listener) {
+    events.on(this, type, listener);
+  },
+
+  off: function(type, listener) {
+    events.off(this, type, listener);
+  },
+
+  once: function(type, listener) {
+    events.once(this, type, listener);
+  },
+
+  emit: function(type, ...args) {
+    events.emit(this, type, ...args);
+  },
+
+  get actor() { return this.request.to || this.request.actor; }
+
+};
 
 // Constants returned by `FeatureCompatibilityShim.onPacketTest`.
 const SUPPORTED = 1;
@@ -878,7 +1136,7 @@ ProtocolCompatibility.prototype = {
   _shimPacket: function (aPacket) {
     let extraPackets = [];
 
-    let loop = function (aFeatures, aPacket) {
+    let loop = (aFeatures, aPacket) => {
       if (aFeatures.length === 0) {
         for (let packet of extraPackets) {
           this._client.onPacket(packet, true);
@@ -901,7 +1159,7 @@ ProtocolCompatibility.prototype = {
                                                      keepPacket);
         return resolve(newPacket).then(loop.bind(null, aFeatures.slice(1)));
       }
-    }.bind(this);
+    };
 
     return loop([f for (f of this._featuresWithoutSupport)],
                 aPacket);
@@ -1011,9 +1269,17 @@ TabClient.prototype = {
 
   /**
    * Reload the page in this tab.
+   *
+   * @param [optional] object options
+   *        An object with a `force` property indicating whether or not
+   *        this reload should skip the cache
    */
-  reload: DebuggerClient.requester({
-    type: "reload"
+  reload: function(options = { force: false }) {
+    return this._reload(options);
+  },
+  _reload: DebuggerClient.requester({
+    type: "reload",
+    options: args(0)
   }, {
     telemetry: "RELOAD"
   }),
@@ -1244,6 +1510,16 @@ ThreadClient.prototype = {
   },
 
   /**
+   * Resume then pause without stepping.
+   *
+   * @param function aOnResponse
+   *        Called with the response packet.
+   */
+  breakOnNext: function (aOnResponse) {
+    this._doResume({ type: "break" }, aOnResponse);
+  },
+
+  /**
    * Step over a function call.
    *
    * @param function aOnResponse
@@ -1377,7 +1653,7 @@ ThreadClient.prototype = {
     after: function (aResponse) {
       if (aResponse.error) {
         // There was an error resuming, back to paused state.
-        self._state = "paused";
+        this._state = "paused";
       }
       return aResponse;
     },
@@ -1411,7 +1687,7 @@ ThreadClient.prototype = {
    */
   setBreakpoint: function ({ url, line, column, condition }, aOnResponse) {
     // A helper function that sets the breakpoint.
-    let doSetBreakpoint = function (aCallback) {
+    let doSetBreakpoint = (aCallback) => {
       const location = {
         url: url,
         line: line,
@@ -1424,21 +1700,24 @@ ThreadClient.prototype = {
         location: location,
         condition: condition
       };
-      this.client.request(packet, function (aResponse) {
+      this.client.request(packet, (aResponse) => {
         // Ignoring errors, since the user may be setting a breakpoint in a
         // dead script that will reappear on a page reload.
         if (aOnResponse) {
-          let bpClient = new BreakpointClient(this.client,
-                                              aResponse.actor,
-                                              location);
-          if (aCallback) {
-            aCallback(aOnResponse(aResponse, bpClient));
-          } else {
-            aOnResponse(aResponse, bpClient);
-          }
+          let root = this.client.mainRoot;
+          let bpClient = new BreakpointClient(
+            this.client,
+            aResponse.actor,
+            location,
+            root.traits.conditionalBreakpoints ? condition : undefined
+          );
+          aOnResponse(aResponse, bpClient);
         }
-      }.bind(this));
-    }.bind(this);
+        if (aCallback) {
+          aCallback();
+        }
+      });
+    };
 
     // If the debuggee is paused, just set the breakpoint.
     if (this.paused) {
@@ -1446,14 +1725,14 @@ ThreadClient.prototype = {
       return;
     }
     // Otherwise, force a pause in order to set the breakpoint.
-    this.interrupt(function (aResponse) {
+    this.interrupt((aResponse) => {
       if (aResponse.error) {
         // Can't set the breakpoint if pausing failed.
         aOnResponse(aResponse);
         return;
       }
       doSetBreakpoint(this.resume.bind(this));
-    }.bind(this));
+    });
   },
 
   /**
@@ -1507,21 +1786,6 @@ ThreadClient.prototype = {
   }, {
     telemetry: "SOURCES"
   }),
-
-  _doInterrupted: function (aAction, aError) {
-    if (this.paused) {
-      aAction();
-      return;
-    }
-    this.interrupt(function (aResponse) {
-      if (aResponse) {
-        aError(aResponse);
-        return;
-      }
-      aAction();
-      this.resume();
-    }.bind(this));
-  },
 
   /**
    * Clear the thread's source script cache. A scriptscleared event
@@ -1582,7 +1846,6 @@ ThreadClient.prototype = {
    */
   fillFrames: function (aTotal, aCallback=noop) {
     this._assertPaused("fillFrames");
-
     if (this._frameCache.length >= aTotal) {
       return false;
     }
@@ -2181,12 +2444,19 @@ SourceClient.prototype = {
  * @param aLocation object
  *        The location of the breakpoint. This is an object with two properties:
  *        url and line.
+ * @param aCondition string
+ *        The conditional expression of the breakpoint
  */
-function BreakpointClient(aClient, aActor, aLocation) {
+function BreakpointClient(aClient, aActor, aLocation, aCondition) {
   this._client = aClient;
   this._actor = aActor;
   this.location = aLocation;
   this.request = this._client.request;
+
+  // The condition property should only exist if it's a truthy value
+  if (aCondition) {
+    this.condition = aCondition;
+  }
 }
 
 BreakpointClient.prototype = {
@@ -2203,6 +2473,81 @@ BreakpointClient.prototype = {
   }, {
     telemetry: "DELETE"
   }),
+
+  /**
+   * Determines if this breakpoint has a condition
+   */
+  hasCondition: function() {
+    let root = this._client.mainRoot;
+    // XXX bug 990137: We will remove support for client-side handling of
+    // conditional breakpoints
+    if (root.traits.conditionalBreakpoints) {
+      return "condition" in this;
+    } else {
+      return "conditionalExpression" in this;
+    }
+  },
+
+  /**
+   * Get the condition of this breakpoint. Currently we have to
+   * support locally emulated conditional breakpoints until the
+   * debugger servers are updated (see bug 990137). We used a
+   * different property when moving it server-side to ensure that we
+   * are testing the right code.
+   */
+  getCondition: function() {
+    let root = this._client.mainRoot;
+    if (root.traits.conditionalBreakpoints) {
+      return this.condition;
+    } else {
+      return this.conditionalExpression;
+    }
+  },
+
+  /**
+   * Set the condition of this breakpoint
+   */
+  setCondition: function(gThreadClient, aCondition) {
+    let root = this._client.mainRoot;
+    let deferred = promise.defer();
+
+    if (root.traits.conditionalBreakpoints) {
+      let info = {
+        url: this.location.url,
+        line: this.location.line,
+        column: this.location.column,
+        condition: aCondition
+      };
+
+      // Remove the current breakpoint and add a new one with the
+      // condition.
+      this.remove(aResponse => {
+        if (aResponse && aResponse.error) {
+          deferred.reject(aResponse);
+          return;
+        }
+
+        gThreadClient.setBreakpoint(info, (aResponse, aNewBreakpoint) => {
+          if (aResponse && aResponse.error) {
+            deferred.reject(aResponse);
+          } else {
+            deferred.resolve(aNewBreakpoint);
+          }
+        });
+      });
+    } else {
+      // The property shouldn't even exist if the condition is blank
+      if(aCondition === "") {
+        delete this.conditionalExpression;
+      }
+      else {
+        this.conditionalExpression = aCondition;
+      }
+      deferred.resolve(this);
+    }
+
+    return deferred.promise;
+  }
 };
 
 eventSource(BreakpointClient.prototype);

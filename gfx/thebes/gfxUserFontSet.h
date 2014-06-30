@@ -141,7 +141,6 @@ public:
     NS_INLINE_DECL_REFCOUNTING(gfxUserFontSet)
 
     gfxUserFontSet();
-    virtual ~gfxUserFontSet();
 
     enum {
         // no flags ==> no hint set
@@ -243,6 +242,9 @@ public:
     // increment the generation on font load
     void IncrementGeneration();
 
+    // rebuild if local rules have been used
+    void RebuildLocalRules();
+
     class UserFontCache {
     public:
         // Record a loaded user-font in the cache. This requires that the
@@ -277,11 +279,11 @@ public:
         // from nsICacheService.
         class Flusher : public nsIObserver
         {
+            virtual ~Flusher() {}
         public:
             NS_DECL_ISUPPORTS
             NS_DECL_NSIOBSERVER
             Flusher() {}
-            virtual ~Flusher() {}
         };
 
         // Key used to look up entries in the user-font cache.
@@ -292,7 +294,7 @@ public:
         // entry and the corresponding "real" font entry.
         struct Key {
             nsCOMPtr<nsIURI>        mURI;
-            nsCOMPtr<nsIPrincipal>  mPrincipal;
+            nsCOMPtr<nsIPrincipal>  mPrincipal; // use nullptr with data: URLs
             gfxFontEntry           *mFontEntry;
             bool                    mPrivate;
 
@@ -331,8 +333,10 @@ public:
             static KeyTypePointer KeyToPointer(KeyType aKey) { return &aKey; }
 
             static PLDHashNumber HashKey(const KeyTypePointer aKey) {
-                uint32_t principalHash;
-                aKey->mPrincipal->GetHashValue(&principalHash);
+                uint32_t principalHash = 0;
+                if (aKey->mPrincipal) {
+                    aKey->mPrincipal->GetHashValue(&principalHash);
+                }
                 return mozilla::HashGeneric(principalHash + int(aKey->mPrivate),
                                             nsURIHashKey::HashKey(aKey->mURI),
                                             HashFeatures(aKey->mFontEntry->mFeatureSettings),
@@ -363,7 +367,7 @@ public:
             }
 
             nsCOMPtr<nsIURI>       mURI;
-            nsCOMPtr<nsIPrincipal> mPrincipal;
+            nsCOMPtr<nsIPrincipal> mPrincipal; // or nullptr for data: URLs
 
             // The "real" font entry corresponding to this downloaded font.
             // The font entry MUST notify the cache when it is destroyed
@@ -378,6 +382,9 @@ public:
     };
 
 protected:
+    // Protected destructor, to discourage deletion outside of Release():
+    virtual ~gfxUserFontSet();
+
     // Return whether the font set is associated with a private-browsing tab.
     virtual bool GetPrivateBrowsing() = 0;
 
@@ -416,10 +423,16 @@ protected:
 
     static bool OTSMessage(void *aUserData, const char *format, ...);
 
+    // helper method for performing the actual userfont set rebuild
+    virtual void DoRebuildUserFontSet() = 0;
+
     // font families defined by @font-face rules
     nsRefPtrHashtable<nsStringHashKey, gfxMixedFontFamily> mFontFamilies;
 
     uint64_t        mGeneration;
+
+    // true when local names have been looked up, false otherwise
+    bool mLocalRulesUsed;
 
     static PRLogModuleInfo* GetUserFontsLog();
 

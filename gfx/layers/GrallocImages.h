@@ -23,63 +23,6 @@ namespace layers {
 class GrallocTextureClientOGL;
 
 /**
- * The gralloc buffer maintained by android GraphicBuffer can be
- * shared between the compositor thread and the producer thread. The
- * mGraphicBuffer is owned by the producer thread, but when it is
- * wrapped by GraphicBufferLocked and passed to the compositor, the
- * buffer content is guaranteed to not change until Unlock() is
- * called. Each producer must maintain their own buffer queue and
- * implement the GraphicBufferLocked::Unlock() interface.
- */
-class GraphicBufferLocked
-  : public AtomicRefCountedWithFinalize<GraphicBufferLocked>
-{
-
-public:
-  GraphicBufferLocked(SurfaceDescriptor aGraphicBuffer)
-    : mSurfaceDescriptor(aGraphicBuffer)
-  {}
-
-  virtual ~GraphicBufferLocked() {}
-
-  SurfaceDescriptor GetSurfaceDescriptor()
-  {
-    return mSurfaceDescriptor;
-  }
-
-  void SetReleaseFenceHandle(const FenceHandle& aReleaseFenceHandle)
-  {
-    mReleaseFenceHandle = aReleaseFenceHandle;
-  }
-
-  const FenceHandle& GetReleaseFenceHandle() const
-  {
-    return mReleaseFenceHandle;
-  }
-
-protected:
-  virtual void Unlock() {}
-
-private:
-  /**
-   * Called once, just before the destructor.
-   *
-   * Here goes the shut-down code that uses virtual methods.
-   * Must only be called by Release().
-   */
-  void Finalize()
-  {
-    Unlock();
-  }
-
-  friend class AtomicRefCountedWithFinalize<GraphicBufferLocked>;
-
-protected:
-  SurfaceDescriptor mSurfaceDescriptor;
-  FenceHandle mReleaseFenceHandle;
-};
-
-/**
  * The YUV format supported by Android HAL
  *
  * 4:2:0 - CbCr width and height is half that of Y.
@@ -107,7 +50,7 @@ class GrallocImage : public PlanarYCbCrImage
   static uint32_t sColorIdMap[];
 public:
   struct GrallocData {
-    nsRefPtr<GraphicBufferLocked> mGraphicBuffer;
+    nsRefPtr<TextureClient> mGraphicBuffer;
     gfx::IntSize mPicSize;
   };
 
@@ -138,26 +81,17 @@ public:
     HAL_PIXEL_FORMAT_YCbCr_420_SP_VENUS     = 0x7FA30C04,
   };
 
-  virtual already_AddRefed<gfxASurface> DeprecatedGetAsSurface();
+  enum {
+    GRALLOC_SW_UAGE = android::GraphicBuffer::USAGE_SOFTWARE_MASK,
+  };
+
   virtual TemporaryRef<gfx::SourceSurface> GetAsSourceSurface() MOZ_OVERRIDE;
 
-  void* GetNativeBuffer()
-  {
-    if (IsValid()) {
-      return GrallocBufferActor::GetFrom(GetSurfaceDescriptor())->getNativeBuffer();
-    } else {
-      return nullptr;
-    }
-  }
+  android::sp<android::GraphicBuffer> GetGraphicBuffer() const;
 
-  virtual bool IsValid() { return GetSurfaceDescriptor().type() != SurfaceDescriptor::T__None; }
+  void* GetNativeBuffer();
 
-  SurfaceDescriptor GetSurfaceDescriptor() {
-    if (mGraphicBufferLocked.get()) {
-      return mGraphicBufferLocked->GetSurfaceDescriptor();
-    }
-    return SurfaceDescriptor();
-  }
+  virtual bool IsValid() { return !!mTextureClient; }
 
   virtual ISharedImage* AsSharedImage() MOZ_OVERRIDE { return this; }
 
@@ -168,9 +102,12 @@ public:
     return static_cast<uint8_t*>(GetNativeBuffer());
   }
 
+  int GetUsage()
+  {
+    return (static_cast<ANativeWindowBuffer*>(GetNativeBuffer()))->usage;
+  }
+
 private:
-  bool mBufferAllocated;
-  nsRefPtr<GraphicBufferLocked> mGraphicBufferLocked;
   RefPtr<GrallocTextureClientOGL> mTextureClient;
 };
 

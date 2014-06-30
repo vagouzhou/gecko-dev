@@ -6,7 +6,9 @@
 // Keep in (case-insensitive) order:
 #include "gfxContext.h"
 #include "gfxPlatform.h"
+#include "mozilla/gfx/2D.h"
 #include "imgIContainer.h"
+#include "nsContainerFrame.h"
 #include "nsIImageLoadingContent.h"
 #include "nsLayoutUtils.h"
 #include "nsRenderingContext.h"
@@ -23,6 +25,7 @@
 
 using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::gfx;
 
 class nsSVGImageFrame;
 
@@ -37,6 +40,8 @@ public:
   void SetFrame(nsSVGImageFrame *frame) { mFrame = frame; }
 
 private:
+  ~nsSVGImageListener() {}
+
   nsSVGImageFrame *mFrame;
 };
 
@@ -70,9 +75,9 @@ public:
   virtual nsresult  AttributeChanged(int32_t         aNameSpaceID,
                                      nsIAtom*        aAttribute,
                                      int32_t         aModType) MOZ_OVERRIDE;
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
 
   /**
@@ -137,9 +142,9 @@ nsSVGImageFrame::~nsSVGImageFrame()
 }
 
 void
-nsSVGImageFrame::Init(nsIContent* aContent,
-                      nsIFrame* aParent,
-                      nsIFrame* aPrevInFlow)
+nsSVGImageFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::image),
                "Content is not an SVG image!");
@@ -383,6 +388,7 @@ nsSVGImageFrame::PaintSVG(nsRenderingContext *aContext,
       // and that's not always true for TYPE_VECTOR images.
       nsLayoutUtils::DrawSingleImage(
         aContext,
+        PresContext(),
         mImageContainer,
         nsLayoutUtils::GetGraphicsFilterForFrame(this),
         destRect,
@@ -392,6 +398,7 @@ nsSVGImageFrame::PaintSVG(nsRenderingContext *aContext,
     } else { // mImageContainer->GetType() == TYPE_RASTER
       nsLayoutUtils::DrawSingleUnscaledImage(
         aContext,
+        PresContext(),
         mImageContainer,
         nsLayoutUtils::GetGraphicsFilterForFrame(this),
         nsPoint(0, 0),
@@ -469,32 +476,11 @@ nsSVGImageFrame::ReflowSVG()
     return;
   }
 
-  gfxContext tmpCtx(gfxPlatform::GetPlatform()->ScreenReferenceSurface());
+  float x, y, width, height;
+  SVGImageElement *element = static_cast<SVGImageElement*>(mContent);
+  element->GetAnimatedLengthValues(&x, &y, &width, &height, nullptr);
 
-  // We'd like to just pass the identity matrix to GeneratePath, but if
-  // this frame's user space size is _very_ large/small then the extents we
-  // obtain below might have overflowed or otherwise be broken. This would
-  // cause us to end up with a broken mRect and visual overflow rect and break
-  // painting of this frame. This is particularly noticeable if the transforms
-  // between us and our nsSVGOuterSVGFrame scale this frame to a reasonable
-  // size. To avoid this we sadly have to do extra work to account for the
-  // transforms between us and our nsSVGOuterSVGFrame, even though the
-  // overwhelming number of SVGs will never have this problem.
-  // XXX Will Azure eventually save us from having to do this?
-  gfxSize scaleFactors = GetCanvasTM(FOR_OUTERSVG_TM).ScaleFactors(true);
-  bool applyScaling = fabs(scaleFactors.width) >= 1e-6 &&
-                      fabs(scaleFactors.height) >= 1e-6;
-  Matrix scaling;
-  if (applyScaling) {
-    scaling.Scale(scaleFactors.width, scaleFactors.height);
-  }
-  tmpCtx.Save();
-  GeneratePath(&tmpCtx, scaling);
-  tmpCtx.Restore();
-  gfxRect extent = tmpCtx.GetUserPathExtent();
-  if (applyScaling) {
-    extent.Scale(1 / scaleFactors.width, 1 / scaleFactors.height);
-  }
+  Rect extent(x, y, width, height);
 
   if (!extent.IsEmpty()) {
     mRect = nsLayoutUtils::RoundGfxRectToAppRect(extent, 
@@ -588,7 +574,7 @@ nsSVGImageFrame::GetHitTestFlags()
 //----------------------------------------------------------------------
 // nsSVGImageListener implementation
 
-NS_IMPL_ISUPPORTS1(nsSVGImageListener, imgINotificationObserver)
+NS_IMPL_ISUPPORTS(nsSVGImageListener, imgINotificationObserver)
 
 nsSVGImageListener::nsSVGImageListener(nsSVGImageFrame *aFrame) :  mFrame(aFrame)
 {

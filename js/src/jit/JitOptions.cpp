@@ -66,11 +66,6 @@ JitOptions::JitOptions()
     forceDefaultIonUsesBeforeCompile = false;
     forcedDefaultIonUsesBeforeCompile = 1000;
 
-    // Force the GVN kind to be optimistic or pessimistic instead of letting
-    // the optimization pass decide.
-    forceGvnKind = false;
-    forcedGvnKind = GVN_Optimistic;
-
     // Force the used register allocator instead of letting the
     // optimization pass decide.
     forceRegisterAllocator = false;
@@ -110,9 +105,6 @@ JitOptions::JitOptions()
 
     // How many uses of a parallel kernel before we attempt compilation.
     usesBeforeCompilePar = 1;
-
-    // Whether to profile inlined functions in Ion or not.
-    profileInlineFrames = false;
 }
 
 bool

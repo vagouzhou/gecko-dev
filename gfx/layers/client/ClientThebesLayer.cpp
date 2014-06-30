@@ -9,7 +9,6 @@
 #include <stdint.h>                     // for uint32_t
 #include "GeckoProfiler.h"              // for PROFILER_LABEL
 #include "client/ClientLayerManager.h"  // for ClientLayerManager, etc
-#include "gfxASurface.h"                // for gfxASurface, etc
 #include "gfxContext.h"                 // for gfxContext
 #include "gfxRect.h"                    // for gfxRect
 #include "gfxPrefs.h"                   // for gfxPrefs
@@ -26,60 +25,83 @@
 #include "nsRect.h"                     // for nsIntRect
 #include "gfx2DGlue.h"
 
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace layers {
+
+PRLogModuleInfo* gTilingLog;
+
+using namespace mozilla::gfx;
 
 void
 ClientThebesLayer::PaintThebes()
 {
-  PROFILER_LABEL("ClientThebesLayer", "PaintThebes");
+  PROFILER_LABEL("ClientThebesLayer", "PaintThebes",
+    js::ProfileEntry::Category::GRAPHICS);
+
   NS_ASSERTION(ClientManager()->InDrawing(),
                "Can only draw in drawing phase");
   
-  {
-    mContentClient->PrepareFrame();
-
-    uint32_t flags = 0;
+  uint32_t flags = RotatedContentBuffer::PAINT_CAN_DRAW_ROTATED;
 #ifndef MOZ_WIDGET_ANDROID
-    if (ClientManager()->CompositorMightResample()) {
+  if (ClientManager()->CompositorMightResample()) {
+    flags |= RotatedContentBuffer::PAINT_WILL_RESAMPLE;
+  }
+  if (!(flags & RotatedContentBuffer::PAINT_WILL_RESAMPLE)) {
+    if (MayResample()) {
       flags |= RotatedContentBuffer::PAINT_WILL_RESAMPLE;
     }
-    if (!(flags & RotatedContentBuffer::PAINT_WILL_RESAMPLE)) {
-      if (MayResample()) {
-        flags |= RotatedContentBuffer::PAINT_WILL_RESAMPLE;
-      }
-    }
+  }
 #endif
-    PaintState state =
-      mContentClient->BeginPaintBuffer(this, flags);
-    mValidRegion.Sub(mValidRegion, state.mRegionToInvalidate);
+  PaintState state =
+    mContentClient->BeginPaintBuffer(this, flags);
+  mValidRegion.Sub(mValidRegion, state.mRegionToInvalidate);
 
-    if (DrawTarget* target = mContentClient->BorrowDrawTargetForPainting(this, state)) {
-      // The area that became invalid and is visible needs to be repainted
-      // (this could be the whole visible area if our buffer switched
-      // from RGB to RGBA, because we might need to repaint with
-      // subpixel AA)
-      state.mRegionToInvalidate.And(state.mRegionToInvalidate,
-                                    GetEffectiveVisibleRegion());
-      SetAntialiasingFlags(this, target);
+  if (!state.mRegionToDraw.IsEmpty() && !ClientManager()->GetThebesLayerCallback()) {
+    ClientManager()->SetTransactionIncomplete();
+    return;
+  }
 
-      nsRefPtr<gfxContext> ctx = gfxContext::ContextForDrawTarget(target);
-      PaintBuffer(ctx,
-                  state.mRegionToDraw, state.mRegionToDraw, state.mRegionToInvalidate,
-                  state.mDidSelfCopy, state.mClip);
-      MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) PaintThebes", this));
-      Mutated();
-      ctx = nullptr;
-      mContentClient->ReturnDrawTargetToBuffer(target);
-    } else {
-      // It's possible that state.mRegionToInvalidate is nonempty here,
-      // if we are shrinking the valid region to nothing. So use mRegionToDraw
-      // instead.
-      NS_WARN_IF_FALSE(state.mRegionToDraw.IsEmpty(),
-                       "No context when we have something to draw, resource exhaustion?");
-    }
+  // The area that became invalid and is visible needs to be repainted
+  // (this could be the whole visible area if our buffer switched
+  // from RGB to RGBA, because we might need to repaint with
+  // subpixel AA)
+  state.mRegionToInvalidate.And(state.mRegionToInvalidate,
+                                GetEffectiveVisibleRegion());
+
+  bool didUpdate = false;
+  RotatedContentBuffer::DrawIterator iter;
+  while (DrawTarget* target = mContentClient->BorrowDrawTargetForPainting(state, &iter)) {
+    SetAntialiasingFlags(this, target);
+
+    nsRefPtr<gfxContext> ctx = gfxContext::ContextForDrawTarget(target);
+
+    ClientManager()->GetThebesLayerCallback()(this,
+                                              ctx,
+                                              iter.mDrawRegion,
+                                              state.mClip,
+                                              state.mRegionToInvalidate,
+                                              ClientManager()->GetThebesLayerCallbackData());
+
+    ctx = nullptr;
+    mContentClient->ReturnDrawTargetToBuffer(target);
+    didUpdate = true;
+  }
+
+  if (didUpdate) {
+    Mutated();
+
+    mValidRegion.Or(mValidRegion, state.mRegionToDraw);
+
+    ContentClientRemote* contentClientRemote = static_cast<ContentClientRemote*>(mContentClient.get());
+    MOZ_ASSERT(contentClientRemote->GetIPDLActor());
+
+    // Hold(this) ensures this layer is kept alive through the current transaction
+    // The ContentClient assumes this layer is kept alive (e.g., in CreateBuffer),
+    // so deleting this Hold for whatever reason will break things.
+    ClientManager()->Hold(this);
+    contentClientRemote->Updated(state.mRegionToDraw,
+                                 mVisibleRegion,
+                                 state.mDidSelfCopy);
   }
 }
 
@@ -103,60 +125,22 @@ ClientThebesLayer::RenderLayer()
   mContentClient->BeginPaint();
   PaintThebes();
   mContentClient->EndPaint();
-  // It is very important that this is called after EndPaint, because destroying
-  // textures is a three stage process:
-  // 1. We are done with the buffer and move it to ContentClient::mOldTextures,
-  // that happens in DestroyBuffers which is may be called indirectly from
-  // PaintThebes.
-  // 2. The content client calls RemoveTextureClient on the texture clients in
-  // mOldTextures and forgets them. They then become invalid. The compositable
-  // client keeps a record of IDs. This happens in EndPaint.
-  // 3. An IPC message is sent to destroy the corresponding texture host. That
-  // happens from OnTransaction.
-  // It is important that these steps happen in order.
-  mContentClient->OnTransaction();
 }
 
-void
-ClientThebesLayer::PaintBuffer(gfxContext* aContext,
-                               const nsIntRegion& aRegionToDraw,
-                               const nsIntRegion& aExtendedRegionToDraw,
-                               const nsIntRegion& aRegionToInvalidate,
-                               bool aDidSelfCopy, DrawRegionClip aClip)
+bool
+ClientLayerManager::IsOptimizedFor(ThebesLayer* aLayer, ThebesLayerCreationHint aHint)
 {
-  ContentClientRemote* contentClientRemote = static_cast<ContentClientRemote*>(mContentClient.get());
-  MOZ_ASSERT(contentClientRemote->GetIPDLActor());
-
-  // NB: this just throws away the entire valid region if there are
-  // too many rects.
-  mValidRegion.SimplifyInward(8);
-
-  if (!ClientManager()->GetThebesLayerCallback()) {
-    ClientManager()->SetTransactionIncomplete();
-    return;
-  }
-  ClientManager()->GetThebesLayerCallback()(this,
-                                            aContext,
-                                            aExtendedRegionToDraw,
-                                            aClip,
-                                            aRegionToInvalidate,
-                                            ClientManager()->GetThebesLayerCallbackData());
-
-  // Everything that's visible has been validated. Do this instead of just
-  // OR-ing with aRegionToDraw, since that can lead to a very complex region
-  // here (OR doesn't automatically simplify to the simplest possible
-  // representation of a region.)
-  nsIntRegion tmp;
-  tmp.Or(mVisibleRegion, aExtendedRegionToDraw);
-  mValidRegion.Or(mValidRegion, tmp);
-
-  // Hold(this) ensures this layer is kept alive through the current transaction
-  // The ContentClient assumes this layer is kept alive (e.g., in CreateBuffer,
-  // DestroyThebesBuffer), so deleting this Hold for whatever reason will break things.
-  ClientManager()->Hold(this);
-  contentClientRemote->Updated(aRegionToDraw,
-                               mVisibleRegion,
-                               aDidSelfCopy);
+#ifdef MOZ_B2G
+  // The only creation hint is whether the layer is scrollable or not, and this
+  // is only respected on B2G, where it's used to determine whether to use
+  // tiled layers or not.
+  // There are pretty nasty performance consequences for not using tiles on
+  // large, scrollable layers, so we want the layer to be recreated in this
+  // situation.
+  return aHint == aLayer->GetCreationHint();
+#else
+  return LayerManager::IsOptimizedFor(aLayer, aHint);
+#endif
 }
 
 already_AddRefed<ThebesLayer>
@@ -177,21 +161,24 @@ ClientLayerManager::CreateThebesLayerWithHint(ThebesLayerCreationHint aHint)
       (AsShadowForwarder()->GetCompositorBackendType() == LayersBackend::LAYERS_OPENGL ||
        AsShadowForwarder()->GetCompositorBackendType() == LayersBackend::LAYERS_D3D9 ||
        AsShadowForwarder()->GetCompositorBackendType() == LayersBackend::LAYERS_D3D11)) {
+    if (!gTilingLog) {
+      gTilingLog = PR_NewLogModule("tiling");
+    }
     if (gfxPrefs::LayersUseSimpleTiles()) {
       nsRefPtr<SimpleClientTiledThebesLayer> layer =
-        new SimpleClientTiledThebesLayer(this);
+        new SimpleClientTiledThebesLayer(this, aHint);
       CREATE_SHADOW(Thebes);
       return layer.forget();
     } else {
       nsRefPtr<ClientTiledThebesLayer> layer =
-        new ClientTiledThebesLayer(this);
+        new ClientTiledThebesLayer(this, aHint);
       CREATE_SHADOW(Thebes);
       return layer.forget();
     }
   } else
   {
     nsRefPtr<ClientThebesLayer> layer =
-      new ClientThebesLayer(this);
+      new ClientThebesLayer(this, aHint);
     CREATE_SHADOW(Thebes);
     return layer.forget();
   }

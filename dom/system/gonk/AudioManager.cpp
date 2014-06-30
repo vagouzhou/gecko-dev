@@ -28,6 +28,8 @@
 
 #include "mozilla/Hal.h"
 #include "mozilla/Services.h"
+#include "mozilla/StaticPtr.h"
+#include "mozilla/ClearOnShutdown.h"
 #include "base/message_loop.h"
 
 #include "BluetoothCommon.h"
@@ -38,6 +40,7 @@
 #include "nsThreadUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsComponentManagerUtils.h"
+#include "nsXULAppAPI.h"
 
 using namespace mozilla::dom::gonk;
 using namespace android;
@@ -47,12 +50,13 @@ using namespace mozilla::dom::bluetooth;
 
 #define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "AudioManager" , ## args)
 
-#define HEADPHONES_STATUS_HEADSET   MOZ_UTF16("headset")
-#define HEADPHONES_STATUS_HEADPHONE MOZ_UTF16("headphone")
-#define HEADPHONES_STATUS_OFF       MOZ_UTF16("off")
-#define HEADPHONES_STATUS_UNKNOWN   MOZ_UTF16("unknown")
-#define HEADPHONES_STATUS_CHANGED   "headphones-status-changed"
-#define MOZ_SETTINGS_CHANGE_ID      "mozsettings-changed"
+#define HEADPHONES_STATUS_HEADSET     MOZ_UTF16("headset")
+#define HEADPHONES_STATUS_HEADPHONE   MOZ_UTF16("headphone")
+#define HEADPHONES_STATUS_OFF         MOZ_UTF16("off")
+#define HEADPHONES_STATUS_UNKNOWN     MOZ_UTF16("unknown")
+#define HEADPHONES_STATUS_CHANGED     "headphones-status-changed"
+#define MOZ_SETTINGS_CHANGE_ID        "mozsettings-changed"
+#define AUDIO_CHANNEL_PROCESS_CHANGED "audio-channel-process-changed"
 
 static void BinderDeadCallback(status_t aErr);
 static void InternalSetAudioRoutes(SwitchState aState);
@@ -125,23 +129,26 @@ public:
   {
     nsCOMPtr<nsIAudioManager> audioManager =
       do_GetService(NS_AUDIOMANAGER_CONTRACTID);
-    NS_ENSURE_TRUE(JSVAL_IS_INT(aResult), NS_OK);
+    NS_ENSURE_TRUE(aResult.isInt32(), NS_OK);
 
-    int32_t volIndex = JSVAL_TO_INT(aResult);
+    int32_t volIndex = aResult.toInt32();
     if (aName.EqualsLiteral("audio.volume.content")) {
-      audioManager->SetAudioChannelVolume(AUDIO_CHANNEL_CONTENT, volIndex);
+      audioManager->SetAudioChannelVolume((int32_t)AudioChannel::Content,
+                                          volIndex);
     } else if (aName.EqualsLiteral("audio.volume.notification")) {
-      audioManager->SetAudioChannelVolume(AUDIO_CHANNEL_NOTIFICATION,
+      audioManager->SetAudioChannelVolume((int32_t)AudioChannel::Notification,
                                           volIndex);
     } else if (aName.EqualsLiteral("audio.volume.alarm")) {
-      audioManager->SetAudioChannelVolume(AUDIO_CHANNEL_ALARM, volIndex);
+      audioManager->SetAudioChannelVolume((int32_t)AudioChannel::Alarm,
+                                          volIndex);
     } else if (aName.EqualsLiteral("audio.volume.telephony")) {
-      audioManager->SetAudioChannelVolume(AUDIO_CHANNEL_TELEPHONY, volIndex);
+      audioManager->SetAudioChannelVolume((int32_t)AudioChannel::Telephony,
+                                          volIndex);
     } else if (aName.EqualsLiteral("audio.volume.bt_sco")) {
       static_cast<AudioManager *>(audioManager.get())->SetStreamVolumeIndex(
         AUDIO_STREAM_BLUETOOTH_SCO, volIndex);
     } else {
-      MOZ_ASSUME_UNREACHABLE("unexpected audio channel for initializing "
+      MOZ_ASSERT_UNREACHABLE("unexpected audio channel for initializing "
                              "volume control");
     }
 
@@ -156,7 +163,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(AudioChannelVolInitCallback, nsISettingsServiceCallback)
+NS_IMPL_ISUPPORTS(AudioChannelVolInitCallback, nsISettingsServiceCallback)
 } /* namespace gonk */
 } /* namespace dom */
 } /* namespace mozilla */
@@ -189,7 +196,7 @@ static void ProcessDelayedAudioRoute(SwitchState aState)
   sSwitchDone = true;
 }
 
-NS_IMPL_ISUPPORTS2(AudioManager, nsIAudioManager, nsIObserver)
+NS_IMPL_ISUPPORTS(AudioManager, nsIAudioManager, nsIObserver)
 
 static void
 InternalSetAudioRoutesICS(SwitchState aState)
@@ -277,6 +284,32 @@ AudioManager::HandleBluetoothStatusChanged(nsISupports* aSubject,
 #endif
 }
 
+void
+AudioManager::HandleAudioChannelProcessChanged()
+{
+  // Note: If the user answers a VoIP call (e.g. WebRTC calls) during the
+  // telephony call (GSM/CDMA calls) the audio manager won't set the
+  // PHONE_STATE_IN_COMMUNICATION audio state. Once the telephony call finishes
+  // the RIL plumbing sets the PHONE_STATE_NORMAL audio state. This seems to be
+  // an issue for the VoIP call but it is not. Once the RIL plumbing sets the
+  // the PHONE_STATE_NORMAL audio state the AudioManager::mPhoneAudioAgent
+  // member will call the StopPlaying() method causing that this function will
+  // be called again and therefore the audio manager sets the
+  // PHONE_STATE_IN_COMMUNICATION audio state.
+
+  if ((mPhoneState == PHONE_STATE_IN_CALL) ||
+      (mPhoneState == PHONE_STATE_RINGTONE)) {
+    return;
+  }
+
+  AudioChannelService *service = AudioChannelService::GetAudioChannelService();
+  NS_ENSURE_TRUE_VOID(service);
+
+  bool telephonyChannelIsActive = service->TelephonyChannelIsActive();
+  telephonyChannelIsActive ? SetPhoneState(PHONE_STATE_IN_COMMUNICATION) :
+                             SetPhoneState(PHONE_STATE_NORMAL);
+}
+
 nsresult
 AudioManager::Observe(nsISupports* aSubject,
                       const char* aTopic,
@@ -292,6 +325,11 @@ AudioManager::Observe(nsISupports* aSubject,
     }
 
     HandleBluetoothStatusChanged(aSubject, aTopic, address);
+    return NS_OK;
+  }
+
+  else if (!strcmp(aTopic, AUDIO_CHANNEL_PROCESS_CHANGED)) {
+    HandleAudioChannelProcessChanged();
     return NS_OK;
   }
 
@@ -426,6 +464,9 @@ AudioManager::AudioManager()
   if (NS_FAILED(obs->AddObserver(this, MOZ_SETTINGS_CHANGE_ID, false))) {
     NS_WARNING("Failed to add mozsettings-changed observer!");
   }
+  if (NS_FAILED(obs->AddObserver(this, AUDIO_CHANNEL_PROCESS_CHANGED, false))) {
+    NS_WARNING("Failed to add audio-channel-process-changed observer!");
+  }
 
 #ifdef MOZ_B2G_RIL
   char value[PROPERTY_VALUE_MAX];
@@ -453,6 +494,29 @@ AudioManager::~AudioManager() {
   if (NS_FAILED(obs->RemoveObserver(this, MOZ_SETTINGS_CHANGE_ID))) {
     NS_WARNING("Failed to remove mozsettings-changed observer!");
   }
+  if (NS_FAILED(obs->RemoveObserver(this,  AUDIO_CHANNEL_PROCESS_CHANGED))) {
+    NS_WARNING("Failed to remove audio-channel-process-changed!");
+  }
+}
+
+static StaticRefPtr<AudioManager> sAudioManager;
+
+already_AddRefed<AudioManager>
+AudioManager::GetInstance()
+{
+  // Avoid createing AudioManager from content process.
+  if (XRE_GetProcessType() != GeckoProcessType_Default) {
+    MOZ_CRASH("Non-chrome processes should not get here.");
+  }
+
+  // Avoid createing multiple AudioManager instance inside main process.
+  if (!sAudioManager) {
+    sAudioManager = new AudioManager();
+    ClearOnShutdown(&sAudioManager);
+  }
+
+  nsRefPtr<AudioManager> audioMgr = sAudioManager.get();
+  return audioMgr.forget();
 }
 
 NS_IMETHODIMP
@@ -531,9 +595,9 @@ AudioManager::SetPhoneState(int32_t aState)
     MOZ_ASSERT(mPhoneAudioAgent);
     if (aState == PHONE_STATE_IN_CALL) {
       // Telephony doesn't be paused by any other channels.
-      mPhoneAudioAgent->Init(nullptr, AUDIO_CHANNEL_TELEPHONY, nullptr);
+      mPhoneAudioAgent->Init(nullptr, (int32_t)AudioChannel::Telephony, nullptr);
     } else {
-      mPhoneAudioAgent->Init(nullptr, AUDIO_CHANNEL_RINGER, nullptr);
+      mPhoneAudioAgent->Init(nullptr, (int32_t)AudioChannel::Ringer, nullptr);
     }
 
     // Telephony can always play.
@@ -608,8 +672,8 @@ NS_IMETHODIMP
 AudioManager::SetAudioChannelVolume(int32_t aChannel, int32_t aIndex) {
   nsresult status;
 
-  switch (aChannel) {
-    case AUDIO_CHANNEL_CONTENT:
+  switch (static_cast<AudioChannel>(aChannel)) {
+    case AudioChannel::Content:
       // sync FMRadio's volume with content channel.
       if (IsDeviceOn(AUDIO_DEVICE_OUT_FM)) {
         status = SetStreamVolumeIndex(AUDIO_STREAM_FM, aIndex);
@@ -619,15 +683,15 @@ AudioManager::SetAudioChannelVolume(int32_t aChannel, int32_t aIndex) {
       NS_ENSURE_SUCCESS(status, status);
       status = SetStreamVolumeIndex(AUDIO_STREAM_SYSTEM, aIndex);
       break;
-    case AUDIO_CHANNEL_NOTIFICATION:
+    case AudioChannel::Notification:
       status = SetStreamVolumeIndex(AUDIO_STREAM_NOTIFICATION, aIndex);
       NS_ENSURE_SUCCESS(status, status);
       status = SetStreamVolumeIndex(AUDIO_STREAM_RING, aIndex);
       break;
-    case AUDIO_CHANNEL_ALARM:
+    case AudioChannel::Alarm:
       status = SetStreamVolumeIndex(AUDIO_STREAM_ALARM, aIndex);
       break;
-    case AUDIO_CHANNEL_TELEPHONY:
+    case AudioChannel::Telephony:
       status = SetStreamVolumeIndex(AUDIO_STREAM_VOICE_CALL, aIndex);
       break;
     default:
@@ -643,21 +707,21 @@ AudioManager::GetAudioChannelVolume(int32_t aChannel, int32_t* aIndex) {
     return NS_ERROR_NULL_POINTER;
   }
 
-  switch (aChannel) {
-    case AUDIO_CHANNEL_CONTENT:
+  switch (static_cast<AudioChannel>(aChannel)) {
+    case AudioChannel::Content:
       MOZ_ASSERT(mCurrentStreamVolumeTbl[AUDIO_STREAM_MUSIC] ==
                  mCurrentStreamVolumeTbl[AUDIO_STREAM_SYSTEM]);
       *aIndex = mCurrentStreamVolumeTbl[AUDIO_STREAM_MUSIC];
       break;
-    case AUDIO_CHANNEL_NOTIFICATION:
+    case AudioChannel::Notification:
       MOZ_ASSERT(mCurrentStreamVolumeTbl[AUDIO_STREAM_NOTIFICATION] ==
                  mCurrentStreamVolumeTbl[AUDIO_STREAM_RING]);
       *aIndex = mCurrentStreamVolumeTbl[AUDIO_STREAM_NOTIFICATION];
       break;
-    case AUDIO_CHANNEL_ALARM:
+    case AudioChannel::Alarm:
       *aIndex = mCurrentStreamVolumeTbl[AUDIO_STREAM_ALARM];
       break;
-    case AUDIO_CHANNEL_TELEPHONY:
+    case AudioChannel::Telephony:
       *aIndex = mCurrentStreamVolumeTbl[AUDIO_STREAM_VOICE_CALL];
       break;
     default:
@@ -674,21 +738,21 @@ AudioManager::GetMaxAudioChannelVolume(int32_t aChannel, int32_t* aMaxIndex) {
   }
 
   int32_t stream;
-  switch (aChannel) {
-    case AUDIO_CHANNEL_CONTENT:
+  switch (static_cast<AudioChannel>(aChannel)) {
+    case AudioChannel::Content:
       MOZ_ASSERT(sMaxStreamVolumeTbl[AUDIO_STREAM_MUSIC] ==
                  sMaxStreamVolumeTbl[AUDIO_STREAM_SYSTEM]);
       stream = AUDIO_STREAM_MUSIC;
       break;
-    case AUDIO_CHANNEL_NOTIFICATION:
+    case AudioChannel::Notification:
       MOZ_ASSERT(sMaxStreamVolumeTbl[AUDIO_STREAM_NOTIFICATION] ==
                  sMaxStreamVolumeTbl[AUDIO_STREAM_RING]);
       stream = AUDIO_STREAM_NOTIFICATION;
       break;
-    case AUDIO_CHANNEL_ALARM:
+    case AudioChannel::Alarm:
       stream = AUDIO_STREAM_ALARM;
       break;
-    case AUDIO_CHANNEL_TELEPHONY:
+    case AudioChannel::Telephony:
       stream = AUDIO_STREAM_VOICE_CALL;
       break;
     default:

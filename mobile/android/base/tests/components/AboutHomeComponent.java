@@ -4,20 +4,20 @@
 
 package org.mozilla.gecko.tests.components;
 
-import static org.mozilla.gecko.tests.helpers.AssertionHelper.*;
+import static org.mozilla.gecko.tests.helpers.AssertionHelper.fAssertEquals;
+import static org.mozilla.gecko.tests.helpers.AssertionHelper.fAssertTrue;
 
-import org.mozilla.gecko.Actions;
 import org.mozilla.gecko.R;
-import org.mozilla.gecko.tests.helpers.*;
 import org.mozilla.gecko.tests.UITestContext;
+import org.mozilla.gecko.tests.helpers.DeviceHelper;
+import org.mozilla.gecko.tests.helpers.WaitHelper;
 
-import com.jayway.android.robotium.solo.Condition;
-import com.jayway.android.robotium.solo.Solo;
-
-import android.support.v4.view.PagerAdapter;
 import android.support.v4.view.ViewPager;
 import android.view.View;
 import android.widget.TextView;
+
+import com.jayway.android.robotium.solo.Condition;
+import com.jayway.android.robotium.solo.Solo;
 
 /**
  * A class representing any interactions that take place on the Awesomescreen.
@@ -30,13 +30,15 @@ public class AboutHomeComponent extends BaseComponent {
         HISTORY,
         TOP_SITES,
         BOOKMARKS,
-        READING_LIST
+        READING_LIST,
+        RECENT_TABS
     }
 
     // TODO: Having a specific ordering of panels is prone to fail and thus temporary.
     // Hopefully the work in bug 940565 will alleviate the need for these enums.
     // Explicit ordering of HomePager panels on a phone.
     private enum PhonePanel {
+        RECENT_TABS,
         HISTORY,
         TOP_SITES,
         BOOKMARKS,
@@ -48,7 +50,8 @@ public class AboutHomeComponent extends BaseComponent {
         TOP_SITES,
         BOOKMARKS,
         READING_LIST,
-        HISTORY
+        HISTORY,
+        RECENT_TABS
     }
 
     // The percentage of the panel to swipe between 0 and 1. This value was set through

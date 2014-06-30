@@ -37,6 +37,7 @@ public:
     , mOffset(aOffset)
     , mTime(aTimestamp)
     , mDuration(aDuration)
+    , mDiscontinuity(false)
   {}
 
   virtual ~MediaData() {}
@@ -52,6 +53,10 @@ public:
 
   // Duration of sample, in microseconds.
   const int64_t mDuration;
+
+  // True if this is the first sample after a gap or discontinuity in
+  // the stream. This is true for the first sample in a stream after a seek.
+  bool mDiscontinuity;
 
   int64_t GetEndTime() const { return mTime + mDuration; }
 
@@ -80,13 +85,7 @@ public:
     MOZ_COUNT_DTOR(AudioData);
   }
 
-  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const {
-    size_t size = aMallocSizeOf(this) + aMallocSizeOf(mAudioData);
-    if (mAudioBuffer) {
-      size += mAudioBuffer->SizeOfIncludingThis(aMallocSizeOf);
-    }
-    return size;
-  }
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const;
 
   // If mAudioBuffer is null, creates it from mAudioData.
   void EnsureAudioBuffer();
@@ -101,7 +100,7 @@ public:
 };
 
 namespace layers {
-class GraphicBufferLocked;
+class TextureClient;
 class PlanarYCbCrImage;
 }
 
@@ -179,7 +178,7 @@ public:
                            int64_t aOffset,
                            int64_t aTime,
                            int64_t aDuration,
-                           layers::GraphicBufferLocked* aBuffer,
+                           layers::TextureClient* aBuffer,
                            bool aKeyframe,
                            int64_t aTimecode,
                            const IntRect& aPicture);
@@ -204,10 +203,16 @@ public:
   static VideoData* ShallowCopyUpdateDuration(VideoData* aOther,
                                               int64_t aDuration);
 
+  // Creates a new VideoData identical to aOther, but with a different
+  // specified timestamp. All data from aOther is copied into the new
+  // VideoData, as ShallowCopyUpdateDuration() does.
+  static VideoData* ShallowCopyUpdateTimestamp(VideoData* aOther,
+                                               int64_t aTimestamp);
+
   // Initialize PlanarYCbCrImage. Only When aCopyData is true,
   // video data is copied to PlanarYCbCrImage.
   static void SetVideoDataToImage(PlanarYCbCrImage* aVideoImage,
-                                  VideoInfo& aInfo,                  
+                                  VideoInfo& aInfo,
                                   const YCbCrBuffer &aBuffer,
                                   const IntRect& aPicture,
                                   bool aCopyData);

@@ -168,13 +168,13 @@ typedef struct nsKeyPairInfoStr {
 class nsCryptoRunArgs : public nsISupports {
 public:
   nsCryptoRunArgs(JSContext *aCx);
-  virtual ~nsCryptoRunArgs();
   nsCOMPtr<nsISupports> m_kungFuDeathGrip;
   JSContext *m_cx;
   JS::PersistentRooted<JSObject*> m_scope;
-  nsCOMPtr<nsIPrincipal> m_principals;
   nsXPIDLCString m_jsCallback;
   NS_DECL_ISUPPORTS
+protected:
+  virtual ~nsCryptoRunArgs();
 };
 
 //This class is used to run the callback code
@@ -192,6 +192,13 @@ private:
   nsCryptoRunArgs *m_args;
 };
 
+namespace mozilla {
+template<>
+struct HasDangerousPublicDestructor<nsCryptoRunnable>
+{
+  static const bool value = true;
+};
+}
 
 //We're going to inherit the memory passed
 //into us.
@@ -200,10 +207,11 @@ private:
 class nsP12Runnable : public nsIRunnable {
 public:
   nsP12Runnable(nsIX509Cert **certArr, int32_t numCerts, nsIPK11Token *token);
-  virtual ~nsP12Runnable();
 
   NS_IMETHOD Run();
   NS_DECL_ISUPPORTS
+protected:
+  virtual ~nsP12Runnable();
 private:
   nsCOMPtr<nsIPK11Token> mToken;
   nsIX509Cert **mCertArr;
@@ -232,10 +240,10 @@ NS_IMPL_RELEASE(nsPkcs11)
 #ifndef MOZ_DISABLE_CRYPTOLEGACY
 
 // ISupports implementation for nsCryptoRunnable
-NS_IMPL_ISUPPORTS1(nsCryptoRunnable, nsIRunnable)
+NS_IMPL_ISUPPORTS(nsCryptoRunnable, nsIRunnable)
 
 // ISupports implementation for nsP12Runnable
-NS_IMPL_ISUPPORTS1(nsP12Runnable, nsIRunnable)
+NS_IMPL_ISUPPORTS(nsP12Runnable, nsIRunnable)
 
 // ISupports implementation for nsCryptoRunArgs
 NS_IMPL_ISUPPORTS0(nsCryptoRunArgs)
@@ -940,13 +948,13 @@ cryptojs_ReadArgsAndGenerateKey(JSContext *cx,
   int    keySize;
   nsresult  rv;
 
-  if (!JSVAL_IS_INT(argv[0])) {
+  if (!argv[0].isInt32()) {
     JS_ReportError(cx, "%s%s", JS_ERROR,
                    "passed in non-integer for key size");
     return NS_ERROR_FAILURE;
   }
-  keySize = JSVAL_TO_INT(argv[0]);
-  if (!JSVAL_IS_NULL(argv[1])) {
+  keySize = argv[0].toInt32();
+  if (!argv[1].isNull()) {
     JS::Rooted<JS::Value> v(cx, argv[1]);
     jsString = JS::ToString(cx, v);
     NS_ENSURE_TRUE(jsString, NS_ERROR_OUT_OF_MEMORY);
@@ -955,7 +963,7 @@ cryptojs_ReadArgsAndGenerateKey(JSContext *cx,
     NS_ENSURE_TRUE(!!params, NS_ERROR_OUT_OF_MEMORY);
   }
 
-  if (JSVAL_IS_NULL(argv[2])) {
+  if (argv[2].isNull()) {
     JS_ReportError(cx,"%s%s", JS_ERROR,
              "key generation type not specified");
     return NS_ERROR_FAILURE;
@@ -1838,7 +1846,7 @@ nsCreateReqFromKeyPairs(nsKeyPairInfo *keyids, int32_t numRequests,
   return retString;
 loser:
   nsFreeCertReqMessages(certReqMsgs,numRequests);
-  return nullptr;;
+  return nullptr;
 }
 
 static nsISupports *
@@ -2014,9 +2022,6 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
                                                  const_cast<char*>(aRegToken.get()),
                                                  const_cast<char*>(aAuthenticator.get()),
                                                  escrowCert);
-#ifdef DEBUG_javi
-  printf ("Created the folloing CRMF request:\n%s\n", encodedRequest);
-#endif
   if (!encodedRequest) {
     nsFreeKeyPairInfo(keyids, numRequests);
     aRv.Throw(NS_ERROR_FAILURE);
@@ -2024,6 +2029,7 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
   }
   CRMFObject* newObject = new CRMFObject();
   newObject->SetCRMFRequest(encodedRequest);
+  PORT_Free(encodedRequest);
   nsFreeKeyPairInfo(keyids, numRequests);
 
   // Post an event on the UI queue so that the JS gets called after
@@ -2036,24 +2042,7 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
   // when the request has been generated.
   //
 
-  nsCOMPtr<nsIScriptSecurityManager> secMan =
-    do_GetService(NS_SCRIPTSECURITYMANAGER_CONTRACTID);
-  if (MOZ_UNLIKELY(!secMan)) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
-    return nullptr;
-  }
-
-  nsCOMPtr<nsIPrincipal> principals;
-  nsresult rv = secMan->GetSubjectPrincipal(getter_AddRefs(principals));
-  if (NS_FAILED(nrv)) {
-    aRv.Throw(nrv);
-    return nullptr;
-  }
-  if (MOZ_UNLIKELY(!principals)) {
-    aRv.Throw(NS_ERROR_UNEXPECTED);
-    return nullptr;
-  }
-
+  MOZ_ASSERT(nsContentUtils::GetCurrentJSContext());
   nsCryptoRunArgs *args = new nsCryptoRunArgs(aContext);
 
   args->m_kungFuDeathGrip = GetISupportsFromContext(aContext);
@@ -2061,11 +2050,10 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
   if (!aJsCallback.IsVoid()) {
     args->m_jsCallback = aJsCallback;
   }
-  args->m_principals = principals;
 
   nsCryptoRunnable *cryptoRunnable = new nsCryptoRunnable(args);
 
-  rv = NS_DispatchToMainThread(cryptoRunnable);
+  nsresult rv = NS_DispatchToMainThread(cryptoRunnable);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
     delete cryptoRunnable;
@@ -2199,7 +2187,7 @@ nsCryptoRunnable::Run()
 
   bool ok =
     JS_EvaluateScript(cx, scope, m_args->m_jsCallback,
-                      strlen(m_args->m_jsCallback), nullptr, 0, nullptr);
+                      strlen(m_args->m_jsCallback), nullptr, 0);
   return ok ? NS_OK : NS_ERROR_FAILURE;
 }
 
@@ -2442,20 +2430,6 @@ nsCrypto::ImportUserCertificates(const nsAString& aNickname,
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
   }
-}
-
-void
-nsCrypto::PopChallengeResponse(const nsAString& aChallenge,
-                               nsAString& aReturn,
-                               ErrorResult& aRv)
-{
-  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
-}
-
-void
-nsCrypto::Random(int32_t aNumBytes, nsAString& aReturn, ErrorResult& aRv)
-{
-  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
 }
 
 static void
@@ -2830,12 +2804,6 @@ nsCrypto::Logout(ErrorResult& aRv)
   }
 }
 
-void
-nsCrypto::DisableRightClick(ErrorResult& aRv)
-{
-  aRv.Throw(NS_ERROR_NOT_IMPLEMENTED);
-}
-
 CRMFObject::CRMFObject()
 {
   MOZ_COUNT_CTOR(CRMFObject);
@@ -2847,10 +2815,9 @@ CRMFObject::~CRMFObject()
 }
 
 JSObject*
-CRMFObject::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope,
-                       bool* aTookOwnership)
+CRMFObject::WrapObject(JSContext *aCx, bool* aTookOwnership)
 {
-  return CRMFObjectBinding::Wrap(aCx, aScope, this, aTookOwnership);
+  return CRMFObjectBinding::Wrap(aCx, this, aTookOwnership);
 }
 
 void

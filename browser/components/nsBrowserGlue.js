@@ -22,6 +22,9 @@ XPCOMUtils.defineLazyModuleGetter(this, "AddonManager",
 XPCOMUtils.defineLazyModuleGetter(this, "ContentClick",
                                   "resource:///modules/ContentClick.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "DirectoryLinksProvider",
+                                  "resource://gre/modules/DirectoryLinksProvider.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "NetUtil",
                                   "resource://gre/modules/NetUtil.jsm");
 
@@ -78,6 +81,9 @@ XPCOMUtils.defineLazyModuleGetter(this, "PlacesBackups",
 XPCOMUtils.defineLazyModuleGetter(this, "OS",
                                   "resource://gre/modules/osfile.jsm");
 
+ XPCOMUtils.defineLazyModuleGetter(this, "RemotePrompt",
+                                   "resource:///modules/RemotePrompt.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "SessionStore",
                                   "resource:///modules/sessionstore/SessionStore.jsm");
 
@@ -87,22 +93,28 @@ XPCOMUtils.defineLazyModuleGetter(this, "BrowserUITelemetry",
 XPCOMUtils.defineLazyModuleGetter(this, "AsyncShutdown",
                                   "resource://gre/modules/AsyncShutdown.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "LoginManagerParent",
+                                  "resource://gre/modules/LoginManagerParent.jsm");
+
 #ifdef NIGHTLY_BUILD
 XPCOMUtils.defineLazyModuleGetter(this, "SignInToWebsiteUX",
                                   "resource:///modules/SignInToWebsite.jsm");
 #endif
 
+XPCOMUtils.defineLazyModuleGetter(this, "ContentSearch",
+                                  "resource:///modules/ContentSearch.jsm");
+
 const PREF_PLUGINS_NOTIFYUSER = "plugins.update.notifyUser";
 const PREF_PLUGINS_UPDATEURL  = "plugins.update.url";
 
 // Seconds of idle before trying to create a bookmarks backup.
-const BOOKMARKS_BACKUP_IDLE_TIME_SEC = 10 * 60;
+const BOOKMARKS_BACKUP_IDLE_TIME_SEC = 8 * 60;
 // Minimum interval between backups.  We try to not create more than one backup
 // per interval.
 const BOOKMARKS_BACKUP_MIN_INTERVAL_DAYS = 1;
 // Maximum interval between backups.  If the last backup is older than these
 // days we will try to create a new one more aggressively.
-const BOOKMARKS_BACKUP_MAX_INTERVAL_DAYS = 5;
+const BOOKMARKS_BACKUP_MAX_INTERVAL_DAYS = 3;
 
 // Factory object
 const BrowserGlueServiceFactory = {
@@ -475,6 +487,8 @@ BrowserGlue.prototype = {
     WebappManager.init();
     PageThumbs.init();
     NewTabUtils.init();
+    DirectoryLinksProvider.init();
+    NewTabUtils.links.addProvider(DirectoryLinksProvider);
     BrowserNewTabPreloader.init();
 #ifdef NIGHTLY_BUILD
     if (Services.prefs.getBoolPref("dom.identity.enabled")) {
@@ -489,9 +503,14 @@ BrowserGlue.prototype = {
     AboutHome.init();
     SessionStore.init();
     BrowserUITelemetry.init();
+    ContentSearch.init();
 
-    if (Services.appinfo.browserTabsRemote)
+    if (Services.appinfo.browserTabsRemote) {
       ContentClick.init();
+      RemotePrompt.init();
+    }
+
+    LoginManagerParent.init();
 
     Services.obs.notifyObservers(null, "browser-ui-startup-complete", "");
   },
@@ -616,6 +635,22 @@ BrowserGlue.prototype = {
                           nb.PRIORITY_INFO_LOW, buttons);
   },
 
+  _firstWindowTelemetry: function(aWindow) {
+#ifdef XP_WIN
+    let SCALING_PROBE_NAME = "DISPLAY_SCALING_MSWIN";
+#elifdef XP_MACOSX
+    let SCALING_PROBE_NAME = "DISPLAY_SCALING_OSX";
+#elifdef XP_LINUX
+    let SCALING_PROBE_NAME = "DISPLAY_SCALING_LINUX";
+#else
+    let SCALING_PROBE_NAME = "";
+#endif
+    if (SCALING_PROBE_NAME) {
+      let scaling = aWindow.devicePixelRatio * 100;
+      Services.telemetry.getHistogramById(SCALING_PROBE_NAME).add(scaling);
+    }
+  },
+
   // the first browser window has finished initializing
   _onFirstWindowLoaded: function BG__onFirstWindowLoaded(aWindow) {
 #ifdef XP_WIN
@@ -644,6 +679,8 @@ BrowserGlue.prototype = {
     }
 
     this._checkForOldBuildUpdates();
+
+    this._firstWindowTelemetry(aWindow);
   },
 
   /**
@@ -1075,6 +1112,19 @@ BrowserGlue.prototype = {
         importBookmarks = true;
     } catch(ex) {}
 
+    // Support legacy bookmarks.html format for apps that depend on that format.
+    let autoExportHTML = false;
+    try {
+      autoExportHTML = Services.prefs.getBoolPref("browser.bookmarks.autoExportHTML");
+    } catch (ex) {} // Do not export.
+    if (autoExportHTML) {
+      // Sqlite.jsm and Places shutdown happen at profile-before-change, thus,
+      // to be on the safe side, this should run earlier.
+      AsyncShutdown.profileChangeTeardown.addBlocker(
+        "Places: export bookmarks.html",
+        () => BookmarkHTMLUtils.exportToFile(BookmarkHTMLUtils.defaultPath));
+    }
+
     Task.spawn(function() {
       // Check if Safe Mode or the user has required to restore bookmarks from
       // default profile's bookmarks.html
@@ -1097,7 +1147,7 @@ BrowserGlue.prototype = {
       // from bookmarks.html, we will try to restore from JSON
       if (importBookmarks && !restoreDefaultBookmarks && !importBookmarksHTML) {
         // get latest JSON backup
-        lastBackupFile = yield PlacesBackups.getMostRecentBackup("json");
+        lastBackupFile = yield PlacesBackups.getMostRecentBackup();
         if (lastBackupFile) {
           // restore from JSON backup
           yield BookmarkJSONUtils.importFromFile(lastBackupFile, true);
@@ -1132,10 +1182,6 @@ BrowserGlue.prototype = {
         // An import operation is about to run.
         // Don't try to recreate smart bookmarks if autoExportHTML is true or
         // smart bookmarks are disabled.
-        let autoExportHTML = false;
-        try {
-          autoExportHTML = Services.prefs.getBoolPref("browser.bookmarks.autoExportHTML");
-        } catch(ex) {}
         let smartBookmarksVersion = 0;
         try {
           smartBookmarksVersion = Services.prefs.getIntPref("browser.places.smartBookmarksVersion");
@@ -1238,19 +1284,6 @@ BrowserGlue.prototype = {
       this._idleService.removeIdleObserver(this, this._bookmarksBackupIdleTime);
       delete this._bookmarksBackupIdleTime;
     }
-
-    // Support legacy bookmarks.html format for apps that depend on that format.
-    try {
-      if (Services.prefs.getBoolPref("browser.bookmarks.autoExportHTML")) {
-        // places-shutdown happens at profile-change-teardown, so here we
-        // can safely add a profile-before-change blocker.
-        AsyncShutdown.profileBeforeChange.addBlocker(
-          "Places: bookmarks.html",
-          () => BookmarkHTMLUtils.exportToFile(BookmarkHTMLUtils.defaultPath)
-                                 .then(null, Cu.reportError)
-        );
-      }
-    } catch (ex) {} // Do not export.
   },
 
   /**
@@ -1397,19 +1430,6 @@ BrowserGlue.prototype = {
       }
     }
 
-    if (currentUIVersion < 6) {
-      // convert tabsontop attribute to pref
-      let toolboxResource = this._rdf.GetResource(BROWSER_DOCURL + "navigator-toolbox");
-      let tabsOnTopResource = this._rdf.GetResource("tabsontop");
-      let tabsOnTopAttribute = this._getPersist(toolboxResource, tabsOnTopResource);
-      if (tabsOnTopAttribute)
-        Services.prefs.setBoolPref("browser.tabs.onTop", tabsOnTopAttribute == "true");
-    }
-
-    // Migration at version 7 only occurred for users who wanted to try the new
-    // Downloads Panel feature before its release. Since migration at version
-    // 9 adds the button by default, this step has been removed.
-
     if (currentUIVersion < 8) {
       // Reset homepage pref for users who have it set to google.com/firefox
       let uri = Services.prefs.getComplexValue("browser.startup.homepage",
@@ -1501,8 +1521,6 @@ BrowserGlue.prototype = {
                               "chromeappsstore.sqlite");
       OS.File.remove(path);
     }
-
-    // Version 15 was obsoleted in favour of 18.
 
     if (currentUIVersion < 16) {
       let toolbarResource = this._rdf.GetResource(BROWSER_DOCURL + "nav-bar");

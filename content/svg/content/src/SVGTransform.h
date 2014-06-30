@@ -18,7 +18,7 @@
 
 class nsSVGElement;
 
-struct gfxMatrix;
+class gfxMatrix;
 
 #define MOZ_SVG_LIST_INDEX_BIT_COUNT 31 // supports > 2 billion list items
 
@@ -59,8 +59,6 @@ public:
    * Ctor for creating an unowned copy. Used with Clone().
    */
   explicit SVGTransform(const nsSVGTransform &aMatrix);
-
-  ~SVGTransform();
 
   /**
    * Create an unowned copy of an owned transform. The caller is responsible for
@@ -120,8 +118,7 @@ public:
 
   // WebIDL
   DOMSVGTransformList* GetParentObject() const { return mList; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
   uint16_t Type() const;
   dom::SVGMatrix* GetMatrix();
   float Angle() const;
@@ -133,6 +130,8 @@ public:
   void SetSkewY(float angle, ErrorResult& rv);
 
 protected:
+  ~SVGTransform();
+
   // Interface for SVGMatrix's use
   friend class dom::SVGMatrix;
   const bool IsAnimVal() const {

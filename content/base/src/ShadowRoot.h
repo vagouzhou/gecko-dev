@@ -7,6 +7,7 @@
 #define mozilla_dom_shadowroot_h__
 
 #include "mozilla/dom/DocumentFragment.h"
+#include "mozilla/dom/StyleSheetList.h"
 #include "nsCOMPtr.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsTHashtable.h"
@@ -15,7 +16,6 @@
 class nsIAtom;
 class nsIContent;
 class nsIDocument;
-class nsINodeInfo;
 class nsPIDOMWindow;
 class nsXBLPrototypeBinding;
 class nsTagNameMapEntry;
@@ -42,17 +42,17 @@ public:
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
-  ShadowRoot(nsIContent* aContent, already_AddRefed<nsINodeInfo>&& aNodeInfo,
+  ShadowRoot(nsIContent* aContent, already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
              nsXBLPrototypeBinding* aProtoBinding);
   virtual ~ShadowRoot();
 
   void AddToIdTable(Element* aElement, nsIAtom* aId);
   void RemoveFromIdTable(Element* aElement, nsIAtom* aId);
-  void InsertSheet(nsCSSStyleSheet* aSheet, nsIContent* aLinkingContent);
-  void RemoveSheet(nsCSSStyleSheet* aSheet);
+  void InsertSheet(CSSStyleSheet* aSheet, nsIContent* aLinkingContent);
+  void RemoveSheet(CSSStyleSheet* aSheet);
   bool ApplyAuthorStyles();
   void SetApplyAuthorStyles(bool aApplyAuthorStyles);
-  nsIDOMStyleSheetList* StyleSheets();
+  StyleSheetList* StyleSheets();
   HTMLShadowElement* GetShadowElement() { return mShadowElement; }
 
   /**
@@ -105,12 +105,15 @@ public:
   nsIContent* GetPoolHost() { return mPoolHost; }
   nsTArray<HTMLShadowElement*>& ShadowDescendants() { return mShadowDescendants; }
 
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static bool IsPooledNode(nsIContent* aChild, nsIContent* aContainer,
                            nsIContent* aHost);
   static ShadowRoot* FromNode(nsINode* aNode);
   static bool IsShadowInsertionPoint(nsIContent* aContent);
+
+  static void RemoveDestInsertionPoint(nsIContent* aInsertionPoint,
+                                       nsTArray<nsIContent*>& aDestInsertionPoints);
 
   // WebIDL methods.
   Element* GetElementById(const nsAString& aElementId);
@@ -123,8 +126,8 @@ public:
     GetElementsByClassName(const nsAString& aClasses);
   void GetInnerHTML(nsAString& aInnerHTML);
   void SetInnerHTML(const nsAString& aInnerHTML, ErrorResult& aError);
+  void StyleSheetChanged();
 protected:
-  void Restyle();
 
   // The pool host is the parent of the nodes that will be distributed
   // into the insertion points in this ShadowRoot. See |ChangeShadowRoot|.
@@ -169,17 +172,22 @@ protected:
   bool mInsertionPointChanged;
 };
 
-class ShadowRootStyleSheetList : public nsIDOMStyleSheetList
+class ShadowRootStyleSheetList : public StyleSheetList
 {
 public:
   ShadowRootStyleSheetList(ShadowRoot* aShadowRoot);
   virtual ~ShadowRootStyleSheetList();
 
-  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-  NS_DECL_CYCLE_COLLECTION_CLASS(ShadowRootStyleSheetList)
+  NS_DECL_ISUPPORTS_INHERITED
+  NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(ShadowRootStyleSheetList, StyleSheetList)
 
-  // nsIDOMStyleSheetList
-  NS_DECL_NSIDOMSTYLESHEETLIST
+  virtual nsINode* GetParentObject() const MOZ_OVERRIDE
+  {
+    return mShadowRoot;
+  }
+
+  virtual uint32_t Length() MOZ_OVERRIDE;
+  virtual CSSStyleSheet* IndexedGetter(uint32_t aIndex, bool& aFound) MOZ_OVERRIDE;
 
 protected:
   nsRefPtr<ShadowRoot> mShadowRoot;

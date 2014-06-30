@@ -127,12 +127,10 @@ public:
   {
     SetIsDOMBinding();
   }
-  ~DOMSVGPreserveAspectRatio();
 
   // WebIDL
   nsSVGElement* GetParentObject() const { return mSVGElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   uint16_t Align();
   void SetAlign(uint16_t aAlign, ErrorResult& rv);
@@ -140,6 +138,8 @@ public:
   void SetMeetOrSlice(uint16_t aMeetOrSlice, ErrorResult& rv);
 
 protected:
+  ~DOMSVGPreserveAspectRatio();
+
   SVGAnimatedPreserveAspectRatio* mVal; // kept alive because it belongs to mSVGElement
   nsRefPtr<nsSVGElement> mSVGElement;
   const bool mIsBaseValue;

@@ -11,7 +11,11 @@ UNIFIED_SOURCES += [
     'TestTrackEncoder.cpp',
 ]
 
-LIBXUL_LIBRARY = True
+if CONFIG['MOZ_WEBM_ENCODER']:
+    UNIFIED_SOURCES += ['TestVideoTrackEncoder.cpp',
+                        'TestVorbisTrackEncoder.cpp',
+                        'TestWebMWriter.cpp',
+]
 
 EXPORT_LIBRARY = True
 
@@ -21,3 +25,6 @@ LOCAL_INCLUDES += [
     '/content/media/encoder',
 ]
 
+FINAL_LIBRARY = 'xul-gtest'
+
+FAIL_ON_WARNINGS = True

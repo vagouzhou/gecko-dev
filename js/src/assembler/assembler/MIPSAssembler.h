@@ -180,6 +180,10 @@ public:
         {
         }
 
+        bool isSet() const {
+            return m_offset != -1;
+        }
+
     private:
         JmpSrc(int offset)
             : m_offset(offset)
@@ -317,7 +321,7 @@ public:
 
     void mul(RegisterID rd, RegisterID rs, RegisterID rt)
     {
-#if WTF_MIPS_ISA_AT_LEAST(32) 
+#if WTF_MIPS_ISA_AT_LEAST(32)
         emitInst(0x70000002 | (rd << OP_SH_RD) | (rs << OP_SH_RS)
                  | (rt << OP_SH_RT));
 #else
@@ -770,6 +774,11 @@ public:
     size_t size() const
     {
         return m_buffer.size();
+    }
+
+    size_t allocSize() const
+    {
+        return m_buffer.allocSize();
     }
 
     void executableCopy(void* buffer)

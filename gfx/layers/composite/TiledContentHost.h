@@ -21,11 +21,15 @@
 #include "mozilla/layers/CompositorTypes.h"  // for TextureInfo, etc
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
-#include "mozilla/layers/TextureHost.h"  // for DeprecatedTextureHost
+#include "mozilla/layers/TextureHost.h"  // for TextureHost
 #include "mozilla/layers/TiledContentClient.h"
 #include "mozilla/mozalloc.h"           // for operator delete
 #include "nsRegion.h"                   // for nsIntRegion
 #include "nscore.h"                     // for nsACString
+
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
+#include <ui/Fence.h>
+#endif
 
 class gfxReusableSurfaceWrapper;
 struct nsIntPoint;
@@ -43,7 +47,6 @@ class Compositor;
 class ISurfaceAllocator;
 class Layer;
 class ThebesBufferData;
-class TiledThebesLayerComposite;
 struct EffectChain;
 
 
@@ -133,6 +136,14 @@ public:
 
   bool IsValid() const { return !mUninitialized; }
 
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
+  virtual void SetReleaseFence(const android::sp<android::Fence>& aReleaseFence);
+#endif
+
+  // Recycle callback for TextureHost.
+  // Used when TiledContentClient is present in client side.
+  static void RecycleCallback(TextureHost* textureHost, void* aClosure);
+
 protected:
   TileHost ValidateTile(TileHost aTile,
                         const nsIntPoint& aTileRect,
@@ -200,6 +211,52 @@ public:
   void UseTiledLayerBuffer(ISurfaceAllocator* aAllocator,
                            const SurfaceDescriptorTiles& aTiledDescriptor);
 
+  void Composite(EffectChain& aEffectChain,
+                 float aOpacity,
+                 const gfx::Matrix4x4& aTransform,
+                 const gfx::Filter& aFilter,
+                 const gfx::Rect& aClipRect,
+                 const nsIntRegion* aVisibleRegion = nullptr,
+                 TiledLayerProperties* aLayerProperties = nullptr);
+
+  virtual CompositableType GetType() { return CompositableType::BUFFER_TILED; }
+
+  virtual TiledLayerComposer* AsTiledLayerComposer() MOZ_OVERRIDE { return this; }
+
+  virtual void Attach(Layer* aLayer,
+                      Compositor* aCompositor,
+                      AttachFlags aFlags = NO_FLAGS) MOZ_OVERRIDE;
+
+#ifdef MOZ_DUMP_PAINTING
+  virtual void Dump(std::stringstream& aStream,
+                    const char* aPrefix="",
+                    bool aDumpHtml=false) MOZ_OVERRIDE;
+#endif
+
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
+
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
+  /**
+   * Store a fence that will signal when the current buffer is no longer being read.
+   * Similar to android's GLConsumer::setReleaseFence()
+   */
+  virtual void SetReleaseFence(const android::sp<android::Fence>& aReleaseFence)
+  {
+    mTiledBuffer.SetReleaseFence(aReleaseFence);
+    mLowPrecisionTiledBuffer.SetReleaseFence(aReleaseFence);
+  }
+#endif
+
+private:
+
+  void RenderLayerBuffer(TiledLayerBufferComposite& aLayerBuffer,
+                         EffectChain& aEffectChain,
+                         float aOpacity,
+                         const gfx::Filter& aFilter,
+                         const gfx::Rect& aClipRect,
+                         nsIntRegion aMaskRegion,
+                         gfx::Matrix4x4 aTransform);
+
   // Renders a single given tile.
   void RenderTile(const TileHost& aTile,
                   EffectChain& aEffectChain,
@@ -210,49 +267,6 @@ public:
                   const nsIntRegion& aScreenRegion,
                   const nsIntPoint& aTextureOffset,
                   const nsIntSize& aTextureBounds);
-
-  void Composite(EffectChain& aEffectChain,
-                 float aOpacity,
-                 const gfx::Matrix4x4& aTransform,
-                 const gfx::Filter& aFilter,
-                 const gfx::Rect& aClipRect,
-                 const nsIntRegion* aVisibleRegion = nullptr,
-                 TiledLayerProperties* aLayerProperties = nullptr);
-
-  virtual CompositableType GetType() { return BUFFER_TILED; }
-
-  virtual TiledLayerComposer* AsTiledLayerComposer() MOZ_OVERRIDE { return this; }
-
-  virtual void EnsureDeprecatedTextureHost(TextureIdentifier aTextureId,
-                                 const SurfaceDescriptor& aSurface,
-                                 ISurfaceAllocator* aAllocator,
-                                 const TextureInfo& aTextureInfo) MOZ_OVERRIDE
-  {
-    MOZ_CRASH("Does nothing");
-  }
-
-  virtual void Attach(Layer* aLayer,
-                      Compositor* aCompositor,
-                      AttachFlags aFlags = NO_FLAGS) MOZ_OVERRIDE;
-
-#ifdef MOZ_DUMP_PAINTING
-  virtual void Dump(FILE* aFile=nullptr,
-                    const char* aPrefix="",
-                    bool aDumpHtml=false) MOZ_OVERRIDE;
-#endif
-
-  virtual void PrintInfo(nsACString& aTo, const char* aPrefix);
-
-private:
-  void RenderLayerBuffer(TiledLayerBufferComposite& aLayerBuffer,
-                         const nsIntRegion& aValidRegion,
-                         EffectChain& aEffectChain,
-                         float aOpacity,
-                         const gfx::Filter& aFilter,
-                         const gfx::Rect& aClipRect,
-                         const nsIntRegion& aMaskRegion,
-                         nsIntRect aVisibleRect,
-                         gfx::Matrix4x4 aTransform);
 
   void EnsureTileStore() {}
 

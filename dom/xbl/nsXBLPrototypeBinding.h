@@ -25,6 +25,10 @@ class nsXBLAttributeEntry;
 class nsXBLBinding;
 class nsXBLProtoImplField;
 
+namespace mozilla {
+class CSSStyleSheet;
+} // namespace mozilla
+
 // *********************************************************************/
 // The XBLPrototypeBinding class
 
@@ -113,13 +117,15 @@ public:
 
   void SetInitialAttributes(nsIContent* aBoundElement, nsIContent* aAnonymousContent);
 
-  nsIStyleRuleProcessor* GetRuleProcessor();
-  nsXBLPrototypeResources::sheet_array_type* GetOrCreateStyleSheets();
-  nsXBLPrototypeResources::sheet_array_type* GetStyleSheets();
+  void AppendStyleSheet(mozilla::CSSStyleSheet* aSheet);
+  void RemoveStyleSheet(mozilla::CSSStyleSheet* aSheet);
+  void InsertStyleSheetAt(size_t aIndex, mozilla::CSSStyleSheet* aSheet);
+  mozilla::CSSStyleSheet* StyleSheetAt(size_t aIndex) const;
+  size_t SheetCount() const;
+  bool HasStyleSheets() const;
+  void AppendStyleSheetsTo(nsTArray<mozilla::CSSStyleSheet*>& aResult) const;
 
-  bool HasStyleSheets() {
-    return mResources && mResources->mStyleSheetList.Length() > 0;
-  }
+  nsIStyleRuleProcessor* GetRuleProcessor();
 
   nsresult FlushSkinSheets();
 
@@ -235,7 +241,7 @@ public:
                 bool aFirstBinding = false);
 
   void Traverse(nsCycleCollectionTraversalCallback &cb) const;
-  void UnlinkJSObjects();
+  void Unlink();
   void Trace(const TraceCallbacks& aCallbacks, void *aClosure) const;
 
 // Internal member functions.
@@ -264,6 +270,9 @@ protected:
   void ConstructAttributeTable(nsIContent* aElement);
   void CreateKeyHandlers();
 
+private:
+  void EnsureResources();
+
 // MEMBER VARIABLES
 protected:
   nsCOMPtr<nsIURI> mBindingURI;
@@ -283,7 +292,7 @@ protected:
   bool mKeyHandlersRegistered;
   bool mChromeOnlyContent;
 
-  nsXBLPrototypeResources* mResources; // If we have any resources, this will be non-null.
+  nsAutoPtr<nsXBLPrototypeResources> mResources; // If we have any resources, this will be non-null.
 
   nsXBLDocumentInfo* mXBLDocInfoWeak; // A pointer back to our doc info.  Weak, since it owns us.
 

@@ -50,10 +50,12 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <errno.h>
+#include <algorithm>
 
 #include "updatelogging.h"
 
 #include "mozilla/Compiler.h"
+#include "mozilla/Types.h"
 
 // Amount of the progress bar to use in each of the 3 update stages,
 // should total 100.0.
@@ -68,7 +70,7 @@
 #if defined(XP_MACOSX)
 // These functions are defined in launchchild_osx.mm
 void LaunchChild(int argc, char **argv);
-void LaunchMacPostProcess(const char* aAppExe);
+void LaunchMacPostProcess(const char* aAppBundle);
 #endif
 
 #ifndef _O_BINARY
@@ -99,7 +101,7 @@ void LaunchMacPostProcess(const char* aAppExe);
 // The only header file in bionic which has a function prototype for ioprio_set
 // is libc/include/sys/linux-unistd.h. However, linux-unistd.h conflicts
 // badly with unistd.h, so we declare the prototype for ioprio_set directly.
-extern "C" int ioprio_set(int which, int who, int ioprio);
+extern "C" MOZ_EXPORT int ioprio_set(int which, int who, int ioprio);
 
 # define MAYBE_USE_HARD_LINKS 1
 static bool sUseHardLinks = true;
@@ -2667,7 +2669,7 @@ int NS_main(int argc, NS_tchar **argv)
         return 1;
       }
 
-      char16_t *cmdLine = MakeCommandLine(argc - 1, argv + 1);
+      wchar_t *cmdLine = MakeCommandLine(argc - 1, argv + 1);
       if (!cmdLine) {
         CloseHandle(elevatedFileHandle);
         return 1;
@@ -2984,7 +2986,7 @@ int NS_main(int argc, NS_tchar **argv)
       size_t callbackPrefixLength = PathCommonPrefixW(argv[callbackIndex],
                                                       installDir,
                                                       nullptr);
-      NS_tstrncpy(p, argv[callbackIndex] + max(callbackPrefixLength, commonPrefixLength), bufferLeft);
+      NS_tstrncpy(p, argv[callbackIndex] + std::max(callbackPrefixLength, commonPrefixLength), bufferLeft);
       targetPath = buffer;
     }
     if (!GetLongPathNameW(targetPath, callbackLongPath,
@@ -3172,7 +3174,10 @@ int NS_main(int argc, NS_tchar **argv)
 #endif /* XP_WIN */
 #ifdef XP_MACOSX
     if (gSucceeded) {
-      LaunchMacPostProcess(argv[callbackIndex]);
+      char installDir[MAXPATHLEN];
+      if (GetInstallationDir(installDir)) {
+        LaunchMacPostProcess(installDir);
+      }
     }
 #endif /* XP_MACOSX */
 

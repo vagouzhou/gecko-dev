@@ -13,7 +13,8 @@
 callback DecodeSuccessCallback = void (AudioBuffer decodedData);
 callback DecodeErrorCallback = void ();
 
-[Constructor]
+[Constructor,
+ Constructor(AudioChannel audioChannelType)]
 interface AudioContext : EventTarget {
 
     readonly attribute AudioDestinationNode destination;
@@ -28,7 +29,7 @@ interface AudioContext : EventTarget {
                          DecodeSuccessCallback successCallback,
                          optional DecodeErrorCallback errorCallback);
 
-    // AudioNode creation 
+    // AudioNode creation
     [NewObject]
     AudioBufferSourceNode createBufferSource();
 
@@ -74,32 +75,20 @@ interface AudioContext : EventTarget {
 
 };
 
-/*
- * The origin of this IDL file is
- * https://dvcs.w3.org/hg/audio/raw-file/tip/webaudio/specification.html#AlternateNames
- */
-partial interface AudioContext {
-    [NewObject, Throws]
-    AudioBuffer? createBuffer(ArrayBuffer buffer, boolean mixToMono);
-
-    // Same as createGain()
-    [NewObject,Pref="media.webaudio.legacy.AudioContext"]
-    GainNode createGainNode();
-
-    // Same as createDelay()
-    [NewObject, Throws, Pref="media.webaudio.legacy.AudioContext"]
-    DelayNode createDelayNode(optional double maxDelayTime = 1);
-
-    // Same as createScriptProcessor()
-    [NewObject, Throws, Pref="media.webaudio.legacy.AudioContext"]
-    ScriptProcessorNode createJavaScriptNode(optional unsigned long bufferSize = 0,
-                                             optional unsigned long numberOfInputChannels = 2,
-                                             optional unsigned long numberOfOutputChannels = 2);
-};
-
 // Mozilla extensions
 partial interface AudioContext {
   // Read AudioChannel.webidl for more information about this attribute.
   [Pref="media.useAudioChannelService", SetterThrows]
   attribute AudioChannel mozAudioChannelType;
+};
+
+partial interface AudioContext {
+  // These 2 events are dispatched when the AudioContext object is muted by
+  // the AudioChannelService. It's call 'interrupt' because when this event is
+  // dispatched on a HTMLMediaElement, the audio stream is paused.
+  [Pref="media.useAudioChannelService"]
+  attribute EventHandler onmozinterruptbegin;
+
+  [Pref="media.useAudioChannelService"]
+  attribute EventHandler onmozinterruptend;
 };

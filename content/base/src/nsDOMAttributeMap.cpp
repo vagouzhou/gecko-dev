@@ -114,7 +114,7 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 
 // QueryInterface implementation for nsDOMAttributeMap
 NS_INTERFACE_TABLE_HEAD(nsDOMAttributeMap)
-  NS_INTERFACE_TABLE1(nsDOMAttributeMap, nsIDOMMozNamedAttrMap)
+  NS_INTERFACE_TABLE(nsDOMAttributeMap, nsIDOMMozNamedAttrMap)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRIES_CYCLE_COLLECTION(nsDOMAttributeMap)
@@ -157,7 +157,7 @@ nsDOMAttributeMap::DropAttribute(int32_t aNamespaceID, nsIAtom* aLocalName)
 }
 
 already_AddRefed<Attr>
-nsDOMAttributeMap::RemoveAttribute(nsINodeInfo* aNodeInfo)
+nsDOMAttributeMap::RemoveAttribute(mozilla::dom::NodeInfo* aNodeInfo)
 {
   NS_ASSERTION(aNodeInfo, "RemoveAttribute() called with aNodeInfo == nullptr!");
 
@@ -169,7 +169,7 @@ nsDOMAttributeMap::RemoveAttribute(nsINodeInfo* aNodeInfo)
     // As we are removing the attribute we need to set the current value in
     // the attribute node.
     mContent->GetAttr(aNodeInfo->NamespaceID(), aNodeInfo->NameAtom(), value);
-    nsCOMPtr<nsINodeInfo> ni = aNodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> ni = aNodeInfo;
     node = new Attr(nullptr, ni.forget(), value, true);
   }
   else {
@@ -184,7 +184,7 @@ nsDOMAttributeMap::RemoveAttribute(nsINodeInfo* aNodeInfo)
 }
 
 Attr*
-nsDOMAttributeMap::GetAttribute(nsINodeInfo* aNodeInfo, bool aNsAware)
+nsDOMAttributeMap::GetAttribute(mozilla::dom::NodeInfo* aNodeInfo, bool aNsAware)
 {
   NS_ASSERTION(aNodeInfo, "GetAttribute() called with aNodeInfo == nullptr!");
 
@@ -192,7 +192,7 @@ nsDOMAttributeMap::GetAttribute(nsINodeInfo* aNodeInfo, bool aNsAware)
 
   Attr* node = mAttributeCache.GetWeak(attr);
   if (!node) {
-    nsCOMPtr<nsINodeInfo> ni = aNodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> ni = aNodeInfo;
     nsRefPtr<Attr> newAttr =
       new Attr(this, ni.forget(), EmptyString(), aNsAware);
     mAttributeCache.Put(attr, newAttr);
@@ -208,13 +208,19 @@ nsDOMAttributeMap::NamedGetter(const nsAString& aAttrName, bool& aFound)
   aFound = false;
   NS_ENSURE_TRUE(mContent, nullptr);
 
-  nsCOMPtr<nsINodeInfo> ni = mContent->GetExistingAttrNameFromQName(aAttrName);
+  nsRefPtr<mozilla::dom::NodeInfo> ni = mContent->GetExistingAttrNameFromQName(aAttrName);
   if (!ni) {
     return nullptr;
   }
 
   aFound = true;
   return GetAttribute(ni, false);
+}
+
+bool
+nsDOMAttributeMap::NameIsEnumerable(const nsAString& aName)
+{
+  return true;
 }
 
 Attr*
@@ -294,7 +300,7 @@ nsDOMAttributeMap::SetNamedItemInternal(Attr& aAttr,
 
   // Get nodeinfo and preexisting attribute (if it exists)
   nsAutoString name;
-  nsCOMPtr<nsINodeInfo> ni;
+  nsRefPtr<mozilla::dom::NodeInfo> ni;
 
   nsRefPtr<Attr> attr;
   // SetNamedItemNS()
@@ -368,7 +374,7 @@ nsDOMAttributeMap::RemoveNamedItem(const nsAString& aName, ErrorResult& aError)
     return nullptr;
   }
 
-  nsCOMPtr<nsINodeInfo> ni = mContent->GetExistingAttrNameFromQName(aName);
+  nsRefPtr<mozilla::dom::NodeInfo> ni = mContent->GetExistingAttrNameFromQName(aName);
   if (!ni) {
     aError.Throw(NS_ERROR_DOM_NOT_FOUND_ERR);
     return nullptr;
@@ -394,7 +400,7 @@ nsDOMAttributeMap::IndexedGetter(uint32_t aIndex, bool& aFound)
   aFound = true;
   // Don't use the nodeinfo even if one exists since it can have the wrong
   // owner document.
-  nsCOMPtr<nsINodeInfo> ni = mContent->NodeInfo()->NodeInfoManager()->
+  nsRefPtr<mozilla::dom::NodeInfo> ni = mContent->NodeInfo()->NodeInfoManager()->
     GetNodeInfo(name->LocalName(), name->GetPrefix(), name->NamespaceID(),
                 nsIDOMNode::ATTRIBUTE_NODE);
   return GetAttribute(ni, true);
@@ -443,7 +449,7 @@ Attr*
 nsDOMAttributeMap::GetNamedItemNS(const nsAString& aNamespaceURI,
                                   const nsAString& aLocalName)
 {
-  nsCOMPtr<nsINodeInfo> ni = GetAttrNodeInfo(aNamespaceURI, aLocalName);
+  nsRefPtr<mozilla::dom::NodeInfo> ni = GetAttrNodeInfo(aNamespaceURI, aLocalName);
   if (!ni) {
     return nullptr;
   }
@@ -451,7 +457,7 @@ nsDOMAttributeMap::GetNamedItemNS(const nsAString& aNamespaceURI,
   return GetAttribute(ni, true);
 }
 
-already_AddRefed<nsINodeInfo>
+already_AddRefed<mozilla::dom::NodeInfo>
 nsDOMAttributeMap::GetAttrNodeInfo(const nsAString& aNamespaceURI,
                                    const nsAString& aLocalName)
 {
@@ -478,7 +484,7 @@ nsDOMAttributeMap::GetAttrNodeInfo(const nsAString& aNamespaceURI,
 
     if (nameSpaceID == attrNS &&
         nameAtom->Equals(aLocalName)) {
-      nsCOMPtr<nsINodeInfo> ni;
+      nsRefPtr<mozilla::dom::NodeInfo> ni;
       ni = mContent->NodeInfo()->NodeInfoManager()->
         GetNodeInfo(nameAtom, name->GetPrefix(), nameSpaceID,
                     nsIDOMNode::ATTRIBUTE_NODE);
@@ -506,14 +512,14 @@ nsDOMAttributeMap::RemoveNamedItemNS(const nsAString& aNamespaceURI,
                                      const nsAString& aLocalName,
                                      ErrorResult& aError)
 {
-  nsCOMPtr<nsINodeInfo> ni = GetAttrNodeInfo(aNamespaceURI, aLocalName);
+  nsRefPtr<mozilla::dom::NodeInfo> ni = GetAttrNodeInfo(aNamespaceURI, aLocalName);
   if (!ni) {
     aError.Throw(NS_ERROR_DOM_NOT_FOUND_ERR);
     return nullptr;
   }
 
   nsRefPtr<Attr> attr = RemoveAttribute(ni);
-  nsINodeInfo* attrNi = attr->NodeInfo();
+  mozilla::dom::NodeInfo* attrNi = attr->NodeInfo();
   mContent->UnsetAttr(attrNi->NamespaceID(), attrNi->NameAtom(), true);
 
   return attr.forget();
@@ -553,7 +559,7 @@ nsDOMAttributeMap::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 }
 
 /* virtual */ JSObject*
-nsDOMAttributeMap::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+nsDOMAttributeMap::WrapObject(JSContext* aCx)
 {
-  return MozNamedAttrMapBinding::Wrap(aCx, aScope, this);
+  return MozNamedAttrMapBinding::Wrap(aCx, this);
 }

@@ -33,6 +33,8 @@ bool SetPropertyPar(ForkJoinContext *cx, HandleObject obj, HandlePropertyName na
                     HandleValue value, bool strict, jsbytecode *pc);
 bool SetElementPar(ForkJoinContext *cx, HandleObject obj, HandleValue index,
                    HandleValue value, bool strict);
+bool SetDenseElementPar(ForkJoinContext *cx, HandleObject obj, int32_t index,
+                        HandleValue value, bool strict);
 
 // String related parallel functions. These tend to call existing VM functions
 // that take a ThreadSafeContext.
@@ -70,13 +72,8 @@ JSObject *InitRestParameterPar(ForkJoinContext *cx, uint32_t length, Value *rest
                                HandleObject templateObj, HandleObject res);
 
 // Abort and debug tracing functions.
-void AbortPar(ParallelBailoutCause cause, JSScript *outermostScript, JSScript *currentScript,
-              jsbytecode *bytecode);
-void PropagateAbortPar(JSScript *outermostScript, JSScript *currentScript);
-
-void TraceLIR(IonLIRTraceData *current);
-
-void CallToUncompiledScriptPar(JSObject *obj);
+void BailoutPar(BailoutStack *sp, uint8_t **entryFramePointer);
+bool CallToUncompiledScriptPar(ForkJoinContext *cx, JSObject *obj);
 
 } // namespace jit
 } // namespace js

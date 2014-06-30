@@ -1007,10 +1007,14 @@ ProcessUpdates(nsIFile *greDir, nsIFile *appDir, nsIFile *updRootDir,
 
 
 
-NS_IMPL_ISUPPORTS1(nsUpdateProcessor, nsIUpdateProcessor)
+NS_IMPL_ISUPPORTS(nsUpdateProcessor, nsIUpdateProcessor)
 
 nsUpdateProcessor::nsUpdateProcessor()
   : mUpdaterPID(0)
+{
+}
+
+nsUpdateProcessor::~nsUpdateProcessor()
 {
 }
 

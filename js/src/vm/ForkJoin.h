@@ -9,11 +9,19 @@
 
 #include "mozilla/ThreadLocal.h"
 
+#include <stdarg.h>
+
 #include "jscntxt.h"
 
+#include "gc/ForkJoinNursery.h"
 #include "gc/GCInternals.h"
 
 #include "jit/Ion.h"
+#include "jit/IonTypes.h"
+
+#ifdef DEBUG
+  #define FORKJOIN_SPEW
+#endif
 
 ///////////////////////////////////////////////////////////////////////////
 // Read Me First
@@ -30,7 +38,7 @@
 // to enable parallel execution.  At the top-level, it consists of a native
 // function (exposed as the ForkJoin intrinsic) that is used like so:
 //
-//     ForkJoin(func, boundsFunc, mode)
+//     ForkJoin(func, sliceStart, sliceEnd, mode, updatable)
 //
 // The intention of this statement is to start some some number (usually the
 // number of hardware threads) of copies of |func()| running in parallel. Each
@@ -41,38 +49,46 @@
 // is not something you should rely upon---if work-stealing is enabled it
 // could be that a single worker thread winds up handling multiple slices.
 //
-// The second argument, |boundsFunc|, is a function that must return an array
-// of exactly two integers. This function is called before every attempt at
-// execution: warmup, sequential, or parallel. The bounds are taken from a
-// function call instead of taken as two static integers so that the bounds
-// may be shrunk when recovering from bailout.
+// The second and third arguments, |sliceStart| and |sliceEnd|, are the slice
+// boundaries. These numbers must each fit inside an uint16_t.
 //
-// The third argument, |mode|, is an internal mode integer giving finer
+// The fourth argument, |mode|, is an internal mode integer giving finer
 // control over the behavior of ForkJoin. See the |ForkJoinMode| enum.
+//
+// The fifth argument, |updatable|, if not null, is an object that may
+// be updated in a race-free manner by |func()| or its callees.
+// Typically this is some sort of pre-sized array.  Only this object
+// may be updated by |func()|, and updates must not race.  (A more
+// general approach is perhaps desirable, eg passing an Array of
+// objects that may be updated, but that is not presently needed.)
 //
 // func() should expect the following arguments:
 //
-//     func(warmup)
+//     func(workerId, sliceStart, sliceEnd)
 //
-// The parameter |warmup| is true for a *warmup or recovery phase*. Warmup
-// phases are discussed below in more detail, but the general idea is that if
-// |warmup| is true, |func| should only do a fixed amount of work. If |warmup|
-// is false, |func| should try to do all remaining work is assigned.
+// The |workerId| parameter is the id of the worker executing the function. It
+// is 0 in sequential mode.
+//
+// The |sliceStart| and |sliceEnd| parameters are the current bounds that that
+// the worker is handling. In parallel execution, these parameters are not
+// used. In sequential execution, they tell the worker what slices should be
+// processed. During the warm up phase, sliceEnd == sliceStart + 1.
 //
 // |func| can keep asking for more work from the scheduler by calling the
-// intrinsic |GetForkJoinSlice(id)|. When there are no more slices to hand
-// out, -1 is returned as a sentinel value. By exposing this function as an
-// intrinsic, we reduce the number of JS-C++ boundary crossings incurred by
-// workstealing, which may have many slices.
+// intrinsic |GetForkJoinSlice(sliceStart, sliceEnd, id)|. When there are no
+// more slices to hand out, ThreadPool::MAX_SLICE_ID is returned as a sentinel
+// value. By exposing this function as an intrinsic, we reduce the number of
+// JS-C++ boundary crossings incurred by workstealing, which may have many
+// slices.
 //
-// |func| MUST PROCESS ALL SLICES BEFORE RETURNING! Not doing so is an error
-// |and is protected by debug asserts in ThreadPool.
+// In sequential execution, |func| should return the maximum computed slice id
+// S for which all slices with id < S have already been processed. This is so
+// ThreadPool can track the leftmost completed slice id to maintain
+// determinism. Slices which have been completed in sequential execution
+// cannot be re-run in parallel execution.
 //
-// Note well that there is a separation of concern between *scheduling* slices
-// and *interpreting* slices. ForkJoin only schedules slices by handing out
-// slice ids; it does not interpret what slice ids mean. Instead, |func|
-// should track how much work it has accomplished thus far; consult |Array.js|
-// for some examples.
+// In parallel execution, |func| MUST PROCESS ALL SLICES BEFORE RETURNING!
+// Not doing so is an error and is protected by debug asserts in ThreadPool.
 //
 // Warmups and Sequential Fallbacks
 // --------------------------------
@@ -163,7 +179,7 @@
 // the error location might not be in the same JSScript as the one
 // which was executing due to inlining.
 //
-// Garbage collection and allocation:
+// Garbage collection, allocation, and write barriers:
 //
 // Code which executes on these parallel threads must be very careful
 // with respect to garbage collection and allocation.  The typical
@@ -172,27 +188,52 @@
 // any synchronization.  They can also trigger GC in an ad-hoc way.
 //
 // To deal with this, the forkjoin code creates a distinct |Allocator|
-// object for each slice.  You can access the appropriate object via
-// the |ForkJoinContext| object that is provided to the callbacks.  Once
-// the execution is complete, all the objects found in these distinct
-// |Allocator| is merged back into the main compartment lists and
-// things proceed normally.
+// object for each worker, which is used as follows.
+//
+// In a non-generational setting you can access the appropriate
+// allocator via the |ForkJoinContext| object that is provided to the
+// callbacks.  Once the parallel execution is complete, all the
+// objects found in these distinct |Allocator| are merged back into
+// the main compartment lists and things proceed normally.  (If it is
+// known that the result array contains no references then no merging
+// is necessary.)
+//
+// In a generational setting there is a per-thread |ForkJoinNursery|
+// in addition to the per-thread Allocator.  All "simple" objects
+// (meaning they are reasonably small, can be copied, and have no
+// complicated finalization semantics) are allocated in the nurseries;
+// other objects are allocated directly in the threads' Allocators,
+// which serve as the tenured areas for the threads.
+//
+// When a thread's nursery fills up it can be collected independently
+// of the other threads' nurseries, and does not require any of the
+// threads to bail out of the parallel section.  The nursery is
+// copy-collected, and the expectation is that the survival rate will
+// be very low and the collection will be very cheap.
+//
+// When the parallel execution is complete, and only if merging of the
+// Allocators into the main compartment is necessary, then the live
+// objects of the nurseries are copied into the respective Allocators,
+// in parallel, before the merging takes place.
 //
 // In Ion-generated code, we will do allocation through the
-// |Allocator| found in |ForkJoinContext| (which is obtained via TLS).
-// Also, no write barriers are emitted.  Conceptually, we should never
-// need a write barrier because we only permit writes to objects that
-// are newly allocated, and such objects are always black (to use
-// incremental GC terminology).  However, to be safe, we also block
-// upon entering a parallel section to ensure that any concurrent
-// marking or incremental GC has completed.
+// |ForkJoinNursery| or |Allocator| found in |ForkJoinContext| (which
+// is obtained via TLS).
+//
+// No write barriers are emitted.  We permit writes to thread-local
+// objects, and such writes can create cross-generational pointers or
+// pointers that may interact with incremental GC.  However, the
+// per-thread generational collector scans its entire tenured area on
+// each minor collection, and we block upon entering a parallel
+// section to ensure that any concurrent marking or incremental GC has
+// completed.
 //
 // In the future, it should be possible to lift the restriction that
-// we must block until inc. GC has completed and also to permit GC
-// during parallel exeution. But we're not there yet.
+// we must block until incremental GC has completed. But we're not
+// there yet.
 //
 // Load balancing (work stealing):
-
+//
 // The ForkJoin job is dynamically divided into a fixed number of slices,
 // and is submitted for parallel execution in the pool. When the number
 // of slices is big enough (typically greater than the number of workers
@@ -215,7 +256,7 @@ namespace js {
 
 class ForkJoinActivation : public Activation
 {
-    uint8_t *prevIonTop_;
+    uint8_t *prevJitTop_;
 
     // We ensure that incremental GC be finished before we enter into a fork
     // join section, but the runtime/zone might still be marked as needing
@@ -224,7 +265,7 @@ class ForkJoinActivation : public Activation
     gc::AutoStopVerifyingBarriers av_;
 
   public:
-    ForkJoinActivation(JSContext *cx);
+    explicit ForkJoinActivation(JSContext *cx);
     ~ForkJoinActivation();
 };
 
@@ -232,82 +273,106 @@ class ForkJoinContext;
 
 bool ForkJoin(JSContext *cx, CallArgs &args);
 
-struct IonLIRTraceData {
-    uint32_t blockIndex;
-    uint32_t lirIndex;
-    uint32_t execModeInt;
-    const char *lirOpName;
-    const char *mirOpName;
-    JSScript *script;
-    jsbytecode *pc;
-};
-
 ///////////////////////////////////////////////////////////////////////////
 // Bailout tracking
 
+//
+// The lattice of causes goes:
+//
+//       { everything else }
+//               |
+//           Interrupt
+//               |
+//           Execution
+//               |
+//              None
+//
 enum ParallelBailoutCause {
-    ParallelBailoutNone,
+    ParallelBailoutNone = 0,
 
-    // Compiler returned Method_Skipped
-    ParallelBailoutCompilationSkipped,
-
-    // Compiler returned Method_CantCompile
-    ParallelBailoutCompilationFailure,
+    // Bailed out of JIT code during execution. The specific reason is found
+    // in the ionBailoutKind field in ParallelBailoutRecord below.
+    ParallelBailoutExecution,
 
     // The periodic interrupt failed, which can mean that either
-    // another thread canceled, the user interrupted us, etc
+    // another thread canceled, the user interrupted us, etc.
     ParallelBailoutInterrupt,
 
-    // An IC update failed
-    ParallelBailoutFailedIC,
+    // Compiler returned Method_Skipped.
+    ParallelBailoutCompilationSkipped,
 
-    // Heap busy flag was set during interrupt
-    ParallelBailoutHeapBusy,
+    // Compiler returned Method_CantCompile.
+    ParallelBailoutCompilationFailure,
 
+    // The main script was GCed before we could start executing.
     ParallelBailoutMainScriptNotPresent,
-    ParallelBailoutCalledToUncompiledScript,
-    ParallelBailoutIllegalWrite,
-    ParallelBailoutAccessToIntrinsic,
+
+    // Went over the stack limit.
     ParallelBailoutOverRecursed,
+
+    // True memory exhaustion. See js_ReportOutOfMemory.
     ParallelBailoutOutOfMemory,
-    ParallelBailoutUnsupported,
-    ParallelBailoutUnsupportedVM,
-    ParallelBailoutUnsupportedStringComparison,
+
+    // GC was requested on the tenured heap, which we cannot comply with in
+    // parallel.
     ParallelBailoutRequestedGC,
-    ParallelBailoutRequestedZoneGC,
+    ParallelBailoutRequestedZoneGC
 };
 
-struct ParallelBailoutTrace {
-    JSScript *script;
-    jsbytecode *bytecode;
-};
+namespace jit {
+class BailoutStack;
+class JitFrameIterator;
+class IonBailoutIterator;
+class RematerializedFrame;
+}
 
 // See "Bailouts" section in comment above.
-struct ParallelBailoutRecord {
-    JSScript *topScript;
+struct ParallelBailoutRecord
+{
+    // Captured Ion frames at the point of bailout. Stored younger-to-older,
+    // i.e., the 0th frame is the youngest frame.
+    Vector<jit::RematerializedFrame *> *frames_;
+
+    // The reason for unsuccessful parallel execution.
     ParallelBailoutCause cause;
 
-    // Eventually we will support deeper traces,
-    // but for now we gather at most a single frame.
-    static const uint32_t MaxDepth = 1;
-    uint32_t depth;
-    ParallelBailoutTrace trace[MaxDepth];
+    // The more specific bailout reason if cause above is
+    // ParallelBailoutExecution.
+    jit::BailoutKind ionBailoutKind;
 
-    void init(JSContext *cx);
-    void reset(JSContext *cx);
-    void setCause(ParallelBailoutCause cause,
-                  JSScript *outermostScript = nullptr,   // inliner (if applicable)
-                  JSScript *currentScript = nullptr,     // inlinee (if applicable)
-                  jsbytecode *currentPc = nullptr);
-    void updateCause(ParallelBailoutCause cause,
-                     JSScript *outermostScript,
-                     JSScript *currentScript,
-                     jsbytecode *currentPc);
-    void addTrace(JSScript *script,
-                  jsbytecode *pc);
+    ParallelBailoutRecord()
+      : frames_(nullptr),
+        cause(ParallelBailoutNone),
+        ionBailoutKind(jit::Bailout_Inevitable)
+    { }
+
+    ~ParallelBailoutRecord();
+
+    bool init(JSContext *cx);
+    void reset();
+
+    Vector<jit::RematerializedFrame *> &frames() { MOZ_ASSERT(frames_); return *frames_; }
+    bool hasFrames() const { return frames_ && !frames_->empty(); }
+    bool bailedOut() const { return cause != ParallelBailoutNone; }
+
+    void joinCause(ParallelBailoutCause cause) {
+        if (this->cause <= ParallelBailoutInterrupt &&
+            (cause > ParallelBailoutInterrupt || cause > this->cause))
+        {
+            this->cause = cause;
+        }
+    }
+
+    void setIonBailoutKind(jit::BailoutKind kind) {
+        joinCause(ParallelBailoutExecution);
+        ionBailoutKind = kind;
+    }
+
+    void rematerializeFrames(ForkJoinContext *cx, jit::JitFrameIterator &frameIter);
+    void rematerializeFrames(ForkJoinContext *cx, jit::IonBailoutIterator &frameIter);
 };
 
-struct ForkJoinShared;
+class ForkJoinShared;
 
 class ForkJoinContext : public ThreadSafeContext
 {
@@ -315,10 +380,7 @@ class ForkJoinContext : public ThreadSafeContext
     // Bailout record used to record the reason this thread stopped executing
     ParallelBailoutRecord *const bailoutRecord;
 
-#ifdef DEBUG
-    // Records the last instr. to execute on this thread.
-    IonLIRTraceData traceData;
-
+#ifdef FORKJOIN_SPEW
     // The maximum worker id.
     uint32_t maxWorkerId;
 #endif
@@ -343,6 +405,8 @@ class ForkJoinContext : public ThreadSafeContext
     ForkJoinContext(PerThreadData *perThreadData, ThreadPoolWorker *worker,
                     Allocator *allocator, ForkJoinShared *shared,
                     ParallelBailoutRecord *bailoutRecord);
+
+    bool initialize();
 
     // Get the worker id. The main thread by convention has the id of the max
     // worker thread id + 1.
@@ -371,9 +435,9 @@ class ForkJoinContext : public ThreadSafeContext
 
     // Reports an unsupported operation, returning false if we are reporting
     // an error. Otherwise drop the warning on the floor.
-    bool reportError(ParallelBailoutCause cause, unsigned report) {
+    bool reportError(unsigned report) {
         if (report & JSREPORT_ERROR)
-            return setPendingAbortFatal(cause);
+            return setPendingAbortFatal(ParallelBailoutExecution);
         return true;
     }
 
@@ -404,12 +468,27 @@ class ForkJoinContext : public ThreadSafeContext
     static inline ForkJoinContext *current();
 
     // Initializes the thread-local state.
-    static bool initialize();
+    static bool initializeTls();
 
     // Used in inlining GetForkJoinSlice.
     static size_t offsetOfWorker() {
         return offsetof(ForkJoinContext, worker_);
     }
+
+#ifdef JSGC_FJGENERATIONAL
+    // There is already a nursery() method in ThreadSafeContext.
+    gc::ForkJoinNursery &nursery() { return nursery_; }
+
+    // Evacuate live data from the per-thread nursery into the per-thread
+    // tenured area.
+    void evacuateLiveData() { nursery_.evacuatingGC(); }
+
+    // Used in inlining nursery allocation.  Note the nursery is a
+    // member of the ForkJoinContext (a substructure), not a pointer.
+    static size_t offsetOfFJNursery() {
+        return offsetof(ForkJoinContext, nursery_);
+    }
+#endif
 
   private:
     friend class AutoSetForkJoinContext;
@@ -419,13 +498,18 @@ class ForkJoinContext : public ThreadSafeContext
 
     ForkJoinShared *const shared_;
 
+#ifdef JSGC_FJGENERATIONAL
+    gc::ForkJoinGCShared gcShared_;
+    gc::ForkJoinNursery nursery_;
+#endif
+
     ThreadPoolWorker *worker_;
 
     bool acquiredJSContext_;
 
     // ForkJoinContext is allocated on the stack. It would be dangerous to GC
     // with it live because of the GC pointer fields stored in the context.
-    JS::AutoAssertNoGC nogc_;
+    JS::AutoSuppressGCAnalysis nogc_;
 };
 
 // Locks a JSContext for its scope. Be very careful, because locking a
@@ -445,7 +529,7 @@ class LockedJSContext
     JSContext *jscx_;
 
   public:
-    LockedJSContext(ForkJoinContext *cx)
+    explicit LockedJSContext(ForkJoinContext *cx)
 #if defined(JS_THREADSAFE) && defined(JS_ION)
       : cx_(cx),
         jscx_(cx->acquireJSContext())
@@ -503,13 +587,15 @@ enum SpewChannel {
     SpewOps,
     SpewCompile,
     SpewBailouts,
+    SpewGC,
     NumSpewChannels
 };
 
-#if defined(DEBUG) && defined(JS_THREADSAFE) && defined(JS_ION)
+#if defined(FORKJOIN_SPEW) && defined(JS_THREADSAFE) && defined(JS_ION)
 
 bool SpewEnabled(SpewChannel channel);
 void Spew(SpewChannel channel, const char *fmt, ...);
+void SpewVA(SpewChannel channel, const char *fmt, va_list args);
 void SpewBeginOp(JSContext *cx, const char *name);
 void SpewBailout(uint32_t count, HandleScript script, jsbytecode *pc,
                  ParallelBailoutCause cause);
@@ -517,12 +603,12 @@ ExecutionStatus SpewEndOp(ExecutionStatus status);
 void SpewBeginCompile(HandleScript script);
 jit::MethodStatus SpewEndCompile(jit::MethodStatus status);
 void SpewMIR(jit::MDefinition *mir, const char *fmt, ...);
-void SpewBailoutIR(IonLIRTraceData *data);
 
 #else
 
 static inline bool SpewEnabled(SpewChannel channel) { return false; }
 static inline void Spew(SpewChannel channel, const char *fmt, ...) { }
+static inline void SpewVA(SpewChannel channel, const char *fmt, va_list args) { }
 static inline void SpewBeginOp(JSContext *cx, const char *name) { }
 static inline void SpewBailout(uint32_t count, HandleScript script,
                                jsbytecode *pc, ParallelBailoutCause cause) {}
@@ -532,9 +618,8 @@ static inline void SpewBeginCompile(HandleScript script) { }
 static inline jit::MethodStatus SpewEndCompile(jit::MethodStatus status) { return status; }
 static inline void SpewMIR(jit::MDefinition *mir, const char *fmt, ...) { }
 #endif
-static inline void SpewBailoutIR(IonLIRTraceData *data) { }
 
-#endif // DEBUG && JS_THREADSAFE && JS_ION
+#endif // FORKJOIN_SPEW && JS_THREADSAFE && JS_ION
 
 } // namespace parallel
 } // namespace js

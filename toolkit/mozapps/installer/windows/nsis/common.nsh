@@ -80,7 +80,7 @@
 !include overrides.nsh
 
 !define SHORTCUTS_LOG "shortcuts_log.ini"
-!define TO_BE_DELETED "to_be_deleted"
+!define TO_BE_DELETED "tobedeleted"
 
 ; !define SHCNF_DWORD     0x0003
 ; !define SHCNF_FLUSH     0x1000
@@ -957,7 +957,7 @@
 !ifndef KEY_WOW64_64KEY
   !define KEY_WOW64_64KEY 0x0100
 !endif
-!ifndef HAVE_64BIT_OS
+!ifndef HAVE_64BIT_BUILD
   !define CREATE_KEY_SAM ${KEY_SET_VALUE}
 !else
   !define CREATE_KEY_SAM ${KEY_SET_VALUE}|${KEY_WOW64_64KEY}
@@ -2527,7 +2527,7 @@
         ; Set the registry to the 32 bit registry for 64 bit installations or to
         ; the 64 bit registry for 32 bit installations at the beginning so it can
         ; easily be set back to the correct registry view when finished.
-        !ifdef HAVE_64BIT_OS
+        !ifdef HAVE_64BIT_BUILD
           SetRegView 32
         !else
           SetRegView 64
@@ -2584,7 +2584,7 @@
       ${If} ${RunningX64}
       ${AndIf} "$R0" == "false"
         ; Set the registry to the correct view.
-        !ifdef HAVE_64BIT_OS
+        !ifdef HAVE_64BIT_BUILD
           SetRegView 64
         !else
           SetRegView 32
@@ -2693,7 +2693,7 @@
         ; Set the registry to the 32 bit registry for 64 bit installations or to
         ; the 64 bit registry for 32 bit installations at the beginning so it can
         ; easily be set back to the correct registry view when finished.
-        !ifdef HAVE_64BIT_OS
+        !ifdef HAVE_64BIT_BUILD
           SetRegView 32
         !else
           SetRegView 64
@@ -2720,7 +2720,7 @@
       ${If} ${RunningX64}
       ${AndIf} "$R3" == "false"
         ; Set the registry to the correct view.
-        !ifdef HAVE_64BIT_OS
+        !ifdef HAVE_64BIT_BUILD
           SetRegView 64
         !else
           SetRegView 32
@@ -4339,10 +4339,12 @@
  * $R0-$R3 so be cautious. Callers of this macro are not affected.
  *
  * @param   _PROGRESSBAR
- *          The progress bar to update using PBM_STEPIT.
+ *          The progress bar to update using PBM_STEPIT. Can also be "false" if
+ *          updating a progressbar isn't needed.
  * @param   _INSTALL_STEP_COUNTER
  *          The install step counter to increment. The variable specified in
- *          this parameter is also updated.
+ *          this parameter is also updated. Can also be "false" if a counter
+ *          isn't needed.
  *
  * $R2 = _INSTALL_STEP_COUNTER
  * $R3 = _PROGRESSBAR
@@ -4420,9 +4422,13 @@
       StrCpy $R1 "$INSTDIR$R9" ; Copy the install dir path and suffix it with the string
       IfFileExists "$R1" +1 end
 
-      IntOp $R2 $R2 + 2
-      SendMessage $R3 ${PBM_STEPIT} 0 0
-      SendMessage $R3 ${PBM_STEPIT} 0 0
+      ${Unless} "$R2" == "false"
+        IntOp $R2 $R2 + 2
+      ${EndIf}
+      ${Unless} "$R3" == "false"
+        SendMessage $R3 ${PBM_STEPIT} 0 0
+        SendMessage $R3 ${PBM_STEPIT} 0 0
+      ${EndIf}
 
       ClearErrors
       Delete "$R1"
@@ -5031,7 +5037,7 @@
       Push $R6
       Push $R5
 
-      !ifdef HAVE_64BIT_OS
+      !ifdef HAVE_64BIT_BUILD
         ${Unless} ${RunningX64}
         ${OrUnless} ${AtLeastWinVista}
           MessageBox MB_OK|MB_ICONSTOP "$R9" IDOK
@@ -5108,7 +5114,7 @@
             SetSilent silent
             ReadINIStr $R8 $R7 "Install" "InstallDirectoryName"
             ${If} $R8 != ""
-              !ifdef HAVE_64BIT_OS
+              !ifdef HAVE_64BIT_BUILD
                 StrCpy $INSTDIR "$PROGRAMFILES64\$R8"
               !else
                 StrCpy $INSTDIR "$PROGRAMFILES32\$R8"
@@ -5250,8 +5256,8 @@
       ; Application update uses a directory named tobedeleted in the $INSTDIR to
       ; delete files on OS reboot when they are in use. Try to delete this
       ; directory if it exists.
-      ${If} ${FileExists} "$INSTDIR\tobedeleted"
-        RmDir /r "$INSTDIR\tobedeleted"
+      ${If} ${FileExists} "$INSTDIR\${TO_BE_DELETED}"
+        RmDir /r "$INSTDIR\${TO_BE_DELETED}"
       ${EndIf}
 
       ; Prevent all operations (e.g. set as default, postupdate, etc.) when a
@@ -5261,7 +5267,7 @@
       Reboot
       Quit ; Nothing initialized so no need to call OnEndCommon
 
-      !ifdef HAVE_64BIT_OS
+      !ifdef HAVE_64BIT_BUILD
         SetRegView 64
       !endif
 
@@ -5436,7 +5442,7 @@
         Abort
       ${EndUnless}
 
-      !ifdef HAVE_64BIT_OS
+      !ifdef HAVE_64BIT_BUILD
         SetRegView 64
       !endif
 
@@ -5688,8 +5694,8 @@
       ; Application update uses a directory named tobedeleted in the $INSTDIR to
       ; delete files on OS reboot when they are in use. Try to delete this
       ; directory if it exists.
-      ${If} ${FileExists} "$INSTDIR\tobedeleted"
-        RmDir /r "$INSTDIR\tobedeleted"
+      ${If} ${FileExists} "$INSTDIR\${TO_BE_DELETED}"
+        RmDir /r "$INSTDIR\${TO_BE_DELETED}"
       ${EndIf}
 
       ; Remove files that may be left behind by the application in the
@@ -6061,7 +6067,7 @@
         ${LogMsg} "OS Name    : Unable to detect"
       ${EndIf}
 
-      !ifdef HAVE_64BIT_OS
+      !ifdef HAVE_64BIT_BUILD
         ${LogMsg} "Target CPU : x64"
       !else
         ${LogMsg} "Target CPU : x86"

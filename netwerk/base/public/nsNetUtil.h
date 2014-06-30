@@ -86,11 +86,6 @@
 
 #include <limits>
 
-#ifdef MOZ_WIDGET_GONK
-#include "nsINetworkManager.h"
-#include "nsThreadUtils.h" // for NS_IsMainThread
-#endif
-
 #ifdef MOZILLA_INTERNAL_API
 
 #include "nsReadableUtils.h"
@@ -2026,14 +2021,14 @@ NS_RelaxStrictFileOriginPolicy(nsIURI *aTargetURI,
   bool allowed = false;
   nsresult rv = sourceFile->IsDirectory(&sourceIsDir);
   if (NS_SUCCEEDED(rv) && sourceIsDir) {
-    rv = sourceFile->Contains(targetFile, true, &allowed);
+    rv = sourceFile->Contains(targetFile, &allowed);
   } else {
     nsCOMPtr<nsIFile> sourceParent;
     rv = sourceFile->GetParent(getter_AddRefs(sourceParent));
     if (NS_SUCCEEDED(rv) && sourceParent) {
       rv = sourceParent->Equals(targetFile, &allowed);
       if (NS_FAILED(rv) || !allowed) {
-        rv = sourceParent->Contains(targetFile, true, &allowed);
+        rv = sourceParent->Contains(targetFile, &allowed);
       } else {
         MOZ_ASSERT(aAllowDirectoryTarget,
                    "sourceFile->Parent == targetFile, but targetFile "
@@ -2313,7 +2308,7 @@ NS_IsAboutBlank(nsIURI *uri)
 
 inline nsresult
 NS_GenerateHostPort(const nsCString& host, int32_t port,
-                    nsCString& hostLine)
+                    nsACString& hostLine)
 {
     if (strchr(host.get(), ':')) {
         // host is an IPv6 address literal and must be encapsulated in []'s
@@ -2351,8 +2346,8 @@ NS_SniffContent(const char* aSnifferType, nsIRequest* aRequest,
                 nsACString& aSniffedType)
 {
   typedef nsCategoryCache<nsIContentSniffer> ContentSnifferCache;
-  extern NS_HIDDEN_(ContentSnifferCache*) gNetSniffers;
-  extern NS_HIDDEN_(ContentSnifferCache*) gDataSniffers;
+  extern ContentSnifferCache* gNetSniffers;
+  extern ContentSnifferCache* gDataSniffers;
   ContentSnifferCache* cache = nullptr;
   if (!strcmp(aSnifferType, NS_CONTENT_SNIFFER_CATEGORY)) {
     if (!gNetSniffers) {
@@ -2403,30 +2398,5 @@ NS_IsSrcdocChannel(nsIChannel *aChannel)
   }
   return false;
 }
-
-// The following members are used for network per-app metering.
-const static uint64_t NETWORK_STATS_THRESHOLD = 65536;
-const static char NETWORK_STATS_NO_SERVICE_TYPE[] = "";
-
-#ifdef MOZ_WIDGET_GONK
-inline nsresult
-NS_GetActiveNetworkInterface(nsCOMPtr<nsINetworkInterface> &aNetworkInterface)
-{
-  MOZ_ASSERT(NS_IsMainThread());
-
-  nsresult rv;
-  nsCOMPtr<nsINetworkManager> networkManager =
-    do_GetService("@mozilla.org/network/manager;1", &rv);
-
-  if (NS_FAILED(rv) || !networkManager) {
-    aNetworkInterface = nullptr;
-    return rv;
-  }
-
-  networkManager->GetActive(getter_AddRefs(aNetworkInterface));
-
-  return NS_OK;
-}
-#endif
 
 #endif // !nsNetUtil_h__

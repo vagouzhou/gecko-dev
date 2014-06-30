@@ -23,12 +23,15 @@ namespace mozilla { namespace net {
 
 class SpdyPushedStream31;
 class SpdyStream31;
+class nsHttpTransaction;
 
 class SpdySession31 MOZ_FINAL : public ASpdySession
-  , public nsAHttpConnection
-  , public nsAHttpSegmentReader
-  , public nsAHttpSegmentWriter
+                              , public nsAHttpConnection
+                              , public nsAHttpSegmentReader
+                              , public nsAHttpSegmentWriter
 {
+  ~SpdySession31();
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSAHTTPTRANSACTION
@@ -36,10 +39,10 @@ public:
   NS_DECL_NSAHTTPSEGMENTREADER
   NS_DECL_NSAHTTPSEGMENTWRITER
 
-  SpdySession31(nsAHttpTransaction *, nsISocketTransport *, int32_t);
-  ~SpdySession31();
+  SpdySession31(nsISocketTransport *);
 
-  bool AddStream(nsAHttpTransaction *, int32_t);
+  bool AddStream(nsAHttpTransaction *, int32_t,
+                 bool, nsIInterfaceRequestor *);
   bool CanReuse() { return !mShouldGoAway && !mClosed; }
   bool RoomForMoreStreams();
 
@@ -157,10 +160,6 @@ public:
   static nsresult HandleWindowUpdate(SpdySession31 *);
   static nsresult HandleCredential(SpdySession31 *);
 
-  template<typename T>
-    static void EnsureBuffer(nsAutoArrayPtr<T> &,
-                             uint32_t, uint32_t, uint32_t &);
-
   // For writing the SPDY data stream to LOG4
   static void LogIO(SpdySession31 *, SpdyStream31 *, const char *,
                     const char *, uint32_t);
@@ -180,6 +179,7 @@ public:
   uint32_t GetServerInitialStreamWindow() { return mServerInitialStreamWindow; }
 
   void ConnectPushedStream(SpdyStream31 *stream);
+  void DecrementConcurrent(SpdyStream31 *stream);
 
   uint64_t Serial() { return mSerial; }
 
@@ -209,7 +209,6 @@ private:
   void        ChangeDownstreamState(enum stateType);
   void        ResetDownstreamState();
   nsresult    UncompressAndDiscard(uint32_t, uint32_t);
-  void        DecrementConcurrent(SpdyStream31 *);
   void        zlibInit();
   void        GeneratePing(uint32_t);
   void        GenerateRstStream(uint32_t, uint32_t);
@@ -405,6 +404,15 @@ private:
   // by the load group and the serial number can be used as part of the cache key
   // to make sure streams aren't shared across sessions.
   uint64_t        mSerial;
+
+private:
+/// connect tunnels
+  void DispatchOnTunnel(nsAHttpTransaction *, nsIInterfaceRequestor *);
+  void RegisterTunnel(SpdyStream31 *);
+  void UnRegisterTunnel(SpdyStream31 *);
+  uint32_t FindTunnelCount(nsHttpConnectionInfo *);
+
+  nsDataHashtable<nsCStringHashKey, uint32_t> mTunnelHash;
 };
 
 }} // namespace mozilla::net

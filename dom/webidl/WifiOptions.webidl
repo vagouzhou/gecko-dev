@@ -43,7 +43,6 @@ dictionary WifiResultOptions
   DOMString ipaddr_str = "";    // The following are for the result of
                                 // dhcp_do_request.
   DOMString gateway_str = "";
-  DOMString broadcast_str = "";
   DOMString dns1_str = "";
   DOMString dns2_str = "";
   DOMString mask_str = "";
@@ -56,4 +55,18 @@ dictionary WifiResultOptions
   long      dns1 = 0;
   long      dns2 = 0;
   long      server = 0;
+};
+
+
+/**
+  * This dictionary holds the callback parameter sent back from WifiCertService
+  * to WifiWorker, and should only be passed around in chrome process.
+  */
+dictionary WifiCertServiceResultOptions
+{
+  long            id = 0;         // request id in WifiWorker.
+  long            status = 0;     // error code of the request, 0 indicates success.
+  unsigned short  usageFlag = 0;  // usage flag of certificate, the flag is defined
+                                  // in nsIWifiCertService.idl
+  DOMString       nickname = "";  // nickname of certificate of the request.
 };

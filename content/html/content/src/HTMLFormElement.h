@@ -42,7 +42,7 @@ class HTMLFormElement MOZ_FINAL : public nsGenericHTMLElement,
   friend class HTMLFormControlsCollection;
 
 public:
-  HTMLFormElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLFormElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLFormElement();
 
   nsresult Init();
@@ -84,7 +84,7 @@ public:
   virtual bool GetValueMissingState(const nsAString& aName) const MOZ_OVERRIDE;
   virtual void SetValueMissingState(const nsAString& aName, bool aValue) MOZ_OVERRIDE;
 
-  virtual nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  virtual EventStates IntrinsicState() const MOZ_OVERRIDE;
 
   // nsIContent
   virtual bool ParseAttribute(int32_t aNamespaceID,
@@ -119,7 +119,7 @@ public:
    */
   void ForgetCurrentSubmission();
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(HTMLFormElement,
                                                          nsGenericHTMLElement)
@@ -395,7 +395,9 @@ public:
   already_AddRefed<nsISupports>
   NamedGetter(const nsAString& aName, bool &aFound);
 
-  void GetSupportedNames(nsTArray<nsString >& aRetval);
+  bool NameIsEnumerable(const nsAString& aName);
+
+  void GetSupportedNames(unsigned, nsTArray<nsString >& aRetval);
 
   static int32_t
   CompareFormControlPosition(Element* aElement1, Element* aElement2,
@@ -408,9 +410,10 @@ public:
 
   js::ExpandoAndGeneration mExpandoAndGeneration;
 
+  void RequestAutocomplete();
+
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   void PostPasswordEvent();
   void EventHandled() { mFormPasswordEventDispatcher = nullptr; }
@@ -425,7 +428,7 @@ protected:
 
     NS_IMETHOD Run() MOZ_OVERRIDE
     {
-      static_cast<HTMLFormElement*>(mEventNode.get())->EventHandled();
+      static_cast<HTMLFormElement*>(mTarget.get())->EventHandled();
       return AsyncEventDispatcher::Run();
     }
   };

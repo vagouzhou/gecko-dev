@@ -12,11 +12,12 @@
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(DOMError, mWindow)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(DOMError, mWindow)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(DOMError)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(DOMError)
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMError)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
+  NS_INTERFACE_MAP_ENTRY(DOMError)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
@@ -59,9 +60,9 @@ DOMError::~DOMError()
 }
 
 JSObject*
-DOMError::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DOMError::WrapObject(JSContext* aCx)
 {
-  return DOMErrorBinding::Wrap(aCx, aScope, this);
+  return DOMErrorBinding::Wrap(aCx, this);
 }
 
 /* static */ already_AddRefed<DOMError>

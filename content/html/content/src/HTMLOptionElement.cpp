@@ -23,7 +23,7 @@
 #include "nsIDOMHTMLSelectElement.h"
 #include "nsNodeInfoManager.h"
 #include "nsCOMPtr.h"
-#include "nsEventStates.h"
+#include "mozilla/EventStates.h"
 #include "nsContentCreatorFunctions.h"
 #include "mozAutoDocUpdate.h"
 #include "nsTextNode.h"
@@ -37,7 +37,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Option)
 namespace mozilla {
 namespace dom {
 
-HTMLOptionElement::HTMLOptionElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLOptionElement::HTMLOptionElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo),
     mSelectedChanged(false),
     mIsSelected(false),
@@ -51,8 +51,8 @@ HTMLOptionElement::~HTMLOptionElement()
 {
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(HTMLOptionElement, nsGenericHTMLElement,
-                             nsIDOMHTMLOptionElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLOptionElement, nsGenericHTMLElement,
+                            nsIDOMHTMLOptionElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLOptionElement)
 
@@ -243,6 +243,25 @@ HTMLOptionElement::BeforeSetAttr(int32_t aNamespaceID, nsIAtom* aName,
   return NS_OK;
 }
 
+nsresult
+HTMLOptionElement::AfterSetAttr(int32_t aNameSpaceID, nsIAtom* aName,
+                                const nsAttrValue* aValue, bool aNotify)
+{
+  if (aNameSpaceID == kNameSpaceID_None &&
+      aName == nsGkAtoms::value && Selected()) {
+    // Since this option is selected, changing value
+    // may have changed missing validity state of the
+    // Select element
+    HTMLSelectElement* select = GetSelect();
+    if (select) {
+      select->UpdateValueMissingValidityState();
+    }
+  }
+
+  return nsGenericHTMLElement::AfterSetAttr(aNameSpaceID, aName,
+                                            aValue, aNotify);
+}
+
 NS_IMETHODIMP
 HTMLOptionElement::GetText(nsAString& aText)
 {
@@ -299,10 +318,10 @@ HTMLOptionElement::UnbindFromTree(bool aDeep, bool aNullParent)
   UpdateState(false);
 }
 
-nsEventStates
+EventStates
 HTMLOptionElement::IntrinsicState() const
 {
-  nsEventStates state = nsGenericHTMLElement::IntrinsicState();
+  EventStates state = nsGenericHTMLElement::IntrinsicState();
   if (Selected()) {
     state |= NS_EVENT_STATE_CHECKED;
   }
@@ -363,7 +382,7 @@ HTMLOptionElement::Option(const GlobalObject& aGlobal,
     return nullptr;
   }
 
-  already_AddRefed<nsINodeInfo> nodeInfo =
+  already_AddRefed<mozilla::dom::NodeInfo> nodeInfo =
     doc->NodeInfoManager()->GetNodeInfo(nsGkAtoms::option, nullptr,
                                         kNameSpaceID_XHTML,
                                         nsIDOMNode::ELEMENT_NODE);
@@ -428,9 +447,9 @@ HTMLOptionElement::CopyInnerTo(Element* aDest)
 }
 
 JSObject*
-HTMLOptionElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLOptionElement::WrapNode(JSContext* aCx)
 {
-  return HTMLOptionElementBinding::Wrap(aCx, aScope, this);
+  return HTMLOptionElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

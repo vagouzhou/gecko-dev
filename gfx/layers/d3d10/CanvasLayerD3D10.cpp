@@ -6,7 +6,6 @@
 #include "CanvasLayerD3D10.h"
 
 #include "../d3d9/Nv3DVUtils.h"
-#include "gfxImageSurface.h"
 #include "gfxWindowsSurface.h"
 #include "gfxWindowsPlatform.h"
 #include "SurfaceStream.h"
@@ -16,11 +15,11 @@
 #include "GLContext.h"
 #include "gfxPrefs.h"
 
-using namespace mozilla::gl;
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace layers {
+
+using namespace mozilla::gl;
+using namespace mozilla::gfx;
 
 CanvasLayerD3D10::CanvasLayerD3D10(LayerManagerD3D10 *aManager)
   : CanvasLayer(aManager, nullptr)
@@ -56,7 +55,6 @@ CanvasLayerD3D10::Initialize(const Data& aData)
     if (!gfxPrefs::WebGLForceLayersReadback()) {
       if (mGLContext->IsANGLE()) {
         factory = SurfaceFactory_ANGLEShareHandle::Create(mGLContext,
-                                                          device(),
                                                           screen->Caps());
       }
     }
@@ -118,16 +116,33 @@ CanvasLayerD3D10::UpdateSurface()
     return;
   }
 
+  if (!mTexture) {
+    return;
+  }
+
   if (mGLContext) {
     SharedSurface_GL* surf = mGLContext->RequestFrame();
-    if (!surf)
-        return;
+    if (!surf) {
+      return;
+    }
 
     switch (surf->Type()) {
       case SharedSurfaceType::EGLSurfaceANGLE: {
         SharedSurface_ANGLEShareHandle* shareSurf = SharedSurface_ANGLEShareHandle::Cast(surf);
+        HANDLE shareHandle = shareSurf->GetShareHandle();
 
-        mSRView = shareSurf->GetSRV();
+        HRESULT hr = device()->OpenSharedResource(shareHandle,
+                                                  __uuidof(ID3D10Texture2D),
+                                                  getter_AddRefs(mTexture));
+        if (FAILED(hr))
+          return;
+
+        hr = device()->CreateShaderResourceView(mTexture,
+                                                nullptr,
+                                                getter_AddRefs(mSRView));
+        if (FAILED(hr))
+          return;
+
         return;
       }
       case SharedSurfaceType::Basic: {
@@ -145,9 +160,10 @@ CanvasLayerD3D10::UpdateSurface()
         DataSourceSurface* frameData = shareSurf->GetData();
         // Scope for DrawTarget, so it's destroyed before Unmap.
         {
+          IntSize boundsSize(mBounds.width, mBounds.height);
           RefPtr<DrawTarget> mapDt = Factory::CreateDrawTargetForData(BackendType::CAIRO,
                                                                       (uint8_t*)map.pData,
-                                                                      frameData->GetSize(),
+                                                                      boundsSize,
                                                                       map.RowPitch,
                                                                       SurfaceFormat::B8G8R8A8);
 

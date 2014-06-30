@@ -19,6 +19,8 @@ namespace dom {
 class MediaError MOZ_FINAL : public nsIDOMMediaError,
                              public nsWrapperCache
 {
+  ~MediaError() {}
+
 public:
   MediaError(HTMLMediaElement* aParent, uint16_t aCode);
 
@@ -34,8 +36,7 @@ public:
     return mParent;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   uint16_t Code() const
   {

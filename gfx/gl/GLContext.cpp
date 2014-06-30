@@ -43,11 +43,11 @@
 #include "nsCocoaFeatures.h"
 #endif
 
-using namespace mozilla::gfx;
-using namespace mozilla::layers;
-
 namespace mozilla {
 namespace gl {
+
+using namespace mozilla::gfx;
+using namespace mozilla::layers;
 
 #ifdef DEBUG
 unsigned GLContext::sCurrentGLContextTLS = -1;
@@ -70,6 +70,7 @@ static const char *sExtensionNames[] = {
     "GL_OES_depth32",
     "GL_OES_stencil8",
     "GL_OES_texture_npot",
+    "GL_IMG_texture_npot",
     "GL_ARB_depth_texture",
     "GL_OES_depth_texture",
     "GL_OES_packed_depth_stencil",
@@ -285,7 +286,7 @@ GLContext::GLContext(const SurfaceCaps& caps,
     mNeedsTextureSizeChecks(false),
     mWorkAroundDriverBugs(true)
 {
-    mOwningThread = NS_GetCurrentThread();
+    mOwningThreadId = PlatformThread::CurrentId();
 }
 
 GLContext::~GLContext() {
@@ -301,6 +302,19 @@ GLContext::~GLContext() {
         ReportOutstandingNames();
     }
 #endif
+}
+
+/*static*/ void
+GLContext::StaticDebugCallback(GLenum source,
+                               GLenum type,
+                               GLuint id,
+                               GLenum severity,
+                               GLsizei length,
+                               const GLchar* message,
+                               const GLvoid* userParam)
+{
+    GLContext* gl = (GLContext*)userParam;
+    gl->DebugCallback(source, type, id, severity, length, message);
 }
 
 bool
@@ -465,7 +479,7 @@ GLContext::InitWithPrefix(const char *prefix, bool trygl)
     if (mInitialized) {
         unsigned int version = 0;
 
-        bool parseSuccess = ParseGLVersion(this, &version);
+        ParseGLVersion(this, &version);
 
 #ifdef DEBUG
         printf_stderr("OpenGL version detected: %u\n", version);
@@ -475,15 +489,15 @@ GLContext::InitWithPrefix(const char *prefix, bool trygl)
 
         if (version >= mVersion) {
             mVersion = version;
-        } else if (parseSuccess) {
-            NS_WARNING("Parsed version less than expected.");
-            mInitialized = false;
         }
+        // Don't fail if version < mVersion, see bug 999445,
+        // Mac OSX 10.6/10.7 machines with Intel GPUs claim only OpenGL 1.4 but
+        // have all the GL2+ extensions that we need.
     }
 
     // Load OpenGL ES 2.0 symbols, or desktop if we aren't using ES 2.
     if (mInitialized) {
-        if (IsGLES2()) {
+        if (IsGLES()) {
             SymLoadStruct symbols_ES2[] = {
                 { (PRFuncPtr*) &mSymbols.fGetShaderPrecisionFormat, { "GetShaderPrecisionFormat", nullptr } },
                 { (PRFuncPtr*) &mSymbols.fClearDepthf, { "ClearDepthf", nullptr } },
@@ -565,13 +579,15 @@ GLContext::InitWithPrefix(const char *prefix, bool trygl)
         const char *rendererMatchStrings[size_t(GLRenderer::Other)] = {
                 "Adreno 200",
                 "Adreno 205",
+                "Adreno (TM) 200",
                 "Adreno (TM) 205",
                 "Adreno (TM) 320",
                 "PowerVR SGX 530",
                 "PowerVR SGX 540",
                 "NVIDIA Tegra",
                 "Android Emulator",
-                "Gallium 0.4 on llvmpipe"
+                "Gallium 0.4 on llvmpipe",
+                "Intel HD Graphics 3000 OpenGL Engine",
         };
 
         mRenderer = GLRenderer::Other;
@@ -1159,11 +1175,20 @@ GLContext::InitWithPrefix(const char *prefix, bool trygl)
         mTexGarbageBin = new TextureGarbageBin(this);
 
         MOZ_ASSERT(IsCurrent());
-    }
 
-    if (mInitialized)
+        if (DebugMode() && IsExtensionSupported(KHR_debug)) {
+            fEnable(LOCAL_GL_DEBUG_OUTPUT);
+            fDisable(LOCAL_GL_DEBUG_OUTPUT_SYNCHRONOUS);
+            fDebugMessageCallback(&StaticDebugCallback, (void*)this);
+            fDebugMessageControl(LOCAL_GL_DONT_CARE,
+                                 LOCAL_GL_DONT_CARE,
+                                 LOCAL_GL_DONT_CARE,
+                                 0, nullptr,
+                                 true);
+        }
+
         reporter.SetSuccessful();
-    else {
+    } else {
         // if initialization fails, ensure all symbols are zero, to avoid hard-to-understand bugs
         mSymbols.Zero();
         NS_WARNING("InitWithPrefix failed!");
@@ -1172,6 +1197,95 @@ GLContext::InitWithPrefix(const char *prefix, bool trygl)
     mVersionString = nsPrintfCString("%u.%u.%u", mVersion / 100, (mVersion / 10) % 10, mVersion % 10);
 
     return mInitialized;
+}
+
+void
+GLContext::DebugCallback(GLenum source,
+                         GLenum type,
+                         GLuint id,
+                         GLenum severity,
+                         GLsizei length,
+                         const GLchar* message)
+{
+    nsAutoCString sourceStr;
+    switch (source) {
+    case LOCAL_GL_DEBUG_SOURCE_API:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_API");
+        break;
+    case LOCAL_GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_WINDOW_SYSTEM");
+        break;
+    case LOCAL_GL_DEBUG_SOURCE_SHADER_COMPILER:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_SHADER_COMPILER");
+        break;
+    case LOCAL_GL_DEBUG_SOURCE_THIRD_PARTY:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_THIRD_PARTY");
+        break;
+    case LOCAL_GL_DEBUG_SOURCE_APPLICATION:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_APPLICATION");
+        break;
+    case LOCAL_GL_DEBUG_SOURCE_OTHER:
+        sourceStr = NS_LITERAL_CSTRING("SOURCE_OTHER");
+        break;
+    default:
+        sourceStr = nsPrintfCString("<source 0x%04x>", source);
+        break;
+    }
+
+    nsAutoCString typeStr;
+    switch (type) {
+    case LOCAL_GL_DEBUG_TYPE_ERROR:
+        typeStr = NS_LITERAL_CSTRING("TYPE_ERROR");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+        typeStr = NS_LITERAL_CSTRING("TYPE_DEPRECATED_BEHAVIOR");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+        typeStr = NS_LITERAL_CSTRING("TYPE_UNDEFINED_BEHAVIOR");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_PORTABILITY:
+        typeStr = NS_LITERAL_CSTRING("TYPE_PORTABILITY");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_PERFORMANCE:
+        typeStr = NS_LITERAL_CSTRING("TYPE_PERFORMANCE");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_OTHER:
+        typeStr = NS_LITERAL_CSTRING("TYPE_OTHER");
+        break;
+    case LOCAL_GL_DEBUG_TYPE_MARKER:
+        typeStr = NS_LITERAL_CSTRING("TYPE_MARKER");
+        break;
+    default:
+        typeStr = nsPrintfCString("<type 0x%04x>", type);
+        break;
+    }
+
+    nsAutoCString sevStr;
+    switch (severity) {
+    case LOCAL_GL_DEBUG_SEVERITY_HIGH:
+        sevStr = NS_LITERAL_CSTRING("SEVERITY_HIGH");
+        break;
+    case LOCAL_GL_DEBUG_SEVERITY_MEDIUM:
+        sevStr = NS_LITERAL_CSTRING("SEVERITY_MEDIUM");
+        break;
+    case LOCAL_GL_DEBUG_SEVERITY_LOW:
+        sevStr = NS_LITERAL_CSTRING("SEVERITY_LOW");
+        break;
+    case LOCAL_GL_DEBUG_SEVERITY_NOTIFICATION:
+        sevStr = NS_LITERAL_CSTRING("SEVERITY_NOTIFICATION");
+        break;
+    default:
+        sevStr = nsPrintfCString("<severity 0x%04x>", severity);
+        break;
+    }
+
+    printf_stderr("[KHR_debug: 0x%x] ID %u: %s %s %s:\n    %s",
+                  (uintptr_t)this,
+                  id,
+                  sourceStr.BeginReading(),
+                  typeStr.BeginReading(),
+                  sevStr.BeginReading(),
+                  message);
 }
 
 void
@@ -1218,6 +1332,20 @@ GLContext::InitExtensions()
         MarkExtensionUnsupported(ANGLE_texture_compression_dxt3);
         MarkExtensionUnsupported(ANGLE_texture_compression_dxt5);
     }
+
+#ifdef XP_MACOSX
+    // Bug 1009642: On OSX Mavericks (10.9), the driver for Intel HD
+    // 3000 appears to be buggy WRT updating sub-images of S3TC
+    // textures with glCompressedTexSubImage2D. Works on Intel HD 4000
+    // and Intel HD 5000/Iris that I tested.
+    if (WorkAroundDriverBugs() &&
+        nsCocoaFeatures::OSXVersionMajor() == 10 &&
+        nsCocoaFeatures::OSXVersionMinor() == 9 &&
+        Renderer() == GLRenderer::IntelHD3000)
+    {
+        MarkExtensionUnsupported(EXT_texture_compression_s3tc);
+    }
+#endif
 
 #ifdef DEBUG
     firstRun = false;
@@ -1337,7 +1465,7 @@ GLContext::ChooseGLFormats(const SurfaceCaps& caps) const
     // If we're on ES2 hardware and we have an explicit request for 16 bits of color or less
     // OR we don't support full 8-bit color, return a 4444 or 565 format.
     bool bpp16 = caps.bpp16;
-    if (IsGLES2()) {
+    if (IsGLES()) {
         if (!IsExtensionSupported(OES_rgb8_rgba8))
             bpp16 = true;
     } else {
@@ -1347,7 +1475,7 @@ GLContext::ChooseGLFormats(const SurfaceCaps& caps) const
     }
 
     if (bpp16) {
-        MOZ_ASSERT(IsGLES2());
+        MOZ_ASSERT(IsGLES());
         if (caps.alpha) {
             formats.color_texInternalFormat = LOCAL_GL_RGBA;
             formats.color_texFormat = LOCAL_GL_RGBA;
@@ -1363,11 +1491,11 @@ GLContext::ChooseGLFormats(const SurfaceCaps& caps) const
         formats.color_texType = LOCAL_GL_UNSIGNED_BYTE;
 
         if (caps.alpha) {
-            formats.color_texInternalFormat = IsGLES2() ? LOCAL_GL_RGBA : LOCAL_GL_RGBA8;
+            formats.color_texInternalFormat = IsGLES() ? LOCAL_GL_RGBA : LOCAL_GL_RGBA8;
             formats.color_texFormat = LOCAL_GL_RGBA;
             formats.color_rbFormat  = LOCAL_GL_RGBA8;
         } else {
-            formats.color_texInternalFormat = IsGLES2() ? LOCAL_GL_RGB : LOCAL_GL_RGB8;
+            formats.color_texInternalFormat = IsGLES() ? LOCAL_GL_RGB : LOCAL_GL_RGB8;
             formats.color_texFormat = LOCAL_GL_RGB;
             formats.color_rbFormat  = LOCAL_GL_RGB8;
         }
@@ -1386,12 +1514,12 @@ GLContext::ChooseGLFormats(const SurfaceCaps& caps) const
 
     // Be clear that these are 0 if unavailable.
     formats.depthStencil = 0;
-    if (!IsGLES2() || IsExtensionSupported(OES_packed_depth_stencil)) {
+    if (!IsGLES() || IsExtensionSupported(OES_packed_depth_stencil)) {
         formats.depthStencil = LOCAL_GL_DEPTH24_STENCIL8;
     }
 
     formats.depth = 0;
-    if (IsGLES2()) {
+    if (IsGLES()) {
         if (IsExtensionSupported(OES_depth24)) {
             formats.depth = LOCAL_GL_DEPTH_COMPONENT24;
         } else {
@@ -1694,7 +1822,38 @@ GLContext::MarkDestroyed()
     mSymbols.Zero();
 }
 
-#ifdef MOZ_ENABLE_GL_TRACKING
+#ifdef DEBUG
+/* static */ void
+GLContext::AssertNotPassingStackBufferToTheGL(const void* ptr)
+{
+  int somethingOnTheStack;
+  const void* someStackPtr = &somethingOnTheStack;
+  const int page_bits = 12;
+  intptr_t page = reinterpret_cast<uintptr_t>(ptr) >> page_bits;
+  intptr_t someStackPage = reinterpret_cast<uintptr_t>(someStackPtr) >> page_bits;
+  uintptr_t pageDistance = std::abs(page - someStackPage);
+
+  // Explanation for the "distance <= 1" check here as opposed to just
+  // an equality check.
+  //
+  // Here we assume that pages immediately adjacent to the someStackAddress page,
+  // are also stack pages. That allows to catch the case where the calling frame put
+  // a buffer on the stack, and we just crossed the page boundary. That is likely
+  // to happen, precisely, when using stack arrays. I hit that specifically
+  // with CompositorOGL::Initialize.
+  //
+  // In theory we could be unlucky and wrongly assert here. If that happens,
+  // it will only affect debug builds, and looking at stacks we'll be able to
+  // see that this assert is wrong and revert to the conservative and safe
+  // approach of only asserting when address and someStackAddress are
+  // on the same page.
+  bool isStackAddress = pageDistance <= 1;
+  MOZ_ASSERT(!isStackAddress,
+             "Please don't pass stack arrays to the GL. "
+             "Consider using HeapCopyOfStackArray. "
+             "See bug 1005658.");
+}
+
 void
 GLContext::CreatedProgram(GLContext *aOrigin, GLuint aName)
 {
@@ -1964,20 +2123,7 @@ GLContext::IsOffscreenSizeAllowed(const IntSize& aSize) const {
 bool
 GLContext::IsOwningThreadCurrent()
 {
-  return NS_GetCurrentThread() == mOwningThread;
-}
-
-void
-GLContext::DispatchToOwningThread(nsIRunnable *event)
-{
-    // Before dispatching, we need to ensure we're not in the middle of
-    // shutting down. Dispatching runnables in the middle of shutdown
-    // (that is, when the main thread is no longer get-able) can cause them
-    // to leak. See Bug 741319, and Bug 744115.
-    nsCOMPtr<nsIThread> mainThread;
-    if (NS_SUCCEEDED(NS_GetMainThread(getter_AddRefs(mainThread)))) {
-        mOwningThread->Dispatch(event, NS_DISPATCH_NORMAL);
-    }
+  return PlatformThread::CurrentId() == mOwningThreadId;
 }
 
 GLBlitHelper*

@@ -185,18 +185,18 @@
           <spacer flex="1"/>
         </vbox>
 
-        <vbox id="noFxaAccount">
+        <vbox id="noFxaAccount" align="start">
           <label>&welcome.description;</label>
-          <label class="text-link"
-                 onclick="gSyncPane.signUp(); return false;"
-                 value="&welcome.createAccount.label;"/>
-          <label class="text-link"
-                 onclick="gSyncPane.signIn(); return false;"
-                 value="&welcome.signIn.label;"/>
-          <separator/>
-          <label class="text-link"
-                 onclick="gSyncPane.openOldSyncSupportPage(); return false;"
-                 value="&welcome.useOldSync.label;"/>
+            <label class="text-link"
+                   onclick="gSyncPane.signUp(); return false;"
+                   value="&welcome.createAccount.label;"/>
+            <label class="text-link"
+                   onclick="gSyncPane.signIn(); return false;"
+                   value="&welcome.signIn.label;"/>
+            <separator/>
+            <label class="text-link"
+                   onclick="gSyncPane.openOldSyncSupportPage(); return false;"
+                   value="&welcome.useOldSync.label;"/>
         </vbox>
 
         <vbox id="hasFxaAccount">
@@ -223,12 +223,11 @@
 
               <!-- logged in to an unverified account -->
               <hbox flex="1">
-                <description>
+                <description flex="1">
                   &signedInUnverified.beforename.label;
                   <span id="fxaEmailAddress2"></span>
                   &signedInUnverified.aftername.label;
                 </description>
-                <spacer flex="1"/>
                 <vbox align="end">
                   <button oncommand="gSyncPane.verifyFirefoxAccount();"
                           label="&verify.label;"/>
@@ -240,12 +239,11 @@
 
               <!-- logged in locally but server rejected credentials -->
               <hbox flex="1">
-                <description>
+                <description flex="1">
                   &signedInLoginFailure.beforename.label;
                   <span id="fxaEmailAddress3"></span>
                   &signedInLoginFailure.aftername.label;
                 </description>
-                <spacer flex="1"/>
                 <vbox align="end">
                   <button oncommand="gSyncPane.reSignIn();"
                          label="&signIn.label;"/>
@@ -276,10 +274,7 @@
                   <vbox id="fxa-pweng-help">
                     <spacer flex="1"/>
                     <hbox id="fxa-pweng-help-link">
-                      <label value=" ["/>
-                      <label class="text-link" value="?"
-                             onclick="gSyncUtils.openMPInfoPage(event);"/>
-                      <label value="]"/>
+                      <image onclick="gSyncUtils.openMPInfoPage(event);" />
                     </hbox>
                     <spacer flex="1"/>
                   </vbox>

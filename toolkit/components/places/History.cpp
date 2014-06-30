@@ -251,7 +251,7 @@ GetJSArrayFromJSValue(JS::Handle<JS::Value> aValue,
   _array.set(JS_NewArrayObject(aCtx, 0));
   NS_ENSURE_TRUE(_array, NS_ERROR_OUT_OF_MEMORY);
 
-  bool rc = JS_DefineElement(aCtx, _array, 0, aValue, nullptr, nullptr, 0);
+  bool rc = JS_DefineElement(aCtx, _array, 0, aValue, 0);
   NS_ENSURE_TRUE(rc, NS_ERROR_UNEXPECTED);
   return NS_OK;
 }
@@ -267,11 +267,11 @@ GetJSArrayFromJSValue(JS::Handle<JS::Value> aValue,
 already_AddRefed<nsIURI>
 GetJSValueAsURI(JSContext* aCtx,
                 const JS::Value& aValue) {
-  if (!JSVAL_IS_PRIMITIVE(aValue)) {
+  if (!aValue.isPrimitive()) {
     nsCOMPtr<nsIXPConnect> xpc = mozilla::services::GetXPConnect();
 
     nsCOMPtr<nsIXPConnectWrappedNative> wrappedObj;
-    nsresult rv = xpc->GetWrappedNativeOfJSObject(aCtx, JSVAL_TO_OBJECT(aValue),
+    nsresult rv = xpc->GetWrappedNativeOfJSObject(aCtx, aValue.toObjectOrNull(),
                                                   getter_AddRefs(wrappedObj));
     NS_ENSURE_SUCCESS(rv, nullptr);
     nsCOMPtr<nsIURI> uri = do_QueryWrappedNative(wrappedObj);
@@ -315,20 +315,20 @@ void
 GetJSValueAsString(JSContext* aCtx,
                    const JS::Value& aValue,
                    nsString& _string) {
-  if (JSVAL_IS_VOID(aValue) ||
-      !(JSVAL_IS_NULL(aValue) || JSVAL_IS_STRING(aValue))) {
+  if (aValue.isUndefined() ||
+      !(aValue.isNull() || aValue.isString())) {
     _string.SetIsVoid(true);
     return;
   }
 
   // |null| in JS maps to the empty string.
-  if (JSVAL_IS_NULL(aValue)) {
+  if (aValue.isNull()) {
     _string.Truncate();
     return;
   }
   size_t length;
   const jschar* chars =
-    JS_GetStringCharsZAndLength(aCtx, JSVAL_TO_STRING(aValue), &length);
+    JS_GetStringCharsZAndLength(aCtx, aValue.toString(), &length);
   if (!chars) {
     _string.SetIsVoid(true);
     return;
@@ -387,11 +387,11 @@ GetIntFromJSObject(JSContext* aCtx,
   JS::Rooted<JS::Value> value(aCtx);
   bool rc = JS_GetProperty(aCtx, aObject, aProperty, &value);
   NS_ENSURE_TRUE(rc, NS_ERROR_UNEXPECTED);
-  if (JSVAL_IS_VOID(value)) {
+  if (value.isUndefined()) {
     return NS_ERROR_INVALID_ARG;
   }
-  NS_ENSURE_ARG(JSVAL_IS_PRIMITIVE(value));
-  NS_ENSURE_ARG(JSVAL_IS_NUMBER(value));
+  NS_ENSURE_ARG(value.isPrimitive());
+  NS_ENSURE_ARG(value.isNumber());
 
   double num;
   rc = JS::ToNumber(aCtx, value, &num);
@@ -1185,7 +1185,10 @@ private:
       if (aPlace.placeId) {
         stmt = mHistory->GetStatement(
           "UPDATE moz_places "
-          "SET frecency = CALCULATE_FRECENCY(:page_id) "
+          "SET frecency = NOTIFY_FRECENCY("
+            "CALCULATE_FRECENCY(:page_id), "
+            "url, guid, hidden, last_visit_date"
+          ") "
           "WHERE id = :page_id"
         );
         NS_ENSURE_STATE(stmt);
@@ -1195,7 +1198,9 @@ private:
       else {
         stmt = mHistory->GetStatement(
           "UPDATE moz_places "
-          "SET frecency = CALCULATE_FRECENCY(id) "
+          "SET frecency = NOTIFY_FRECENCY("
+            "CALCULATE_FRECENCY(id), url, guid, hidden, last_visit_date"
+          ") "
           "WHERE url = :page_url"
         );
         NS_ENSURE_STATE(stmt);
@@ -1516,6 +1521,8 @@ public:
   }
 
 private:
+  ~SetDownloadAnnotations() {}
+
   nsCOMPtr<nsIURI> mDestination;
 
   /**
@@ -1524,7 +1531,7 @@ private:
    */
   nsRefPtr<History> mHistory;
 };
-NS_IMPL_ISUPPORTS1(
+NS_IMPL_ISUPPORTS(
   SetDownloadAnnotations,
   mozIVisitInfoCallback
 )
@@ -1635,7 +1642,7 @@ static PLDHashOperator ListToBeRemovedPlaceIds(PlaceHashKey* aEntry,
   if (visits.Length() == aEntry->visitCount && !aEntry->bookmarked) {
     nsCString* list = static_cast<nsCString*>(aIdsList);
     if (!list->IsEmpty())
-      list->AppendLiteral(",");
+      list->Append(',');
     list->AppendInt(visits[0].placeId);
   }
   return PL_DHASH_NEXT;
@@ -1839,7 +1846,7 @@ private:
     nsCString query("DELETE FROM moz_places "
                     "WHERE id IN (");
     query.Append(placeIdsToRemove);
-    query.AppendLiteral(")");
+    query.Append(')');
 
     nsCOMPtr<mozIStorageStatement> stmt = mHistory->GetStatement(query);
     NS_ENSURE_STATE(stmt);
@@ -2037,13 +2044,14 @@ History::InsertPlace(const VisitData& aPlace)
   NS_ENSURE_SUCCESS(rv, rv);
   rv = URIBinder::Bind(stmt, NS_LITERAL_CSTRING("url"), aPlace.spec);
   NS_ENSURE_SUCCESS(rv, rv);
+  nsString title = aPlace.title;
   // Empty strings should have no title, just like nsNavHistory::SetPageTitle.
-  if (aPlace.title.IsEmpty()) {
+  if (title.IsEmpty()) {
     rv = stmt->BindNullByName(NS_LITERAL_CSTRING("title"));
   }
   else {
-    rv = stmt->BindStringByName(NS_LITERAL_CSTRING("title"),
-                                StringHead(aPlace.title, TITLE_LENGTH_MAX));
+    title.Assign(StringHead(aPlace.title, TITLE_LENGTH_MAX));
+    rv = stmt->BindStringByName(NS_LITERAL_CSTRING("title"), title);
   }
   NS_ENSURE_SUCCESS(rv, rv);
   rv = stmt->BindInt32ByName(NS_LITERAL_CSTRING("typed"), aPlace.typed);
@@ -2064,6 +2072,13 @@ History::InsertPlace(const VisitData& aPlace)
   NS_ENSURE_SUCCESS(rv, rv);
   rv = stmt->Execute();
   NS_ENSURE_SUCCESS(rv, rv);
+
+  // Post an onFrecencyChanged observer notification.
+  const nsNavHistory* navHistory = nsNavHistory::GetConstHistoryService();
+  NS_ENSURE_STATE(navHistory);
+  navHistory->DispatchFrecencyChangedNotification(aPlace.spec, frecency, guid,
+                                                  aPlace.hidden,
+                                                  aPlace.visitTime);
 
   return NS_OK;
 }
@@ -2221,7 +2236,7 @@ MOZ_DEFINE_MALLOC_SIZE_OF(HistoryMallocSizeOf)
 
 NS_IMETHODIMP
 History::CollectReports(nsIHandleReportCallback* aHandleReport,
-                        nsISupports* aData)
+                        nsISupports* aData, bool aAnonymize)
 {
   return MOZ_COLLECT_REPORT(
     "explicit/history-links-hashtable", KIND_HEAP, UNITS_BYTES,
@@ -2750,7 +2765,7 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
                       JSContext* aCtx)
 {
   NS_ENSURE_TRUE(NS_IsMainThread(), NS_ERROR_UNEXPECTED);
-  NS_ENSURE_TRUE(!JSVAL_IS_PRIMITIVE(aPlaceInfos), NS_ERROR_INVALID_ARG);
+  NS_ENSURE_TRUE(!aPlaceInfos.isPrimitive(), NS_ERROR_INVALID_ARG);
 
   uint32_t infosLength;
   JS::Rooted<JSObject*> infos(aCtx);
@@ -2797,8 +2812,8 @@ History::UpdatePlaces(JS::Handle<JS::Value> aPlaceInfos,
       JS::Rooted<JS::Value> visitsVal(aCtx);
       bool rc = JS_GetProperty(aCtx, info, "visits", &visitsVal);
       NS_ENSURE_TRUE(rc, NS_ERROR_UNEXPECTED);
-      if (!JSVAL_IS_PRIMITIVE(visitsVal)) {
-        visits = JSVAL_TO_OBJECT(visitsVal);
+      if (!visitsVal.isPrimitive()) {
+        visits = visitsVal.toObjectOrNull();
         NS_ENSURE_ARG(JS_IsArrayObject(aCtx, visits));
       }
     }
@@ -2917,7 +2932,7 @@ History::Observe(nsISupports* aSubject, const char* aTopic,
 ////////////////////////////////////////////////////////////////////////////////
 //// nsISupports
 
-NS_IMPL_ISUPPORTS5(
+NS_IMPL_ISUPPORTS(
   History
 , IHistory
 , nsIDownloadHistory

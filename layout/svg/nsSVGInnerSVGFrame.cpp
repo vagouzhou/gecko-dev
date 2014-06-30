@@ -37,9 +37,9 @@ NS_QUERYFRAME_TAIL_INHERITING(nsSVGInnerSVGFrameBase)
 
 #ifdef DEBUG
 void
-nsSVGInnerSVGFrame::Init(nsIContent* aContent,
-                         nsIFrame* aParent,
-                         nsIFrame* aPrevInFlow)
+nsSVGInnerSVGFrame::Init(nsIContent*       aContent,
+                         nsContainerFrame* aParent,
+                         nsIFrame*         aPrevInFlow)
 {
   NS_ASSERTION(aContent->IsSVG(nsGkAtoms::svg),
                "Content is not an SVG 'svg' element!");
@@ -78,7 +78,7 @@ nsSVGInnerSVGFrame::PaintSVG(nsRenderingContext *aContext,
       return NS_OK;
     }
 
-    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
     gfxMatrix clipTransform = parent->GetCanvasTM(FOR_PAINTING, aTransformRoot);
 
     gfxContext *gfx = aContext->ThebesContext();
@@ -102,6 +102,13 @@ nsSVGInnerSVGFrame::ReflowSVG()
   mRect = nsLayoutUtils::RoundGfxRectToAppRect(
                            gfxRect(x, y, width, height),
                            PresContext()->AppUnitsPerCSSPixel());
+
+  // If we have a filter, we need to invalidate ourselves because filter
+  // output can change even if none of our descendants need repainting.
+  if (StyleSVGReset()->HasFilters()) {
+    InvalidateFrame();
+  }
+
   nsSVGInnerSVGFrameBase::ReflowSVG();
 }
 
@@ -235,7 +242,7 @@ nsSVGInnerSVGFrame::GetFrameForPoint(const nsPoint &aPoint)
 
   if (StyleDisplay()->IsScrollableOverflow()) {
     nsSVGElement *content = static_cast<nsSVGElement*>(mContent);
-    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
 
     float clipX, clipY, clipWidth, clipHeight;
     content->GetAnimatedLengthValues(&clipX, &clipY, &clipWidth, &clipHeight, nullptr);
@@ -278,9 +285,9 @@ nsSVGInnerSVGFrame::GetCanvasTM(uint32_t aFor, nsIFrame* aTransformRoot)
     }
   }
   if (!mCanvasTM) {
-    NS_ASSERTION(mParent, "null parent");
+    NS_ASSERTION(GetParent(), "null parent");
 
-    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(mParent);
+    nsSVGContainerFrame *parent = static_cast<nsSVGContainerFrame*>(GetParent());
     SVGSVGElement *content = static_cast<SVGSVGElement*>(mContent);
 
     gfxMatrix tm = content->PrependLocalTransformsTo(

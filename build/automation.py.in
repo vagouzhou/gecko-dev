@@ -449,6 +449,7 @@ class Automation(object):
     pk12util = os.path.join(utilityPath, "pk12util" + self.BIN_SUFFIX)
 
     status = self.Process([certutil, "-N", "-d", profileDir, "-f", pwfilePath], env = env).wait()
+    automationutils.printstatus(status, "certutil")
     if status != 0:
       return status
 
@@ -460,18 +461,20 @@ class Automation(object):
         trustBits = "CT,,"
         if root.endswith("-object"):
           trustBits = "CT,,CT"
-        self.Process([certutil, "-A", "-i", os.path.join(certPath, item),
+        status = self.Process([certutil, "-A", "-i", os.path.join(certPath, item),
                     "-d", profileDir, "-f", pwfilePath, "-n", root, "-t", trustBits],
                     env = env).wait()
+        automationutils.printstatus(status, "certutil")
       if ext == ".client":
-        self.Process([pk12util, "-i", os.path.join(certPath, item), "-w",
+        status = self.Process([pk12util, "-i", os.path.join(certPath, item), "-w",
                     pwfilePath, "-d", profileDir], 
                     env = env).wait()
+        automationutils.printstatus(status, "pk12util")
 
     os.unlink(pwfilePath)
     return 0
 
-  def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False, dmdPath=None):
+  def environment(self, env=None, xrePath=None, crashreporter=True, debugger=False, dmdPath=None, lsanPath=None):
     if xrePath == None:
       xrePath = self.DIST_BIN
     if env == None:
@@ -507,13 +510,16 @@ class Automation(object):
     else:
       env['MOZ_CRASHREPORTER_DISABLE'] = '1'
 
+    # Crash on non-local network connections.
+    env['MOZ_DISABLE_NONLOCAL_CONNECTIONS'] = '1'
+
     env['GNOME_DISABLE_CRASH_DIALOG'] = '1'
     env['XRE_NO_WINDOWS_CRASH_DIALOG'] = '1'
     env['NS_TRACE_MALLOC_DISABLE_STACKS'] = '1'
 
     # Set WebRTC logging in case it is not set yet
-    env.setdefault('NSPR_LOG_MODULES', 'signaling:5,mtransport:3')
-    env.setdefault('R_LOG_LEVEL', '5')
+    env.setdefault('NSPR_LOG_MODULES', 'signaling:5,mtransport:5,datachannel:5')
+    env.setdefault('R_LOG_LEVEL', '6')
     env.setdefault('R_LOG_DESTINATION', 'stderr')
     env.setdefault('R_LOG_VERBOSE', '1')
 
@@ -524,6 +530,8 @@ class Automation(object):
       if os.path.isfile(llvmsym):
         env["ASAN_SYMBOLIZER_PATH"] = llvmsym
         self.log.info("INFO | automation.py | ASan using symbolizer at %s", llvmsym)
+      else:
+        self.log.info("TEST-UNEXPECTED-FAIL | automation.py | Failed to find ASan symbolizer at %s", llvmsym)
 
       try:
         totalMemory = int(os.popen("free").readlines()[1].split()[1])
@@ -654,8 +662,11 @@ class Automation(object):
       else:
         # We should have a "crashinject" program in our utility path
         crashinject = os.path.normpath(os.path.join(utilityPath, "crashinject.exe"))
-        if os.path.exists(crashinject) and subprocess.Popen([crashinject, str(processPID)]).wait() == 0:
-          return
+        if os.path.exists(crashinject):
+          status = subprocess.Popen([crashinject, str(processPID)]).wait()
+          automationutils.printstatus(status, "crashinject")
+          if status == 0:
+            return
     self.log.info("Can't trigger Breakpad, just killing process")
     self.killPid(processPID)
 
@@ -728,12 +739,14 @@ class Automation(object):
         self.killAndGetStack(browserProcessId, utilityPath, debuggerInfo)
 
     status = proc.wait()
+    automationutils.printstatus(status, "Main app process")
     if status == 0:
       self.lastTestSeen = "Main app process exited normally"
     if status != 0 and not didTimeout and not hitMaxTime:
       self.log.info("TEST-UNEXPECTED-FAIL | %s | Exited with code %d during test run", self.lastTestSeen, status)
     if stackFixerProcess is not None:
       fixerStatus = stackFixerProcess.wait()
+      automationutils.printstatus(status, "stackFixerProcess")
       if fixerStatus != 0 and not didTimeout and not hitMaxTime:
         self.log.info("TEST-UNEXPECTED-FAIL | automation.py | Stack fixer process exited with code %d during test run", fixerStatus)
     return status
@@ -806,7 +819,7 @@ class Automation(object):
              xrePath = None, certPath = None,
              debuggerInfo = None, symbolsPath = None,
              timeout = -1, maxTime = None, onLaunch = None,
-             webapprtChrome = False, hide_subtests=None):
+             webapprtChrome = False, screenshotOnFail=False, testPath=None):
     """
     Run the app, log the duration it took to execute, return the status code.
     Kills the app if it runs for longer than |maxTime| seconds, or outputs nothing for |timeout| seconds.

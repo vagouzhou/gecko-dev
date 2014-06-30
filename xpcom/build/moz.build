@@ -50,6 +50,7 @@ UNIFIED_SOURCES += [
     'FrozenFunctions.cpp',
     'IOInterposer.cpp',
     'LateWriteChecks.cpp',
+    'MainThreadIOLogger.cpp',
     'nsXPComInit.cpp',
     'nsXPCOMStrings.cpp',
     'Services.cpp',
@@ -77,9 +78,6 @@ FINAL_LIBRARY = 'xul'
 
 DEFINES['_IMPL_NS_STRINGAPI'] = True
 DEFINES['OMNIJAR_NAME'] = CONFIG['OMNIJAR_NAME']
-
-if CONFIG['TARGET_XPCOM_ABI']:
-    DEFINES['TARGET_XPCOM_ABI'] = '"%s"' % CONFIG['TARGET_XPCOM_ABI']
 
 if CONFIG['MOZ_OPTIMIZE']:
     DEFINES['MOZ_OPTIMIZE'] = True

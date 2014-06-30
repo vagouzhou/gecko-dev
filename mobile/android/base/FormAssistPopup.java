@@ -85,15 +85,17 @@ public class FormAssistPopup extends RelativeLayout implements GeckoEventListene
 
         setFocusable(false);
 
-        registerEventListener("FormAssist:AutoComplete");
-        registerEventListener("FormAssist:ValidationMessage");
-        registerEventListener("FormAssist:Hide");
+        EventDispatcher.getInstance().registerGeckoThreadListener(this,
+            "FormAssist:AutoComplete",
+            "FormAssist:ValidationMessage",
+            "FormAssist:Hide");
     }
 
     void destroy() {
-        unregisterEventListener("FormAssist:AutoComplete");
-        unregisterEventListener("FormAssist:ValidationMessage");
-        unregisterEventListener("FormAssist:Hide");
+        EventDispatcher.getInstance().unregisterGeckoThreadListener(this,
+            "FormAssist:AutoComplete",
+            "FormAssist:ValidationMessage",
+            "FormAssist:Hide");
     }
 
     @Override
@@ -254,13 +256,13 @@ public class FormAssistPopup extends RelativeLayout implements GeckoEventListene
         int width = (int) (mW * zoom);
         int height = (int) (mH * zoom);
 
-        int popupWidth = RelativeLayout.LayoutParams.FILL_PARENT;
+        int popupWidth = RelativeLayout.LayoutParams.MATCH_PARENT;
         int popupLeft = left < 0 ? 0 : left;
 
         FloatSize viewport = aMetrics.getSize();
 
         // For autocomplete suggestions, if the input is smaller than the screen-width,
-        // shrink the popup's width. Otherwise, keep it as FILL_PARENT.
+        // shrink the popup's width. Otherwise, keep it as MATCH_PARENT.
         if ((mPopupType == PopupType.AUTOCOMPLETE) && (left + width) < viewport.width) {
             popupWidth = left < 0 ? left + width : width;
 
@@ -396,13 +398,5 @@ public class FormAssistPopup extends RelativeLayout implements GeckoEventListene
 
             return convertView;
         }
-    }
-
-    private void registerEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().registerEventListener(event, this);
-    }
-
-    private void unregisterEventListener(String event) {
-        GeckoAppShell.getEventDispatcher().unregisterEventListener(event, this);
     }
 }

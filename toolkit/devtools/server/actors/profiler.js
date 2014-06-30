@@ -106,10 +106,6 @@ ProfilerActor.prototype = {
     var currentTime = isActive ? getCurrentTime() : null;
     return { "isActive": isActive, "currentTime": currentTime }
   },
-  onGetResponsivenessTimes: function(aRequest) {
-    var times = this._profiler.GetResponsivenessTimes({});
-    return { "responsivenessTimes": times }
-  },
   onGetFeatures: function(aRequest) {
     var features = this._profiler.GetFeatures([]);
     return { "features": features }
@@ -165,11 +161,12 @@ ProfilerActor.prototype = {
     }
 
     /*
-     * If these values are objects with a non-null 'wrappedJSObject'
-     * property, use its value. Otherwise, use the value unchanged.
+     * If these values are objects with a non-null 'wrappedJSObject' property
+     * and aren't Xrays, use their .wrappedJSObject. Otherwise, use the value
+     * unchanged.
      */
-    aSubject = (aSubject && aSubject.wrappedJSObject) || aSubject;
-    aData    = (aData    && aData.wrappedJSObject)    || aData;
+    aSubject = (aSubject && !Cu.isXrayWrapper(aSubject) && aSubject.wrappedJSObject) || aSubject;
+    aData    = (aData && !Cu.isXrayWrapper(aData) && aData.wrappedJSObject) || aData;
 
     let subj = JSON.parse(JSON.stringify(aSubject, cycleBreaker));
     let data = JSON.parse(JSON.stringify(aData,    cycleBreaker));
@@ -239,7 +236,6 @@ ProfilerActor.prototype.requestTypes = {
   "getProfileStr": ProfilerActor.prototype.onGetProfileStr,
   "getProfile": ProfilerActor.prototype.onGetProfile,
   "isActive": ProfilerActor.prototype.onIsActive,
-  "getResponsivenessTimes": ProfilerActor.prototype.onGetResponsivenessTimes,
   "getFeatures": ProfilerActor.prototype.onGetFeatures,
   "getSharedLibraryInformation": ProfilerActor.prototype.onGetSharedLibraryInformation,
   "registerEventNotifications": ProfilerActor.prototype.onRegisterEventNotifications,

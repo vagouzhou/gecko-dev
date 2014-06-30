@@ -40,7 +40,6 @@
 #include "nsNetUtil.h"
 #include "nsIProgressEventSink.h"
 #include "nsIDocument.h"
-#include "nsHashtable.h"
 #include "nsPluginLogging.h"
 #include "nsIScriptChannel.h"
 #include "nsIBlocklistService.h"
@@ -126,6 +125,11 @@ static const char *kPrefWhitelist = "plugin.allowed_types";
 static const char *kPrefDisableFullPage = "plugin.disable_full_page_plugin_for_types";
 static const char *kPrefJavaMIME = "plugin.java.mime";
 
+// How long we wait before unloading an idle plugin process.
+// Defaults to 30 seconds.
+static const char *kPrefUnloadPluginTimeoutSecs = "dom.ipc.plugins.unloadTimeoutSecs";
+static const uint32_t kDefaultPluginUnloadingTimeout = 30;
+
 // Version of cached plugin info
 // 0.01 first implementation
 // 0.02 added caching of CanUnload to fix bug 105935
@@ -143,8 +147,9 @@ static const char *kPrefJavaMIME = "plugin.java.mime";
 // 0.14 force refresh due to locale comparison fix, bug 611296
 // 0.15 force refresh due to bug in reading Java plist MIME data, bug 638171
 // 0.16 version bump to avoid importing the plugin flags in newer versions
+// 0.17 added flag on whether plugin is loaded from an XPI
 // The current plugin registry version (and the maximum version we know how to read)
-static const char *kPluginRegistryVersion = "0.16";
+static const char *kPluginRegistryVersion = "0.17";
 // The minimum registry version we know how to read
 static const char *kMinimumRegistryVersion = "0.9";
 
@@ -226,7 +231,7 @@ bool ReadSectionHeader(nsPluginManifestLineReader& reader, const char *token)
 
 static bool UnloadPluginsASAP()
 {
-  return Preferences::GetBool("dom.ipc.plugins.unloadASAP", false);
+  return (Preferences::GetUint(kPrefUnloadPluginTimeoutSecs, kDefaultPluginUnloadingTimeout) == 0);
 }
 
 nsPluginHost::nsPluginHost()
@@ -277,11 +282,11 @@ nsPluginHost::~nsPluginHost()
   sInst = nullptr;
 }
 
-NS_IMPL_ISUPPORTS4(nsPluginHost,
-                   nsIPluginHost,
-                   nsIObserver,
-                   nsITimerCallback,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsPluginHost,
+                  nsIPluginHost,
+                  nsIObserver,
+                  nsITimerCallback,
+                  nsISupportsWeakReference)
 
 already_AddRefed<nsPluginHost>
 nsPluginHost::GetInst()
@@ -714,10 +719,10 @@ void nsPluginHost::OnPluginInstanceDestroyed(nsPluginTag* aPluginTag)
   // Another reason not to unload immediately is that loading is expensive,
   // and it is better to leave popular plugins loaded.
   //
-  // Our default behavior is to try to unload a plugin three minutes after
-  // its last instance is destroyed. This seems like a reasonable compromise
-  // that allows us to reclaim memory while allowing short state retention
-  // and avoid perf hits for loading popular plugins.
+  // Our default behavior is to try to unload a plugin after a pref-controlled
+  // delay once its last instance is destroyed. This seems like a reasonable
+  // compromise that allows us to reclaim memory while allowing short state
+  // retention and avoid perf hits for loading popular plugins.
   if (!hasInstance) {
     if (UnloadPluginsASAP()) {
       aPluginTag->TryUnloadPlugin(false);
@@ -727,7 +732,11 @@ void nsPluginHost::OnPluginInstanceDestroyed(nsPluginTag* aPluginTag)
       } else {
         aPluginTag->mUnloadTimer = do_CreateInstance(NS_TIMER_CONTRACTID);
       }
-      aPluginTag->mUnloadTimer->InitWithCallback(this, 1000 * 60 * 3, nsITimer::TYPE_ONE_SHOT);
+      uint32_t unloadTimeout = Preferences::GetUint(kPrefUnloadPluginTimeoutSecs,
+                                                    kDefaultPluginUnloadingTimeout);
+      aPluginTag->mUnloadTimer->InitWithCallback(this,
+                                                 1000 * unloadTimeout,
+                                                 nsITimer::TYPE_ONE_SHOT);
     }
   }
 }
@@ -1406,7 +1415,7 @@ nsPluginHost::RegisterPlayPreviewMimeType(const nsACString& mimeType,
   nsAutoCString url(redirectURL);
   if (url.Length() == 0) {
     // using default play preview iframe URL, if redirectURL is not specified
-    url.Assign("data:application/x-moz-playpreview;,");
+    url.AssignLiteral("data:application/x-moz-playpreview;,");
     url.Append(mimeType);
   }
 
@@ -1627,6 +1636,52 @@ int64_t GetPluginLastModifiedTime(const nsCOMPtr<nsIFile>& localfile)
   return fileModTime;
 }
 
+bool
+GetPluginIsFromExtension(const nsCOMPtr<nsIFile>& pluginFile,
+                         const nsCOMArray<nsIFile>& extensionDirs)
+{
+  for (uint32_t i = 0; i < extensionDirs.Length(); ++i) {
+    bool contains;
+    if (NS_FAILED(extensionDirs[i]->Contains(pluginFile, &contains)) || !contains) {
+      continue;
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
+void
+GetExtensionDirectories(nsCOMArray<nsIFile>& dirs)
+{
+  nsCOMPtr<nsIProperties> dirService = do_GetService(NS_DIRECTORY_SERVICE_CONTRACTID);
+  if (!dirService) {
+    return;
+  }
+
+  nsCOMPtr<nsISimpleEnumerator> list;
+  nsresult rv = dirService->Get(XRE_EXTENSIONS_DIR_LIST,
+                                NS_GET_IID(nsISimpleEnumerator),
+                                getter_AddRefs(list));
+  if (NS_FAILED(rv)) {
+    return;
+  }
+
+  bool more;
+  while (NS_SUCCEEDED(list->HasMoreElements(&more)) && more) {
+    nsCOMPtr<nsISupports> next;
+    if (NS_FAILED(list->GetNext(getter_AddRefs(next)))) {
+      break;
+    }
+    nsCOMPtr<nsIFile> file = do_QueryInterface(next);
+    if (file) {
+      file->Normalize();
+      dirs.AppendElement(file);
+    }
+  }
+}
+
 struct CompareFilesByTime
 {
   bool
@@ -1690,6 +1745,9 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
 
   pluginFiles.Sort(CompareFilesByTime());
 
+  nsCOMArray<nsIFile> extensionDirs;
+  GetExtensionDirectories(extensionDirs);
+
   bool warnOutdated = false;
 
   for (int32_t i = (pluginFiles.Length() - 1); i >= 0; i--) {
@@ -1700,7 +1758,8 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
     if (NS_FAILED(rv))
       continue;
 
-    int64_t fileModTime = GetPluginLastModifiedTime(localfile);
+    const int64_t fileModTime = GetPluginLastModifiedTime(localfile);
+    const bool fromExtension = GetPluginIsFromExtension(localfile, extensionDirs);
 
     // Look for it in our cache
     NS_ConvertUTF16toUTF8 filePath(utf16FilePath);
@@ -1781,7 +1840,7 @@ nsresult nsPluginHost::ScanPluginsDirectory(nsIFile *pluginsDir,
         continue;
       }
 
-      pluginTag = new nsPluginTag(&info, fileModTime);
+      pluginTag = new nsPluginTag(&info, fileModTime, fromExtension);
       pluginFile.FreePluginInfo(info);
       if (!pluginTag)
         return NS_ERROR_OUT_OF_MEMORY;
@@ -2222,7 +2281,7 @@ nsPluginHost::WritePluginInfo()
     return rv;
 
   nsAutoCString filename(kPluginRegistryFilename);
-  filename.Append(".tmp");
+  filename.AppendLiteral(".tmp");
   rv = pluginReg->AppendNative(filename);
   if (NS_FAILED(rv))
     return rv;
@@ -2272,13 +2331,15 @@ nsPluginHost::WritePluginInfo()
       PLUGIN_REGISTRY_FIELD_DELIMITER,
       PLUGIN_REGISTRY_END_OF_LINE_MARKER);
 
-    // lastModifiedTimeStamp|canUnload|tag->mFlags
-    PR_fprintf(fd, "%lld%c%d%c%lu%c%c\n",
+    // lastModifiedTimeStamp|canUnload|tag->mFlags|fromExtension
+    PR_fprintf(fd, "%lld%c%d%c%lu%c%d%c%c\n",
       tag->mLastModifiedTime,
       PLUGIN_REGISTRY_FIELD_DELIMITER,
       false, // did store whether or not to unload in-process plugins
       PLUGIN_REGISTRY_FIELD_DELIMITER,
       0, // legacy field for flags
+      PLUGIN_REGISTRY_FIELD_DELIMITER,
+      tag->IsFromExtension(),
       PLUGIN_REGISTRY_FIELD_DELIMITER,
       PLUGIN_REGISTRY_END_OF_LINE_MARKER);
 
@@ -2486,19 +2547,22 @@ nsPluginHost::ReadPluginInfo()
   }
 
   // Registry v0.13 and upwards includes the list of invalid plugins
-  bool hasInvalidPlugins = (version >= "0.13");
+  const bool hasInvalidPlugins = (version >= "0.13");
 
   // Registry v0.16 and upwards always have 0 for their plugin flags, prefs are used instead
   const bool hasValidFlags = (version < "0.16");
 
-  if (!ReadSectionHeader(reader, "PLUGINS"))
-    return rv;
+  // Registry v0.17 and upwards store whether the plugin comes from an XPI.
+  const bool hasFromExtension = (version >= "0.17");
 
 #if defined(XP_MACOSX)
-  bool hasFullPathInFileNameField = false;
+  const bool hasFullPathInFileNameField = false;
 #else
-  bool hasFullPathInFileNameField = (version < "0.11");
+  const bool hasFullPathInFileNameField = (version < "0.11");
 #endif
+
+  if (!ReadSectionHeader(reader, "PLUGINS"))
+    return rv;
 
   while (reader.NextLine()) {
     const char *filename;
@@ -2545,13 +2609,18 @@ nsPluginHost::ReadPluginInfo()
       version = "0";
     }
 
-    // lastModifiedTimeStamp|canUnload|tag.mFlag
-    if (reader.ParseLine(values, 3) != 3)
+    // lastModifiedTimeStamp|canUnload|tag.mFlag|fromExtension
+    const int count = hasFromExtension ? 4 : 3;
+    if (reader.ParseLine(values, count) != count)
       return rv;
 
     // If this is an old plugin registry mark this plugin tag to be refreshed
     int64_t lastmod = (vdiff == 0) ? nsCRT::atoll(values[0]) : -1;
     uint32_t tagflag = atoi(values[2]);
+    bool fromExtension = false;
+    if (hasFromExtension) {
+      fromExtension = atoi(values[3]);
+    }
     if (!reader.NextLine())
       return rv;
 
@@ -2622,7 +2691,7 @@ nsPluginHost::ReadPluginInfo()
       (const char* const*)mimetypes,
       (const char* const*)mimedescriptions,
       (const char* const*)extensions,
-      mimetypecount, lastmod, true);
+      mimetypecount, lastmod, fromExtension, true);
     if (heapalloced)
       delete [] heapalloced;
 

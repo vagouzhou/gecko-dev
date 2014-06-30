@@ -19,12 +19,12 @@
 #include "nsIDOMHTMLObjectElement.h"
 #include "nsIDOMHTMLAppletElement.h"
 #include "nsIExternalProtocolHandler.h"
-#include "nsEventStates.h"
 #include "nsIObjectFrame.h"
 #include "nsIPermissionManager.h"
 #include "nsPluginHost.h"
 #include "nsPluginInstanceOwner.h"
 #include "nsJSNPRuntime.h"
+#include "nsINestedURI.h"
 #include "nsIPresShell.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsScriptSecurityManager.h"
@@ -81,6 +81,7 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/Telemetry.h"
 
 #ifdef XP_WIN
@@ -395,7 +396,7 @@ private:
   nsCOMPtr<nsIObjectLoadingContent> mContent;
 };
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsStopPluginRunnable, nsRunnable, nsITimerCallback)
+NS_IMPL_ISUPPORTS_INHERITED(nsStopPluginRunnable, nsRunnable, nsITimerCallback)
 
 NS_IMETHODIMP
 nsStopPluginRunnable::Notify(nsITimer *aTimer)
@@ -919,7 +920,8 @@ NS_IMETHODIMP
 nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
                                        nsISupports *aContext)
 {
-  PROFILER_LABEL("nsObjectLoadingContent", "OnStartRequest");
+  PROFILER_LABEL("nsObjectLoadingContent", "OnStartRequest",
+    js::ProfileEntry::Category::NETWORK);
 
   LOG(("OBJLC [%p]: Channel OnStartRequest", this));
 
@@ -981,6 +983,9 @@ nsObjectLoadingContent::OnStopRequest(nsIRequest *aRequest,
                                       nsISupports *aContext,
                                       nsresult aStatusCode)
 {
+  PROFILER_LABEL("nsObjectLoadingContent", "OnStopRequest",
+    js::ProfileEntry::Category::NETWORK);
+
   NS_ENSURE_TRUE(nsContentUtils::IsCallerChrome(), NS_ERROR_NOT_AVAILABLE);
 
   if (aRequest != mChannel) {
@@ -1154,10 +1159,11 @@ public:
   {}
 
 protected:
+  ~ObjectInterfaceRequestorShim() {}
   nsCOMPtr<nsIObjectLoadingContent> mContent;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(ObjectInterfaceRequestorShim, mContent)
+NS_IMPL_CYCLE_COLLECTION(ObjectInterfaceRequestorShim, mContent)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(ObjectInterfaceRequestorShim)
   NS_INTERFACE_MAP_ENTRY(nsIInterfaceRequestor)
@@ -1201,7 +1207,7 @@ nsObjectLoadingContent::AsyncOnChannelRedirect(nsIChannel *aOldChannel,
 }
 
 // <public>
-nsEventStates
+EventStates
 nsObjectLoadingContent::ObjectState() const
 {
   switch (mType) {
@@ -1214,7 +1220,7 @@ nsObjectLoadingContent::ObjectState() const
       // These are OK. If documents start to load successfully, they display
       // something, and are thus not broken in this sense. The same goes for
       // plugins.
-      return nsEventStates();
+      return EventStates();
     case eType_Null:
       switch (mFallbackType) {
         case eFallbackSuppressed:
@@ -1531,14 +1537,14 @@ nsObjectLoadingContent::UpdateObjectParameters(bool aJavaURI)
 
   if (isJava && hasCodebase && codebaseStr.IsEmpty()) {
     // Java treats codebase="" as "/"
-    codebaseStr.AssignLiteral("/");
+    codebaseStr.Assign('/');
     // XXX(johns): This doesn't cover the case of "https:" which java would
     //             interpret as "https:///" but we interpret as this document's
     //             URI but with a changed scheme.
   } else if (isJava && !hasCodebase) {
     // Java expects a directory as the codebase, or else it will construct
     // relative URIs incorrectly :(
-    codebaseStr.AssignLiteral(".");
+    codebaseStr.Assign('.');
   }
 
   if (!codebaseStr.IsEmpty()) {
@@ -1904,7 +1910,7 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
   }
 
   // Save these for NotifyStateChanged();
-  nsEventStates oldState = ObjectState();
+  EventStates oldState = ObjectState();
   ObjectType oldType = mType;
 
   ParameterUpdateFlags stateChange = UpdateObjectParameters();
@@ -2022,6 +2028,31 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
       } else {
         fallbackType = eFallbackSuppressed;
       }
+    }
+  }
+
+  // Don't allow view-source scheme.
+  // view-source is the only scheme to which this applies at the moment due to
+  // potential timing attacks to read data from cross-origin documents. If this
+  // widens we should add a protocol flag for whether the scheme is only allowed
+  // in top and use something like nsNetUtil::NS_URIChainHasFlags.
+  if (mType != eType_Null) {
+    nsCOMPtr<nsIURI> tempURI = mURI;
+    nsCOMPtr<nsINestedURI> nestedURI = do_QueryInterface(tempURI);
+    while (nestedURI) {
+      // view-source should always be an nsINestedURI, loop and check the
+      // scheme on this and all inner URIs that are also nested URIs.
+      bool isViewSource = false;
+      rv = tempURI->SchemeIs("view-source", &isViewSource);
+      if (NS_FAILED(rv) || isViewSource) {
+        LOG(("OBJLC [%p]: Blocking as effective URI has view-source scheme",
+             this));
+        mType = eType_Null;
+        break;
+      }
+
+      nestedURI->GetInnerURI(getter_AddRefs(tempURI));
+      nestedURI = do_QueryInterface(tempURI);
     }
   }
 
@@ -2323,6 +2354,12 @@ nsObjectLoadingContent::OpenChannel()
   nsCOMPtr<nsIHttpChannel> httpChan(do_QueryInterface(chan));
   if (httpChan) {
     httpChan->SetReferrer(doc->GetDocumentURI());
+
+    // Set the initiator type
+    nsCOMPtr<nsITimedChannel> timedChannel(do_QueryInterface(httpChan));
+    if (timedChannel) {
+      timedChannel->SetInitiatorType(thisContent->LocalName());
+    }
   }
 
   // Set up the channel's principal and such, like nsDocShell::DoURILoad does.
@@ -2427,7 +2464,7 @@ nsObjectLoadingContent::UnloadObject(bool aResetState)
 
 void
 nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
-                                           nsEventStates aOldState,
+                                           EventStates aOldState,
                                            bool aSync,
                                            bool aNotify)
 {
@@ -2458,12 +2495,12 @@ nsObjectLoadingContent::NotifyStateChanged(ObjectType aOldType,
     return; // Nothing to do
   }
 
-  nsEventStates newState = ObjectState();
+  EventStates newState = ObjectState();
 
   if (newState != aOldState) {
     // This will trigger frame construction
     NS_ASSERTION(InActiveDocument(thisContent), "Something is confused");
-    nsEventStates changedBits = aOldState ^ newState;
+    EventStates changedBits = aOldState ^ newState;
 
     {
       nsAutoScriptBlocker scriptBlocker;
@@ -2614,7 +2651,7 @@ nsObjectLoadingContent::ScriptRequestPluginInstance(JSContext* aCx,
   MOZ_ASSERT_IF(nsContentUtils::GetCurrentJSContext(),
                 aCx == nsContentUtils::GetCurrentJSContext());
   bool callerIsContentJS = (!nsContentUtils::IsCallerChrome() &&
-                            !nsContentUtils::IsCallerXBL() &&
+                            !nsContentUtils::IsCallerContentXBL() &&
                             js::IsContextRunningJS(aCx));
 
   nsCOMPtr<nsIContent> thisContent =
@@ -2731,7 +2768,7 @@ DoDelayedStop(nsPluginInstanceOwner* aInstanceOwner,
 
 void
 nsObjectLoadingContent::LoadFallback(FallbackType aType, bool aNotify) {
-  nsEventStates oldState = ObjectState();
+  EventStates oldState = ObjectState();
   ObjectType oldType = mType;
 
   NS_ASSERTION(!mInstanceOwner && !mFrameLoader && !mChannel,
@@ -3089,8 +3126,8 @@ nsObjectLoadingContent::ShouldPlay(FallbackType &aReason, bool aIgnoreCurrentTyp
   NS_ENSURE_SUCCESS(rv, false);
   nsCOMPtr<nsIDocument> topDoc = do_QueryInterface(topDocument);
 
-  nsCOMPtr<nsIPermissionManager> permissionManager = do_GetService(NS_PERMISSIONMANAGER_CONTRACTID, &rv);
-  NS_ENSURE_SUCCESS(rv, false);
+  nsCOMPtr<nsIPermissionManager> permissionManager = services::GetPermissionManager();
+  NS_ENSURE_TRUE(permissionManager, false);
 
   // For now we always say that the system principal uses click-to-play since
   // that maintains current behavior and we have tests that expect this.
@@ -3161,17 +3198,18 @@ nsObjectLoadingContent::GetContentDocument()
   }
 
   // Return null for cross-origin contentDocument.
-  if (!nsContentUtils::GetSubjectPrincipal()->SubsumesConsideringDomain(sub_doc->NodePrincipal())) {
+  if (!nsContentUtils::SubjectPrincipal()->SubsumesConsideringDomain(sub_doc->NodePrincipal())) {
     return nullptr;
   }
 
   return sub_doc;
 }
 
-JS::Value
+void
 nsObjectLoadingContent::LegacyCall(JSContext* aCx,
                                    JS::Handle<JS::Value> aThisVal,
                                    const Sequence<JS::Value>& aArguments,
+                                   JS::MutableHandle<JS::Value> aRetval,
                                    ErrorResult& aRv)
 {
   nsCOMPtr<nsIContent> thisContent =
@@ -3185,12 +3223,12 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   // this is not an Xray situation by hand.
   if (!JS_WrapObject(aCx, &obj)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
-    return JS::UndefinedValue();
+    return;
   }
 
   if (nsDOMClassInfo::ObjectIsNativeWrapper(aCx, obj)) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
   obj = thisContent->GetWrapper();
@@ -3199,33 +3237,33 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   JS::AutoValueVector args(aCx);
   if (!args.append(aArguments.Elements(), aArguments.Length())) {
     aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-    return JS::UndefinedValue();
+    return;
   }
 
   for (size_t i = 0; i < args.length(); i++) {
-    if (!JS_WrapValue(aCx, args.handleAt(i))) {
+    if (!JS_WrapValue(aCx, args[i])) {
       aRv.Throw(NS_ERROR_UNEXPECTED);
-      return JS::UndefinedValue();
+      return;
     }
   }
 
   JS::Rooted<JS::Value> thisVal(aCx, aThisVal);
   if (!JS_WrapValue(aCx, &thisVal)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
-    return JS::UndefinedValue();
+    return;
   }
 
   nsRefPtr<nsNPAPIPluginInstance> pi;
   nsresult rv = ScriptRequestPluginInstance(aCx, getter_AddRefs(pi));
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    return JS::UndefinedValue();
+    return;
   }
 
   // if there's no plugin around for this object, throw.
   if (!pi) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
   JS::Rooted<JSObject*> pi_obj(aCx);
@@ -3234,23 +3272,21 @@ nsObjectLoadingContent::LegacyCall(JSContext* aCx,
   rv = GetPluginJSObject(aCx, obj, pi, &pi_obj, &pi_proto);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    return JS::UndefinedValue();
+    return;
   }
 
   if (!pi_obj) {
     aRv.Throw(NS_ERROR_NOT_AVAILABLE);
-    return JS::UndefinedValue();
+    return;
   }
 
-  JS::Rooted<JS::Value> retval(aCx);
-  bool ok = JS::Call(aCx, thisVal, pi_obj, args, &retval);
+  bool ok = JS::Call(aCx, thisVal, pi_obj, args, aRetval);
   if (!ok) {
     aRv.Throw(NS_ERROR_FAILURE);
-    return JS::UndefinedValue();
+    return;
   }
 
   Telemetry::Accumulate(Telemetry::PLUGIN_CALLED_DIRECTLY, true);
-  return retval;
 }
 
 void
@@ -3485,6 +3521,10 @@ nsObjectLoadingContent::SetupProtoChainRunner::SetupProtoChainRunner(
 {
 }
 
+nsObjectLoadingContent::SetupProtoChainRunner::~SetupProtoChainRunner()
+{
+}
+
 NS_IMETHODIMP
 nsObjectLoadingContent::SetupProtoChainRunner::Run()
 {
@@ -3508,5 +3548,5 @@ nsObjectLoadingContent::SetupProtoChainRunner::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsObjectLoadingContent::SetupProtoChainRunner, nsIRunnable)
+NS_IMPL_ISUPPORTS(nsObjectLoadingContent::SetupProtoChainRunner, nsIRunnable)
 

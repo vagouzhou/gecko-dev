@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -93,7 +93,8 @@ const ACTIVITY_TYPE = {
   // Forcing the target to reload with cache enabled or disabled.
   RELOAD: {
     WITH_CACHE_ENABLED: 1,
-    WITH_CACHE_DISABLED: 2
+    WITH_CACHE_DISABLED: 2,
+    WITH_CACHE_DEFAULT: 3
   },
 
   // Enabling or disabling the cache without triggering a reload.
@@ -117,6 +118,12 @@ const {Tooltip} = require("devtools/shared/widgets/Tooltip");
 XPCOMUtils.defineLazyModuleGetter(this, "Chart",
   "resource:///modules/devtools/Chart.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "Curl",
+  "resource:///modules/devtools/Curl.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "CurlUtils",
+  "resource:///modules/devtools/Curl.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "Task",
   "resource://gre/modules/Task.jsm");
 
@@ -126,22 +133,16 @@ XPCOMUtils.defineLazyModuleGetter(this, "PluralForm",
 XPCOMUtils.defineLazyModuleGetter(this, "DevToolsUtils",
   "resource://gre/modules/devtools/DevToolsUtils.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "devtools",
-  "resource://gre/modules/devtools/Loader.jsm");
+XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
+  "@mozilla.org/widget/clipboardhelper;1", "nsIClipboardHelper");
 
 Object.defineProperty(this, "NetworkHelper", {
   get: function() {
-    return devtools.require("devtools/toolkit/webconsole/network-helper");
+    return require("devtools/toolkit/webconsole/network-helper");
   },
   configurable: true,
   enumerable: true
 });
-
-XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
-  "@mozilla.org/widget/clipboardhelper;1", "nsIClipboardHelper");
-
-XPCOMUtils.defineLazyModuleGetter(this, "Curl",
-  "resource:///modules/devtools/Curl.jsm");
 
 /**
  * Object defining the network monitor controller components.
@@ -191,7 +192,7 @@ let NetMonitorController = {
    * @return object
    *         A promise that is resolved when the monitor finishes connecting.
    */
-  connect: function() {
+  connect: Task.async(function*() {
     if (this._connection) {
       return this._connection;
     }
@@ -207,11 +208,9 @@ let NetMonitorController = {
       this._startMonitoringTab(client, form, deferred.resolve);
     }
 
-    return deferred.promise.then((result) => {
-      window.emit(EVENTS.CONNECTED);
-      return result;
-    });
-  },
+    yield deferred.promise;
+    window.emit(EVENTS.CONNECTED);
+  }),
 
   /**
    * Disconnects the debugger client and removes event handlers as necessary.
@@ -223,6 +222,14 @@ let NetMonitorController = {
     this.client = null;
     this.tabClient = null;
     this.webConsoleClient = null;
+  },
+
+  /**
+   * Checks whether the netmonitor connection is active.
+   * @return boolean
+   */
+  isConnected: function() {
+    return !!this.client;
   },
 
   /**
@@ -349,7 +356,9 @@ let NetMonitorController = {
       let navigationFinished = waitForNavigation();
       return reconfigureTab(aOptions).then(() => navigationFinished);
     }
-
+    if (aType == ACTIVITY_TYPE.RELOAD.WITH_CACHE_DEFAULT) {
+      return reconfigureTabAndWaitForNavigation({}).then(standBy);
+    }
     if (aType == ACTIVITY_TYPE.RELOAD.WITH_CACHE_ENABLED) {
       this._currentActivity = ACTIVITY_TYPE.ENABLE_CACHE;
       this._target.once("will-navigate", () => this._currentActivity = aType);
@@ -447,9 +456,10 @@ TargetEventsHandler.prototype = {
     switch (aType) {
       case "will-navigate": {
         // Reset UI.
-        NetMonitorView.RequestsMenu.reset();
-        NetMonitorView.Sidebar.toggle(false);
-
+        if (!Services.prefs.getBoolPref("devtools.webconsole.persistlog")) {
+          NetMonitorView.RequestsMenu.reset();
+          NetMonitorView.Sidebar.toggle(false);
+        }
         // Switch to the default network traffic inspector view.
         if (NetMonitorController.getCurrentActivity() == ACTIVITY_TYPE.NONE) {
           NetMonitorView.showNetworkInspectorView();
@@ -529,7 +539,7 @@ NetworkEventsHandler.prototype = {
 
     let { actor, startedDateTime, method, url, isXHR } = aPacket.eventActor;
     NetMonitorView.RequestsMenu.addRequest(actor, startedDateTime, method, url, isXHR);
-    window.emit(EVENTS.NETWORK_EVENT);
+    window.emit(EVENTS.NETWORK_EVENT, actor);
   },
 
   /**
@@ -550,23 +560,23 @@ NetworkEventsHandler.prototype = {
     switch (aPacket.updateType) {
       case "requestHeaders":
         this.webConsoleClient.getRequestHeaders(actor, this._onRequestHeaders);
-        window.emit(EVENTS.UPDATING_REQUEST_HEADERS);
+        window.emit(EVENTS.UPDATING_REQUEST_HEADERS, actor);
         break;
       case "requestCookies":
         this.webConsoleClient.getRequestCookies(actor, this._onRequestCookies);
-        window.emit(EVENTS.UPDATING_REQUEST_COOKIES);
+        window.emit(EVENTS.UPDATING_REQUEST_COOKIES, actor);
         break;
       case "requestPostData":
         this.webConsoleClient.getRequestPostData(actor, this._onRequestPostData);
-        window.emit(EVENTS.UPDATING_REQUEST_POST_DATA);
+        window.emit(EVENTS.UPDATING_REQUEST_POST_DATA, actor);
         break;
       case "responseHeaders":
         this.webConsoleClient.getResponseHeaders(actor, this._onResponseHeaders);
-        window.emit(EVENTS.UPDATING_RESPONSE_HEADERS);
+        window.emit(EVENTS.UPDATING_RESPONSE_HEADERS, actor);
         break;
       case "responseCookies":
         this.webConsoleClient.getResponseCookies(actor, this._onResponseCookies);
-        window.emit(EVENTS.UPDATING_RESPONSE_COOKIES);
+        window.emit(EVENTS.UPDATING_RESPONSE_COOKIES, actor);
         break;
       case "responseStart":
         NetMonitorView.RequestsMenu.updateRequest(aPacket.from, {
@@ -575,7 +585,7 @@ NetworkEventsHandler.prototype = {
           statusText: aPacket.response.statusText,
           headersSize: aPacket.response.headersSize
         });
-        window.emit(EVENTS.STARTED_RECEIVING_RESPONSE);
+        window.emit(EVENTS.STARTED_RECEIVING_RESPONSE, actor);
         break;
       case "responseContent":
         NetMonitorView.RequestsMenu.updateRequest(aPacket.from, {
@@ -583,14 +593,14 @@ NetworkEventsHandler.prototype = {
           mimeType: aPacket.mimeType
         });
         this.webConsoleClient.getResponseContent(actor, this._onResponseContent);
-        window.emit(EVENTS.UPDATING_RESPONSE_CONTENT);
+        window.emit(EVENTS.UPDATING_RESPONSE_CONTENT, actor);
         break;
       case "eventTimings":
         NetMonitorView.RequestsMenu.updateRequest(aPacket.from, {
           totalTime: aPacket.totalTime
         });
         this.webConsoleClient.getEventTimings(actor, this._onEventTimings);
-        window.emit(EVENTS.UPDATING_EVENT_TIMINGS);
+        window.emit(EVENTS.UPDATING_EVENT_TIMINGS, actor);
         break;
     }
   },
@@ -605,7 +615,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       requestHeaders: aResponse
     });
-    window.emit(EVENTS.RECEIVED_REQUEST_HEADERS);
+    window.emit(EVENTS.RECEIVED_REQUEST_HEADERS, aResponse.from);
   },
 
   /**
@@ -618,7 +628,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       requestCookies: aResponse
     });
-    window.emit(EVENTS.RECEIVED_REQUEST_COOKIES);
+    window.emit(EVENTS.RECEIVED_REQUEST_COOKIES, aResponse.from);
   },
 
   /**
@@ -631,7 +641,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       requestPostData: aResponse
     });
-    window.emit(EVENTS.RECEIVED_REQUEST_POST_DATA);
+    window.emit(EVENTS.RECEIVED_REQUEST_POST_DATA, aResponse.from);
   },
 
   /**
@@ -644,7 +654,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       responseHeaders: aResponse
     });
-    window.emit(EVENTS.RECEIVED_RESPONSE_HEADERS);
+    window.emit(EVENTS.RECEIVED_RESPONSE_HEADERS, aResponse.from);
   },
 
   /**
@@ -657,7 +667,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       responseCookies: aResponse
     });
-    window.emit(EVENTS.RECEIVED_RESPONSE_COOKIES);
+    window.emit(EVENTS.RECEIVED_RESPONSE_COOKIES, aResponse.from);
   },
 
   /**
@@ -670,7 +680,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       responseContent: aResponse
     });
-    window.emit(EVENTS.RECEIVED_RESPONSE_CONTENT);
+    window.emit(EVENTS.RECEIVED_RESPONSE_CONTENT, aResponse.from);
   },
 
   /**
@@ -683,7 +693,7 @@ NetworkEventsHandler.prototype = {
     NetMonitorView.RequestsMenu.updateRequest(aResponse.from, {
       eventTimings: aResponse
     });
-    window.emit(EVENTS.RECEIVED_EVENT_TIMINGS);
+    window.emit(EVENTS.RECEIVED_EVENT_TIMINGS, aResponse.from);
   },
 
   /**

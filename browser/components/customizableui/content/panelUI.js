@@ -49,6 +49,7 @@ const PanelUI = {
     this.menuButton.addEventListener("keypress", this);
     this._overlayScrollListenerBoundFn = this._overlayScrollListener.bind(this);
     window.matchMedia("(-moz-overlay-scrollbars)").addListener(this._overlayScrollListenerBoundFn);
+    CustomizableUI.addListener(this);
     this._initialized = true;
   },
 
@@ -69,10 +70,6 @@ const PanelUI = {
   },
 
   uninit: function() {
-    if (!this._eventListenersAdded) {
-      return;
-    }
-
     for (let event of this.kEvents) {
       this.panel.removeEventListener(event, this);
     }
@@ -80,6 +77,7 @@ const PanelUI = {
     this.menuButton.removeEventListener("mousedown", this);
     this.menuButton.removeEventListener("keypress", this);
     window.matchMedia("(-moz-overlay-scrollbars)").removeListener(this._overlayScrollListenerBoundFn);
+    CustomizableUI.removeListener(this);
     this._overlayScrollListenerBoundFn = null;
   },
 
@@ -151,10 +149,6 @@ const PanelUI = {
       } else {
         anchor = aEvent.target;
       }
-      let iconAnchor =
-        document.getAnonymousElementByAttribute(anchor, "class",
-                                                "toolbarbutton-icon");
-      this.panel.openPopup(iconAnchor || anchor);
 
       this.panel.addEventListener("popupshown", function onPopupShown() {
         this.removeEventListener("popupshown", onPopupShown);
@@ -164,6 +158,11 @@ const PanelUI = {
         gCustomizationTabPreloader.ensurePreloading();
         deferred.resolve();
       });
+
+      let iconAnchor =
+        document.getAnonymousElementByAttribute(anchor, "class",
+                                                "toolbarbutton-icon");
+      this.panel.openPopup(iconAnchor || anchor);
     });
 
     return deferred.promise;
@@ -183,6 +182,7 @@ const PanelUI = {
   handleEvent: function(aEvent) {
     switch (aEvent.type) {
       case "popupshowing":
+        this._adjustLabelsForAutoHyphens();
         // Fall through
       case "popupshown":
         // Fall through
@@ -199,6 +199,10 @@ const PanelUI = {
         this.toggle(aEvent);
         break;
     }
+  },
+
+  get isReady() {
+    return !!this._isReady;
   },
 
   /**
@@ -264,6 +268,7 @@ const PanelUI = {
       }
       this._updateQuitTooltip();
       this.panel.hidden = false;
+      this._isReady = true;
     }.bind(this)).then(null, Cu.reportError);
 
     return this._readyPromise;
@@ -324,6 +329,9 @@ const PanelUI = {
       tempPanel.setAttribute("type", "arrow");
       tempPanel.setAttribute("id", "customizationui-widget-panel");
       tempPanel.setAttribute("class", "cui-widget-panel");
+      if (this._disableAnimations) {
+        tempPanel.setAttribute("animate", "false");
+      }
       tempPanel.setAttribute("context", "");
       document.getElementById(CustomizableUI.AREA_NAVBAR).appendChild(tempPanel);
       // If the view has a footer, set a convenience class on the panel.
@@ -360,14 +368,36 @@ const PanelUI = {
   },
 
   /**
-   * Open a dialog window that allow the user to customize listed character sets.
+   * NB: The enable- and disableSingleSubviewPanelAnimations methods only
+   * affect the hiding/showing animations of single-subview panels (tempPanel
+   * in the showSubView method).
    */
-  onCharsetCustomizeCommand: function() {
-    this.hide();
-    window.openDialog("chrome://global/content/customizeCharset.xul",
-                      "PrefWindow",
-                      "chrome,modal=yes,resizable=yes",
-                      "browser");
+  disableSingleSubviewPanelAnimations: function() {
+    this._disableAnimations = true;
+  },
+
+  enableSingleSubviewPanelAnimations: function() {
+    this._disableAnimations = false;
+  },
+
+  onWidgetAfterDOMChange: function(aNode, aNextNode, aContainer, aWasRemoval) {
+    if (aContainer != this.contents) {
+      return;
+    }
+    if (aWasRemoval) {
+      aNode.removeAttribute("auto-hyphens");
+    }
+  },
+
+  onWidgetBeforeDOMChange: function(aNode, aNextNode, aContainer, aIsRemoval) {
+    if (aContainer != this.contents) {
+      return;
+    }
+    if (!aIsRemoval &&
+        (this.panel.state == "open" ||
+         document.documentElement.hasAttribute("customizing"))) {
+      this._adjustLabelsForAutoHyphens(aNode);
+    }
   },
 
   /** 
@@ -387,6 +417,22 @@ const PanelUI = {
   endBatchUpdate: function(aReason) {
     this._ensureEventListenersAdded();
     this.multiView.ignoreMutations = false;
+  },
+
+  _adjustLabelsForAutoHyphens: function(aNode) {
+    let toolbarButtons = aNode ? [aNode] :
+                                 this.contents.querySelectorAll(".toolbarbutton-1");
+    for (let node of toolbarButtons) {
+      let label = node.getAttribute("label");
+      if (!label) {
+        continue;
+      }
+      if (label.contains("\u00ad")) {
+        node.setAttribute("auto-hyphens", "off");
+      } else {
+        node.removeAttribute("auto-hyphens");
+      }
+    }
   },
 
   /**

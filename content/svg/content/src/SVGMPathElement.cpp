@@ -19,9 +19,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGMPathElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGMPathElement::WrapNode(JSContext *aCx)
 {
-  return SVGMPathElementBinding::Wrap(aCx, aScope, this);
+  return SVGMPathElementBinding::Wrap(aCx, this);
 }
 
 nsSVGElement::StringInfo SVGMPathElement::sStringInfo[1] =
@@ -49,13 +49,13 @@ NS_IMPL_ADDREF_INHERITED(SVGMPathElement,SVGMPathElementBase)
 NS_IMPL_RELEASE_INHERITED(SVGMPathElement,SVGMPathElementBase)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGMPathElement)
-  NS_INTERFACE_TABLE_INHERITED4(SVGMPathElement, nsIDOMNode, nsIDOMElement,
-                                nsIDOMSVGElement,
-                                nsIMutationObserver)
+  NS_INTERFACE_TABLE_INHERITED(SVGMPathElement, nsIDOMNode, nsIDOMElement,
+                               nsIDOMSVGElement,
+                               nsIMutationObserver)
 NS_INTERFACE_TABLE_TAIL_INHERITING(SVGMPathElementBase)
 
 // Constructor
-SVGMPathElement::SVGMPathElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+SVGMPathElement::SVGMPathElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : SVGMPathElementBase(aNodeInfo),
     mHrefTarget(MOZ_THIS_IN_INITIALIZER_LIST())
 {

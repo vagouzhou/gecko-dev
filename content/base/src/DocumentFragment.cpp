@@ -9,7 +9,7 @@
 
 #include "mozilla/dom/DocumentFragment.h"
 #include "mozilla/dom/Element.h" // for NS_IMPL_ELEMENT_CLONE
-#include "nsINodeInfo.h"
+#include "mozilla/dom/NodeInfo.h"
 #include "nsNodeInfoManager.h"
 #include "nsError.h"
 #include "nsGkAtoms.h"
@@ -18,32 +18,21 @@
 #include "mozilla/dom/DocumentFragmentBinding.h"
 #include "nsPIDOMWindow.h"
 #include "nsIDocument.h"
+#include "mozilla/IntegerPrintfMacros.h"
 
 namespace mozilla {
 namespace dom {
 
 JSObject*
-DocumentFragment::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+DocumentFragment::WrapNode(JSContext *aCx)
 {
-  return DocumentFragmentBinding::Wrap(aCx, aScope, this);
+  return DocumentFragmentBinding::Wrap(aCx, this);
 }
 
 bool
 DocumentFragment::IsNodeOfType(uint32_t aFlags) const
 {
   return !(aFlags & ~(eCONTENT | eDOCUMENT_FRAGMENT));
-}
-
-nsIAtom*
-DocumentFragment::DoGetID() const
-{
-  return nullptr;  
-}
-
-nsIAtom*
-DocumentFragment::GetIDAttributeName() const
-{
-  return nullptr;
 }
 
 NS_IMETHODIMP
@@ -72,7 +61,7 @@ DocumentFragment::List(FILE* out, int32_t aIndent) const
   fprintf(out, "DocumentFragment@%p", (void *)this);
 
   fprintf(out, " flags=[%08x]", static_cast<unsigned int>(GetFlags()));
-  fprintf(out, " refcount=%d<", mRefCnt.get());
+  fprintf(out, " refcount=%" PRIuPTR "<", mRefCnt.get());
 
   nsIContent* child = GetFirstChild();
   if (child) {

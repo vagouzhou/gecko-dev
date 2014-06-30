@@ -18,9 +18,6 @@ class BluetoothNamedValue;
 class BluetoothValue;
 class BluetoothReplyRunnable;
 
-const bt_interface_t*
-GetBluetoothInterface();
-
 void
 StringToBdAddressType(const nsAString& aBdAddress,
                       bt_bdaddr_t *aRetBdAddressType);
@@ -29,6 +26,9 @@ void
 BdAddressTypeToString(bt_bdaddr_t* aBdAddressType,
                       nsAString& aRetBdAddress);
 
+uint16_t
+UuidToServiceClassInt(bt_uuid_t* p_uuid);
+
 bool
 SetJsObject(JSContext* aContext,
             const BluetoothValue& aValue,
@@ -36,7 +36,7 @@ SetJsObject(JSContext* aContext,
 
 bool
 BroadcastSystemMessage(const nsAString& aType,
-                       const InfallibleTArray<BluetoothNamedValue>& aData);
+                       const BluetoothValue& aData);
 
 void
 DispatchBluetoothReply(BluetoothReplyRunnable* aRunnable,

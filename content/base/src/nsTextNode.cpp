@@ -16,6 +16,7 @@
 #include "nsIDocument.h"
 #include "nsThreadUtils.h"
 #include "nsStubMutationObserver.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #ifdef DEBUG
 #include "nsRange.h"
 #endif
@@ -32,7 +33,7 @@ class nsAttributeTextNode MOZ_FINAL : public nsTextNode,
 public:
   NS_DECL_ISUPPORTS_INHERITED
   
-  nsAttributeTextNode(already_AddRefed<nsINodeInfo>& aNodeInfo,
+  nsAttributeTextNode(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                       int32_t aNameSpaceID,
                       nsIAtom* aAttrName) :
     nsTextNode(aNodeInfo),
@@ -57,11 +58,11 @@ public:
   NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
   NS_DECL_NSIMUTATIONOBSERVER_NODEWILLBEDESTROYED
 
-  virtual nsGenericDOMDataNode *CloneDataNode(nsINodeInfo *aNodeInfo,
+  virtual nsGenericDOMDataNode *CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo,
                                               bool aCloneText) const
   {
-    already_AddRefed<nsINodeInfo> ni =
-      nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+    already_AddRefed<mozilla::dom::NodeInfo> ni =
+      nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
     nsAttributeTextNode *it = new nsAttributeTextNode(ni,
                                                       mNameSpaceID,
                                                       mAttrName);
@@ -95,13 +96,13 @@ nsTextNode::~nsTextNode()
 {
 }
 
-NS_IMPL_ISUPPORTS_INHERITED3(nsTextNode, nsGenericDOMDataNode, nsIDOMNode,
-                             nsIDOMText, nsIDOMCharacterData)
+NS_IMPL_ISUPPORTS_INHERITED(nsTextNode, nsGenericDOMDataNode, nsIDOMNode,
+                            nsIDOMText, nsIDOMCharacterData)
 
 JSObject*
-nsTextNode::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+nsTextNode::WrapNode(JSContext *aCx)
 {
-  return TextBinding::Wrap(aCx, aScope, this);
+  return TextBinding::Wrap(aCx, this);
 }
 
 bool
@@ -111,9 +112,9 @@ nsTextNode::IsNodeOfType(uint32_t aFlags) const
 }
 
 nsGenericDOMDataNode*
-nsTextNode::CloneDataNode(nsINodeInfo *aNodeInfo, bool aCloneText) const
+nsTextNode::CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo, bool aCloneText) const
 {
-  already_AddRefed<nsINodeInfo> ni = nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
   nsTextNode *it = new nsTextNode(ni);
   if (aCloneText) {
     it->mText = mText;
@@ -169,7 +170,7 @@ nsTextNode::List(FILE* out, int32_t aIndent) const
     fprintf(out, " ranges:%d", ranges ? ranges->Count() : 0);
   }
   fprintf(out, " primaryframe=%p", static_cast<void*>(GetPrimaryFrame()));
-  fprintf(out, " refcount=%d<", mRefCnt.get());
+  fprintf(out, " refcount=%" PRIuPTR "<", mRefCnt.get());
 
   nsAutoString tmp;
   ToCString(tmp, 0, mText.GetLength());
@@ -207,7 +208,7 @@ NS_NewAttributeContent(nsNodeInfoManager *aNodeInfoManager,
   
   *aResult = nullptr;
 
-  already_AddRefed<nsINodeInfo> ni = aNodeInfoManager->GetTextNodeInfo();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = aNodeInfoManager->GetTextNodeInfo();
 
   nsAttributeTextNode* textNode = new nsAttributeTextNode(ni,
                                                           aNameSpaceID,
@@ -221,8 +222,8 @@ NS_NewAttributeContent(nsNodeInfoManager *aNodeInfoManager,
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsAttributeTextNode, nsTextNode,
-                             nsIMutationObserver)
+NS_IMPL_ISUPPORTS_INHERITED(nsAttributeTextNode, nsTextNode,
+                            nsIMutationObserver)
 
 nsresult
 nsAttributeTextNode::BindToTree(nsIDocument* aDocument, nsIContent* aParent,

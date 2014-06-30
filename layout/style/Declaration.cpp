@@ -343,14 +343,14 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
         AppendValueToString(eCSSProperty_border_image_slice, aValue,
                             aSerialization);
         if (!widthDefault || !outsetDefault) {
-          aValue.Append(NS_LITERAL_STRING(" /"));
+          aValue.AppendLiteral(" /");
           if (!widthDefault) {
             aValue.Append(char16_t(' '));
             AppendValueToString(eCSSProperty_border_image_width, aValue,
                                 aSerialization);
           }
           if (!outsetDefault) {
-            aValue.Append(NS_LITERAL_STRING(" / "));
+            aValue.AppendLiteral(" / ");
             AppendValueToString(eCSSProperty_border_image_outset, aValue,
                                 aSerialization);
           }
@@ -715,15 +715,15 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
       break;
     }
     case eCSSProperty_list_style:
-      if (AppendValueToString(eCSSProperty_list_style_type, aValue,
-                              aSerialization)) {
-        aValue.Append(char16_t(' '));
-      }
       if (AppendValueToString(eCSSProperty_list_style_position, aValue,
                               aSerialization)) {
         aValue.Append(char16_t(' '));
       }
-      AppendValueToString(eCSSProperty_list_style_image, aValue,
+      if (AppendValueToString(eCSSProperty_list_style_image, aValue,
+                              aSerialization)) {
+        aValue.Append(char16_t(' '));
+      }
+      AppendValueToString(eCSSProperty_list_style_type, aValue,
                           aSerialization);
       break;
     case eCSSProperty_overflow: {
@@ -994,7 +994,7 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
                             aValue, aSerialization);
         break;
       } else if (!(autoFlowValue.GetUnit() == eCSSUnit_Enumerated &&
-                   autoFlowValue.GetIntValue() == NS_STYLE_GRID_AUTO_FLOW_NONE &&
+                   autoFlowValue.GetIntValue() == NS_STYLE_GRID_AUTO_FLOW_ROW &&
                    autoColumnsValue.GetUnit() == eCSSUnit_Auto &&
                    autoRowsValue.GetUnit() == eCSSUnit_Auto)) {
         // Not serializable, bail.
@@ -1017,14 +1017,30 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
                             aValue, aSerialization);
         break;
       }
+      if (columnsValue.GetUnit() == eCSSUnit_List ||
+          columnsValue.GetUnit() == eCSSUnit_ListDep) {
+        const nsCSSValueList* columnsItem = columnsValue.GetListValue();
+        if (columnsItem->mValue.GetUnit() == eCSSUnit_Enumerated &&
+            columnsItem->mValue.GetIntValue() == NS_STYLE_GRID_TEMPLATE_SUBGRID) {
+          // We have "grid-template-areas:[something]; grid-template-columns:subgrid"
+          // which isn't a value that the shorthand can express. Bail.
+          return;
+        }
+      }
       if (rowsValue.GetUnit() != eCSSUnit_List &&
           rowsValue.GetUnit() != eCSSUnit_ListDep) {
         // We have "grid-template-areas:[something]; grid-template-rows:none"
         // which isn't a value that the shorthand can express. Bail.
         return;
       }
-      const GridTemplateAreasValue* areas = areasValue.GetGridTemplateAreas();
       const nsCSSValueList* rowsItem = rowsValue.GetListValue();
+      if (rowsItem->mValue.GetUnit() == eCSSUnit_Enumerated &&
+          rowsItem->mValue.GetIntValue() == NS_STYLE_GRID_TEMPLATE_SUBGRID) {
+        // We have "grid-template-areas:[something]; grid-template-rows:subgrid"
+        // which isn't a value that the shorthand can express. Bail.
+        return;
+      }
+      const GridTemplateAreasValue* areas = areasValue.GetGridTemplateAreas();
       uint32_t nRowItems = 0;
       while (rowsItem) {
         nRowItems++;
@@ -1052,10 +1068,10 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
 
         } else if (unit == eCSSUnit_List || unit == eCSSUnit_ListDep) {
           // Non-empty <line-names>
-          aValue.AppendLiteral("(");
+          aValue.Append('(');
           rowsItem->mValue.AppendToString(eCSSProperty_grid_template_rows,
                                           aValue, aSerialization);
-          aValue.AppendLiteral(")");
+          aValue.Append(')');
 
         } else {
           nsStyleUtil::AppendEscapedCSSString(areas->mTemplates[row++], aValue);
@@ -1064,6 +1080,12 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
           // <track-size>
           rowsItem->mValue.AppendToString(eCSSProperty_grid_template_rows,
                                           aValue, aSerialization);
+          if (rowsItem->mNext &&
+              rowsItem->mNext->mValue.GetUnit() == eCSSUnit_Null &&
+              !rowsItem->mNext->mNext) {
+            // Break out of the loop early to avoid a trailing space.
+            break;
+          }
         }
 
         rowsItem = rowsItem->mNext;
@@ -1098,9 +1120,6 @@ Declaration::GetValue(nsCSSProperty aProperty, nsAString& aValue,
   }
 }
 
-// Length of the "var-" prefix of custom property names.
-#define VAR_PREFIX_LENGTH 4
-
 bool
 Declaration::GetValueIsImportant(const nsAString& aProperty) const
 {
@@ -1110,7 +1129,9 @@ Declaration::GetValueIsImportant(const nsAString& aProperty) const
     return false;
   }
   if (propID == eCSSPropertyExtra_variable) {
-    return GetVariableValueIsImportant(Substring(aProperty, VAR_PREFIX_LENGTH));
+    const nsSubstring& variableName =
+      Substring(aProperty, CSS_CUSTOM_NAME_PREFIX_LENGTH);
+    return GetVariableValueIsImportant(variableName);
   }
   return GetValueIsImportant(propID);
 }
@@ -1165,7 +1186,7 @@ void
 Declaration::AppendVariableAndValueToString(const nsAString& aName,
                                             nsAString& aResult) const
 {
-  aResult.AppendLiteral("var-");
+  aResult.AppendLiteral("--");
   aResult.Append(aName);
   CSSVariableDeclarations::Type type;
   nsString value;

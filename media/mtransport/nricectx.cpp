@@ -89,6 +89,14 @@ extern "C" {
 
 namespace mozilla {
 
+TimeStamp nr_socket_short_term_violation_time() {
+  return NrSocketBase::short_term_violation_time();
+}
+
+TimeStamp nr_socket_long_term_violation_time() {
+  return NrSocketBase::long_term_violation_time();
+}
+
 MOZ_MTLOG_MODULE("mtransport")
 
 const char kNrIceTransportUdp[] = "udp";
@@ -134,6 +142,8 @@ static int nr_crypto_nss_hmac(UCHAR *key, int keyl, UCHAR *buf, int bufl,
 
   hmac_ctx = PK11_CreateContextBySymKey(mech, CKA_SIGN,
                                         skey, &param);
+  if (!hmac_ctx)
+    goto abort;
 
   status = PK11_DigestBegin(hmac_ctx);
   if (status != SECSuccess)
@@ -408,7 +418,8 @@ RefPtr<NrIceCtx> NrIceCtx::Create(const std::string& name,
       NR_reg_set_uchar((char *)"ice.pref.interface.wlan0", 232);
     }
 
-    NR_reg_set_uint4((char *)"stun.client.maximum_transmits",4);
+    NR_reg_set_uint4((char *)"stun.client.maximum_transmits",7);
+    NR_reg_set_uint4((char *)NR_ICE_REG_TRICKLE_GRACE_PERIOD, 5000);
   }
 
   // Create the ICE context
@@ -508,6 +519,10 @@ nsresult NrIceCtx::SetControlling(Controlling controlling) {
   MOZ_MTLOG(ML_DEBUG, "ICE ctx " << name_ << " setting controlling to" <<
             controlling);
   return NS_OK;
+}
+
+NrIceCtx::Controlling NrIceCtx::GetControlling() {
+  return (peer_->controlling) ? ICE_CONTROLLING : ICE_CONTROLLED;
 }
 
 nsresult NrIceCtx::SetStunServers(const std::vector<NrIceStunServer>&
@@ -707,6 +722,15 @@ void NrIceCtx::SetConnectionState(ConnectionState state) {
   MOZ_MTLOG(ML_INFO, "NrIceCtx(" << name_ << "): state " <<
             connection_state_ << "->" << state);
   connection_state_ = state;
+
+  if (connection_state_ == ICE_CTX_FAILED) {
+    MOZ_MTLOG(ML_INFO, "NrIceCtx(" << name_ << "): dumping r_log ringbuffer... ");
+    std::deque<std::string> logs;
+    RLogRingBuffer::GetInstance()->GetAny(0, &logs);
+    for (auto l = logs.begin(); l != logs.end(); ++l) {
+      MOZ_MTLOG(ML_INFO, *l);
+    }
+  }
 
   SignalConnectionStateChange(this, state);
 }

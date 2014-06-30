@@ -32,6 +32,7 @@ GetUserMediaLog()
 #include "nsIComponentRegistrar.h"
 #include "MediaEngineTabVideoSource.h"
 #include "nsITabSource.h"
+#include "MediaTrackConstraints.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidJNIWrapper.h"
@@ -64,6 +65,8 @@ MediaEngineWebRTC::MediaEngineWebRTC(MediaEnginePrefs &aPrefs)
 #else
   AsyncLatencyLogger::Get()->AddRef();
 #endif
+  // XXX
+  gFarendObserver = new AudioOutputObserver();
 }
     
 void
@@ -173,22 +176,14 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
   MutexAutoLock lock(mMutex);
 
 #ifdef MOZ_WIDGET_ANDROID
-  jobject context = mozilla::AndroidBridge::Bridge()->GetGlobalContextRef();
-
   // get the JVM
   JavaVM *jvm = mozilla::AndroidBridge::Bridge()->GetVM();
 
-  if (webrtc::VideoEngine::SetAndroidObjects(jvm, (void*)context) != 0) {
+  if (webrtc::VideoEngine::SetAndroidObjects(jvm) != 0) {
     LOG(("VieCapture:SetAndroidObjects Failed"));
     return;
   }
 #endif
-  /*if (!videoEngine) {
-    if (!(videoEngine = webrtc::VideoEngine::Create())) {
-      return;
-    }
-  }*/
-
   PRLogModuleInfo *logs = GetWebRTCLogInfo();
   if (!gWebrtcTraceLoggingOn && logs && logs->level > 0) {
     // no need to a critical section or lock here
@@ -201,23 +196,29 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
 
     LOG(("%s Logging webrtc to %s level %d", __FUNCTION__, file, logs->level));
 
-    videoEngine->SetTraceFilter(logs->level);
-    videoEngine->SetTraceFile(file);
+    mVideoEngine->SetTraceFilter(logs->level);
+    mVideoEngine->SetTraceFile(file);
   }
 
-  ptrViEBase = webrtc::ViEBase::GetInterface(videoEngine);
+  if (!mVideoEngine) {
+    if (!(mVideoEngine = webrtc::VideoEngine::Create())) {
+      return;
+    }
+  }
+
+  ptrViEBase = webrtc::ViEBase::GetInterface(mVideoEngine);
   if (!ptrViEBase) {
     return;
   }
 
-  if (!aEngineInit) {
+  if (!mVideoEngineInit) {
     if (ptrViEBase->Init() < 0) {
       return;
     }
-    aEngineInit = true;
+    mVideoEngineInit = true;
   }
 
-  ptrViECapture = webrtc::ViECapture::GetInterface(videoEngine);
+  ptrViECapture = webrtc::ViECapture::GetInterface(mVideoEngine);
   if (!ptrViECapture) {
     return;
   }
@@ -282,13 +283,13 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
       aVSources->AppendElement(vSource.get());
     } else {
         if(mozMediaSourceType==dom::MozMediaSourceEnum::Screen){
-            vSource = new MediaEngineWebRTCScreenSource(videoEngine,i);
+            vSource = new MediaEngineWebRTCScreenSource(mVideoEngine,i);
         }
         else if(mozMediaSourceType==dom::MozMediaSourceEnum::Application){
-            vSource = new MediaEngineWebRTCApplicationSource(videoEngine,i);
+            vSource = new MediaEngineWebRTCApplicationSource(mVideoEngine,i);
         }
         else
-            vSource = new MediaEngineWebRTCVideoSource(videoEngine,i);
+            vSource = new MediaEngineWebRTCVideoSource(mVideoEngine,i);
       mVideoSources.Put(uuid, vSource); // Hashtable takes ownership.
       aVSources->AppendElement(vSource);
     }
@@ -327,22 +328,6 @@ MediaEngineWebRTC::EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSourc
     if (!mVoiceEngine) {
       return;
     }
-  }
-
-  PRLogModuleInfo *logs = GetWebRTCLogInfo();
-  if (!gWebrtcTraceLoggingOn && logs && logs->level > 0) {
-    // no need to a critical section or lock here
-    gWebrtcTraceLoggingOn = 1;
-
-    const char *file = PR_GetEnv("WEBRTC_TRACE_FILE");
-    if (!file) {
-      file = "WebRTC.log";
-    }
-
-    LOG(("Logging webrtc to %s level %d", __FUNCTION__, file, logs->level));
-
-    mVoiceEngine->SetTraceFilter(logs->level);
-    mVoiceEngine->SetTraceFile(file);
   }
 
   ptrVoEBase = webrtc::VoEBase::GetInterface(mVoiceEngine);
@@ -406,8 +391,10 @@ MediaEngineWebRTC::Shutdown()
   // This is likely paranoia
   MutexAutoLock lock(mMutex);
 
+  // Clear callbacks before we go away since the engines may outlive us
   if (mVideoEngine) {
     mVideoSources.Clear();
+    mVideoEngine->SetTraceCallback(nullptr);
     webrtc::VideoEngine::Delete(mVideoEngine);
   }
     
@@ -422,6 +409,7 @@ MediaEngineWebRTC::Shutdown()
 
   if (mVoiceEngine) {
     mAudioSources.Clear();
+    mVoiceEngine->SetTraceCallback(nullptr);
     webrtc::VoiceEngine::Delete(mVoiceEngine);
   }
 

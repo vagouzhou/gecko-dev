@@ -24,11 +24,12 @@ public:
     NS_DECL_NSISEEKABLESTREAM
 
     nsBufferedStream();
-    virtual ~nsBufferedStream();
 
     nsresult Close();
 
 protected:
+    virtual ~nsBufferedStream();
+
     nsresult Init(nsISupports* stream, uint32_t bufferSize);
     NS_IMETHOD Fill() = 0;
     NS_IMETHOD Flush() = 0;
@@ -109,7 +110,7 @@ public:
     }
 
 protected:
-    NS_IMETHOD Fill() { return NS_OK; } // no-op for input streams
+    NS_IMETHOD Fill() { return NS_OK; } // no-op for output streams
 
     nsCOMPtr<nsISafeOutputStream> mSafeStream; // QI'd from mStream
 };

@@ -5,20 +5,22 @@
 
 package org.mozilla.gecko.db;
 
+import java.util.ArrayList;
 import java.util.List;
 
-import org.mozilla.gecko.db.BrowserContract.Bookmarks;
 import org.mozilla.gecko.db.BrowserContract.ExpirePriority;
+import org.mozilla.gecko.db.SuggestedSites;
+import org.mozilla.gecko.distribution.Distribution;
 import org.mozilla.gecko.favicons.decoders.LoadFaviconResult;
 import org.mozilla.gecko.mozglue.RobocopTarget;
 
 import android.content.ContentResolver;
 import android.content.ContentValues;
+import android.content.Context;
 import android.database.ContentObserver;
 import android.database.Cursor;
-import android.database.CursorWrapper;
 import android.graphics.drawable.BitmapDrawable;
-import android.util.SparseArray;
+import android.graphics.Color;
 
 public class BrowserDB {
     private static boolean sAreContentProvidersEnabled = true;
@@ -34,6 +36,7 @@ public class BrowserDB {
     }
 
     private static BrowserDBIface sDb = null;
+    private static SuggestedSites sSuggestedSites;
 
     public interface BrowserDBIface {
         public void invalidateCachedState();
@@ -137,6 +140,9 @@ public class BrowserDB {
 
         @RobocopTarget
         public Cursor getBookmarkForUrl(ContentResolver cr, String url);
+
+        public int addDefaultBookmarks(Context context, ContentResolver cr, int offset);
+        public int addDistributionBookmarks(ContentResolver cr, Distribution distribution, int offset);
     }
 
     static {
@@ -148,6 +154,22 @@ public class BrowserDB {
         sDb = new LocalBrowserDB(profile);
     }
 
+    public static int addDefaultBookmarks(Context context, ContentResolver cr, final int offset) {
+        return sDb.addDefaultBookmarks(context, cr, offset);
+    }
+
+    public static int addDistributionBookmarks(ContentResolver cr, Distribution distribution, int offset) {
+        return sDb.addDistributionBookmarks(cr, distribution, offset);
+    }
+
+    public static void setSuggestedSites(SuggestedSites suggestedSites) {
+        sSuggestedSites = suggestedSites;
+    }
+
+    public static boolean hideSuggestedSite(String url) {
+        return sSuggestedSites.hideSite(url);
+    }
+
     public static void invalidateCachedState() {
         sDb.invalidateCachedState();
     }
@@ -157,12 +179,35 @@ public class BrowserDB {
         return sDb.filter(cr, constraint, limit);
     }
 
+    private static void appendUrlsFromCursor(List<String> urls, Cursor c) {
+        c.moveToPosition(-1);
+        while (c.moveToNext()) {
+            urls.add(c.getString(c.getColumnIndex(URLColumns.URL)));
+        };
+    }
+
     public static Cursor getTopSites(ContentResolver cr, int minLimit, int maxLimit) {
         // Note this is not a single query anymore, but actually returns a mixture
         // of two queries, one for topSites and one for pinned sites.
         Cursor pinnedSites = sDb.getPinnedSites(cr, minLimit);
-        Cursor topSites = sDb.getTopSites(cr, maxLimit - pinnedSites.getCount());
-        return new TopSitesCursorWrapper(pinnedSites, topSites, minLimit);
+
+        int pinnedCount = pinnedSites.getCount();
+        Cursor topSites = sDb.getTopSites(cr, maxLimit - pinnedCount);
+        int topCount = topSites.getCount();
+
+        Cursor suggestedSites = null;
+        if (sSuggestedSites != null) {
+            final int count = minLimit - pinnedCount - topCount;
+            if (count > 0) {
+                final List<String> excludeUrls = new ArrayList<String>(pinnedCount + topCount);
+                appendUrlsFromCursor(excludeUrls, pinnedSites);
+                appendUrlsFromCursor(excludeUrls, topSites);
+
+                suggestedSites = sSuggestedSites.get(count, excludeUrls);
+            }
+        }
+
+        return new TopSitesCursorWrapper(pinnedSites, topSites, suggestedSites, minLimit);
     }
 
     public static void updateVisitedHistory(ContentResolver cr, String uri) {
@@ -359,182 +404,20 @@ public class BrowserDB {
         sAreContentProvidersEnabled = enableContentProviders;
     }
 
-    public static class PinnedSite {
-        public String title = "";
-        public String url = "";
-
-        public PinnedSite(String aTitle, String aUrl) {
-            title = aTitle;
-            url = aUrl;
-        }
+    public static boolean hasSuggestedImageUrl(String url) {
+        return sSuggestedSites.contains(url);
     }
 
-    /* Cursor wrapper that forces top sites to contain at least
-     * mNumberOfTopSites entries. For rows outside the wrapped cursor
-     * will return empty strings and zero.
-     */
-    public static class TopSitesCursorWrapper extends CursorWrapper {
-        int mIndex = -1; // Current position of the cursor
-        Cursor mCursor = null;
-        int mSize = 0;
-        private SparseArray<PinnedSite> mPinnedSites = null;
+    public static String getSuggestedImageUrlForUrl(String url) {
+        return sSuggestedSites.getImageUrlForUrl(url);
+    }
 
-        public TopSitesCursorWrapper(Cursor pinnedCursor, Cursor normalCursor, int minSize) {
-            super(normalCursor);
-
-            setPinnedSites(pinnedCursor);
-            mCursor = normalCursor;
-            mSize = Math.max(minSize, mPinnedSites.size() + mCursor.getCount());
+    public static int getSuggestedBackgroundColorForUrl(String url) {
+        final String bgColor = sSuggestedSites.getBackgroundColorForUrl(url);
+        if (bgColor != null) {
+            return Color.parseColor(bgColor);
         }
 
-        public void setPinnedSites(Cursor c) {
-            mPinnedSites = new SparseArray<PinnedSite>();
-
-            if (c == null) {
-                return;
-            }
-
-            try {
-                if (c.getCount() <= 0) {
-                    return;
-                }
-                c.moveToPosition(0);
-                do {
-                    int pos = c.getInt(c.getColumnIndex(Bookmarks.POSITION));
-                    String url = c.getString(c.getColumnIndex(URLColumns.URL));
-                    String title = c.getString(c.getColumnIndex(URLColumns.TITLE));
-                    mPinnedSites.put(pos, new PinnedSite(title, url));
-                } while (c.moveToNext());
-            } finally {
-                c.close();
-            }
-        }
-
-        public boolean hasPinnedSites() {
-            return mPinnedSites != null && mPinnedSites.size() > 0;
-        }
-
-        public PinnedSite getPinnedSite(int position) {
-            if (!hasPinnedSites()) {
-                return null;
-            }
-            return mPinnedSites.get(position);
-        }
-
-        public boolean isPinned() {
-            return mPinnedSites.get(mIndex) != null;
-        }
-
-        private int getPinnedBefore(int position) {
-            int numFound = 0;
-            if (!hasPinnedSites()) {
-                return numFound;
-            }
-
-            for (int i = 0; i < position; i++) {
-                if (mPinnedSites.get(i) != null) {
-                    numFound++;
-                }
-            }
-
-            return numFound;
-        }
-
-        @Override
-        public int getPosition() { return mIndex; }
-        @Override
-        public int getCount() { return mSize; }
-        @Override
-        public boolean isAfterLast() { return mIndex >= mSize; }
-        @Override
-        public boolean isBeforeFirst() { return mIndex < 0; }
-        @Override
-        public boolean isLast() { return mIndex == mSize - 1; }
-        @Override
-        public boolean moveToNext() { return moveToPosition(mIndex + 1); }
-        @Override
-        public boolean moveToPrevious() { return moveToPosition(mIndex - 1); }
-
-        @Override
-        public boolean moveToPosition(int position) {
-            mIndex = position;
-
-            // Move the real cursor as if we were stepping through it to this position.
-            // Account for pinned sites, and be careful to update its position to the
-            // minimum or maximum position, even if we're moving beyond its bounds.
-            int before = getPinnedBefore(position);
-            int p2 = position - before;
-            if (p2 <= -1) {
-                super.moveToPosition(-1);
-            } else if (p2 >= mCursor.getCount()) {
-                super.moveToPosition(mCursor.getCount());
-            } else {
-                super.moveToPosition(p2);
-            }
-
-            return !(isBeforeFirst() || isAfterLast());
-        }
-
-        @Override
-        public long getLong(int columnIndex) {
-            if (hasPinnedSites()) {
-                PinnedSite site = getPinnedSite(mIndex);
-                if (site != null) {
-                    return 0;
-                }
-            }
-
-            if (!super.isBeforeFirst() && !super.isAfterLast())
-                return super.getLong(columnIndex);
-            return 0;
-        }
-
-        @Override
-        public int getInt(int columnIndex) {
-            if (hasPinnedSites()) {
-                PinnedSite site = getPinnedSite(mIndex);
-                if (site != null) {
-                    return 0;
-                }
-            }
-
-            if (!super.isBeforeFirst() && !super.isAfterLast())
-                return super.getInt(columnIndex);
-            return 0;
-        }
-
-        @Override
-        public String getString(int columnIndex) {
-            if (hasPinnedSites()) {
-                PinnedSite site = getPinnedSite(mIndex);
-                if (site != null) {
-                    if (columnIndex == mCursor.getColumnIndex(URLColumns.URL)) {
-                        return site.url;
-                    } else if (columnIndex == mCursor.getColumnIndex(URLColumns.TITLE)) {
-                        return site.title;
-                    }
-                    return "";
-                }
-            }
-
-            if (!super.isBeforeFirst() && !super.isAfterLast())
-                return super.getString(columnIndex);
-            return "";
-        }
-
-        @Override
-        public boolean move(int offset) {
-            return moveToPosition(mIndex + offset);
-        }
-
-        @Override
-        public boolean moveToFirst() {
-            return moveToPosition(0);
-        }
-
-        @Override
-        public boolean moveToLast() {
-            return moveToPosition(mSize-1);
-        }
+        return 0;
     }
 }

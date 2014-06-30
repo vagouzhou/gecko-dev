@@ -242,7 +242,7 @@ struct VMFunction
 // A collection of VM functions for each execution mode.
 struct VMFunctionsModal
 {
-    VMFunctionsModal(const VMFunction &info) {
+    explicit VMFunctionsModal(const VMFunction &info) {
         add(info);
     }
     VMFunctionsModal(const VMFunction &info1, const VMFunction &info2) {
@@ -445,7 +445,7 @@ template <> struct MatchContext<ThreadSafeContext *> {
     static inline uint64_t argumentRootTypes() {                                        \
         return ForEachNb(COMPUTE_ARG_ROOT, SEP_OR, NOTHING);                            \
     }                                                                                   \
-    FunctionInfo(pf fun, PopValues extraValuesToPop = PopValues(0))                     \
+    explicit FunctionInfo(pf fun, PopValues extraValuesToPop = PopValues(0))            \
         : VMFunction(JS_FUNC_TO_DATA_PTR(void *, fun), explicitArgs(),                  \
                      argumentProperties(), argumentPassedInFloatRegs(),                 \
                      argumentRootTypes(), outParam(), outParamRootType(),               \
@@ -486,7 +486,7 @@ struct FunctionInfo<R (*)(Context)> : public VMFunction {
     static inline uint64_t argumentRootTypes() {
         return 0;
     }
-    FunctionInfo(pf fun)
+    explicit FunctionInfo(pf fun)
       : VMFunction(JS_FUNC_TO_DATA_PTR(void *, fun), explicitArgs(),
                    argumentProperties(), argumentPassedInFloatRegs(),
                    argumentRootTypes(), outParam(), outParamRootType(),
@@ -556,6 +556,8 @@ class AutoDetectInvalidation
     Value *rval_;
     bool disabled_;
 
+    void setReturnOverride();
+
   public:
     AutoDetectInvalidation(JSContext *cx, Value *rval, IonScript *ionScript = nullptr);
 
@@ -566,7 +568,7 @@ class AutoDetectInvalidation
 
     ~AutoDetectInvalidation() {
         if (!disabled_ && ionScript_->invalidated())
-            cx_->runtime()->setIonReturnOverride(*rval_);
+            setReturnOverride();
     }
 };
 
@@ -617,9 +619,9 @@ bool SetProperty(JSContext *cx, HandleObject obj, HandlePropertyName name, Handl
 
 bool InterruptCheck(JSContext *cx);
 
-HeapSlot *NewSlots(JSRuntime *rt, unsigned nslots);
-JSObject *NewCallObject(JSContext *cx, HandleScript script,
-                        HandleShape shape, HandleTypeObject type, HeapSlot *slots);
+void *MallocWrapper(JSRuntime *rt, size_t nbytes);
+JSObject *NewCallObject(JSContext *cx, HandleShape shape, HandleTypeObject type);
+JSObject *NewSingletonCallObject(JSContext *cx, HandleShape shape);
 JSObject *NewStringObject(JSContext *cx, HandleString str);
 
 bool SPSEnter(JSContext *cx, HandleScript script);
@@ -645,6 +647,7 @@ uint32_t GetIndexFromString(JSString *str);
 
 bool DebugPrologue(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, bool *mustReturn);
 bool DebugEpilogue(JSContext *cx, BaselineFrame *frame, jsbytecode *pc, bool ok);
+bool DebugEpilogueOnBaselineReturn(JSContext *cx, BaselineFrame *frame, jsbytecode *pc);
 
 bool StrictEvalPrologue(JSContext *cx, BaselineFrame *frame);
 bool HeavyweightFunPrologue(JSContext *cx, BaselineFrame *frame);
@@ -671,17 +674,25 @@ bool InitBaselineFrameForOsr(BaselineFrame *frame, InterpreterFrame *interpFrame
 JSObject *CreateDerivedTypedObj(JSContext *cx, HandleObject descr,
                                 HandleObject owner, int32_t offset);
 
+bool ArraySpliceDense(JSContext *cx, HandleObject obj, uint32_t start, uint32_t deleteCount);
+
 bool Recompile(JSContext *cx);
 JSString *RegExpReplace(JSContext *cx, HandleString string, HandleObject regexp,
                         HandleString repl);
 JSString *StringReplace(JSContext *cx, HandleString string, HandleString pattern,
                         HandleString repl);
 
+bool SetDenseElement(JSContext *cx, HandleObject obj, int32_t index, HandleValue value,
+                     bool strict);
+
 #ifdef DEBUG
 void AssertValidObjectPtr(JSContext *cx, JSObject *obj);
 void AssertValidStringPtr(JSContext *cx, JSString *str);
+void AssertValidSymbolPtr(JSContext *cx, JS::Symbol *sym);
 void AssertValidValue(JSContext *cx, Value *v);
 #endif
+
+JSObject *TypedObjectProto(JSObject *obj);
 
 } // namespace jit
 } // namespace js

@@ -29,7 +29,7 @@
 #include "nsTextFragment.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/LookAndFeel.h"
-#include "mozilla/Selection.h"
+#include "mozilla/dom/Selection.h"
 #include <algorithm>
 
 // The bidi indicator hangs off the caret to one side, to show which
@@ -37,10 +37,8 @@
 // an insignificant dot
 static const int32_t kMinBidiIndicatorPixels = 2;
 
-#ifdef IBMBIDI
 #include "nsIBidiKeyboard.h"
 #include "nsContentUtils.h"
-#endif //IBMBIDI
 
 using namespace mozilla;
 
@@ -120,10 +118,8 @@ nsCaret::nsCaret()
 , mReadOnly(false)
 , mShowDuringSelection(false)
 , mIgnoreUserModify(true)
-#ifdef IBMBIDI
 , mKeyboardRTL(false)
 , mLastBidiLevel(0)
-#endif
 , mLastContentOffset(0)
 , mLastHint(nsFrameSelection::HINTLEFT)
 {
@@ -180,9 +176,7 @@ nsresult nsCaret::Init(nsIPresShell *inPresShell)
   {
     StartBlinking();
   }
-#ifdef IBMBIDI
   mBidiUI = Preferences::GetBool("bidi.browser.ui");
-#endif
 
   return NS_OK;
 }
@@ -242,7 +236,7 @@ void nsCaret::Terminate()
 }
 
 //-----------------------------------------------------------------------------
-NS_IMPL_ISUPPORTS1(nsCaret, nsISelectionListener)
+NS_IMPL_ISUPPORTS(nsCaret, nsISelectionListener)
 
 //-----------------------------------------------------------------------------
 nsISelection* nsCaret::GetCaretDOMSelection()
@@ -307,8 +301,12 @@ nsCaret::GetGeometryForFrame(nsIFrame* aFrame,
   if (NS_FAILED(rv))
     return rv;
 
-  nsIFrame *frame = aFrame->GetContentInsertionFrame();
-  NS_ASSERTION(frame, "We should not be in the middle of reflow");
+  nsIFrame* frame = aFrame->GetContentInsertionFrame();
+  if (!frame) {
+    frame = aFrame;
+  }
+  NS_ASSERTION(!(frame->GetStateBits() & NS_FRAME_IN_REFLOW),
+               "We should not be in the middle of reflow");
   nscoord baseline = frame->GetCaretBaseline();
   nscoord ascent = 0, descent = 0;
   nsRefPtr<nsFontMetrics> fm;
@@ -413,22 +411,6 @@ void nsCaret::SetVisibilityDuringSelection(bool aVisibility)
   mShowDuringSelection = aVisibility;
 }
 
-static
-nsFrameSelection::HINT GetHintForPosition(nsIDOMNode* aNode, int32_t aOffset)
-{
-  nsFrameSelection::HINT hint = nsFrameSelection::HINTLEFT;
-  nsCOMPtr<nsIContent> node = do_QueryInterface(aNode);
-  if (!node || aOffset < 1) {
-    return hint;
-  }
-  const nsTextFragment* text = node->GetText();
-  if (text && text->CharAt(aOffset - 1) == '\n') {
-    // Attach the caret to the next line if needed
-    hint = nsFrameSelection::HINTRIGHT;
-  }
-  return hint;
-}
-
 nsresult nsCaret::DrawAtPosition(nsIDOMNode* aNode, int32_t aOffset)
 {
   NS_ENSURE_ARG(aNode);
@@ -444,8 +426,9 @@ nsresult nsCaret::DrawAtPosition(nsIDOMNode* aNode, int32_t aOffset)
   // ourselves, our consumer will take care of that.
   mBlinkRate = 0;
 
+  nsCOMPtr<nsIContent> node = do_QueryInterface(aNode);
   nsresult rv = DrawAtPositionWithHint(aNode, aOffset,
-                                       GetHintForPosition(aNode, aOffset),
+                                       nsFrameSelection::GetHintForPosition(node, aOffset),
                                        bidiLevel, true)
     ?  NS_OK : NS_ERROR_FAILURE;
   ToggleDrawnStatus();
@@ -870,6 +853,25 @@ nsCaret::CheckCaretDrawingState()
   }
 }
 
+size_t nsCaret::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+{
+  size_t total = aMallocSizeOf(this);
+  if (mPresShell) {
+    // We only want the size of the nsWeakReference object, not the PresShell
+    // (since we don't own the PresShell).
+    total += mPresShell->SizeOfOnlyThis(aMallocSizeOf);
+  }
+  if (mDomSelectionWeak) {
+    // We only want size of the nsWeakReference object, not the selection
+    // (again, we don't own the selection).
+    total += mDomSelectionWeak->SizeOfOnlyThis(aMallocSizeOf);
+  }
+  if (mBlinkTimer) {
+    total += mBlinkTimer->SizeOfIncludingThis(aMallocSizeOf);
+  }
+  return total;
+}
+
 /*-----------------------------------------------------------------------------
 
   MustDrawCaret
@@ -1050,7 +1052,6 @@ nsCaret::UpdateCaretRects(nsIFrame* aFrame, int32_t aFrameOffset)
   if (NS_STYLE_DIRECTION_RTL == vis->mDirection)
     mCaretRect.x -= mCaretRect.width;
 
-#ifdef IBMBIDI
   mHookRect.SetEmpty();
 
   // Simon -- make a hook to draw to the left or right of the caret to show keyboard language direction
@@ -1086,7 +1087,6 @@ nsCaret::UpdateCaretRects(nsIFrame* aFrame, int32_t aFrameOffset)
                       bidiIndicatorSize,
                       mCaretRect.width);
   }
-#endif //IBMBIDI
   return true;
 }
 
@@ -1109,7 +1109,7 @@ nsCaret::GetFrameSelection()
   if (!sel)
     return nullptr;
 
-  return static_cast<Selection*>(sel.get())->GetFrameSelection();
+  return static_cast<dom::Selection*>(sel.get())->GetFrameSelection();
 }
 
 void

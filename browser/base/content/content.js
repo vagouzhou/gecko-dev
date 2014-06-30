@@ -1,11 +1,9 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-let Cc = Components.classes;
-let Ci = Components.interfaces;
-let Cu = Components.utils;
+let {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -36,22 +34,22 @@ addMessageListener("Browser:HideSessionRestoreButton", function (message) {
   }
 });
 
+addEventListener("DOMFormHasPassword", function(event) {
+  InsecurePasswordUtils.checkForInsecurePasswords(event.target);
+  LoginManagerContent.onFormPassword(event);
+});
+addEventListener("DOMAutoComplete", function(event) {
+  LoginManagerContent.onUsernameInput(event);
+});
+addEventListener("blur", function(event) {
+  LoginManagerContent.onUsernameInput(event);
+});
+
 if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
   addEventListener("contextmenu", function (event) {
     sendAsyncMessage("contextmenu", {}, { event: event });
   }, false);
 } else {
-  addEventListener("DOMFormHasPassword", function(event) {
-    InsecurePasswordUtils.checkForInsecurePasswords(event.target);
-    LoginManagerContent.onFormPassword(event);
-  });
-  addEventListener("DOMAutoComplete", function(event) {
-    LoginManagerContent.onUsernameInput(event);
-  });
-  addEventListener("blur", function(event) {
-    LoginManagerContent.onUsernameInput(event);
-  });
-
   addEventListener("mozUITour", function(event) {
     if (!Services.prefs.getBoolPref("browser.uitour.enabled"))
       return;
@@ -188,6 +186,60 @@ let AboutHomeListener = {
   },
 };
 AboutHomeListener.init(this);
+
+
+let ContentSearchMediator = {
+
+  whitelist: new Set([
+    "about:newtab",
+  ]),
+
+  init: function (chromeGlobal) {
+    chromeGlobal.addEventListener("ContentSearchClient", this, true, true);
+    addMessageListener("ContentSearch", this);
+  },
+
+  handleEvent: function (event) {
+    if (this._contentWhitelisted) {
+      this._sendMsg(event.detail.type, event.detail.data);
+    }
+  },
+
+  receiveMessage: function (msg) {
+    if (msg.data.type == "AddToWhitelist") {
+      for (let uri of msg.data.data) {
+        this.whitelist.add(uri);
+      }
+      this._sendMsg("AddToWhitelistAck");
+      return;
+    }
+    if (this._contentWhitelisted) {
+      this._fireEvent(msg.data.type, msg.data.data);
+    }
+  },
+
+  get _contentWhitelisted() {
+    return this.whitelist.has(content.document.documentURI.toLowerCase());
+  },
+
+  _sendMsg: function (type, data=null) {
+    sendAsyncMessage("ContentSearch", {
+      type: type,
+      data: data,
+    });
+  },
+
+  _fireEvent: function (type, data=null) {
+    content.dispatchEvent(new content.CustomEvent("ContentSearchService", {
+      detail: {
+        type: type,
+        data: data,
+      },
+    }));
+  },
+};
+ContentSearchMediator.init(this);
+
 
 var global = this;
 
@@ -387,3 +439,10 @@ let PageStyleHandler = {
   },
 };
 PageStyleHandler.init();
+
+// Keep a reference to the translation content handler to avoid it it being GC'ed.
+let trHandler = null;
+if (Services.prefs.getBoolPref("browser.translation.detectLanguage")) {
+  Cu.import("resource:///modules/translation/TranslationContentHandler.jsm");
+  trHandler = new TranslationContentHandler(global, docShell);
+}

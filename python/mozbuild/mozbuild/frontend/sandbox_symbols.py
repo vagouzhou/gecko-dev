@@ -314,13 +314,6 @@ VARIABLES = {
         A list of libraries and flags to include when linking.
         """, None),
 
-    'LIBXUL_LIBRARY': (bool, bool,
-        """Whether the library in this directory is linked into libxul.
-
-        Implies ``FORCE_STATIC_LIB`` and the ``MOZILLA_INTERNAL_API``
-        preprocessor macro.
-        """, None),
-
     'LOCAL_INCLUDES': (StrictOrderingOnAppendList, list,
         """Additional directories to be searched for include files by the compiler.
         """, None),
@@ -364,6 +357,12 @@ VARIABLES = {
         """The program .def (module definition) file.
 
         This variable can only be used on Windows.
+        """, None),
+
+    'LD_VERSION_SCRIPT': (unicode, unicode,
+        """The linker version script for shared libraries.
+
+        This variable can only be used on Linux.
         """, None),
 
     'RESOURCE_FILES': (HierarchicalStringListWithFlagsFactory({'preprocess': bool}), list,
@@ -600,6 +599,12 @@ VARIABLES = {
         """List of manifest files defining browser chrome tests.
         """, None),
 
+    'CRASHTEST_MANIFESTS': (StrictOrderingOnAppendList, list,
+        """List of manifest files defining crashtests.
+
+        These are commonly named crashtests.list.
+        """, None),
+
     'METRO_CHROME_MANIFESTS': (StrictOrderingOnAppendList, list,
         """List of manifest files defining metro browser chrome tests.
         """, None),
@@ -614,6 +619,12 @@ VARIABLES = {
 
     'MOCHITEST_WEBAPPRT_CHROME_MANIFESTS': (StrictOrderingOnAppendList, list,
         """List of manifest files defining webapprt mochitest chrome tests.
+        """, None),
+
+    'REFTEST_MANIFESTS': (StrictOrderingOnAppendList, list,
+        """List of manifest files defining reftests.
+
+        These are commonly named reftest.list.
         """, None),
 
     'WEBRTC_SIGNALLING_TEST_MANIFESTS': (StrictOrderingOnAppendList, list,

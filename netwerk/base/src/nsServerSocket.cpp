@@ -263,7 +263,7 @@ nsServerSocket::KeepWhenOffline(bool *aKeepWhenOffline)
 // nsServerSocket::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsServerSocket, nsIServerSocket)
+NS_IMPL_ISUPPORTS(nsServerSocket, nsIServerSocket)
 
 
 //-----------------------------------------------------------------------------
@@ -407,6 +407,8 @@ namespace {
 
 class ServerSocketListenerProxy MOZ_FINAL : public nsIServerSocketListener
 {
+  ~ServerSocketListenerProxy() {}
+
 public:
   ServerSocketListenerProxy(nsIServerSocketListener* aListener)
     : mListener(new nsMainThreadPtrHolder<nsIServerSocketListener>(aListener))
@@ -459,8 +461,8 @@ private:
   nsCOMPtr<nsIEventTarget> mTargetThread;
 };
 
-NS_IMPL_ISUPPORTS1(ServerSocketListenerProxy,
-                   nsIServerSocketListener)
+NS_IMPL_ISUPPORTS(ServerSocketListenerProxy,
+                  nsIServerSocketListener)
 
 NS_IMETHODIMP
 ServerSocketListenerProxy::OnSocketAccepted(nsIServerSocket* aServ,

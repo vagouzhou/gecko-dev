@@ -25,7 +25,6 @@
 
 #include "nsITimer.h"
 
-#include "nsIDOMProgressEvent.h"
 #include "MediaError.h"
 #include "MediaDecoder.h"
 #include "mozilla/Preferences.h"
@@ -41,8 +40,8 @@ namespace dom {
 
 static bool sVideoStatsEnabled;
 
-NS_IMPL_ISUPPORTS_INHERITED2(HTMLVideoElement, HTMLMediaElement,
-                             nsIDOMHTMLMediaElement, nsIDOMHTMLVideoElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLVideoElement, HTMLMediaElement,
+                            nsIDOMHTMLMediaElement, nsIDOMHTMLVideoElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLVideoElement)
 
@@ -65,7 +64,7 @@ NS_IMETHODIMP HTMLVideoElement::GetVideoHeight(uint32_t *aVideoHeight)
   return NS_OK;
 }
 
-HTMLVideoElement::HTMLVideoElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLVideoElement::HTMLVideoElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : HTMLMediaElement(aNodeInfo)
 {
 }
@@ -234,16 +233,16 @@ NS_IMETHODIMP HTMLVideoElement::GetMozHasAudio(bool *aHasAudio) {
 }
 
 JSObject*
-HTMLVideoElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLVideoElement::WrapNode(JSContext* aCx)
 {
-  return HTMLVideoElementBinding::Wrap(aCx, aScope, this);
+  return HTMLVideoElementBinding::Wrap(aCx, this);
 }
 
 void
 HTMLVideoElement::NotifyOwnerDocumentActivityChanged()
 {
   HTMLMediaElement::NotifyOwnerDocumentActivityChanged();
-  WakeLockUpdate();
+  UpdateScreenWakeLock();
 }
 
 already_AddRefed<VideoPlaybackQuality>
@@ -280,17 +279,19 @@ HTMLVideoElement::GetVideoPlaybackQuality()
 void
 HTMLVideoElement::WakeLockCreate()
 {
-  WakeLockUpdate();
+  HTMLMediaElement::WakeLockCreate();
+  UpdateScreenWakeLock();
 }
 
 void
 HTMLVideoElement::WakeLockRelease()
 {
-  WakeLockUpdate();
+  UpdateScreenWakeLock();
+  HTMLMediaElement::WakeLockRelease();
 }
 
 void
-HTMLVideoElement::WakeLockUpdate()
+HTMLVideoElement::UpdateScreenWakeLock()
 {
   bool hidden = OwnerDoc()->Hidden();
 

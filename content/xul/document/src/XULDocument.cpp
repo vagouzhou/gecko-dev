@@ -71,7 +71,7 @@
 #include "nsIParser.h"
 #include "nsCharsetSource.h"
 #include "nsIParserService.h"
-#include "nsCSSStyleSheet.h"
+#include "mozilla/CSSStyleSheet.h"
 #include "mozilla/css/Loader.h"
 #include "nsIScriptError.h"
 #include "nsIStyleSheetLinkingElement.h"
@@ -82,8 +82,10 @@
 #include "nsXULPopupManager.h"
 #include "nsCCUncollectableMarker.h"
 #include "nsURILoader.h"
+#include "mozilla/AddonPathService.h"
 #include "mozilla/BasicEvents.h"
 #include "mozilla/dom/Element.h"
+#include "mozilla/dom/NodeInfoInlines.h"
 #include "mozilla/dom/ProcessingInstruction.h"
 #include "mozilla/dom/XULDocumentBinding.h"
 #include "mozilla/EventDispatcher.h"
@@ -202,7 +204,7 @@ XULDocument::XULDocument(void)
     mCharacterSet.AssignLiteral("UTF-8");
 
     mDefaultElementType = kNameSpaceID_XUL;
-    mIsXUL = true;
+    mType = eXUL;
 
     mDelayFrameLoaderInitialization = true;
 
@@ -244,6 +246,10 @@ XULDocument::~XULDocument()
         NS_IF_RELEASE(kNC_persist);
         NS_IF_RELEASE(kNC_attribute);
         NS_IF_RELEASE(kNC_value);
+    }
+
+    if (mOffThreadCompileStringBuf) {
+      js_free(mOffThreadCompileStringBuf);
     }
 }
 
@@ -350,9 +356,9 @@ NS_IMPL_RELEASE_INHERITED(XULDocument, XMLDocument)
 
 // QueryInterface implementation for XULDocument
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(XULDocument)
-    NS_INTERFACE_TABLE_INHERITED5(XULDocument, nsIXULDocument,
-                                  nsIDOMXULDocument, nsIStreamLoaderObserver,
-                                  nsICSSLoaderObserver, nsIOffThreadScriptReceiver)
+    NS_INTERFACE_TABLE_INHERITED(XULDocument, nsIXULDocument,
+                                 nsIDOMXULDocument, nsIStreamLoaderObserver,
+                                 nsICSSLoaderObserver, nsIOffThreadScriptReceiver)
 NS_INTERFACE_TABLE_TAIL_INHERITING(XMLDocument)
 
 
@@ -962,8 +968,7 @@ XULDocument::AttributeWillChange(nsIDocument* aDocument,
 
     // XXXbz check aNameSpaceID, dammit!
     // See if we need to update our ref map.
-    if (aAttribute == nsGkAtoms::ref ||
-        (aAttribute == nsGkAtoms::id && !aElement->GetIDAttributeName())) {
+    if (aAttribute == nsGkAtoms::ref) {
         // Might not need this, but be safe for now.
         nsCOMPtr<nsIMutationObserver> kungFuDeathGrip(this);
         RemoveElementFromRefMap(aElement);
@@ -982,8 +987,7 @@ XULDocument::AttributeChanged(nsIDocument* aDocument,
 
     // XXXbz check aNameSpaceID, dammit!
     // See if we need to update our ref map.
-    if (aAttribute == nsGkAtoms::ref ||
-        (aAttribute == nsGkAtoms::id && !aElement->GetIDAttributeName())) {
+    if (aAttribute == nsGkAtoms::ref) {
         AddElementToRefMap(aElement);
     }
     
@@ -1029,7 +1033,7 @@ XULDocument::AttributeChanged(nsIDocument* aDocument,
                                                                attrSet,
                                                                needsAttrChange);
 
-                        uint32_t index =
+                        size_t index =
                             mDelayedAttrChangeBroadcasts.IndexOf(delayedUpdate,
                                 0, nsDelayedBroadcastUpdate::Comparator());
                         if (index != mDelayedAttrChangeBroadcasts.NoIndex) {
@@ -1299,7 +1303,7 @@ XULDocument::Persist(const nsAString& aID,
     nsCOMPtr<nsIAtom> tag;
     int32_t nameSpaceID;
 
-    nsCOMPtr<nsINodeInfo> ni = element->GetExistingAttrNameFromQName(aAttr);
+    nsRefPtr<mozilla::dom::NodeInfo> ni = element->GetExistingAttrNameFromQName(aAttr);
     nsresult rv;
     if (ni) {
         tag = ni->NameAtom();
@@ -1923,9 +1927,6 @@ static void
 GetRefMapAttribute(Element* aElement, nsAutoString* aValue)
 {
     aElement->GetAttr(kNameSpaceID_None, nsGkAtoms::ref, *aValue);
-    if (aValue->IsEmpty() && !aElement->GetIDAttributeName()) {
-        aElement->GetAttr(kNameSpaceID_None, nsGkAtoms::id, *aValue);
-    }
 }
 
 nsresult
@@ -1968,7 +1969,7 @@ XULDocument::RemoveElementFromRefMap(Element* aElement)
 //
 
 nsresult
-XULDocument::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+XULDocument::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
     // We don't allow cloning of a XUL document
     *aResult = nullptr;
@@ -3288,7 +3289,7 @@ XULDocument::DoneWalking()
 }
 
 NS_IMETHODIMP
-XULDocument::StyleSheetLoaded(nsCSSStyleSheet* aSheet,
+XULDocument::StyleSheetLoaded(CSSStyleSheet* aSheet,
                               bool aWasAlternate,
                               nsresult aStatus)
 {
@@ -3526,26 +3527,40 @@ XULDocument::OnStreamComplete(nsIStreamLoader* aLoader,
 
         // XXX should also check nsIHttpChannel::requestSucceeded
 
-        MOZ_ASSERT(!mOffThreadCompiling && mOffThreadCompileString.Length() == 0,
+        MOZ_ASSERT(!mOffThreadCompiling && (mOffThreadCompileStringLength == 0 &&
+                                            !mOffThreadCompileStringBuf),
                    "XULDocument can't load multiple scripts at once");
 
         rv = nsScriptLoader::ConvertToUTF16(channel, string, stringLen,
-                                            EmptyString(), this, mOffThreadCompileString);
+                                            EmptyString(), this,
+                                            mOffThreadCompileStringBuf,
+                                            mOffThreadCompileStringLength);
         if (NS_SUCCEEDED(rv)) {
-            rv = mCurrentScriptProto->Compile(mOffThreadCompileString.get(),
-                                              mOffThreadCompileString.Length(),
-                                              uri, 1, this,
-                                              mCurrentPrototype,
-                                              this);
+            // Attempt to give ownership of the buffer to the JS engine.  If
+            // we hit offthread compilation, however, we will have to take it
+            // back below in order to keep the memory alive until compilation
+            // completes.
+            JS::SourceBufferHolder srcBuf(mOffThreadCompileStringBuf,
+                                          mOffThreadCompileStringLength,
+                                          JS::SourceBufferHolder::GiveOwnership);
+            mOffThreadCompileStringBuf = nullptr;
+            mOffThreadCompileStringLength = 0;
+
+            rv = mCurrentScriptProto->Compile(srcBuf, uri, 1, this, this);
             if (NS_SUCCEEDED(rv) && !mCurrentScriptProto->GetScriptObject()) {
                 // We will be notified via OnOffThreadCompileComplete when the
                 // compile finishes. Keep the contents of the compiled script
                 // alive until the compilation finishes.
                 mOffThreadCompiling = true;
+                // If the JS engine did not take the source buffer, then take
+                // it back here to ensure it remains alive.
+                mOffThreadCompileStringBuf = srcBuf.take();
+                if (mOffThreadCompileStringBuf) {
+                  mOffThreadCompileStringLength = srcBuf.length();
+                }
                 BlockOnload();
                 return NS_OK;
             }
-            mOffThreadCompileString.Truncate();
         }
     }
 
@@ -3567,7 +3582,11 @@ XULDocument::OnScriptCompileComplete(JSScript* aScript, nsresult aStatus)
     }
 
     // After compilation finishes the script's characters are no longer needed.
-    mOffThreadCompileString.Truncate();
+    if (mOffThreadCompileStringBuf) {
+      js_free(mOffThreadCompileStringBuf);
+      mOffThreadCompileStringBuf = nullptr;
+      mOffThreadCompileStringLength = 0;
+    }
 
     // Clear mCurrentScriptProto now, but save it first for use below in
     // the execute code, and in the while loop that resumes walks of other
@@ -3673,14 +3692,21 @@ XULDocument::ExecuteScript(nsIScriptContext * aContext,
     nsAutoMicroTask mt;
     JSContext *cx = aContext->GetNativeContext();
     AutoCxPusher pusher(cx);
-    JS::Rooted<JSObject*> global(cx, mScriptGlobalObject->GetGlobalJSObject());
+    JS::Rooted<JSObject*> baseGlobal(cx, mScriptGlobalObject->GetGlobalJSObject());
+    NS_ENSURE_TRUE(baseGlobal, NS_ERROR_FAILURE);
+    NS_ENSURE_TRUE(nsContentUtils::GetSecurityManager()->ScriptAllowed(baseGlobal), NS_OK);
+
+    JSAddonId *addonId = MapURIToAddonID(mCurrentPrototype->GetURI());
+    JS::Rooted<JSObject*> global(cx, xpc::GetAddonScope(cx, baseGlobal, addonId));
     NS_ENSURE_TRUE(global, NS_ERROR_FAILURE);
-    NS_ENSURE_TRUE(nsContentUtils::GetSecurityManager()->ScriptAllowed(global), NS_OK);
+
     JS::ExposeObjectToActiveJS(global);
     xpc_UnmarkGrayScript(aScriptObject);
     JSAutoCompartment ac(cx, global);
-    JS::Rooted<JS::Value> unused(cx);
-    if (!JS_ExecuteScript(cx, global, aScriptObject, unused.address()))
+
+    // The script is in the compilation scope. Clone it into the target scope
+    // and execute it.
+    if (!JS::CloneAndExecuteScript(cx, global, aScriptObject))
         nsJSUtils::ReportPendingException(cx);
     return NS_OK;
 }
@@ -3743,13 +3769,13 @@ XULDocument::CreateElementFromPrototype(nsXULPrototypeElement* aPrototype,
         // what. So we need to copy everything out of the prototype
         // into the element.  Get a nodeinfo from our nodeinfo manager
         // for this node.
-        nsCOMPtr<nsINodeInfo> newNodeInfo;
+        nsRefPtr<mozilla::dom::NodeInfo> newNodeInfo;
         newNodeInfo = mNodeInfoManager->GetNodeInfo(aPrototype->mNodeInfo->NameAtom(),
                                                     aPrototype->mNodeInfo->GetPrefixAtom(),
                                                     aPrototype->mNodeInfo->NamespaceID(),
                                                     nsIDOMNode::ELEMENT_NODE);
         if (!newNodeInfo) return NS_ERROR_OUT_OF_MEMORY;
-        nsCOMPtr<nsINodeInfo> xtfNi = newNodeInfo;
+        nsRefPtr<mozilla::dom::NodeInfo> xtfNi = newNodeInfo;
         rv = NS_NewElement(getter_AddRefs(result), newNodeInfo.forget(),
                            NOT_FROM_PARSER);
         if (NS_FAILED(rv))
@@ -3919,7 +3945,7 @@ XULDocument::AddPrototypeSheets()
     for (int32_t i = 0; i < sheets.Count(); i++) {
         nsCOMPtr<nsIURI> uri = sheets[i];
 
-        nsRefPtr<nsCSSStyleSheet> incompleteSheet;
+        nsRefPtr<CSSStyleSheet> incompleteSheet;
         rv = CSSLoader()->LoadSheet(uri,
                                     mCurrentPrototype->DocumentPrincipal(),
                                     EmptyCString(), this,
@@ -4222,7 +4248,7 @@ XULDocument::BroadcasterHookup::~BroadcasterHookup()
         }
         else {
             mObservesElement->GetAttr(kNameSpaceID_None, nsGkAtoms::observes, broadcasterID);
-            attribute.AssignLiteral("*");
+            attribute.Assign('*');
         }
 
         nsAutoCString attributeC,broadcasteridC;
@@ -4310,7 +4336,7 @@ XULDocument::FindBroadcaster(Element* aElement,
                              nsString& aAttribute,
                              Element** aBroadcaster)
 {
-    nsINodeInfo *ni = aElement->NodeInfo();
+    mozilla::dom::NodeInfo *ni = aElement->NodeInfo();
     *aListener = nullptr;
     *aBroadcaster = nullptr;
 
@@ -4371,7 +4397,7 @@ XULDocument::FindBroadcaster(Element* aElement,
         *aListener = aElement;
         NS_ADDREF(*aListener);
 
-        aAttribute.AssignLiteral("*");
+        aAttribute.Assign('*');
     }
 
     // Make sure we got a valid listener.
@@ -4566,8 +4592,8 @@ XULDocument::CachedChromeStreamListener::~CachedChromeStreamListener()
 }
 
 
-NS_IMPL_ISUPPORTS2(XULDocument::CachedChromeStreamListener,
-                   nsIRequestObserver, nsIStreamListener)
+NS_IMPL_ISUPPORTS(XULDocument::CachedChromeStreamListener,
+                  nsIRequestObserver, nsIStreamListener)
 
 NS_IMETHODIMP
 XULDocument::CachedChromeStreamListener::OnStartRequest(nsIRequest *request,
@@ -4615,7 +4641,7 @@ XULDocument::ParserObserver::~ParserObserver()
 {
 }
 
-NS_IMPL_ISUPPORTS1(XULDocument::ParserObserver, nsIRequestObserver)
+NS_IMPL_ISUPPORTS(XULDocument::ParserObserver, nsIRequestObserver)
 
 NS_IMETHODIMP
 XULDocument::ParserObserver::OnStartRequest(nsIRequest *request,
@@ -4673,9 +4699,11 @@ XULDocument::ParserObserver::OnStopRequest(nsIRequest *request,
 already_AddRefed<nsPIWindowRoot>
 XULDocument::GetWindowRoot()
 {
-    nsCOMPtr<nsIInterfaceRequestor> ir(mDocumentContainer);
-    nsCOMPtr<nsIDOMWindow> window(do_GetInterface(ir));
-    nsCOMPtr<nsPIDOMWindow> piWin(do_QueryInterface(window));
+  if (!mDocumentContainer) {
+    return nullptr;
+  }
+
+    nsCOMPtr<nsPIDOMWindow> piWin = mDocumentContainer->GetWindow();
     return piWin ? piWin->GetTopWindowRoot() : nullptr;
 }
 
@@ -4783,9 +4811,9 @@ XULDocument::GetBoxObjectFor(nsIDOMElement* aElement, nsIBoxObject** aResult)
 }
 
 JSObject*
-XULDocument::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+XULDocument::WrapNode(JSContext *aCx)
 {
-  return XULDocumentBinding::Wrap(aCx, aScope, this);
+  return XULDocumentBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

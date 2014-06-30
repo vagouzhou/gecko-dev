@@ -11,11 +11,9 @@ Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/PermissionsInstaller.jsm");
 Cu.import("resource://gre/modules/PermissionPromptHelper.jsm");
 Cu.import("resource://gre/modules/ContactService.jsm");
-#ifdef MOZ_ANDROID_SYNTHAPKS
 Cu.import("resource://gre/modules/AppsUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Notifications", "resource://gre/modules/Notifications.jsm");
-#endif
 
 function pref(name, value) {
   return {
@@ -39,6 +37,11 @@ let WebappRT = {
     pref("toolkit.telemetry.notifiedOptOut", 999),
     pref("media.useAudioChannelService", true),
     pref("dom.mozTCPSocket.enabled", true),
+    // Don't check for updates in webapp processes to avoid duplicate notifications.
+    pref("browser.webapps.checkForUpdates", 0),
+
+    // Enabled system messages for web activity support
+    pref("dom.sysmsg.enabled", true),
   ],
 
   init: function(aStatus, aUrl, aCallback) {
@@ -65,14 +68,12 @@ let WebappRT = {
       });
     }
 
-#ifdef MOZ_ANDROID_SYNTHAPKS
     // If the app is in debug mode, configure and enable the remote debugger.
-    // sendMessageToJava can only return string values, so it returns the string
-    // "true" rather than boolean true if the app is in debug mode.
-    if (sendMessageToJava({ type: "NativeApp:IsDebuggable" }) === "true") {
-      this._enableRemoteDebugger(aUrl);
-    }
-#endif
+    sendMessageToJava({ type: "NativeApp:IsDebuggable" }, (response) => {
+      if (response.isDebuggable) {
+        this._enableRemoteDebugger(aUrl);
+      }
+    });
 
     this.findManifestUrlFor(aUrl, aCallback);
   },
@@ -158,7 +159,6 @@ let WebappRT = {
     }
   },
 
-#ifdef MOZ_ANDROID_SYNTHAPKS
   _enableRemoteDebugger: function(aUrl) {
     // Skip the connection prompt in favor of notifying the user below.
     Services.prefs.setBoolPref("devtools.debugger.prompt-connection", false);
@@ -190,7 +190,6 @@ let WebappRT = {
       });
     });
   },
-#endif
 
   handleEvent: function(event) {
     let target = event.target;

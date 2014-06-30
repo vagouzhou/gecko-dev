@@ -10,14 +10,13 @@
 #include "mozilla/dom/indexedDB/IndexedDatabase.h"
 
 #include "nsIDocument.h"
-#include "nsIFileStorage.h"
 #include "nsIOfflineStorage.h"
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/dom/IDBObjectStoreBinding.h"
 #include "mozilla/dom/IDBTransactionBinding.h"
 #include "mozilla/dom/quota/PersistenceType.h"
-#include "nsDOMEventTargetHelper.h"
 
 #include "mozilla/dom/indexedDB/FileManager.h"
 #include "mozilla/dom/indexedDB/IDBRequest.h"
@@ -29,7 +28,7 @@ class nsPIDOMWindow;
 namespace mozilla {
 class EventChainPostVisitor;
 namespace dom {
-class ContentParent;
+class nsIContentParent;
 namespace quota {
 class Client;
 }
@@ -54,11 +53,11 @@ class IDBDatabase : public IDBWrapperCache,
 {
   friend class AsyncConnectionHelper;
   friend class IndexedDatabaseManager;
+  friend class IndexedDBDatabaseParent;
   friend class IndexedDBDatabaseChild;
 
 public:
   NS_DECL_ISUPPORTS_INHERITED
-  NS_DECL_NSIFILESTORAGE
   NS_DECL_NSIOFFLINESTORAGE
 
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(IDBDatabase, IDBWrapperCache)
@@ -69,17 +68,10 @@ public:
          already_AddRefed<DatabaseInfo> aDatabaseInfo,
          const nsACString& aASCIIOrigin,
          FileManager* aFileManager,
-         mozilla::dom::ContentParent* aContentParent);
+         mozilla::dom::nsIContentParent* aContentParent);
 
   static IDBDatabase*
   FromStorage(nsIOfflineStorage* aStorage);
-
-  static IDBDatabase*
-  FromStorage(nsIFileStorage* aStorage)
-  {
-    nsCOMPtr<nsIOfflineStorage> storage = do_QueryInterface(aStorage);
-    return storage ? FromStorage(storage) : nullptr;
-  }
 
   // nsIDOMEventTarget
   virtual nsresult PostHandleEvent(
@@ -108,6 +100,14 @@ public:
 
     nsCOMPtr<nsIDocument> doc = GetOwner()->GetExtantDoc();
     return doc.forget();
+  }
+
+  // Whether or not the database has been invalidated. If it has then no further
+  // transactions for this database will be allowed to run. This function may be
+  // called on any thread.
+  bool IsInvalidated() const
+  {
+    return mInvalidated;
   }
 
   void DisconnectFromActorParent();
@@ -153,7 +153,7 @@ public:
     return mActorParent;
   }
 
-  mozilla::dom::ContentParent*
+  mozilla::dom::nsIContentParent*
   GetContentParent() const
   {
     return mContentParent;
@@ -172,7 +172,7 @@ public:
 
   // nsWrapperCache
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // WebIDL
   nsPIDOMWindow*
@@ -226,8 +226,15 @@ public:
   }
 
   already_AddRefed<IDBRequest>
+  CreateMutableFile(const nsAString& aName, const Optional<nsAString>& aType,
+                    ErrorResult& aRv);
+
+  already_AddRefed<IDBRequest>
   MozCreateFileHandle(const nsAString& aName, const Optional<nsAString>& aType,
-                      ErrorResult& aRv);
+                      ErrorResult& aRv)
+  {
+    return CreateMutableFile(aName, aType, aRv);
+  }
 
   virtual void LastRelease() MOZ_OVERRIDE;
 
@@ -236,6 +243,7 @@ private:
   ~IDBDatabase();
 
   void OnUnlink();
+  void InvalidateInternal(bool aIsDead);
 
   // The factory must be kept alive when IndexedDB is used in multiple
   // processes. If it dies then the entire actor tree will be destroyed with it
@@ -257,7 +265,7 @@ private:
   IndexedDBDatabaseChild* mActorChild;
   IndexedDBDatabaseParent* mActorParent;
 
-  mozilla::dom::ContentParent* mContentParent;
+  mozilla::dom::nsIContentParent* mContentParent;
 
   nsRefPtr<mozilla::dom::quota::Client> mQuotaClient;
 

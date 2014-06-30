@@ -14,12 +14,13 @@
 class NetworkParams;
 class CommandChain;
 
-using namespace mozilla::dom;
-
-typedef void (*CommandCallback)(CommandChain*, bool, NetworkResultOptions& aResult);
-typedef void (*CommandFunc)(CommandChain*, CommandCallback, NetworkResultOptions& aResult);
-typedef void (*MessageCallback)(NetworkResultOptions& aResult);
-typedef void (*ErrorCallback)(NetworkParams& aOptions, NetworkResultOptions& aResult);
+typedef void (*CommandCallback)(CommandChain*, bool,
+                                mozilla::dom::NetworkResultOptions& aResult);
+typedef void (*CommandFunc)(CommandChain*, CommandCallback,
+                            mozilla::dom::NetworkResultOptions& aResult);
+typedef void (*MessageCallback)(mozilla::dom::NetworkResultOptions& aResult);
+typedef void (*ErrorCallback)(NetworkParams& aOptions,
+                              mozilla::dom::NetworkResultOptions& aResult);
 
 class NetworkParams
 {
@@ -31,10 +32,8 @@ public:
     mIp = aOther.mIp;
     mCmd = aOther.mCmd;
     mDomain = aOther.mDomain;
-    mDns1_str = aOther.mDns1_str;
-    mDns2_str = aOther.mDns2_str;
     mGateway = aOther.mGateway;
-    mGateway_str = aOther.mGateway_str;
+    mGateways = aOther.mGateways;
     mHostnames = aOther.mHostnames;
     mId = aOther.mId;
     mIfname = aOther.mIfname;
@@ -60,6 +59,7 @@ public:
     mUsbEndIp = aOther.mUsbEndIp;
     mDns1 = aOther.mDns1;
     mDns2 = aOther.mDns2;
+    mDnses = aOther.mDnses;
     mRxBytes = aOther.mRxBytes;
     mTxBytes = aOther.mTxBytes;
     mDate = aOther.mDate;
@@ -74,7 +74,7 @@ public:
     mThreshold = aOther.mThreshold;
   }
 
-  NetworkParams(const NetworkCommandOptions& aOther) {
+  NetworkParams(const mozilla::dom::NetworkCommandOptions& aOther) {
 
 #define COPY_SEQUENCE_FIELD(prop, type)                                                      \
     if (aOther.prop.WasPassed()) {                                                           \
@@ -108,10 +108,8 @@ public:
     COPY_FIELD(mId)
     COPY_FIELD(mCmd)
     COPY_OPT_STRING_FIELD(mDomain, EmptyString())
-    COPY_OPT_STRING_FIELD(mDns1_str, EmptyString())
-    COPY_OPT_STRING_FIELD(mDns2_str, EmptyString())
     COPY_OPT_STRING_FIELD(mGateway, EmptyString())
-    COPY_OPT_STRING_FIELD(mGateway_str, EmptyString())
+    COPY_SEQUENCE_FIELD(mGateways, nsString)
     COPY_SEQUENCE_FIELD(mHostnames, nsString)
     COPY_OPT_STRING_FIELD(mIfname, EmptyString())
     COPY_OPT_STRING_FIELD(mIp, EmptyString())
@@ -137,6 +135,7 @@ public:
     COPY_OPT_STRING_FIELD(mUsbEndIp, EmptyString())
     COPY_OPT_STRING_FIELD(mDns1, EmptyString())
     COPY_OPT_STRING_FIELD(mDns2, EmptyString())
+    COPY_SEQUENCE_FIELD(mDnses, nsString)
     COPY_OPT_FIELD(mRxBytes, -1)
     COPY_OPT_FIELD(mTxBytes, -1)
     COPY_OPT_STRING_FIELD(mDate, EmptyString())
@@ -159,10 +158,8 @@ public:
   int32_t mId;
   nsString mCmd;
   nsString mDomain;
-  nsString mDns1_str;
-  nsString mDns2_str;
   nsString mGateway;
-  nsString mGateway_str;
+  nsTArray<nsString> mGateways;
   nsTArray<nsString> mHostnames;
   nsString mIfname;
   nsString mIp;
@@ -188,6 +185,7 @@ public:
   nsString mUsbEndIp;
   nsString mDns1;
   nsString mDns2;
+  nsTArray<nsString> mDnses;
   float mRxBytes;
   float mTxBytes;
   nsString mDate;
@@ -291,6 +289,7 @@ private:
   static CommandFunc sWifiEnableChain[];
   static CommandFunc sWifiDisableChain[];
   static CommandFunc sWifiFailChain[];
+  static CommandFunc sWifiRetryChain[];
   static CommandFunc sWifiOperationModeChain[];
   static CommandFunc sUSBEnableChain[];
   static CommandFunc sUSBDisableChain[];
@@ -307,7 +306,8 @@ private:
   /**
    * Individual netd command stored in command chain.
    */
-#define PARAMS CommandChain* aChain, CommandCallback aCallback, NetworkResultOptions& aResult
+#define PARAMS CommandChain* aChain, CommandCallback aCallback, \
+               mozilla::dom::NetworkResultOptions& aResult
   static void wifiFirmwareReload(PARAMS);
   static void startAccessPointDriver(PARAMS);
   static void stopAccessPointDriver(PARAMS);
@@ -316,6 +316,7 @@ private:
   static void createUpStream(PARAMS);
   static void startSoftAP(PARAMS);
   static void stopSoftAP(PARAMS);
+  static void clearWifiTetherParms(PARAMS);
   static void getRxBytes(PARAMS);
   static void getTxBytes(PARAMS);
   static void enableAlarm(PARAMS);
@@ -349,7 +350,8 @@ private:
   /**
    * Error callback function executed when a command is fail.
    */
-#define PARAMS NetworkParams& aOptions, NetworkResultOptions& aResult
+#define PARAMS NetworkParams& aOptions, \
+               mozilla::dom::NetworkResultOptions& aResult
   static void wifiTetheringFail(PARAMS);
   static void wifiOperationModeFail(PARAMS);
   static void usbTetheringFail(PARAMS);
@@ -363,7 +365,8 @@ private:
   /**
    * Command chain processing functions.
    */
-  static void next(CommandChain* aChain, bool aError, NetworkResultOptions& aResult);
+  static void next(CommandChain* aChain, bool aError,
+                   mozilla::dom::NetworkResultOptions& aResult);
   static void nextNetdCommand();
   static void doCommand(const char* aCommand, CommandChain* aChain, CommandCallback aCallback);
 
@@ -378,6 +381,7 @@ private:
   void checkUsbRndisState(NetworkParams& aOptions);
   void dumpParams(NetworkParams& aOptions, const char* aType);
 
+  static void escapeQuote(nsCString& aString);
   inline uint32_t netdResponseType(uint32_t code);
   inline bool isBroadcastMessage(uint32_t code);
   inline bool isError(uint32_t code);

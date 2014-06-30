@@ -7,7 +7,9 @@
 #define MOZILLA_IMAGELIB_CLIPPEDIMAGE_H_
 
 #include "ImageWrapper.h"
+#include "mozilla/gfx/2D.h"
 #include "mozilla/Maybe.h"
+#include "mozilla/RefPtr.h"
 
 namespace mozilla {
 namespace image {
@@ -24,10 +26,10 @@ class DrawSingleTileCallback;
  */
 class ClippedImage : public ImageWrapper
 {
+  typedef mozilla::gfx::SourceSurface SourceSurface;
+
 public:
   NS_DECL_ISUPPORTS
-
-  virtual ~ClippedImage();
 
   virtual nsIntRect FrameRect(uint32_t aWhichFrame) MOZ_OVERRIDE;
 
@@ -35,8 +37,8 @@ public:
   NS_IMETHOD GetHeight(int32_t* aHeight) MOZ_OVERRIDE;
   NS_IMETHOD GetIntrinsicSize(nsSize* aSize) MOZ_OVERRIDE;
   NS_IMETHOD GetIntrinsicRatio(nsSize* aRatio) MOZ_OVERRIDE;
-  NS_IMETHOD_(already_AddRefed<gfxASurface>) GetFrame(uint32_t aWhichFrame,
-                                                      uint32_t aFlags) MOZ_OVERRIDE;
+  NS_IMETHOD_(mozilla::TemporaryRef<SourceSurface>)
+    GetFrame(uint32_t aWhichFrame, uint32_t aFlags) MOZ_OVERRIDE;
   NS_IMETHOD GetImageContainer(mozilla::layers::LayerManager* aManager,
                                mozilla::layers::ImageContainer** _retval) MOZ_OVERRIDE;
   NS_IMETHOD Draw(gfxContext* aContext,
@@ -50,15 +52,19 @@ public:
                   uint32_t aFlags) MOZ_OVERRIDE;
   NS_IMETHOD RequestDiscard() MOZ_OVERRIDE;
   NS_IMETHOD_(Orientation) GetOrientation() MOZ_OVERRIDE;
+  NS_IMETHOD_(nsIntRect) GetImageSpaceInvalidationRect(const nsIntRect& aRect) MOZ_OVERRIDE;
 
 protected:
   ClippedImage(Image* aImage, nsIntRect aClip);
 
+  virtual ~ClippedImage();
+
 private:
-  already_AddRefed<gfxASurface> GetFrameInternal(const nsIntSize& aViewportSize,
-                                                 const SVGImageContext* aSVGContext,
-                                                 uint32_t aWhichFrame,
-                                                 uint32_t aFlags);
+  mozilla::TemporaryRef<SourceSurface>
+    GetFrameInternal(const nsIntSize& aViewportSize,
+                     const SVGImageContext* aSVGContext,
+                     uint32_t aWhichFrame,
+                     uint32_t aFlags);
   bool ShouldClip();
   bool MustCreateSurface(gfxContext* aContext,
                          const gfxMatrix& aTransform,

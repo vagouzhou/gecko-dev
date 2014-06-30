@@ -20,6 +20,7 @@
 #include "nsCSSAnonBoxes.h"
 #include "nsCSSColorUtils.h"
 #include "nsView.h"
+#include "nsViewManager.h"
 #include "nsPlaceholderFrame.h"
 #include "nsIScrollableFrame.h"
 #include "nsIDOMEvent.h"
@@ -41,6 +42,7 @@
 #include "nsIWidget.h"
 #include "gfxMatrix.h"
 #include "gfxPoint3D.h"
+#include "gfxPrefs.h"
 #include "gfxTypes.h"
 #include "nsTArray.h"
 #include "mozilla/dom/HTMLCanvasElement.h"
@@ -73,6 +75,11 @@
 #include "ActiveLayerTracker.h"
 #include "mozilla/gfx/2D.h"
 #include "gfx2DGlue.h"
+#include "mozilla/LookAndFeel.h"
+#include "UnitTransforms.h"
+#include "TiledLayerBuffer.h" // For TILEDLAYERBUFFER_TILE_SIZE
+#include "ClientLayerManager.h"
+#include "nsRefreshDriver.h"
 
 #include "mozilla/Preferences.h"
 
@@ -85,8 +92,12 @@
 #include "nsTransitionManager.h"
 #include "RestyleManager.h"
 
+// Additional includes used on B2G by code in GetOrMaybeCreateDisplayPort().
+#ifdef MOZ_WIDGET_GONK
+#include "mozilla/layers/AsyncPanZoomController.h"
+#endif
+
 using namespace mozilla;
-using namespace mozilla::css;
 using namespace mozilla::dom;
 using namespace mozilla::layers;
 using namespace mozilla::layout;
@@ -117,6 +128,7 @@ typedef FrameMetrics::ViewID ViewID;
 /* static */ bool nsLayoutUtils::sFontSizeInflationDisabledInMasterProcess;
 /* static */ bool nsLayoutUtils::sInvalidationDebuggingIsEnabled;
 /* static */ bool nsLayoutUtils::sCSSVariablesEnabled;
+/* static */ bool nsLayoutUtils::sInterruptibleReflowEnabled;
 
 static ViewID sScrollIdCounter = FrameMetrics::START_SCROLL_ID;
 
@@ -244,20 +256,20 @@ TextAlignTrueEnabledPrefChangeCallback(const char* aPrefName, void* aClosure)
     isTextAlignTrueEnabled ? eCSSKeyword_true : eCSSKeyword_UNKNOWN;
 }
 
-template <class AnimationsOrTransitions>
-static AnimationsOrTransitions*
-HasAnimationOrTransitionForCompositor(nsIContent* aContent,
-                                      nsIAtom* aAnimationProperty,
-                                      nsCSSProperty aProperty)
+static ElementAnimationCollection*
+GetAnimationsOrTransitionsForCompositor(nsIContent* aContent,
+                                        nsIAtom* aAnimationProperty,
+                                        nsCSSProperty aProperty)
 {
-  AnimationsOrTransitions* animations =
-    static_cast<AnimationsOrTransitions*>(aContent->GetProperty(aAnimationProperty));
-  if (animations) {
-    bool propertyMatches = animations->HasAnimationOfProperty(aProperty);
+  ElementAnimationCollection* collection =
+    static_cast<ElementAnimationCollection*>(
+      aContent->GetProperty(aAnimationProperty));
+  if (collection) {
+    bool propertyMatches = collection->HasAnimationOfProperty(aProperty);
     if (propertyMatches &&
-        animations->CanPerformOnCompositorThread(
-          CommonElementAnimationData::CanAnimate_AllowPartial)) {
-      return animations;
+        collection->CanPerformOnCompositorThread(
+          ElementAnimationCollection::CanAnimate_AllowPartial)) {
+      return collection;
     }
   }
 
@@ -270,40 +282,28 @@ nsLayoutUtils::HasAnimationsForCompositor(nsIContent* aContent,
 {
   if (!aContent->MayHaveAnimations())
     return false;
-  return HasAnimationOrTransitionForCompositor<ElementAnimations>
-            (aContent, nsGkAtoms::animationsProperty, aProperty) ||
-         HasAnimationOrTransitionForCompositor<ElementTransitions>
-            (aContent, nsGkAtoms::transitionsProperty, aProperty);
+  return GetAnimationsOrTransitionsForCompositor(
+           aContent, nsGkAtoms::animationsProperty, aProperty) ||
+         GetAnimationsOrTransitionsForCompositor(
+           aContent, nsGkAtoms::transitionsProperty, aProperty);
 }
 
-template <class AnimationsOrTransitions>
-AnimationsOrTransitions*
-mozilla::HasAnimationOrTransition(nsIContent* aContent,
-                         nsIAtom* aAnimationProperty,
-                         nsCSSProperty aProperty)
+static ElementAnimationCollection*
+GetAnimationsOrTransitions(nsIContent* aContent,
+                           nsIAtom* aAnimationProperty,
+                           nsCSSProperty aProperty)
 {
-  AnimationsOrTransitions* animations =
-    static_cast<AnimationsOrTransitions*>(aContent->GetProperty(aAnimationProperty));
-  if (animations) {
-    bool propertyMatches = animations->HasAnimationOfProperty(aProperty);
+  ElementAnimationCollection* collection =
+    static_cast<ElementAnimationCollection*>(aContent->GetProperty(
+        aAnimationProperty));
+  if (collection) {
+    bool propertyMatches = collection->HasAnimationOfProperty(aProperty);
     if (propertyMatches) {
-      return animations;
+      return collection;
     }
   }
-
   return nullptr;
 }
-
-template ElementAnimations*
-mozilla::HasAnimationOrTransition<ElementAnimations>(nsIContent* aContent,
-                         nsIAtom* aAnimationProperty,
-                         nsCSSProperty aProperty);
-
-template ElementTransitions*
-mozilla::HasAnimationOrTransition<ElementTransitions>(nsIContent* aContent,
-                         nsIAtom* aAnimationProperty,
-                         nsCSSProperty aProperty);
-
 
 bool
 nsLayoutUtils::HasAnimations(nsIContent* aContent,
@@ -311,21 +311,36 @@ nsLayoutUtils::HasAnimations(nsIContent* aContent,
 {
   if (!aContent->MayHaveAnimations())
     return false;
-  return HasAnimationOrTransition<ElementAnimations>
-            (aContent, nsGkAtoms::animationsProperty, aProperty) ||
-         HasAnimationOrTransition<ElementTransitions>
-            (aContent, nsGkAtoms::transitionsProperty, aProperty);
+  return GetAnimationsOrTransitions(aContent, nsGkAtoms::animationsProperty,
+                                    aProperty) ||
+         GetAnimationsOrTransitions(aContent, nsGkAtoms::transitionsProperty,
+                                    aProperty);
+}
+
+bool
+nsLayoutUtils::HasCurrentAnimations(nsIContent* aContent,
+                                    nsIAtom* aAnimationProperty,
+                                    nsPresContext* aPresContext)
+{
+  if (!aContent->MayHaveAnimations())
+    return false;
+
+  TimeStamp now = aPresContext->RefreshDriver()->MostRecentRefresh();
+
+  ElementAnimationCollection* collection =
+    static_cast<ElementAnimationCollection*>(
+      aContent->GetProperty(aAnimationProperty));
+  return (collection && collection->HasCurrentAnimationsAt(now));
 }
 
 static gfxSize
-GetScaleForValue(const nsStyleAnimation::Value& aValue,
-                 nsIFrame* aFrame)
+GetScaleForValue(const StyleAnimationValue& aValue, nsIFrame* aFrame)
 {
   if (!aFrame) {
     NS_WARNING("No frame.");
     return gfxSize();
   }
-  if (aValue.GetUnit() != nsStyleAnimation::eUnit_Transform) {
+  if (aValue.GetUnit() != StyleAnimationValue::eUnit_Transform) {
     NS_WARNING("Expected a transform.");
     return gfxSize();
   }
@@ -355,7 +370,7 @@ GetScaleForValue(const nsStyleAnimation::Value& aValue,
   return transform2d.ScaleFactors(true);
 }
 
-float
+static float
 GetSuitableScale(float aMaxScale, float aMinScale)
 {
   // If the minimum scale >= 1.0f, use it; if the maximum <= 1.0f, use it;
@@ -370,68 +385,59 @@ GetSuitableScale(float aMaxScale, float aMinScale)
   return 1.0f;
 }
 
+static void
+GetMinAndMaxScaleForAnimationProperty(nsIContent* aContent,
+                                      nsIAtom* aAnimationProperty,
+                                      gfxSize& aMaxScale,
+                                      gfxSize& aMinScale)
+{
+  ElementAnimationCollection* collection =
+    GetAnimationsOrTransitionsForCompositor(aContent, aAnimationProperty,
+                                            eCSSProperty_transform);
+  if (!collection)
+    return;
+
+  for (uint32_t animIdx = collection->mAnimations.Length(); animIdx-- != 0; ) {
+    mozilla::ElementAnimation* anim = collection->mAnimations[animIdx];
+    if (anim->IsFinishedTransition()) {
+      continue;
+    }
+    for (uint32_t propIdx = anim->mProperties.Length(); propIdx-- != 0; ) {
+      AnimationProperty& prop = anim->mProperties[propIdx];
+      if (prop.mProperty == eCSSProperty_transform) {
+        for (uint32_t segIdx = prop.mSegments.Length(); segIdx-- != 0; ) {
+          AnimationPropertySegment& segment = prop.mSegments[segIdx];
+          gfxSize from = GetScaleForValue(segment.mFromValue,
+                                          aContent->GetPrimaryFrame());
+          aMaxScale.width = std::max<float>(aMaxScale.width, from.width);
+          aMaxScale.height = std::max<float>(aMaxScale.height, from.height);
+          aMinScale.width = std::min<float>(aMinScale.width, from.width);
+          aMinScale.height = std::min<float>(aMinScale.height, from.height);
+          gfxSize to = GetScaleForValue(segment.mToValue,
+                                        aContent->GetPrimaryFrame());
+          aMaxScale.width = std::max<float>(aMaxScale.width, to.width);
+          aMaxScale.height = std::max<float>(aMaxScale.height, to.height);
+          aMinScale.width = std::min<float>(aMinScale.width, to.width);
+          aMinScale.height = std::min<float>(aMinScale.height, to.height);
+        }
+      }
+    }
+  }
+}
+
 gfxSize
 nsLayoutUtils::ComputeSuitableScaleForAnimation(nsIContent* aContent)
 {
   gfxSize maxScale(1.0f, 1.0f);
   gfxSize minScale(1.0f, 1.0f);
 
-  ElementAnimations* animations = HasAnimationOrTransitionForCompositor<ElementAnimations>
-    (aContent, nsGkAtoms::animationsProperty, eCSSProperty_transform);
-  if (animations) {
-    for (uint32_t animIdx = animations->mAnimations.Length(); animIdx-- != 0; ) {
-      ElementAnimation& anim = animations->mAnimations[animIdx];
-      for (uint32_t propIdx = anim.mProperties.Length(); propIdx-- != 0; ) {
-        AnimationProperty& prop = anim.mProperties[propIdx];
-        if (prop.mProperty == eCSSProperty_transform) {
-          for (uint32_t segIdx = prop.mSegments.Length(); segIdx-- != 0; ) {
-            AnimationPropertySegment& segment = prop.mSegments[segIdx];
-            gfxSize from = GetScaleForValue(segment.mFromValue,
-                                            aContent->GetPrimaryFrame());
-            maxScale.width = std::max<float>(maxScale.width, from.width);
-            maxScale.height = std::max<float>(maxScale.height, from.height);
-            minScale.width = std::min<float>(minScale.width, from.width);
-            minScale.height = std::min<float>(minScale.height, from.height);
-            gfxSize to = GetScaleForValue(segment.mToValue,
-                                          aContent->GetPrimaryFrame());
-            maxScale.width = std::max<float>(maxScale.width, to.width);
-            maxScale.height = std::max<float>(maxScale.height, to.height);
-            minScale.width = std::min<float>(minScale.width, to.width);
-            minScale.height = std::min<float>(minScale.height, to.height);
-          }
-        }
-      }
-    }
-  }
-
-  ElementTransitions* transitions = HasAnimationOrTransitionForCompositor<ElementTransitions>
-    (aContent, nsGkAtoms::transitionsProperty, eCSSProperty_transform);
-  if (transitions) {
-    for (uint32_t i = 0, i_end = transitions->mPropertyTransitions.Length();
-         i < i_end; ++i){
-      ElementPropertyTransition &pt = transitions->mPropertyTransitions[i];
-      if (pt.IsRemovedSentinel()) {
-        continue;
-      }
-      if (pt.mProperty == eCSSProperty_transform) {
-        gfxSize start = GetScaleForValue(pt.mStartValue,
-                                         aContent->GetPrimaryFrame());
-        maxScale.width = std::max<float>(maxScale.width, start.width);
-        maxScale.height = std::max<float>(maxScale.height, start.height);
-        minScale.width = std::min<float>(minScale.width, start.width);
-        minScale.height = std::min<float>(minScale.height, start.height);
-        gfxSize end = GetScaleForValue(pt.mEndValue,
-                                       aContent->GetPrimaryFrame());
-        maxScale.width = std::max<float>(maxScale.width, end.width);
-        maxScale.height = std::max<float>(maxScale.height, end.height);
-        minScale.width = std::min<float>(minScale.width, end.width);
-        minScale.height = std::min<float>(minScale.height, end.height);
-      }
-    }
-  }
+  GetMinAndMaxScaleForAnimationProperty(aContent,
+    nsGkAtoms::animationsProperty, maxScale, minScale);
+  GetMinAndMaxScaleForAnimationProperty(aContent,
+    nsGkAtoms::transitionsProperty, maxScale, minScale);
 
   return gfxSize(GetSuitableScale(maxScale.width, minScale.width),
-      GetSuitableScale(maxScale.height, minScale.height));
+                 GetSuitableScale(maxScale.height, minScale.height));
 }
 
 bool
@@ -561,11 +567,12 @@ nsLayoutUtils::IsTextAlignTrueValueEnabled()
 
 void
 nsLayoutUtils::UnionChildOverflow(nsIFrame* aFrame,
-                                  nsOverflowAreas& aOverflowAreas)
+                                  nsOverflowAreas& aOverflowAreas,
+                                  FrameChildListIDs aSkipChildLists)
 {
   // Iterate over all children except pop-ups.
-  const nsIFrame::ChildListIDs skip(nsIFrame::kPopupList |
-                                    nsIFrame::kSelectPopupList);
+  FrameChildListIDs skip = aSkipChildLists |
+      nsIFrame::kSelectPopupList | nsIFrame::kPopupList;
   for (nsIFrame::ChildListIterator childLists(aFrame);
        !childLists.IsDone(); childLists.Next()) {
     if (skip.Contains(childLists.CurrentID())) {
@@ -652,44 +659,253 @@ nsLayoutUtils::FindScrollableFrameFor(ViewID aId)
   return scrolledFrame ? scrolledFrame->GetScrollTargetFrame() : nullptr;
 }
 
-bool
-nsLayoutUtils::GetDisplayPort(nsIContent* aContent, nsRect *aResult)
+static nsRect
+ApplyRectMultiplier(nsRect aRect, float aMultiplier)
 {
-  void* property = aContent->GetProperty(nsGkAtoms::DisplayPort);
-  if (!property) {
+  if (aMultiplier == 1.0f) {
+    return aRect;
+  }
+  float newWidth = aRect.width * aMultiplier;
+  float newHeight = aRect.height * aMultiplier;
+  float newX = aRect.x - ((newWidth - aRect.width) / 2.0f);
+  float newY = aRect.y - ((newHeight - aRect.height) / 2.0f);
+  // Rounding doesn't matter too much here, do a round-in
+  return nsRect(ceil(newX), ceil(newY), floor(newWidth), floor(newHeight));
+}
+
+static nsRect
+GetDisplayPortFromRectData(nsIContent* aContent,
+                           DisplayPortPropertyData* aRectData,
+                           float aMultiplier)
+{
+  // In the case where the displayport is set as a rect, we assume it is
+  // already aligned and clamped as necessary. The burden to do that is
+  // on the setter of the displayport. In practice very few places set the
+  // displayport directly as a rect (mostly tests). We still do need to
+  // expand it by the multiplier though.
+  return ApplyRectMultiplier(aRectData->mRect, aMultiplier);
+}
+
+static nsRect
+GetDisplayPortFromMarginsData(nsIContent* aContent,
+                              DisplayPortMarginsPropertyData* aMarginsData,
+                              float aMultiplier)
+{
+  // In the case where the displayport is set via margins, we apply the margins
+  // to a base rect. Then we align the expanded rect based on the alignment
+  // requested, further expand the rect by the multiplier, and finally, clamp it
+  // to the size of the scrollable rect.
+
+  nsRect base;
+  if (nsRect* baseData = static_cast<nsRect*>(aContent->GetProperty(nsGkAtoms::DisplayPortBase))) {
+    base = *baseData;
+  } else {
+    NS_WARNING("Attempting to get a margins-based displayport with no base data!");
+  }
+
+  nsIFrame* frame = aContent->GetPrimaryFrame();
+  if (!frame) {
+    // Turns out we can't really compute it. Oops. We still should return
+    // something sane. Note that although we can apply the multiplier on the
+    // base rect here, we can't tile-align or clamp the rect without a frame.
+    NS_WARNING("Attempting to get a displayport from a content with no primary frame!");
+    return ApplyRectMultiplier(base, aMultiplier);
+  }
+
+  bool isRoot = false;
+  if (aContent->OwnerDoc()->GetRootElement() == aContent) {
+    // We want the scroll frame, the root scroll frame differs from all
+    // others in that the primary frame is not the scroll frame.
+    frame = frame->PresContext()->PresShell()->GetRootScrollFrame();
+    isRoot = true;
+  }
+
+  nsPoint scrollPos;
+  if (nsIScrollableFrame* scrollableFrame = frame->GetScrollTargetFrame()) {
+    scrollPos = scrollableFrame->GetScrollPosition();
+  }
+
+  nsPresContext* presContext = frame->PresContext();
+  int32_t auPerDevPixel = presContext->AppUnitsPerDevPixel();
+  gfxSize res = presContext->PresShell()->GetCumulativeResolution();
+
+  // First convert the base rect to layer pixels
+  gfxSize parentRes = res;
+  if (isRoot) {
+    // the base rect for root scroll frames is specified in the parent document
+    // coordinate space, so it doesn't include the local resolution.
+    gfxSize localRes = presContext->PresShell()->GetResolution();
+    parentRes.width /= localRes.width;
+    parentRes.height /= localRes.height;
+  }
+  LayerRect layerRect(NSAppUnitsToFloatPixels(base.x, auPerDevPixel) * parentRes.width,
+                      NSAppUnitsToFloatPixels(base.y, auPerDevPixel) * parentRes.height,
+                      NSAppUnitsToFloatPixels(base.width, auPerDevPixel) * parentRes.width,
+                      NSAppUnitsToFloatPixels(base.height, auPerDevPixel) * parentRes.height);
+
+  // Expand the rect by the margins
+  layerRect.Inflate(aMarginsData->mMargins);
+
+  // And then align it to the requested alignment
+  if (aMarginsData->mAlignmentX > 0 || aMarginsData->mAlignmentY > 0) {
+    // Inflate the rectangle by 1 so that we always push to the next tile
+    // boundary. This is desirable to stop from having a rectangle with a
+    // moving origin occasionally being smaller when it coincidentally lines
+    // up to tile boundaries.
+    layerRect.Inflate(1);
+
+    // Avoid division by zero.
+    if (aMarginsData->mAlignmentX == 0) {
+      aMarginsData->mAlignmentX = 1;
+    }
+    if (aMarginsData->mAlignmentY == 0) {
+      aMarginsData->mAlignmentY = 1;
+    }
+
+    LayerPoint scrollPosLayer(NSAppUnitsToFloatPixels(scrollPos.x, auPerDevPixel) * res.width,
+                              NSAppUnitsToFloatPixels(scrollPos.y, auPerDevPixel) * res.height);
+
+    layerRect += scrollPosLayer;
+    float x = aMarginsData->mAlignmentX * floor(layerRect.x / aMarginsData->mAlignmentX);
+    float y = aMarginsData->mAlignmentY * floor(layerRect.y / aMarginsData->mAlignmentY);
+    float w = aMarginsData->mAlignmentX * ceil(layerRect.XMost() / aMarginsData->mAlignmentX) - x;
+    float h = aMarginsData->mAlignmentY * ceil(layerRect.YMost() / aMarginsData->mAlignmentY) - y;
+    layerRect = LayerRect(x, y, w, h);
+    layerRect -= scrollPosLayer;
+  }
+
+  // Convert the aligned rect back into app units
+  nsRect result(NSFloatPixelsToAppUnits(layerRect.x / res.width, auPerDevPixel),
+                NSFloatPixelsToAppUnits(layerRect.y / res.height, auPerDevPixel),
+                NSFloatPixelsToAppUnits(layerRect.width / res.width, auPerDevPixel),
+                NSFloatPixelsToAppUnits(layerRect.height / res.height, auPerDevPixel));
+
+  // Expand it for the low-res buffer if needed
+  result = ApplyRectMultiplier(result, aMultiplier);
+
+  // Finally, clamp it to the expanded scrollable rect.
+  nsRect expandedScrollableRect = nsLayoutUtils::CalculateExpandedScrollableRect(frame);
+  result = expandedScrollableRect.Intersect(result + scrollPos) - scrollPos;
+
+  return result;
+}
+
+static bool
+GetDisplayPortImpl(nsIContent* aContent, nsRect *aResult, float aMultiplier)
+{
+  DisplayPortPropertyData* rectData =
+    static_cast<DisplayPortPropertyData*>(aContent->GetProperty(nsGkAtoms::DisplayPort));
+  DisplayPortMarginsPropertyData* marginsData =
+    static_cast<DisplayPortMarginsPropertyData*>(aContent->GetProperty(nsGkAtoms::DisplayPortMargins));
+
+  if (!rectData && !marginsData) {
+    // This content element has no displayport data at all
     return false;
   }
 
-  if (aResult) {
-    *aResult = (static_cast<DisplayPortPropertyData*>(property))->mRect;
+  if (!aResult) {
+    // We have displayport data, but the caller doesn't want the actual
+    // rect, so we don't need to actually compute it.
+    return true;
+  }
+
+  if (rectData && marginsData) {
+    // choose margins if equal priority
+    if (rectData->mPriority > marginsData->mPriority) {
+      marginsData = nullptr;
+    } else {
+      rectData = nullptr;
+    }
+  }
+
+  NS_ASSERTION((rectData == nullptr) != (marginsData == nullptr),
+               "Only one of rectData or marginsData should be set!");
+
+  if (rectData) {
+    *aResult = GetDisplayPortFromRectData(aContent, rectData, aMultiplier);
+  } else {
+    *aResult = GetDisplayPortFromMarginsData(aContent, marginsData, aMultiplier);
   }
   return true;
+}
+
+bool
+nsLayoutUtils::GetDisplayPort(nsIContent* aContent, nsRect *aResult)
+{
+  if (gfxPrefs::UseLowPrecisionBuffer()) {
+    return GetDisplayPortImpl(aContent, aResult, 1.0f / gfxPrefs::LowPrecisionResolution());
+  }
+  return GetDisplayPortImpl(aContent, aResult, 1.0f);
+}
+
+void
+nsLayoutUtils::SetDisplayPortMargins(nsIContent* aContent,
+                                     nsIPresShell* aPresShell,
+                                     const LayerMargin& aMargins,
+                                     uint32_t aAlignmentX,
+                                     uint32_t aAlignmentY,
+                                     uint32_t aPriority,
+                                     RepaintMode aRepaintMode)
+{
+  DisplayPortMarginsPropertyData* currentData =
+    static_cast<DisplayPortMarginsPropertyData*>(aContent->GetProperty(nsGkAtoms::DisplayPortMargins));
+  if (currentData && currentData->mPriority > aPriority) {
+    return;
+  }
+
+  aContent->SetProperty(nsGkAtoms::DisplayPortMargins,
+                        new DisplayPortMarginsPropertyData(
+                            aMargins, aAlignmentX, aAlignmentY, aPriority),
+                        nsINode::DeleteProperty<DisplayPortMarginsPropertyData>);
+
+  nsIFrame* rootScrollFrame = aPresShell->GetRootScrollFrame();
+  if (rootScrollFrame && aContent == rootScrollFrame->GetContent()) {
+    // We are setting a root displayport for a document.
+    // The pres shell needs a special flag set.
+    aPresShell->SetIgnoreViewportScrolling(true);
+  }
+
+  if (aRepaintMode == RepaintMode::Repaint) {
+    nsIFrame* rootFrame = aPresShell->FrameManager()->GetRootFrame();
+    if (rootFrame) {
+      rootFrame->SchedulePaint();
+    }
+  }
+}
+
+void
+nsLayoutUtils::SetDisplayPortBase(nsIContent* aContent, const nsRect& aBase)
+{
+  aContent->SetProperty(nsGkAtoms::DisplayPortBase, new nsRect(aBase),
+                        nsINode::DeleteProperty<nsRect>);
+}
+
+void
+nsLayoutUtils::SetDisplayPortBaseIfNotSet(nsIContent* aContent, const nsRect& aBase)
+{
+  if (!aContent->GetProperty(nsGkAtoms::DisplayPortBase)) {
+    SetDisplayPortBase(aContent, aBase);
+  }
 }
 
 bool
 nsLayoutUtils::GetCriticalDisplayPort(nsIContent* aContent, nsRect* aResult)
 {
-  void* property = aContent->GetProperty(nsGkAtoms::CriticalDisplayPort);
-  if (!property) {
-    return false;
+  if (gfxPrefs::UseLowPrecisionBuffer()) {
+    return GetDisplayPortImpl(aContent, aResult, 1.0f);
   }
-
-  if (aResult) {
-    *aResult = *static_cast<nsRect*>(property);
-  }
-  return true;
+  return false;
 }
 
-nsIFrame*
-nsLayoutUtils::LastContinuationWithChild(nsIFrame* aFrame)
+nsContainerFrame*
+nsLayoutUtils::LastContinuationWithChild(nsContainerFrame* aFrame)
 {
   NS_PRECONDITION(aFrame, "NULL frame pointer");
-  aFrame = aFrame->LastContinuation();
-  while (!aFrame->GetFirstPrincipalChild() &&
-         aFrame->GetPrevContinuation()) {
-    aFrame = aFrame->GetPrevContinuation();
+  nsIFrame* f = aFrame->LastContinuation();
+  while (!f->GetFirstPrincipalChild() && f->GetPrevContinuation()) {
+    f = f->GetPrevContinuation();
   }
-  return aFrame;
+  return static_cast<nsContainerFrame*>(f);
 }
 
 /**
@@ -728,13 +944,13 @@ GetFirstChildFrame(nsIFrame*       aFrame,
  * @param aFrame the frame's content node
  */
 static nsIFrame*
-GetLastChildFrame(nsIFrame*       aFrame,
-                  nsIContent*     aContent)
+GetLastChildFrame(nsContainerFrame* aFrame,
+                  nsIContent*       aContent)
 {
   NS_PRECONDITION(aFrame, "NULL frame pointer");
 
   // Get the last continuation frame that's a parent
-  nsIFrame* lastParentContinuation =
+  nsContainerFrame* lastParentContinuation =
     nsLayoutUtils::LastContinuationWithChild(aFrame);
   nsIFrame* lastChildFrame =
     lastParentContinuation->GetLastChild(nsIFrame::kPrincipalList);
@@ -749,7 +965,8 @@ GetLastChildFrame(nsIFrame*       aFrame,
     if (lastChildFrame &&
         lastChildFrame->IsPseudoFrame(aContent) &&
         !lastChildFrame->IsGeneratedContentFrame()) {
-      return GetLastChildFrame(lastChildFrame, aContent);
+      return GetLastChildFrame(static_cast<nsContainerFrame*>(lastChildFrame),
+                               aContent);
     }
 
     return lastChildFrame;
@@ -833,7 +1050,7 @@ nsLayoutUtils::GetChildListNameFor(nsIFrame* aChildFrame)
 #ifdef DEBUG
   // Verify that the frame is actually in that child list or in the
   // corresponding overflow list.
-  nsIFrame* parent = aChildFrame->GetParent();
+  nsContainerFrame* parent = aChildFrame->GetParent();
   bool found = parent->GetChildList(id).ContainsFrame(aChildFrame);
   if (!found) {
     if (!(aChildFrame->GetStateBits() & NS_FRAME_OUT_OF_FLOW)) {
@@ -864,8 +1081,11 @@ nsLayoutUtils::GetBeforeFrame(nsIFrame* aFrame)
   NS_ASSERTION(!aFrame->GetPrevContinuation(),
                "aFrame must be first continuation");
 
-  nsIFrame* firstFrame = GetFirstChildFrame(aFrame, aFrame->GetContent());
-
+  nsIFrame* cif = aFrame->GetContentInsertionFrame();
+  if (!cif) {
+    return nullptr;
+  }
+  nsIFrame* firstFrame = GetFirstChildFrame(cif, aFrame->GetContent());
   if (firstFrame && IsGeneratedContentFor(nullptr, firstFrame,
                                           nsCSSPseudoElements::before)) {
     return firstFrame;
@@ -880,8 +1100,11 @@ nsLayoutUtils::GetAfterFrame(nsIFrame* aFrame)
 {
   NS_PRECONDITION(aFrame, "NULL frame pointer");
 
-  nsIFrame* lastFrame = GetLastChildFrame(aFrame, aFrame->GetContent());
-
+  nsContainerFrame* cif = aFrame->GetContentInsertionFrame();
+  if (!cif) {
+    return nullptr;
+  }
+  nsIFrame* lastFrame = GetLastChildFrame(cif, aFrame->GetContent());
   if (lastFrame && IsGeneratedContentFor(nullptr, lastFrame,
                                          nsCSSPseudoElements::after)) {
     return lastFrame;
@@ -1259,9 +1482,6 @@ nsIScrollableFrame*
 nsLayoutUtils::GetScrollableFrameFor(const nsIFrame *aScrolledFrame)
 {
   nsIFrame *frame = aScrolledFrame->GetParent();
-  if (!frame) {
-    return nullptr;
-  }
   nsIScrollableFrame *sf = do_QueryFrame(frame);
   return sf;
 }
@@ -1370,32 +1590,47 @@ nsLayoutUtils::IsFixedPosFrameInDisplayPort(const nsIFrame* aFrame, nsRect* aDis
   return ViewportHasDisplayPort(aFrame->PresContext(), aDisplayPort);
 }
 
-nsIFrame*
-nsLayoutUtils::GetAnimatedGeometryRootFor(nsIFrame* aFrame,
-                                          const nsIFrame* aStopAtAncestor)
+NS_DECLARE_FRAME_PROPERTY(ScrollbarThumbLayerized, nullptr)
+
+/* static */ void
+nsLayoutUtils::SetScrollbarThumbLayerization(nsIFrame* aThumbFrame, bool aLayerize)
+{
+  aThumbFrame->Properties().Set(ScrollbarThumbLayerized(),
+    reinterpret_cast<void*>(intptr_t(aLayerize)));
+}
+
+static bool
+IsScrollbarThumbLayerized(nsIFrame* aThumbFrame)
+{
+  return reinterpret_cast<intptr_t>(aThumbFrame->Properties().Get(ScrollbarThumbLayerized()));
+}
+
+static nsIFrame*
+GetAnimatedGeometryRootForFrame(nsIFrame* aFrame,
+                                const nsIFrame* aStopAtAncestor)
 {
   nsIFrame* f = aFrame;
   nsIFrame* stickyFrame = nullptr;
   while (f != aStopAtAncestor) {
-    if (IsPopup(f))
+    if (nsLayoutUtils::IsPopup(f))
       break;
     if (ActiveLayerTracker::IsOffsetOrMarginStyleAnimated(f))
       break;
-    if (!f->GetParent() && ViewportHasDisplayPort(f->PresContext())) {
+    if (!f->GetParent() &&
+        nsLayoutUtils::ViewportHasDisplayPort(f->PresContext())) {
       // Viewport frames in a display port need to be animated geometry roots
       // for background-attachment:fixed elements.
       break;
     }
-    nsIFrame* parent = GetCrossDocParentFrame(f);
+    nsIFrame* parent = nsLayoutUtils::GetCrossDocParentFrame(f);
     if (!parent)
       break;
     nsIAtom* parentType = parent->GetType();
-#ifdef ANDROID
-    // Treat the slider thumb as being as an active scrolled root
-    // on mobile so that it can move without repainting.
-    if (parentType == nsGkAtoms::sliderFrame)
+    // Treat the slider thumb as being as an active scrolled root when it wants
+    // its own layer so that it can move without repainting.
+    if (parentType == nsGkAtoms::sliderFrame && IsScrollbarThumbLayerized(f)) {
       break;
-#endif
+    }
     // Sticky frames are active if their nearest scrollable frame
     // is also active, just keep a record of sticky frames that we
     // encounter for now.
@@ -1417,7 +1652,7 @@ nsLayoutUtils::GetAnimatedGeometryRootFor(nsIFrame* aFrame,
       }
     }
     // Fixed-pos frames are parented by the viewport frame, which has no parent
-    if (IsFixedPosFrameInDisplayPort(f)) {
+    if (nsLayoutUtils::IsFixedPosFrameInDisplayPort(f)) {
       return f;
     }
     f = parent;
@@ -1434,7 +1669,7 @@ nsLayoutUtils::GetAnimatedGeometryRootFor(nsDisplayItem* aItem,
     nsDisplayScrollLayer* scrollLayerItem =
       static_cast<nsDisplayScrollLayer*>(aItem);
     nsIFrame* scrolledFrame = scrollLayerItem->GetScrolledFrame();
-    return nsLayoutUtils::GetAnimatedGeometryRootFor(scrolledFrame,
+    return GetAnimatedGeometryRootForFrame(scrolledFrame,
         aBuilder->FindReferenceFrameFor(scrolledFrame));
   }
   if (aItem->ShouldFixToViewport(aBuilder)) {
@@ -1445,10 +1680,10 @@ nsLayoutUtils::GetAnimatedGeometryRootFor(nsDisplayItem* aItem,
     nsIFrame* viewportFrame =
       nsLayoutUtils::GetClosestFrameOfType(f, nsGkAtoms::viewportFrame);
     NS_ASSERTION(viewportFrame, "no viewport???");
-    return nsLayoutUtils::GetAnimatedGeometryRootFor(viewportFrame,
+    return GetAnimatedGeometryRootForFrame(viewportFrame,
         aBuilder->FindReferenceFrameFor(viewportFrame));
   }
-  return nsLayoutUtils::GetAnimatedGeometryRootFor(f, aItem->ReferenceFrame());
+  return GetAnimatedGeometryRootForFrame(f, aItem->ReferenceFrame());
 }
 
 // static
@@ -1700,6 +1935,34 @@ nsLayoutUtils::ChangeMatrixBasis(const gfxPoint3D &aOrigin,
   return result; 
 }
 
+static void ConstrainToCoordValues(float& aStart, float& aSize)
+{
+  MOZ_ASSERT(aSize >= 0);
+
+  // Here we try to make sure that the resulting nsRect will continue to cover
+  // as much of the area that was covered by the original gfx Rect as possible.
+
+  // We clamp the bounds of the rect to {nscoord_MIN,nscoord_MAX} since
+  // nsRect::X/Y() and nsRect::XMost/YMost() can't return values outwith this
+  // range:
+  float end = aStart + aSize;
+  aStart = clamped(aStart, float(nscoord_MIN), float(nscoord_MAX));
+  end = clamped(end, float(nscoord_MIN), float(nscoord_MAX));
+
+  aSize = end - aStart;
+
+  // We must also clamp aSize to {0,nscoord_MAX} since nsRect::Width/Height()
+  // can't return a value greater than nscoord_MAX. If aSize is greater than
+  // nscoord_MAX then we reduce it to nscoord_MAX while keeping the rect
+  // centered:
+  if (aSize > nscoord_MAX) {
+    float excess = aSize - nscoord_MAX;
+    excess /= 2;
+    aStart += excess;
+    aSize = nscoord_MAX;
+  }
+}
+
 /**
  * Given a gfxFloat, constrains its value to be between nscoord_MIN and nscoord_MAX.
  *
@@ -1737,6 +2000,22 @@ static void ConstrainToCoordValues(gfxFloat& aStart, gfxFloat& aSize)
     aStart -= excess;
     aSize = nscoord_MIN;
   }
+}
+
+nsRect
+nsLayoutUtils::RoundGfxRectToAppRect(const Rect &aRect, float aFactor)
+{
+  /* Get a new Rect whose units are app units by scaling by the specified factor. */
+  Rect scaledRect = aRect;
+  scaledRect.ScaleRoundOut(aFactor);
+
+  /* We now need to constrain our results to the max and min values for coords. */
+  ConstrainToCoordValues(scaledRect.x, scaledRect.width);
+  ConstrainToCoordValues(scaledRect.y, scaledRect.height);
+
+  /* Now typecast everything back.  This is guaranteed to be safe. */
+  return nsRect(nscoord(scaledRect.X()), nscoord(scaledRect.Y()),
+                nscoord(scaledRect.Width()), nscoord(scaledRect.Height()));
 }
 
 nsRect
@@ -1953,6 +2232,66 @@ nsLayoutUtils::TransformPoints(nsIFrame* aFromFrame, nsIFrame* aToFrame,
   return TRANSFORM_SUCCEEDED;
 }
 
+nsLayoutUtils::TransformResult
+nsLayoutUtils::TransformPoint(nsIFrame* aFromFrame, nsIFrame* aToFrame,
+                              nsPoint& aPoint)
+{
+  nsIFrame* nearestCommonAncestor = FindNearestCommonAncestorFrame(aFromFrame, aToFrame);
+  if (!nearestCommonAncestor) {
+    return NO_COMMON_ANCESTOR;
+  }
+  gfx3DMatrix downToDest = GetTransformToAncestor(aToFrame, nearestCommonAncestor);
+  if (downToDest.IsSingular()) {
+    return NONINVERTIBLE_TRANSFORM;
+  }
+  downToDest.Invert();
+  gfx3DMatrix upToAncestor = GetTransformToAncestor(aFromFrame, nearestCommonAncestor);
+
+  float devPixelsPerAppUnitFromFrame =
+    1.0f / aFromFrame->PresContext()->AppUnitsPerDevPixel();
+  float devPixelsPerAppUnitToFrame =
+    1.0f / aToFrame->PresContext()->AppUnitsPerDevPixel();
+  gfxPoint toDevPixels = downToDest.ProjectPoint(
+      upToAncestor.ProjectPoint(
+        gfxPoint(aPoint.x * devPixelsPerAppUnitFromFrame,
+                 aPoint.y * devPixelsPerAppUnitFromFrame)));
+  aPoint.x = toDevPixels.x / devPixelsPerAppUnitToFrame;
+  aPoint.y = toDevPixels.y / devPixelsPerAppUnitToFrame;
+  return TRANSFORM_SUCCEEDED;
+}
+
+nsLayoutUtils::TransformResult
+nsLayoutUtils::TransformRect(nsIFrame* aFromFrame, nsIFrame* aToFrame,
+                             nsRect& aRect)
+{
+  nsIFrame* nearestCommonAncestor = FindNearestCommonAncestorFrame(aFromFrame, aToFrame);
+  if (!nearestCommonAncestor) {
+    return NO_COMMON_ANCESTOR;
+  }
+  gfx3DMatrix downToDest = GetTransformToAncestor(aToFrame, nearestCommonAncestor);
+  if (downToDest.IsSingular()) {
+    return NONINVERTIBLE_TRANSFORM;
+  }
+  downToDest.Invert();
+  gfx3DMatrix upToAncestor = GetTransformToAncestor(aFromFrame, nearestCommonAncestor);
+
+  float devPixelsPerAppUnitFromFrame =
+    1.0f / aFromFrame->PresContext()->AppUnitsPerDevPixel();
+  float devPixelsPerAppUnitToFrame =
+    1.0f / aToFrame->PresContext()->AppUnitsPerDevPixel();
+  gfxRect toDevPixels = downToDest.ProjectRectBounds(
+    upToAncestor.ProjectRectBounds(
+      gfxRect(aRect.x * devPixelsPerAppUnitFromFrame,
+              aRect.y * devPixelsPerAppUnitFromFrame,
+              aRect.width * devPixelsPerAppUnitFromFrame,
+              aRect.height * devPixelsPerAppUnitFromFrame)));
+  aRect.x = toDevPixels.x / devPixelsPerAppUnitToFrame;
+  aRect.y = toDevPixels.y / devPixelsPerAppUnitToFrame;
+  aRect.width = toDevPixels.width / devPixelsPerAppUnitToFrame;
+  aRect.height = toDevPixels.height / devPixelsPerAppUnitToFrame;
+  return TRANSFORM_SUCCEEDED;
+}
+
 bool
 nsLayoutUtils::GetLayerTransformForFrame(nsIFrame* aFrame,
                                          gfx3DMatrix* aTransform)
@@ -2093,13 +2432,16 @@ nsLayoutUtils::TransformFrameRectToAncestor(nsIFrame* aFrame,
 
 static nsIntPoint GetWidgetOffset(nsIWidget* aWidget, nsIWidget*& aRootWidget) {
   nsIntPoint offset(0, 0);
-  nsIWidget* parent = aWidget->GetParent();
-  while (parent) {
+  while ((aWidget->WindowType() == eWindowType_child ||
+          aWidget->WindowType() == eWindowType_plugin)) {
+    nsIWidget* parent = aWidget->GetParent();
+    if (!parent) {
+      break;
+    }
     nsIntRect bounds;
     aWidget->GetBounds(bounds);
     offset += bounds.TopLeft();
     aWidget = parent;
-    parent = aWidget->GetParent();
   }
   aRootWidget = aWidget;
   return offset;
@@ -2204,7 +2546,9 @@ nsLayoutUtils::GetRemoteContentIds(nsIFrame* aFrame,
 nsIFrame*
 nsLayoutUtils::GetFrameForPoint(nsIFrame* aFrame, nsPoint aPt, uint32_t aFlags)
 {
-  PROFILER_LABEL("nsLayoutUtils", "GetFrameForPoint");
+  PROFILER_LABEL("nsLayoutUtils", "GetFrameForPoint",
+    js::ProfileEntry::Category::GRAPHICS);
+
   nsresult rv;
   nsAutoTArray<nsIFrame*,8> outFrames;
   rv = GetFramesForArea(aFrame, nsRect(aPt, nsSize(1, 1)), outFrames, aFlags);
@@ -2217,7 +2561,9 @@ nsLayoutUtils::GetFramesForArea(nsIFrame* aFrame, const nsRect& aRect,
                                 nsTArray<nsIFrame*> &aOutFrames,
                                 uint32_t aFlags)
 {
-  PROFILER_LABEL("nsLayoutUtils","GetFramesForArea");
+  PROFILER_LABEL("nsLayoutUtils", "GetFramesForArea",
+    js::ProfileEntry::Category::GRAPHICS);
+
   nsDisplayListBuilder builder(aFrame, nsDisplayListBuilder::EVENT_DELIVERY,
                                false);
   nsDisplayList list;
@@ -2245,7 +2591,10 @@ nsLayoutUtils::GetFramesForArea(nsIFrame* aFrame, const nsRect& aRect,
 #ifdef MOZ_DUMP_PAINTING
   if (gDumpEventList) {
     fprintf_stderr(stderr, "Event handling --- (%d,%d):\n", aRect.x, aRect.y);
-    nsFrame::PrintDisplayList(&builder, list);
+
+    std::stringstream ss;
+    nsFrame::PrintDisplayList(&builder, list, ss);
+    fprintf_stderr(stderr, "%s", ss.str().c_str());
   }
 #endif
 
@@ -2255,12 +2604,113 @@ nsLayoutUtils::GetFramesForArea(nsIFrame* aFrame, const nsRect& aRect,
   return NS_OK;
 }
 
+// This function is only used on B2G, and some compilers complain about
+// unused static functions, so we need to #ifdef it.
+#ifdef MOZ_WIDGET_GONK
+// aScrollFrame and aScrollFrameAsScrollable must be non-nullptr
+static FrameMetrics
+CalculateFrameMetricsForDisplayPort(nsIFrame* aScrollFrame,
+                                    nsIScrollableFrame* aScrollFrameAsScrollable) {
+  // Calculate the metrics necessary for calculating the displayport.
+  // This code has a lot in common with the code in RecordFrameMetrics();
+  // we may want to refactor this at some point.
+  FrameMetrics metrics;
+  nsPresContext* presContext = aScrollFrame->PresContext();
+  nsIPresShell* presShell = presContext->PresShell();
+  CSSToLayoutDeviceScale deviceScale(float(nsPresContext::AppUnitsPerCSSPixel())
+                                     / presContext->AppUnitsPerDevPixel());
+  ParentLayerToLayerScale resolution(presShell->GetResolution().width);
+  LayoutDeviceToLayerScale cumulativeResolution(presShell->GetCumulativeResolution().width);
+
+  metrics.mDevPixelsPerCSSPixel = deviceScale;
+  metrics.mResolution = resolution;
+  metrics.mCumulativeResolution = cumulativeResolution;
+  metrics.SetZoom(deviceScale * cumulativeResolution * LayerToScreenScale(1));
+
+  // Only the size of the composition bounds is relevant to the
+  // displayport calculation, not its origin.
+  nsSize compositionSize = nsLayoutUtils::CalculateCompositionSizeForFrame(aScrollFrame);
+  metrics.mCompositionBounds
+      = RoundedToInt(LayoutDeviceRect::FromAppUnits(nsRect(nsPoint(0, 0), compositionSize),
+                                                    presContext->AppUnitsPerDevPixel())
+                     * (cumulativeResolution / resolution));
+
+  // This function is used for setting a display port for subframes, so
+  // aScrollFrame will not be the root content document's root scroll frame.
+  metrics.SetRootCompositionSize(
+      nsLayoutUtils::CalculateRootCompositionSize(aScrollFrame, false, metrics));
+
+  metrics.SetScrollOffset(CSSPoint::FromAppUnits(
+      aScrollFrameAsScrollable->GetScrollPosition()));
+
+  metrics.mScrollableRect = CSSRect::FromAppUnits(
+      nsLayoutUtils::CalculateScrollableRectForFrame(aScrollFrameAsScrollable, nullptr));
+
+  return metrics;
+}
+#endif
+
+bool
+nsLayoutUtils::GetOrMaybeCreateDisplayPort(nsDisplayListBuilder& aBuilder,
+                                           nsIFrame* aScrollFrame,
+                                           nsRect aDisplayPortBase,
+                                           nsRect* aOutDisplayport) {
+  nsIContent* content = aScrollFrame->GetContent();
+  nsIScrollableFrame* scrollableFrame = do_QueryFrame(aScrollFrame);
+  if (!content || !scrollableFrame) {
+    return false;
+  }
+
+  // Set the base rect. Note that this will not influence 'haveDisplayPort',
+  // which is based on either the whole rect or margins being set, but it
+  // will affect what is returned in 'aOutDisplayPort' if margins are set.
+  SetDisplayPortBase(content, aDisplayPortBase);
+
+  bool haveDisplayPort = GetDisplayPort(content, aOutDisplayport);
+
+#ifdef MOZ_WIDGET_GONK
+  // On B2G, we perform an optimization where we ensure that at least one
+  // async-scrollable frame (i.e. one that WantsAsyncScroll()) has a displayport.
+  // If that's not the case yet, and we are async-scrollable, we will get a
+  // displayport.
+  // Note: we only do this in processes where we do subframe scrolling to
+  //       begin with (i.e., not in the parent process on B2G).
+  if (aBuilder.IsPaintingToWindow() && WantSubAPZC() &&
+      !aBuilder.HaveScrollableDisplayPort() &&
+      scrollableFrame->WantAsyncScroll()) {
+
+    // If we don't already have a displayport, calculate and set one.
+    if (!haveDisplayPort) {
+      FrameMetrics metrics = CalculateFrameMetricsForDisplayPort(aScrollFrame, scrollableFrame);
+      LayerMargin displayportMargins = AsyncPanZoomController::CalculatePendingDisplayPort(
+          metrics, ScreenPoint(0.0f, 0.0f), 0.0);
+      nsIPresShell* presShell = aScrollFrame->PresContext()->GetPresShell();
+      gfx::IntSize alignment = gfxPrefs::LayersTilesEnabled()
+          ? gfx::IntSize(gfxPrefs::LayersTileWidth(), gfxPrefs::LayersTileHeight()) :
+            gfx::IntSize(0, 0);
+      nsLayoutUtils::SetDisplayPortMargins(
+          content, presShell, displayportMargins, alignment.width,
+          alignment.height, 0, nsLayoutUtils::RepaintMode::DoNotRepaint);
+      haveDisplayPort = GetDisplayPort(content, aOutDisplayport);
+      NS_ASSERTION(haveDisplayPort, "should have a displayport after having just set it");
+    }
+
+    // Record that the we now have a scrollable display port.
+    aBuilder.SetHaveScrollableDisplayPort();
+  }
+#endif
+
+  return haveDisplayPort;
+}
+
 nsresult
 nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFrame,
                           const nsRegion& aDirtyRegion, nscolor aBackstop,
                           uint32_t aFlags)
 {
-  PROFILER_LABEL("nsLayoutUtils","PaintFrame");
+  PROFILER_LABEL("nsLayoutUtils", "PaintFrame",
+    js::ProfileEntry::Category::GRAPHICS);
+
   if (aFlags & PAINT_WIDGET_LAYERS) {
     nsView* view = aFrame->GetView();
     if (!(view && view->GetWidget() && GetDisplayRootFrame(aFrame) == aFrame)) {
@@ -2276,14 +2726,18 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
     return NS_OK;
   }
 
+  nsDisplayListBuilder builder(aFrame, nsDisplayListBuilder::PAINTING,
+                           !(aFlags & PAINT_HIDE_CARET));
+
   nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame();
   bool usingDisplayPort = false;
   nsRect displayport;
   if (rootScrollFrame && !aFrame->GetParent()) {
-    nsIContent* content = rootScrollFrame->GetContent();
-    if (content) {
-      usingDisplayPort = nsLayoutUtils::GetDisplayPort(content, &displayport);
-    }
+    nsRect displayportBase(
+        nsPoint(0,0),
+        nsLayoutUtils::CalculateCompositionSizeForFrame(rootScrollFrame));
+    usingDisplayPort = nsLayoutUtils::GetOrMaybeCreateDisplayPort(
+        builder, rootScrollFrame, displayportBase, &displayport);
   }
 
   nsRegion visibleRegion;
@@ -2307,9 +2761,6 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
   // paint in a window then we will flush out any retained layer trees before
   // *and after* we draw.
   bool willFlushRetainedLayers = (aFlags & PAINT_HIDE_CARET) != 0;
-
-  nsDisplayListBuilder builder(aFrame, nsDisplayListBuilder::PAINTING,
-		                       !(aFlags & PAINT_HIDE_CARET));
 
   nsDisplayList list;
   if (aFlags & PAINT_IN_TRANSFORM) {
@@ -2362,7 +2813,24 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
   nsRect dirtyRect = visibleRegion.GetBounds();
   builder.EnterPresShell(aFrame, dirtyRect);
   {
-    PROFILER_LABEL("nsLayoutUtils","PaintFrame::BuildDisplayList");
+    // If a scrollable container layer is created in nsDisplayList::PaintForFrame,
+    // it will be the scroll parent for display items that are built in the
+    // BuildDisplayListForStackingContext call below. We need to set the scroll
+    // parent on the display list builder while we build those items, so that they
+    // can pick up their scroll parent's id.
+    ViewID id = FrameMetrics::NULL_SCROLL_ID;
+    if (ignoreViewportScrolling && presContext->IsRootContentDocument()) {
+      if (nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame()) {
+        if (nsIContent* content = rootScrollFrame->GetContent()) {
+          id = nsLayoutUtils::FindOrCreateIDFor(content);
+        }
+      }
+    }
+    nsDisplayListBuilder::AutoCurrentScrollParentIdSetter idSetter(&builder, id);
+
+    PROFILER_LABEL("nsLayoutUtils", "PaintFrame::BuildDisplayList",
+      js::ProfileEntry::Category::GRAPHICS);
+
     aFrame->BuildDisplayListForStackingContext(&builder, dirtyRect, &list);
   }
   const bool paintAllContinuations = aFlags & PAINT_ALL_CONTINUATIONS;
@@ -2375,7 +2843,9 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
   if (paintAllContinuations) {
     nsIFrame* currentFrame = aFrame;
     while ((currentFrame = currentFrame->GetNextContinuation()) != nullptr) {
-      PROFILER_LABEL("nsLayoutUtils","PaintFrame::ContinuationsBuildDisplayList");
+      PROFILER_LABEL("nsLayoutUtils", "PaintFrame::ContinuationsBuildDisplayList",
+        js::ProfileEntry::Category::GRAPHICS);
+
       nsRect frameDirty = dirtyRect - builder.ToReferenceFrame(currentFrame);
       currentFrame->BuildDisplayListForStackingContext(&builder,
                                                        frameDirty, &list);
@@ -2428,23 +2898,25 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
 
 #ifdef MOZ_DUMP_PAINTING
   FILE* savedDumpFile = gfxUtils::sDumpPaintFile;
-  if (gfxUtils::sDumpPaintList || gfxUtils::sDumpPainting) {
+
+  std::stringstream ss;
+  if (gfxUtils::DumpPaintList() || gfxUtils::sDumpPainting) {
     if (gfxUtils::sDumpPaintingToFile) {
       nsCString string("dump-");
       string.AppendInt(gPaintCount);
-      string.Append(".html");
+      string.AppendLiteral(".html");
       gfxUtils::sDumpPaintFile = fopen(string.BeginReading(), "w");
     } else {
       gfxUtils::sDumpPaintFile = stderr;
     }
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf_stderr(gfxUtils::sDumpPaintFile, "<html><head><script>var array = {}; function ViewImage(index) { window.location = array[index]; }</script></head><body>");
+      ss << "<html><head><script>var array = {}; function ViewImage(index) { window.location = array[index]; }</script></head><body>";
     }
-    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- before optimization (dirty %d,%d,%d,%d):\n",
-            dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height);
-    nsFrame::PrintDisplayList(&builder, list, gfxUtils::sDumpPaintFile, gfxUtils::sDumpPaintingToFile);
+    ss << nsPrintfCString("Painting --- before optimization (dirty %d,%d,%d,%d):\n",
+            dirtyRect.x, dirtyRect.y, dirtyRect.width, dirtyRect.height).get();
+    nsFrame::PrintDisplayList(&builder, list, ss, gfxUtils::sDumpPaintingToFile);
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf_stderr(gfxUtils::sDumpPaintFile, "<script>");
+      ss << "<script>";
     }
   }
 #endif
@@ -2487,24 +2959,29 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
   list.PaintRoot(&builder, aRenderingContext, flags);
 
 #ifdef MOZ_DUMP_PAINTING
-  if (gfxUtils::sDumpPaintList || gfxUtils::sDumpPainting) {
+  if (gfxUtils::DumpPaintList() || gfxUtils::sDumpPainting) {
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf_stderr(gfxUtils::sDumpPaintFile, "</script>");
+      ss << "</script>";
     }
-    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- after optimization:\n");
-    nsFrame::PrintDisplayList(&builder, list, gfxUtils::sDumpPaintFile, gfxUtils::sDumpPaintingToFile);
+    ss << "Painting --- after optimization:\n";
+    nsFrame::PrintDisplayList(&builder, list, ss, gfxUtils::sDumpPaintingToFile);
 
-    fprintf_stderr(gfxUtils::sDumpPaintFile, "Painting --- retained layer tree:\n");
+    ss << "Painting --- retained layer tree:\n";
     nsIWidget* widget = aFrame->GetNearestWidget();
     if (widget) {
       nsRefPtr<LayerManager> layerManager = widget->GetLayerManager();
       if (layerManager) {
-        FrameLayerBuilder::DumpRetainedLayerTree(layerManager, gfxUtils::sDumpPaintFile,
+        FrameLayerBuilder::DumpRetainedLayerTree(layerManager, ss,
                                                  gfxUtils::sDumpPaintingToFile);
       }
     }
     if (gfxUtils::sDumpPaintingToFile) {
-      fprintf(gfxUtils::sDumpPaintFile, "</body></html>");
+      ss << "</body></html>";
+    }
+
+    fprintf(gfxUtils::sDumpPaintFile, "%s", ss.str().c_str());
+
+    if (gfxUtils::sDumpPaintingToFile) {
       fclose(gfxUtils::sDumpPaintFile);
     }
     gfxUtils::sDumpPaintFile = savedDumpFile;
@@ -2748,6 +3225,20 @@ void nsLayoutUtils::RectListBuilder::AddRect(const nsRect& aRect) {
 
   rect->SetLayoutRect(aRect);
   mRectList->Append(rect);
+}
+
+nsLayoutUtils::FirstAndLastRectCollector::FirstAndLastRectCollector()
+  : mSeenFirstRect(false)
+{
+}
+
+void nsLayoutUtils::FirstAndLastRectCollector::AddRect(const nsRect& aRect) {
+  if (!mSeenFirstRect) {
+    mSeenFirstRect = true;
+    mFirstRect = aRect;
+  }
+
+  mLastRect = aRect;
 }
 
 nsIFrame* nsLayoutUtils::GetContainingBlockForClientRect(nsIFrame* aFrame)
@@ -3392,7 +3883,7 @@ nsLayoutUtils::IntrinsicForContainer(nsRenderingContext *aRenderingContext,
     bool canOverride = true;
     nsPresContext *presContext = aFrame->PresContext();
     presContext->GetTheme()->
-      GetMinimumWidgetSize(aRenderingContext, aFrame, disp->mAppearance,
+      GetMinimumWidgetSize(presContext, aFrame, disp->mAppearance,
                            &size, &canOverride);
 
     nscoord themeWidth = presContext->DevPixelsToAppUnits(size.width);
@@ -3518,6 +4009,51 @@ nsLayoutUtils::ComputeHeightDependentValue(
                aCoord.GetUnit() == eStyleUnit_Auto,
                "unexpected height value");
   return 0;
+}
+
+/* static */ void
+nsLayoutUtils::MarkDescendantsDirty(nsIFrame *aSubtreeRoot)
+{
+  nsAutoTArray<nsIFrame*, 4> subtrees;
+  subtrees.AppendElement(aSubtreeRoot);
+
+  // dirty descendants, iterating over subtrees that may include
+  // additional subtrees associated with placeholders
+  do {
+    nsIFrame *subtreeRoot = subtrees.ElementAt(subtrees.Length() - 1);
+    subtrees.RemoveElementAt(subtrees.Length() - 1);
+
+    // Mark all descendants dirty (using an nsTArray stack rather than
+    // recursion).
+    // Note that nsHTMLReflowState::InitResizeFlags has some similar
+    // code; see comments there for how and why it differs.
+    nsAutoTArray<nsIFrame*, 32> stack;
+    stack.AppendElement(subtreeRoot);
+
+    do {
+      nsIFrame *f = stack.ElementAt(stack.Length() - 1);
+      stack.RemoveElementAt(stack.Length() - 1);
+
+      f->MarkIntrinsicWidthsDirty();
+
+      if (f->GetType() == nsGkAtoms::placeholderFrame) {
+        nsIFrame *oof = nsPlaceholderFrame::GetRealFrameForPlaceholder(f);
+        if (!nsLayoutUtils::IsProperAncestorFrame(subtreeRoot, oof)) {
+          // We have another distinct subtree we need to mark.
+          subtrees.AppendElement(oof);
+        }
+      }
+
+      nsIFrame::ChildListIterator lists(f);
+      for (; !lists.IsDone(); lists.Next()) {
+        nsFrameList::Enumerator childFrames(lists.CurrentList());
+        for (; !childFrames.AtEnd(); childFrames.Next()) {
+          nsIFrame* kid = childFrames.get();
+          stack.AppendElement(kid);
+        }
+      }
+    } while (stack.Length() != 0);
+  } while (subtrees.Length() != 0);
 }
 
 #define MULDIV(a,b,c) (nscoord(int64_t(a) * int64_t(b) / int64_t(c)))
@@ -3937,7 +4473,6 @@ nsLayoutUtils::DrawString(const nsIFrame*       aFrame,
                           nsPoint               aPoint,
                           nsStyleContext*       aStyleContext)
 {
-#ifdef IBMBIDI
   nsresult rv = NS_ERROR_FAILURE;
   nsPresContext* presContext = aFrame->PresContext();
   if (presContext->BidiEnabled()) {
@@ -3949,7 +4484,6 @@ nsLayoutUtils::DrawString(const nsIFrame*       aFrame,
                                      aPoint.x, aPoint.y);
   }
   if (NS_FAILED(rv))
-#endif // IBMBIDI
   {
     aContext->SetTextRunRTL(false);
     aContext->DrawString(aString, aLength, aPoint.x, aPoint.y);
@@ -3962,7 +4496,6 @@ nsLayoutUtils::GetStringWidth(const nsIFrame*      aFrame,
                               const char16_t*     aString,
                               int32_t              aLength)
 {
-#ifdef IBMBIDI
   nsPresContext* presContext = aFrame->PresContext();
   if (presContext->BidiEnabled()) {
     nsBidiLevel level =
@@ -3970,7 +4503,6 @@ nsLayoutUtils::GetStringWidth(const nsIFrame*      aFrame,
     return nsBidiPresUtils::MeasureTextWidth(aString, aLength,
                                              level, presContext, *aContext);
   }
-#endif // IBMBIDI
   aContext->SetTextRunRTL(false);
   return aContext->GetWidth(aString, aLength);
 }
@@ -4044,17 +4576,19 @@ nsLayoutUtils::GetCenteredFontBaseline(nsFontMetrics* aFontMetrics,
 
 
 /* static */ bool
-nsLayoutUtils::GetFirstLineBaseline(const nsIFrame* aFrame, nscoord* aResult)
+nsLayoutUtils::GetFirstLineBaseline(WritingMode aWritingMode,
+                                    const nsIFrame* aFrame, nscoord* aResult)
 {
   LinePosition position;
-  if (!GetFirstLinePosition(aFrame, &position))
+  if (!GetFirstLinePosition(aWritingMode, aFrame, &position))
     return false;
   *aResult = position.mBaseline;
   return true;
 }
 
 /* static */ bool
-nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
+nsLayoutUtils::GetFirstLinePosition(WritingMode aWM,
+                                    const nsIFrame* aFrame,
                                     LinePosition* aResult)
 {
   const nsBlockFrame* block = nsLayoutUtils::GetAsBlock(const_cast<nsIFrame*>(aFrame));
@@ -4063,11 +4597,11 @@ nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
     // so, use the baseline of its first row.
     nsIAtom* fType = aFrame->GetType();
     if (fType == nsGkAtoms::tableOuterFrame) {
-      aResult->mTop = 0;
-      aResult->mBaseline = aFrame->GetBaseline();
+      aResult->mBStart = 0;
+      aResult->mBaseline = aFrame->GetLogicalBaseline(aWM);
       // This is what we want for the list bullet caller; not sure if
       // other future callers will want the same.
-      aResult->mBottom = aFrame->GetSize().height;
+      aResult->mBEnd = aFrame->BSize(aWM);
       return true;
     }
 
@@ -4078,11 +4612,13 @@ nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
         NS_NOTREACHED("not scroll frame");
       }
       LinePosition kidPosition;
-      if (GetFirstLinePosition(sFrame->GetScrolledFrame(), &kidPosition)) {
+      if (GetFirstLinePosition(aWM,
+                               sFrame->GetScrolledFrame(), &kidPosition)) {
         // Consider only the border and padding that contributes to the
         // kid's position, not the scrolling, so we get the initial
         // position.
-        *aResult = kidPosition + aFrame->GetUsedBorderAndPadding().top;
+        *aResult = kidPosition +
+          aFrame->GetLogicalUsedBorderAndPadding(aWM).BStart(aWM);
         return true;
       }
       return false;
@@ -4092,8 +4628,9 @@ nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
       LinePosition kidPosition;
       nsIFrame* kid = aFrame->GetFirstPrincipalChild();
       // kid might be a legend frame here, but that's ok.
-      if (GetFirstLinePosition(kid, &kidPosition)) {
-        *aResult = kidPosition + kid->GetNormalPosition().y;
+      if (GetFirstLinePosition(aWM, kid, &kidPosition)) {
+        *aResult = kidPosition +
+          kid->GetLogicalNormalPosition(aWM, aFrame->GetSize().width).B(aWM);
         return true;
       }
       return false;
@@ -4109,18 +4646,23 @@ nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
     if (line->IsBlock()) {
       nsIFrame *kid = line->mFirstChild;
       LinePosition kidPosition;
-      if (GetFirstLinePosition(kid, &kidPosition)) {
-        *aResult = kidPosition + kid->GetNormalPosition().y;
+      if (GetFirstLinePosition(aWM, kid, &kidPosition)) {
+        //XXX Not sure if this is the correct value to use for container
+        //    width here. It will only be used in vertical-rl layout,
+        //    which we don't have full support and testing for yet.
+        nscoord containerWidth = line->mContainerWidth;
+        *aResult = kidPosition +
+                   kid->GetLogicalNormalPosition(aWM, containerWidth).B(aWM);
         return true;
       }
     } else {
       // XXX Is this the right test?  We have some bogus empty lines
       // floating around, but IsEmpty is perhaps too weak.
-      if (line->GetHeight() != 0 || !line->IsEmpty()) {
-        nscoord top = line->mBounds.y;
-        aResult->mTop = top;
-        aResult->mBaseline = top + line->GetAscent();
-        aResult->mBottom = top + line->GetHeight();
+      if (line->BSize() != 0 || !line->IsEmpty()) {
+        nscoord bStart = line->BStart();
+        aResult->mBStart = bStart;
+        aResult->mBaseline = bStart + line->GetLogicalAscent();
+        aResult->mBEnd = bStart + line->BSize();
         return true;
       }
     }
@@ -4129,7 +4671,8 @@ nsLayoutUtils::GetFirstLinePosition(const nsIFrame* aFrame,
 }
 
 /* static */ bool
-nsLayoutUtils::GetLastLineBaseline(const nsIFrame* aFrame, nscoord* aResult)
+nsLayoutUtils::GetLastLineBaseline(WritingMode aWM,
+                                   const nsIFrame* aFrame, nscoord* aResult)
 {
   const nsBlockFrame* block = nsLayoutUtils::GetAsBlock(const_cast<nsIFrame*>(aFrame));
   if (!block)
@@ -4142,21 +4685,24 @@ nsLayoutUtils::GetLastLineBaseline(const nsIFrame* aFrame, nscoord* aResult)
     if (line->IsBlock()) {
       nsIFrame *kid = line->mFirstChild;
       nscoord kidBaseline;
-      if (GetLastLineBaseline(kid, &kidBaseline)) {
+      nscoord containerWidth = line->mContainerWidth;
+      if (GetLastLineBaseline(aWM, kid, &kidBaseline)) {
         // Ignore relative positioning for baseline calculations
-        *aResult = kidBaseline + kid->GetNormalPosition().y;
+        *aResult = kidBaseline +
+          kid->GetLogicalNormalPosition(aWM, containerWidth).B(aWM);
         return true;
       } else if (kid->GetType() == nsGkAtoms::scrollFrame) {
         // Use the bottom of the scroll frame.
         // XXX CSS2.1 really doesn't say what to do here.
-        *aResult = kid->GetNormalPosition().y + kid->GetRect().height;
+        *aResult = kid->GetLogicalNormalPosition(aWM, containerWidth).B(aWM) +
+                   kid->BSize(aWM);
         return true;
       }
     } else {
       // XXX Is this the right test?  We have some bogus empty lines
       // floating around, but IsEmpty is perhaps too weak.
-      if (line->GetHeight() != 0 || !line->IsEmpty()) {
-        *aResult = line->mBounds.y + line->GetAscent();
+      if (line->BSize() != 0 || !line->IsEmpty()) {
+        *aResult = line->BStart() + line->GetLogicalAscent();
         return true;
       }
     }
@@ -4165,45 +4711,49 @@ nsLayoutUtils::GetLastLineBaseline(const nsIFrame* aFrame, nscoord* aResult)
 }
 
 static nscoord
-CalculateBlockContentBottom(nsBlockFrame* aFrame)
+CalculateBlockContentBEnd(WritingMode aWM, nsBlockFrame* aFrame)
 {
   NS_PRECONDITION(aFrame, "null ptr");
 
-  nscoord contentBottom = 0;
+  nscoord contentBEnd = 0;
 
   for (nsBlockFrame::line_iterator line = aFrame->begin_lines(),
                                    line_end = aFrame->end_lines();
        line != line_end; ++line) {
     if (line->IsBlock()) {
       nsIFrame* child = line->mFirstChild;
-      nscoord offset = child->GetNormalPosition().y;
-      contentBottom = std::max(contentBottom,
-                        nsLayoutUtils::CalculateContentBottom(child) + offset);
+      nscoord containerWidth = line->mContainerWidth;
+      nscoord offset =
+        child->GetLogicalNormalPosition(aWM, containerWidth).B(aWM);
+      contentBEnd =
+        std::max(contentBEnd,
+                 nsLayoutUtils::CalculateContentBEnd(aWM, child) + offset);
     }
     else {
-      contentBottom = std::max(contentBottom, line->mBounds.YMost());
+      contentBEnd = std::max(contentBEnd, line->BEnd());
     }
   }
-  return contentBottom;
+  return contentBEnd;
 }
 
 /* static */ nscoord
-nsLayoutUtils::CalculateContentBottom(nsIFrame* aFrame)
+nsLayoutUtils::CalculateContentBEnd(WritingMode aWM, nsIFrame* aFrame)
 {
   NS_PRECONDITION(aFrame, "null ptr");
 
-  nscoord contentBottom = aFrame->GetRect().height;
+  nscoord contentBEnd = aFrame->BSize(aWM);
 
   // We want scrollable overflow rather than visual because this
   // calculation is intended to affect layout.
-  if (aFrame->GetScrollableOverflowRect().height > contentBottom) {
+  LogicalSize overflowSize(aWM, aFrame->GetScrollableOverflowRect().Size());
+  if (overflowSize.BSize(aWM) > contentBEnd) {
     nsIFrame::ChildListIDs skip(nsIFrame::kOverflowList |
                                 nsIFrame::kExcessOverflowContainersList |
                                 nsIFrame::kOverflowOutOfFlowList);
     nsBlockFrame* blockFrame = GetAsBlock(aFrame);
     if (blockFrame) {
-      contentBottom =
-        std::max(contentBottom, CalculateBlockContentBottom(blockFrame));
+      contentBEnd =
+        std::max(contentBEnd, CalculateBlockContentBEnd(aWM, blockFrame));
       skip |= nsIFrame::kPrincipalList;
     }
     nsIFrame::ChildListIterator lists(aFrame);
@@ -4212,14 +4762,16 @@ nsLayoutUtils::CalculateContentBottom(nsIFrame* aFrame)
         nsFrameList::Enumerator childFrames(lists.CurrentList()); 
         for (; !childFrames.AtEnd(); childFrames.Next()) {
           nsIFrame* child = childFrames.get();
-          nscoord offset = child->GetNormalPosition().y;
-          contentBottom = std::max(contentBottom,
-                                 CalculateContentBottom(child) + offset);
+          nscoord offset =
+            child->GetLogicalNormalPosition(aWM,
+                                            aFrame->GetSize().width).B(aWM);
+          contentBEnd = std::max(contentBEnd,
+                                 CalculateContentBEnd(aWM, child) + offset);
         }
       }
     }
   }
-  return contentBottom;
+  return contentBEnd;
 }
 
 /* static */ nsIFrame*
@@ -4367,7 +4919,7 @@ ComputeSnappedImageDrawingParameters(gfxContext*     aCtx,
   // we have something that's not translation+scale, or if the scale flips in
   // the X or Y direction, because snapped image drawing can't handle that yet.
   if (!currentMatrix.HasNonAxisAlignedTransform() &&
-      currentMatrix.xx > 0.0 && currentMatrix.yy > 0.0 &&
+      currentMatrix._11 > 0.0 && currentMatrix._22 > 0.0 &&
       aCtx->UserToDevicePixelSnapped(fill, true)) {
     didSnap = true;
     if (fill.IsEmpty()) {
@@ -4416,8 +4968,8 @@ ComputeSnappedImageDrawingParameters(gfxContext*     aCtx,
   if (didSnap) {
     // We'll reset aCTX to the identity matrix before drawing, so we need to
     // adjust our scales to match.
-    scaleX /= currentMatrix.xx;
-    scaleY /= currentMatrix.yy;
+    scaleX /= currentMatrix._11;
+    scaleY /= currentMatrix._22;
   }
   gfxFloat translateX = imageSpaceAnchorPoint.x - anchorPoint.x*scaleX;
   gfxFloat translateY = imageSpaceAnchorPoint.y - anchorPoint.y*scaleY;
@@ -4445,6 +4997,7 @@ ComputeSnappedImageDrawingParameters(gfxContext*     aCtx,
 
 static nsresult
 DrawImageInternal(nsRenderingContext*    aRenderingContext,
+                  nsPresContext*         aPresContext,
                   imgIContainer*         aImage,
                   GraphicsFilter         aGraphicsFilter,
                   const nsRect&          aDest,
@@ -4455,10 +5008,16 @@ DrawImageInternal(nsRenderingContext*    aRenderingContext,
                   const SVGImageContext* aSVGContext,
                   uint32_t               aImageFlags)
 {
+  if (aPresContext->Type() == nsPresContext::eContext_Print) {
+    // We want vector images to be passed on as vector commands, not a raster
+    // image.
+    aImageFlags |= imgIContainer::FLAG_BYPASS_SURFACE_CACHE;
+  }
   if (aDest.Contains(aFill)) {
     aImageFlags |= imgIContainer::FLAG_CLAMP;
   }
-  int32_t appUnitsPerDevPixel = aRenderingContext->AppUnitsPerDevPixel();
+  int32_t appUnitsPerDevPixel =
+   aPresContext->AppUnitsPerDevPixel();
   gfxContext* ctx = aRenderingContext->ThebesContext();
 
   SnappedImageDrawingParameters drawingParams =
@@ -4481,6 +5040,7 @@ DrawImageInternal(nsRenderingContext*    aRenderingContext,
 
 /* static */ void
 nsLayoutUtils::DrawPixelSnapped(nsRenderingContext* aRenderingContext,
+                                nsPresContext*       aPresContext,
                                 gfxDrawable*         aDrawable,
                                 GraphicsFilter       aFilter,
                                 const nsRect&        aDest,
@@ -4488,7 +5048,8 @@ nsLayoutUtils::DrawPixelSnapped(nsRenderingContext* aRenderingContext,
                                 const nsPoint&       aAnchor,
                                 const nsRect&        aDirty)
 {
-  int32_t appUnitsPerDevPixel = aRenderingContext->AppUnitsPerDevPixel();
+  int32_t appUnitsPerDevPixel =
+    aPresContext->AppUnitsPerDevPixel();
   gfxContext* ctx = aRenderingContext->ThebesContext();
   gfxIntSize drawableSize = aDrawable->Size();
   nsIntSize imageSize(drawableSize.width, drawableSize.height);
@@ -4517,11 +5078,12 @@ nsLayoutUtils::DrawPixelSnapped(nsRenderingContext* aRenderingContext,
   gfxUtils::DrawPixelSnapped(ctx, aDrawable,
                              drawingParams.mUserSpaceToImageSpace, subimage,
                              sourceRect, imageRect, drawingParams.mFillRect,
-                             gfxImageFormat::ARGB32, aFilter);
+                             gfx::SurfaceFormat::B8G8R8A8, aFilter);
 }
 
 /* static */ nsresult
 nsLayoutUtils::DrawSingleUnscaledImage(nsRenderingContext* aRenderingContext,
+                                       nsPresContext*       aPresContext,
                                        imgIContainer*       aImage,
                                        GraphicsFilter       aGraphicsFilter,
                                        const nsPoint&       aDest,
@@ -4551,13 +5113,15 @@ nsLayoutUtils::DrawSingleUnscaledImage(nsRenderingContext* aRenderingContext,
   // outside the image bounds, we want to honor the aSourceArea-to-aDest
   // translation but we don't want to actually tile the image.
   fill.IntersectRect(fill, dest);
-  return DrawImageInternal(aRenderingContext, aImage, aGraphicsFilter,
+  return DrawImageInternal(aRenderingContext, aPresContext,
+                           aImage, aGraphicsFilter,
                            dest, fill, aDest, aDirty ? *aDirty : dest,
                            imageSize, nullptr, aImageFlags);
 }
 
 /* static */ nsresult
 nsLayoutUtils::DrawSingleImage(nsRenderingContext*    aRenderingContext,
+                               nsPresContext*         aPresContext,
                                imgIContainer*         aImage,
                                GraphicsFilter         aGraphicsFilter,
                                const nsRect&          aDest,
@@ -4571,7 +5135,8 @@ nsLayoutUtils::DrawSingleImage(nsRenderingContext*    aRenderingContext,
     // We choose a size for vector images that emulates a raster image which
     // is perfectly sized for the destination rect: each pixel in the image
     // maps exactly to a single pixel on-screen.
-    nscoord appUnitsPerDevPx = aRenderingContext->AppUnitsPerDevPixel();
+    nscoord appUnitsPerDevPx =
+      aPresContext->AppUnitsPerDevPixel();
     imageSize.width = NSAppUnitsToIntPixels(aDest.width, appUnitsPerDevPx);
     imageSize.height = NSAppUnitsToIntPixels(aDest.height, appUnitsPerDevPx);
   } else {
@@ -4597,7 +5162,8 @@ nsLayoutUtils::DrawSingleImage(nsRenderingContext*    aRenderingContext,
   // transform but we don't want to actually tile the image.
   nsRect fill;
   fill.IntersectRect(aDest, dest);
-  return DrawImageInternal(aRenderingContext, aImage, aGraphicsFilter, dest, fill,
+  return DrawImageInternal(aRenderingContext, aPresContext, aImage,
+                           aGraphicsFilter, dest, fill,
                            fill.TopLeft(), aDirty, imageSize, aSVGContext, aImageFlags);
 }
 
@@ -4624,6 +5190,7 @@ nsLayoutUtils::ComputeSizeForDrawing(imgIContainer *aImage,
 
 /* static */ nsresult
 nsLayoutUtils::DrawBackgroundImage(nsRenderingContext* aRenderingContext,
+                                   nsPresContext*      aPresContext,
                                    imgIContainer*      aImage,
                                    const nsIntSize&    aImageSize,
                                    GraphicsFilter      aGraphicsFilter,
@@ -4633,19 +5200,22 @@ nsLayoutUtils::DrawBackgroundImage(nsRenderingContext* aRenderingContext,
                                    const nsRect&       aDirty,
                                    uint32_t            aImageFlags)
 {
-  PROFILER_LABEL("layout", "nsLayoutUtils::DrawBackgroundImage");
+  PROFILER_LABEL("nsLayoutUtils", "DrawBackgroundImage",
+    js::ProfileEntry::Category::GRAPHICS);
 
   if (UseBackgroundNearestFiltering()) {
     aGraphicsFilter = GraphicsFilter::FILTER_NEAREST;
   }
 
-  return DrawImageInternal(aRenderingContext, aImage, aGraphicsFilter,
+  return DrawImageInternal(aRenderingContext, aPresContext, aImage,
+                           aGraphicsFilter,
                            aDest, aFill, aAnchor, aDirty,
                            aImageSize, nullptr, aImageFlags);
 }
 
 /* static */ nsresult
 nsLayoutUtils::DrawImage(nsRenderingContext* aRenderingContext,
+                         nsPresContext*       aPresContext,
                          imgIContainer*       aImage,
                          GraphicsFilter       aGraphicsFilter,
                          const nsRect&        aDest,
@@ -4688,7 +5258,8 @@ nsLayoutUtils::DrawImage(nsRenderingContext* aRenderingContext,
     imageSize.height = nsPresContext::AppUnitsToIntCSSPixels(aFill.height);
   }
 
-  return DrawImageInternal(aRenderingContext, aImage, aGraphicsFilter,
+  return DrawImageInternal(aRenderingContext, aPresContext, aImage,
+                           aGraphicsFilter,
                            aDest, aFill, aAnchor, aDirty,
                            imageSize, nullptr, aImageFlags);
 }
@@ -4956,7 +5527,7 @@ nsLayoutUtils::GetDeviceContextForScreenInfo(nsPIDOMWindow* aWindow)
     // context does the right thing on multi-monitor systems when we return it to
     // the caller.  It will also make sure that our prescontext has been created,
     // if we're supposed to have one.
-    nsCOMPtr<nsPIDOMWindow> win = do_GetInterface(docShell);
+    nsCOMPtr<nsPIDOMWindow> win = docShell->GetWindow();
     if (!win) {
       // No reason to go on
       return nullptr;
@@ -5037,8 +5608,10 @@ nsLayoutUtils::SurfaceFromElement(nsIImageLoadingContent* aElement,
   uint32_t frameFlags = imgIContainer::FLAG_SYNC_DECODE;
   if (aSurfaceFlags & SFE_NO_COLORSPACE_CONVERSION)
     frameFlags |= imgIContainer::FLAG_DECODE_NO_COLORSPACE_CONVERSION;
-  if (aSurfaceFlags & SFE_NO_PREMULTIPLY_ALPHA)
+  if (aSurfaceFlags & SFE_PREFER_NO_PREMULTIPLY_ALPHA) {
     frameFlags |= imgIContainer::FLAG_DECODE_NO_PREMULTIPLY_ALPHA;
+    result.mIsPremultiplied = false;
+  }
 
   int32_t imgWidth, imgHeight;
   rv = imgContainer->GetWidth(&imgWidth);
@@ -5047,32 +5620,23 @@ nsLayoutUtils::SurfaceFromElement(nsIImageLoadingContent* aElement,
     return result;
 
   if (!noRasterize || imgContainer->GetType() == imgIContainer::TYPE_RASTER) {
-    bool wantImageSurface = (aSurfaceFlags & SFE_WANT_IMAGE_SURFACE) != 0;
-    if (aSurfaceFlags & SFE_NO_PREMULTIPLY_ALPHA) {
-      wantImageSurface = true;
+    if (aSurfaceFlags & SFE_WANT_IMAGE_SURFACE) {
+      frameFlags |= imgIContainer::FLAG_WANT_DATA_SURFACE;
     }
-    
-    nsRefPtr<gfxASurface> gfxsurf =
-      imgContainer->GetFrame(whichFrame, frameFlags);
-    if (!gfxsurf)
+    result.mSourceSurface = imgContainer->GetFrame(whichFrame, frameFlags);
+    if (!result.mSourceSurface) {
       return result;
-
-    if (wantImageSurface) {
-      IntSize size(imgWidth, imgHeight);
-      RefPtr<DataSourceSurface> output = Factory::CreateDataSourceSurface(size, SurfaceFormat::B8G8R8A8);
-      RefPtr<DrawTarget> dt = Factory::CreateDrawTargetForData(BackendType::CAIRO,
-                                                               output->GetData(),
-                                                               size,
-                                                               output->Stride(),
-                                                               SurfaceFormat::B8G8R8A8);
-      RefPtr<SourceSurface> source = gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(dt, gfxsurf);
-
-      dt->CopySurface(source, IntRect(0, 0, imgWidth, imgHeight), IntPoint());
-      dt->Flush();
-
-      result.mSourceSurface = output;
-    } else {
-      result.mSourceSurface = gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(aTarget, gfxsurf);
+    }
+    // The surface we return is likely to be cached. We don't want to have to
+    // convert to a surface that's compatible with aTarget each time it's used
+    // (that would result in terrible performance), so we convert once here
+    // upfront if aTarget is specified.
+    if (aTarget) {
+      RefPtr<SourceSurface> optSurface =
+        aTarget->OptimizeSourceSurface(result.mSourceSurface);
+      if (optSurface) {
+        result.mSourceSurface = optSurface;
+      }
     }
   } else {
     result.mDrawInfo.mImgContainer = imgContainer;
@@ -5109,52 +5673,28 @@ nsLayoutUtils::SurfaceFromElement(HTMLCanvasElement* aElement,
                                   DrawTarget* aTarget)
 {
   SurfaceFromElementResult result;
-  nsresult rv;
 
-  bool premultAlpha = (aSurfaceFlags & SFE_NO_PREMULTIPLY_ALPHA) == 0;
+  bool* isPremultiplied = nullptr;
+  if (aSurfaceFlags & SFE_PREFER_NO_PREMULTIPLY_ALPHA) {
+    isPremultiplied = &result.mIsPremultiplied;
+  }
 
   gfxIntSize size = aElement->GetSize();
 
-  if (premultAlpha && aElement->CountContexts() == 1) {
-    nsICanvasRenderingContextInternal *srcCanvas = aElement->GetContextAtIndex(0);
-    result.mSourceSurface = srcCanvas->GetSurfaceSnapshot();
-  }
-
+  result.mSourceSurface = aElement->GetSurfaceSnapshot(isPremultiplied);
   if (!result.mSourceSurface) {
-    nsRefPtr<gfxContext> ctx;
-    RefPtr<DrawTarget> dt;
-    if (premultAlpha) {
-      if (aTarget) {
-        dt = aTarget->CreateSimilarDrawTarget(IntSize(size.width, size.height), SurfaceFormat::B8G8R8A8);
-      } else {
-        dt = gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(IntSize(size.width, size.height),
-                                                                          SurfaceFormat::B8G8R8A8);
-      }
-      if (!dt) {
-        return result;
-      }
-      ctx = new gfxContext(dt);
-    } else {
-      // TODO: RenderContextsExternal expects to get a gfxImageFormat
-      // so that it can un-premultiply.
-      RefPtr<DataSourceSurface> data = Factory::CreateDataSourceSurface(IntSize(size.width, size.height),
-                                                                        SurfaceFormat::B8G8R8A8);
-      memset(data->GetData(), 0, data->Stride() * size.height);
-      result.mSourceSurface = data;
-      nsRefPtr<gfxImageSurface> image = new gfxImageSurface(data->GetData(),
-                                                            gfxIntSize(size.width, size.height),
-                                                            data->Stride(),
-                                                            gfxImageFormat::ARGB32);
-      ctx = new gfxContext(image);
-    }
-    // XXX shouldn't use the external interface, but maybe we can layerify this
-    uint32_t flags = premultAlpha ? HTMLCanvasElement::RenderFlagPremultAlpha : 0;
-    rv = aElement->RenderContextsExternal(ctx, GraphicsFilter::FILTER_NEAREST, flags);
-    if (NS_FAILED(rv))
-      return result;
-
-    if (premultAlpha) {
-      result.mSourceSurface = dt->Snapshot();
+     // If the element doesn't have a context then we won't get a snapshot. The canvas spec wants us to not error and just
+     // draw nothing, so return an empty surface.
+     DrawTarget *ref = aTarget ? aTarget : gfxPlatform::GetPlatform()->ScreenReferenceDrawTarget();
+     RefPtr<DrawTarget> dt = ref->CreateSimilarDrawTarget(IntSize(size.width, size.height),
+                                                          SurfaceFormat::B8G8R8A8);
+     if (dt) {
+       result.mSourceSurface = dt->Snapshot();
+     }
+  } else if (aTarget) {
+    RefPtr<SourceSurface> opt = aTarget->OptimizeSourceSurface(result.mSourceSurface);
+    if (opt) {
+      result.mSourceSurface = opt;
     }
   }
 
@@ -5176,7 +5716,7 @@ nsLayoutUtils::SurfaceFromElement(HTMLVideoElement* aElement,
 {
   SurfaceFromElementResult result;
 
-  NS_WARN_IF_FALSE((aSurfaceFlags & SFE_NO_PREMULTIPLY_ALPHA) == 0, "We can't support non-premultiplied alpha for video!");
+  NS_WARN_IF_FALSE((aSurfaceFlags & SFE_PREFER_NO_PREMULTIPLY_ALPHA) == 0, "We can't support non-premultiplied alpha for video!");
 
   uint16_t readyState;
   if (NS_SUCCEEDED(aElement->GetReadyState(&readyState)) &&
@@ -5196,11 +5736,17 @@ nsLayoutUtils::SurfaceFromElement(HTMLVideoElement* aElement,
     return result;
 
   mozilla::gfx::IntSize size;
-  nsRefPtr<gfxASurface> surf = container->DeprecatedGetCurrentAsSurface(&size);
-  if (!surf)
+  result.mSourceSurface = container->GetCurrentAsSourceSurface(&size);
+  if (!result.mSourceSurface)
     return result;
 
-  result.mSourceSurface = gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(aTarget, surf);
+  if (aTarget) {
+    RefPtr<SourceSurface> opt = aTarget->OptimizeSourceSurface(result.mSourceSurface);
+    if (opt) {
+      result.mSourceSurface = opt;
+    }
+  }
+
   result.mCORSUsed = aElement->GetCORSMode() != CORS_NONE;
   result.mSize = ThebesIntSize(size);
   result.mPrincipal = principal.forget();
@@ -5478,6 +6024,8 @@ nsLayoutUtils::Initialize()
                                "nglayout.debug.invalidation");
   Preferences::AddBoolVarCache(&sCSSVariablesEnabled,
                                "layout.css.variables.enabled");
+  Preferences::AddBoolVarCache(&sInterruptibleReflowEnabled,
+                               "layout.interruptible-reflow.enabled");
 
   Preferences::RegisterCallback(GridEnabledPrefChangeCallback,
                                 GRID_ENABLED_PREF_NAME);
@@ -5962,9 +6510,235 @@ nsLayoutUtils::UpdateImageVisibilityForFrame(nsIFrame* aImageFrame)
   }
 }
 
+/* static */ nsSize
+nsLayoutUtils::CalculateCompositionSizeForFrame(nsIFrame* aFrame)
+{
+  nsSize size(aFrame->GetSize());
+
+  nsPresContext* presContext = aFrame->PresContext();
+  nsIPresShell* presShell = presContext->PresShell();
+
+  // See the comments in the code that calculates the root
+  // composition bounds in RecordFrameMetrics.
+  // TODO: Reuse that code here.
+  bool isRootContentDocRootScrollFrame = presContext->IsRootContentDocument()
+                                      && aFrame == presShell->GetRootScrollFrame();
+  if (isRootContentDocRootScrollFrame) {
+    if (nsIFrame* rootFrame = presShell->GetRootFrame()) {
+      if (nsView* view = rootFrame->GetView()) {
+        nsSize viewSize = view->GetBounds().Size();
+        nsIWidget* widget =
+#ifdef MOZ_WIDGET_ANDROID
+            rootFrame->GetNearestWidget();
+#else
+            view->GetWidget();
+#endif
+        if (widget) {
+          nsIntRect widgetBounds;
+          widget->GetBounds(widgetBounds);
+          int32_t auPerDevPixel = presContext->AppUnitsPerDevPixel();
+          size = nsSize(widgetBounds.width * auPerDevPixel,
+                        widgetBounds.height * auPerDevPixel);
+#ifdef MOZ_WIDGET_ANDROID
+          if (viewSize.height < size.height) {
+            size.height = viewSize.height;
+          }
+#endif
+        } else {
+          size = viewSize;
+        }
+      }
+    }
+  }
+
+  // Adjust composition bounds for the size of scroll bars.
+  nsIScrollableFrame* scrollableFrame = aFrame->GetScrollTargetFrame();
+  if (scrollableFrame && !LookAndFeel::GetInt(LookAndFeel::eIntID_UseOverlayScrollbars)) {
+    nsMargin margins = scrollableFrame->GetActualScrollbarSizes();
+    size.width -= margins.LeftRight();
+    size.height -= margins.TopBottom();
+  }
+
+  return size;
+}
+/* static */ CSSSize
+nsLayoutUtils::CalculateRootCompositionSize(nsIFrame* aFrame,
+                                            bool aIsRootContentDocRootScrollFrame,
+                                            const FrameMetrics& aMetrics)
+{
+
+  if (aIsRootContentDocRootScrollFrame) {
+    return ViewAs<LayerPixel>(ParentLayerSize(aMetrics.mCompositionBounds.Size()),
+                              PixelCastJustification::ParentLayerToLayerForRootComposition)
+           / aMetrics.LayersPixelsPerCSSPixel();
+  }
+  nsPresContext* presContext = aFrame->PresContext();
+  LayerSize rootCompositionSize;
+  nsPresContext* rootPresContext =
+    presContext->GetToplevelContentDocumentPresContext();
+  if (!rootPresContext) {
+    rootPresContext = presContext->GetRootPresContext();
+  }
+  nsIPresShell* rootPresShell = nullptr;
+  if (rootPresContext) {
+    // See the comments in the code that calculates the root
+    // composition bounds in RecordFrameMetrics.
+    // TODO: Reuse that code here.
+    nsIPresShell* rootPresShell = rootPresContext->PresShell();
+    if (nsIFrame* rootFrame = rootPresShell->GetRootFrame()) {
+      if (nsView* view = rootFrame->GetView()) {
+        LayoutDeviceToParentLayerScale parentResolution(
+          rootPresShell->GetCumulativeResolution().width
+          / rootPresShell->GetResolution().width);
+        int32_t rootAUPerDevPixel = rootPresContext->AppUnitsPerDevPixel();
+        nsRect viewBounds = view->GetBounds();
+        LayerSize viewSize = ViewAs<LayerPixel>(
+          (LayoutDeviceRect::FromAppUnits(viewBounds, rootAUPerDevPixel)
+           * parentResolution).Size(), PixelCastJustification::ParentLayerToLayerForRootComposition);
+        nsIWidget* widget =
+#ifdef MOZ_WIDGET_ANDROID
+            rootFrame->GetNearestWidget();
+#else
+            view->GetWidget();
+#endif
+        if (widget) {
+          nsIntRect widgetBounds;
+          widget->GetBounds(widgetBounds);
+          rootCompositionSize = LayerSize(ViewAs<LayerPixel>(widgetBounds.Size()));
+#ifdef MOZ_WIDGET_ANDROID
+          if (viewSize.height < rootCompositionSize.height) {
+            rootCompositionSize.height = viewSize.height;
+          }
+#endif
+        } else {
+          rootCompositionSize = viewSize;
+        }
+      }
+    }
+  } else {
+    nsIWidget* widget = aFrame->GetNearestWidget();
+    nsIntRect widgetBounds;
+    widget->GetBounds(widgetBounds);
+    rootCompositionSize = LayerSize(ViewAs<LayerPixel>(widgetBounds.Size()));
+  }
+
+  // Adjust composition size for the size of scroll bars.
+  nsIFrame* rootRootScrollFrame = rootPresShell ? rootPresShell->GetRootScrollFrame() : nullptr;
+  nsIScrollableFrame* rootScrollableFrame = nullptr;
+  if (rootRootScrollFrame) {
+    rootScrollableFrame = rootRootScrollFrame->GetScrollTargetFrame();
+  }
+  if (rootScrollableFrame && !LookAndFeel::GetInt(LookAndFeel::eIntID_UseOverlayScrollbars)) {
+    CSSMargin margins = CSSMargin::FromAppUnits(rootScrollableFrame->GetActualScrollbarSizes());
+    // Scrollbars are not subject to scaling, so CSS pixels = layer pixels for them.
+    rootCompositionSize.width -= margins.LeftRight();
+    rootCompositionSize.height -= margins.TopBottom();
+  }
+
+  return rootCompositionSize / aMetrics.LayersPixelsPerCSSPixel();
+}
+
+/* static */ nsRect
+nsLayoutUtils::CalculateScrollableRectForFrame(nsIScrollableFrame* aScrollableFrame, nsIFrame* aRootFrame)
+{
+  nsRect contentBounds;
+  if (aScrollableFrame) {
+    contentBounds = aScrollableFrame->GetScrollRange();
+
+    // We ifndef the below code for Fennec because it requires special behaviour
+    // on the APZC side. Because Fennec has it's own PZC implementation which doesn't
+    // provide the special behaviour, this code will cause it to break. We can remove
+    // the ifndef once Fennec switches over to APZ or if we add the special handling
+    // to Fennec
+#ifndef MOZ_WIDGET_ANDROID
+    nsPoint scrollPosition = aScrollableFrame->GetScrollPosition();
+    if (aScrollableFrame->GetScrollbarStyles().mVertical == NS_STYLE_OVERFLOW_HIDDEN) {
+      contentBounds.y = scrollPosition.y;
+      contentBounds.height = 0;
+    }
+    if (aScrollableFrame->GetScrollbarStyles().mHorizontal == NS_STYLE_OVERFLOW_HIDDEN) {
+      contentBounds.x = scrollPosition.x;
+      contentBounds.width = 0;
+    }
+#endif
+
+    contentBounds.width += aScrollableFrame->GetScrollPortRect().width;
+    contentBounds.height += aScrollableFrame->GetScrollPortRect().height;
+  } else {
+    contentBounds = aRootFrame->GetRect();
+  }
+  return contentBounds;
+}
+
+/* static */ nsRect
+nsLayoutUtils::CalculateExpandedScrollableRect(nsIFrame* aFrame)
+{
+  nsRect scrollableRect =
+    CalculateScrollableRectForFrame(aFrame->GetScrollTargetFrame(),
+                                    aFrame->PresContext()->PresShell()->GetRootFrame());
+  nsSize compSize = CalculateCompositionSizeForFrame(aFrame);
+
+  if (aFrame == aFrame->PresContext()->PresShell()->GetRootScrollFrame()) {
+    // the composition size for the root scroll frame does not include the
+    // local resolution, so we adjust.
+    gfxSize res = aFrame->PresContext()->PresShell()->GetResolution();
+    compSize.width = NSToCoordRound(compSize.width / ((float) res.width));
+    compSize.height = NSToCoordRound(compSize.height / ((float) res.height));
+  }
+
+  if (scrollableRect.width < compSize.width) {
+    scrollableRect.x = std::max(0,
+                                scrollableRect.x - (compSize.width - scrollableRect.width));
+    scrollableRect.width = compSize.width;
+  }
+
+  if (scrollableRect.height < compSize.height) {
+    scrollableRect.y = std::max(0,
+                                scrollableRect.y - (compSize.height - scrollableRect.height));
+    scrollableRect.height = compSize.height;
+  }
+  return scrollableRect;
+}
+
+/* static */ bool
+nsLayoutUtils::WantSubAPZC()
+{
+  // TODO Turn this on for inprocess OMTC on all platforms
+  bool wantSubAPZC = gfxPrefs::AsyncPanZoomEnabled() &&
+                     gfxPrefs::APZSubframeEnabled();
+#ifdef MOZ_WIDGET_GONK
+  if (XRE_GetProcessType() != GeckoProcessType_Content) {
+    wantSubAPZC = false;
+  }
+#endif
+  return wantSubAPZC;
+}
+
+/* static */ void
+nsLayoutUtils::DoLogTestDataForPaint(nsIPresShell* aPresShell,
+                                     ViewID aScrollId,
+                                     const std::string& aKey,
+                                     const std::string& aValue)
+{
+  nsRefPtr<LayerManager> lm = aPresShell->GetPresContext()->GetRootPresContext()
+      ->GetPresShell()->GetLayerManager();
+  if (lm && lm->GetBackendType() == LayersBackend::LAYERS_CLIENT) {
+    static_cast<ClientLayerManager*>(lm.get())->LogTestDataForCurrentPaint(aScrollId, aKey, aValue);
+  }
+}
+
+/* static */ bool
+nsLayoutUtils::IsAPZTestLoggingEnabled()
+{
+  return gfxPrefs::APZTestLoggingEnabled();
+}
+
 nsLayoutUtils::SurfaceFromElementResult::SurfaceFromElementResult()
   // Use safe default values here
-  : mIsWriteOnly(true), mIsStillLoading(false), mCORSUsed(false)
+  : mIsWriteOnly(true)
+  , mIsStillLoading(false)
+  , mCORSUsed(false)
+  , mIsPremultiplied(true)
 {
 }
 
@@ -6003,4 +6777,35 @@ AutoMaybeDisableFontInflation::~AutoMaybeDisableFontInflation()
   if (mPresContext) {
     mPresContext->mInflationDisabledForShrinkWrap = mOldValue;
   }
+}
+
+namespace mozilla {
+namespace layout {
+
+void
+MaybeSetupTransactionIdAllocator(layers::LayerManager* aManager, nsView* aView)
+{
+  if (aManager->GetBackendType() == layers::LayersBackend::LAYERS_CLIENT) {
+    layers::ClientLayerManager *manager = static_cast<layers::ClientLayerManager*>(aManager);
+    nsRefreshDriver *refresh = aView->GetViewManager()->GetPresShell()->GetPresContext()->RefreshDriver();
+    manager->SetTransactionIdAllocator(refresh);
+  }
+}
+
+}
+}
+
+/* static */ bool
+nsLayoutUtils::IsOutlineStyleAutoEnabled()
+{
+  static bool sOutlineStyleAutoEnabled;
+  static bool sOutlineStyleAutoPrefCached = false;
+
+  if (!sOutlineStyleAutoPrefCached) {
+    sOutlineStyleAutoPrefCached = true;
+    Preferences::AddBoolVarCache(&sOutlineStyleAutoEnabled,
+                                 "layout.css.outline-style-auto.enabled",
+                                 false);
+  }
+  return sOutlineStyleAutoEnabled;
 }

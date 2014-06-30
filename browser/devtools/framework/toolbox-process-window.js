@@ -32,11 +32,32 @@ function connect() {
   );
   gClient = new DebuggerClient(transport);
   gClient.connect(() => {
-    gClient.listTabs(openToolbox);
+    let addonID = getParameterByName("addonID");
+
+    if (addonID) {
+      gClient.listAddons(({addons}) => {
+        let addonActor = addons.filter(addon => addon.id === addonID).pop();
+        openToolbox({
+          addonActor: addonActor.actor,
+          consoleActor: addonActor.consoleActor,
+          title: addonActor.name
+        });
+      });
+    } else {
+      gClient.listTabs(openToolbox);
+    }
   });
 }
 
-window.addEventListener("load", connect);
+window.addEventListener("load", function() {
+  let cmdClose = document.getElementById("toolbox-cmd-close");
+  cmdClose.addEventListener("command", onCloseCommand);
+  connect();
+});
+
+function onCloseCommand(event) {
+  window.close();
+}
 
 function openToolbox(form) {
   let options = {
@@ -69,6 +90,8 @@ function bindToolboxHandlers() {
 function onUnload() {
   window.removeEventListener("unload", onUnload);
   window.removeEventListener("message", onMessage);
+  let cmdClose = document.getElementById("toolbox-cmd-close");
+  cmdClose.removeEventListener("command", onCloseCommand);
   gToolbox.destroy();
 }
 
@@ -105,4 +128,11 @@ function quitApp() {
   if (shouldProceed) {
     Services.startup.quit(Ci.nsIAppStartup.eForceQuit);
   }
+}
+
+function getParameterByName (name) {
+  let name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
+  let regex = new RegExp("[\\?&]" + name + "=([^&#]*)");
+  let results = regex.exec(window.location.search);
+  return results == null ? "" : decodeURIComponent(results[1].replace(/\+/g, " "));
 }

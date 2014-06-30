@@ -10,6 +10,7 @@
 #include "mozilla/EventListenerManager.h"
 #include "mozilla/dom/FunctionBinding.h"
 #include "mozilla/dom/DedicatedWorkerGlobalScopeBinding.h"
+#include "mozilla/dom/ServiceWorkerGlobalScopeBinding.h"
 #include "mozilla/dom/SharedWorkerGlobalScopeBinding.h"
 #include "mozilla/dom/Console.h"
 
@@ -28,6 +29,7 @@
   UnwrapObject<prototypes::id::Interface##_workers,                           \
     mozilla::dom::Interface##Binding_workers::NativeType>(obj, value)
 
+using namespace mozilla;
 using namespace mozilla::dom;
 USING_WORKERS_NAMESPACE
 
@@ -49,31 +51,31 @@ WorkerGlobalScope::~WorkerGlobalScope()
 NS_IMPL_CYCLE_COLLECTION_CLASS(WorkerGlobalScope)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WorkerGlobalScope,
-                                                  nsDOMEventTargetHelper)
+                                                  DOMEventTargetHelper)
   tmp->mWorkerPrivate->AssertIsOnWorkerThread();
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WorkerGlobalScope,
-                                                nsDOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   tmp->mWorkerPrivate->AssertIsOnWorkerThread();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WorkerGlobalScope,
-                                               nsDOMEventTargetHelper)
+                                               DOMEventTargetHelper)
   tmp->mWorkerPrivate->AssertIsOnWorkerThread();
 
   tmp->mWorkerPrivate->TraceTimeouts(aCallbacks, aClosure);
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
-NS_IMPL_ADDREF_INHERITED(WorkerGlobalScope, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(WorkerGlobalScope, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(WorkerGlobalScope, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(WorkerGlobalScope, DOMEventTargetHelper)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WorkerGlobalScope)
   NS_INTERFACE_MAP_ENTRY(nsIGlobalObject)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 JSObject*
-WorkerGlobalScope::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+WorkerGlobalScope::WrapObject(JSContext* aCx)
 {
   MOZ_CRASH("We should never get here!");
 }
@@ -296,12 +298,10 @@ DedicatedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
   JS::CompartmentOptions options;
   mWorkerPrivate->CopyJSCompartmentOptions(options);
 
-  // We're wrapping the global, so the scope is undefined.
-  JS::Rooted<JSObject*> scope(aCx);
-
   return DedicatedWorkerGlobalScopeBinding_workers::Wrap(aCx, this, this,
                                                          options,
-                                                         GetWorkerPrincipal());
+                                                         GetWorkerPrincipal(),
+                                                         true);
 }
 
 void
@@ -337,11 +337,38 @@ SharedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
   JS::CompartmentOptions options;
   mWorkerPrivate->CopyJSCompartmentOptions(options);
 
-  // We're wrapping the global, so the scope is undefined.
-  JS::Rooted<JSObject*> scope(aCx);
-
   return SharedWorkerGlobalScopeBinding_workers::Wrap(aCx, this, this, options,
-                                                      GetWorkerPrincipal());
+                                                      GetWorkerPrincipal(),
+                                                      true);
+}
+
+ServiceWorkerGlobalScope::ServiceWorkerGlobalScope(WorkerPrivate* aWorkerPrivate,
+                                                   const nsACString& aScope)
+  : WorkerGlobalScope(aWorkerPrivate),
+    mScope(NS_ConvertUTF8toUTF16(aScope))
+{
+}
+
+/* static */ bool
+ServiceWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
+{
+  ServiceWorkerGlobalScope* self = nullptr;
+  nsresult rv = UNWRAP_WORKER_OBJECT(ServiceWorkerGlobalScope, aObj, self);
+  return NS_SUCCEEDED(rv) && self;
+}
+
+JSObject*
+ServiceWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
+{
+  mWorkerPrivate->AssertIsOnWorkerThread();
+  MOZ_ASSERT(mWorkerPrivate->IsServiceWorker());
+
+  JS::CompartmentOptions options;
+  mWorkerPrivate->CopyJSCompartmentOptions(options);
+
+  return ServiceWorkerGlobalScopeBinding_workers::Wrap(aCx, this, this, options,
+                                                       GetWorkerPrincipal(),
+                                                       true);
 }
 
 bool

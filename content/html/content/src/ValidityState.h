@@ -17,6 +17,8 @@ namespace dom {
 class ValidityState MOZ_FINAL : public nsIDOMValidityState,
                                 public nsWrapperCache
 {
+  ~ValidityState() {}
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(ValidityState)
@@ -28,8 +30,7 @@ public:
     return mConstraintValidation;
   }
 
-  virtual JSObject* WrapObject(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
 
   // Web IDL methods
   bool ValueMissing() const

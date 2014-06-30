@@ -35,7 +35,7 @@
 #include "nsServiceManagerUtils.h"
 #include "nsIEditor.h"
 #include "nsTextEditRules.h"
-#include "mozilla/Selection.h"
+#include "mozilla/dom/Selection.h"
 #include "mozilla/EventListenerManager.h"
 #include "nsContentUtils.h"
 #include "mozilla/Preferences.h"
@@ -191,18 +191,20 @@ public:
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
 private:
+  ~nsAnonDivObserver() {}
   nsTextEditorState* mTextEditorState;
 };
 
 class nsTextInputSelectionImpl MOZ_FINAL : public nsSupportsWeakReference
                                          , public nsISelectionController
 {
+  ~nsTextInputSelectionImpl(){}
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsTextInputSelectionImpl, nsISelectionController)
 
   nsTextInputSelectionImpl(nsFrameSelection *aSel, nsIPresShell *aShell, nsIContent *aLimiter);
-  ~nsTextInputSelectionImpl(){}
 
   void SetScrollableFrame(nsIScrollableFrame *aScrollableFrame);
   nsFrameSelection* GetConstFrameSelection()
@@ -249,14 +251,14 @@ private:
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsTextInputSelectionImpl)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsTextInputSelectionImpl)
 NS_INTERFACE_TABLE_HEAD(nsTextInputSelectionImpl)
-  NS_INTERFACE_TABLE3(nsTextInputSelectionImpl,
-                      nsISelectionController,
-                      nsISelectionDisplay,
-                      nsISupportsWeakReference)
+  NS_INTERFACE_TABLE(nsTextInputSelectionImpl,
+                     nsISelectionController,
+                     nsISelectionDisplay,
+                     nsISupportsWeakReference)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(nsTextInputSelectionImpl)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_2(nsTextInputSelectionImpl, mFrameSelection, mLimiter)
+NS_IMPL_CYCLE_COLLECTION(nsTextInputSelectionImpl, mFrameSelection, mLimiter)
 
 
 // BEGIN nsTextInputSelectionImpl
@@ -652,9 +654,6 @@ public:
   /** the default constructor
    */ 
   explicit nsTextInputListener(nsITextControlElement* aTxtCtrlElement);
-  /** the default destructor. virtual due to the possibility of derivation.
-   */
-  virtual ~nsTextInputListener();
 
   /** SetEditor gives an address to the editor that will be accessed
    *  @param aEditor the editor this listener calls for editing operations
@@ -673,6 +672,9 @@ public:
   NS_DECL_NSIEDITOROBSERVER
 
 protected:
+  /** the default destructor. virtual due to the possibility of derivation.
+   */
+  virtual ~nsTextInputListener();
 
   nsresult  UpdateTextInputCommands(const nsAString& commandsToUpdate);
 
@@ -725,11 +727,11 @@ nsTextInputListener::~nsTextInputListener()
 {
 }
 
-NS_IMPL_ISUPPORTS4(nsTextInputListener,
-                   nsISelectionListener,
-                   nsIEditorObserver,
-                   nsISupportsWeakReference,
-                   nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsTextInputListener,
+                  nsISelectionListener,
+                  nsIEditorObserver,
+                  nsISupportsWeakReference,
+                  nsIDOMEventListener)
 
 // BEGIN nsIDOMSelectionListener
 
@@ -1234,6 +1236,16 @@ nsTextEditorState::PrepareEditor(const nsAString *aValue)
     newEditor = mEditor; // just pretend that we have a new editor!
   }
 
+  // Get the current value of the textfield from the content.
+  // Note that if we've created a new editor, mEditor is null at this stage,
+  // so we will get the real value from the content.
+  nsAutoString defaultValue;
+  if (aValue) {
+    defaultValue = *aValue;
+  } else {
+    GetValue(defaultValue, true);
+  }
+
   if (!mEditorInitialized) {
     // Now initialize the editor.
     //
@@ -1252,9 +1264,10 @@ nsTextEditorState::PrepareEditor(const nsAString *aValue)
     // Note that any script that's directly trying to access our value
     // has to be going through some scriptable object to do that and that
     // already does the relevant security checks.
-    AutoSystemCaller asc;
+    AutoNoJSAPI nojsapi;
 
-    rv = newEditor->Init(domdoc, GetRootNode(), mSelCon, editorFlags);
+    rv = newEditor->Init(domdoc, GetRootNode(), mSelCon, editorFlags,
+                         defaultValue);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -1333,16 +1346,6 @@ nsTextEditorState::PrepareEditor(const nsAString *aValue)
       mSelCon->SetDisplaySelection(nsISelectionController::SELECTION_OFF);
 
     newEditor->SetFlags(editorFlags);
-  }
-
-  // Get the current value of the textfield from the content.
-  // Note that if we've created a new editor, mEditor is null at this stage,
-  // so we will get the real value from the content.
-  nsAutoString defaultValue;
-  if (aValue) {
-    defaultValue = *aValue;
-  } else {
-    GetValue(defaultValue, true);
   }
 
   if (shouldInitializeEditor) {
@@ -1428,6 +1431,7 @@ nsTextEditorState::DestroyEditor()
     mEditor->PreDestroy(true);
     mEditorInitialized = false;
   }
+  ClearValueCache();
 }
 
 void
@@ -1575,7 +1579,7 @@ nsTextEditorState::CreateRootNode()
   NS_ENSURE_TRUE(doc, NS_ERROR_FAILURE);
 
   // Now create a DIV and add it to the anonymous content child list.
-  nsCOMPtr<nsINodeInfo> nodeInfo;
+  nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
   nodeInfo = doc->NodeInfoManager()->GetNodeInfo(nsGkAtoms::div, nullptr,
                                                  kNameSpaceID_XHTML,
                                                  nsIDOMNode::ELEMENT_NODE);
@@ -1658,7 +1662,7 @@ be called if @placeholder is the empty string when trimmed from line breaks");
 
   // Create a DIV for the placeholder
   // and add it to the anonymous content child list
-  nsCOMPtr<nsINodeInfo> nodeInfo;
+  nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
   nodeInfo = pNodeInfoManager->GetNodeInfo(nsGkAtoms::div, nullptr,
                                            kNameSpaceID_XHTML,
                                            nsIDOMNode::ELEMENT_NODE);
@@ -1740,8 +1744,8 @@ nsTextEditorState::GetValue(nsAString& aValue, bool aIgnoreWrap) const
     // XXXbz if we could just get the textContent of our anonymous content (eg
     // if plaintext editor didn't create <br> nodes all over), we wouldn't need
     // this.
-    { /* Scope for AutoSystemCaller. */
-      AutoSystemCaller asc;
+    { /* Scope for AutoNoJSAPI. */
+      AutoNoJSAPI nojsapi;
 
       mEditor->OutputToString(NS_LITERAL_STRING("text/plain"), flags,
                               aValue);
@@ -1780,18 +1784,7 @@ nsTextEditorState::SetValue(const nsAString& aValue, bool aUserInput,
 #endif
 
     nsAutoString currentValue;
-    if (!mEditorInitialized && IsSingleLineTextControl()) {
-      // Grab the current value directly from the text node to make sure that we
-      // deal with stale data correctly.
-      NS_ASSERTION(mRootNode, "We should have a root node here");
-      nsIContent *textContent = mRootNode->GetFirstChild();
-      nsCOMPtr<nsIDOMCharacterData> textNode = do_QueryInterface(textContent);
-      if (textNode) {
-        textNode->GetData(currentValue);
-      }
-    } else {
-      mBoundFrame->GetText(currentValue);
-    }
+    mBoundFrame->GetText(currentValue);
 
     nsWeakFrame weakFrame(mBoundFrame);
 
@@ -1820,7 +1813,7 @@ nsTextEditorState::SetValue(const nsAString& aValue, bool aUserInput,
       // for why this is needed.  Note that we have to do this up here, because
       // otherwise SelectAll() will fail.
       {
-        AutoSystemCaller asc;
+        AutoNoJSAPI nojsapi;
 
         nsCOMPtr<nsISelection> domSel;
         nsCOMPtr<nsISelectionPrivate> selPriv;
@@ -1949,11 +1942,6 @@ nsTextEditorState::InitializeKeyboardEventListeners()
 void
 nsTextEditorState::ValueWasChanged(bool aNotify)
 {
-  // placeholder management
-  if (!mPlaceholderDiv) {
-    return;
-  }
-
   UpdatePlaceholderVisibility(aNotify);
 }
 
@@ -1974,15 +1962,11 @@ nsTextEditorState::UpdatePlaceholderText(bool aNotify)
   nsContentUtils::RemoveNewlines(placeholderValue);
   NS_ASSERTION(mPlaceholderDiv->GetFirstChild(), "placeholder div has no child");
   mPlaceholderDiv->GetFirstChild()->SetText(placeholderValue, aNotify);
-  ValueWasChanged(aNotify);
 }
 
 void
 nsTextEditorState::UpdatePlaceholderVisibility(bool aNotify)
 {
-  NS_ASSERTION(mPlaceholderDiv, "This function should not be called if "
-                                "mPlaceholderDiv isn't set");
-
   nsAutoString value;
   GetValue(value, true);
 
@@ -2009,7 +1993,7 @@ nsTextEditorState::HideSelectionIfBlurred()
   }
 }
 
-NS_IMPL_ISUPPORTS1(nsAnonDivObserver, nsIMutationObserver)
+NS_IMPL_ISUPPORTS(nsAnonDivObserver, nsIMutationObserver)
 
 void
 nsAnonDivObserver::CharacterDataChanged(nsIDocument*             aDocument,

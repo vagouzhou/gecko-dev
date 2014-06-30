@@ -17,11 +17,12 @@
 #include "mozilla/IMEStateManager.h"
 #include "mozilla/layers/CompositorChild.h"
 #include "mozilla/layers/PLayerTransactionChild.h"
+#include "mozilla/TextComposition.h"
 #include "mozilla/TextEvents.h"
 #include "PuppetWidget.h"
 #include "nsIWidgetListener.h"
-#include "TextComposition.h"
 
+using namespace mozilla;
 using namespace mozilla::dom;
 using namespace mozilla::hal;
 using namespace mozilla::gfx;
@@ -72,13 +73,14 @@ MightNeedIMEFocus(const nsWidgetInitData* aInitData)
 // Arbitrary, fungible.
 const size_t PuppetWidget::kMaxDimension = 4000;
 
-NS_IMPL_ISUPPORTS_INHERITED1(PuppetWidget, nsBaseWidget,
-                             nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS_INHERITED(PuppetWidget, nsBaseWidget,
+                            nsISupportsWeakReference)
 
 PuppetWidget::PuppetWidget(TabChild* aTabChild)
   : mTabChild(aTabChild)
   , mDPI(-1)
   , mDefaultScale(-1)
+  , mNativeKeyCommandsValid(false)
 {
   MOZ_COUNT_CTOR(PuppetWidget);
 
@@ -107,9 +109,8 @@ PuppetWidget::Create(nsIWidget        *aParent,
   mEnabled = true;
   mVisible = true;
 
-  mSurface = gfxPlatform::GetPlatform()
-             ->CreateOffscreenSurface(IntSize(1, 1),
-                                      gfxASurface::ContentFromFormat(gfxImageFormat::ARGB32));
+  mDrawTarget = gfxPlatform::GetPlatform()->
+    CreateOffscreenContentDrawTarget(IntSize(1, 1), SurfaceFormat::B8G8R8A8);
 
   mIMEComposing = false;
   mNeedIMEStateInit = MightNeedIMEFocus(aInitData);
@@ -275,6 +276,14 @@ PuppetWidget::DispatchEvent(WidgetGUIEvent* event, nsEventStatus& aStatus)
   NS_ABORT_IF_FALSE(!mChild || mChild->mWindowType == eWindowType_popup,
                     "Unexpected event dispatch!");
 
+  AutoCacheNativeKeyCommands autoCache(this);
+  if (event->mFlags.mIsSynthesizedForTests && !mNativeKeyCommandsValid) {
+    WidgetKeyboardEvent* keyEvent = event->AsKeyboardEvent();
+    if (keyEvent) {
+      mTabChild->RequestNativeKeyBindings(&autoCache, keyEvent);
+    }
+  }
+
   aStatus = nsEventStatus_eIgnore;
 
   if (event->message == NS_COMPOSITION_START) {
@@ -319,6 +328,12 @@ PuppetWidget::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
                                       DoCommandCallback aCallback,
                                       void* aCallbackData)
 {
+  // B2G doesn't have native key bindings.
+#ifdef MOZ_B2G
+  return false;
+#else // #ifdef MOZ_B2G
+  MOZ_ASSERT(mNativeKeyCommandsValid);
+
   nsTArray<mozilla::CommandInt>& commands = mSingleLineCommands;
   switch (aType) {
     case nsIWidget::NativeKeyBindingsForSingleLineEditor:
@@ -340,6 +355,7 @@ PuppetWidget::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
     aCallback(static_cast<mozilla::Command>(commands[i]), aCallbackData);
   }
   return true;
+#endif
 }
 
 LayerManager*
@@ -372,12 +388,6 @@ PuppetWidget::GetLayerManager(PLayerTransactionChild* aShadowManager,
     *aAllowRetaining = true;
   }
   return mLayerManager;
-}
-
-gfxASurface*
-PuppetWidget::GetThebesSurface()
-{
-  return mSurface;
 }
 
 nsresult
@@ -633,15 +643,17 @@ PuppetWidget::NotifyIMEOfSelectionChange(
 NS_IMETHODIMP
 PuppetWidget::SetCursor(nsCursor aCursor)
 {
-  if (mCursor == aCursor) {
+  if (mCursor == aCursor && !mUpdateCursor) {
     return NS_OK;
   }
 
-  if (mTabChild && !mTabChild->SendSetCursor(aCursor)) {
+  if (mTabChild &&
+      !mTabChild->SendSetCursor(aCursor, mUpdateCursor)) {
     return NS_ERROR_FAILURE;
   }
 
   mCursor = aCursor;
+  mUpdateCursor = false;
 
   return NS_OK;
 }
@@ -676,7 +688,7 @@ PuppetWidget::Paint()
         mTabChild->NotifyPainted();
       }
     } else {
-      nsRefPtr<gfxContext> ctx = new gfxContext(mSurface);
+      nsRefPtr<gfxContext> ctx = new gfxContext(mDrawTarget);
       ctx->Rectangle(gfxRect(0,0,0,0));
       ctx->Clip();
       AutoLayerManagerSetup setupLayerManager(this, ctx,
@@ -839,7 +851,7 @@ PuppetScreen::SetRotation(uint32_t aRotation)
   return NS_ERROR_NOT_AVAILABLE;
 }
 
-NS_IMPL_ISUPPORTS1(PuppetScreenManager, nsIScreenManager)
+NS_IMPL_ISUPPORTS(PuppetScreenManager, nsIScreenManager)
 
 PuppetScreenManager::PuppetScreenManager()
 {

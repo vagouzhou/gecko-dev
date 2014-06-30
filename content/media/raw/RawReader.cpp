@@ -112,6 +112,13 @@ nsresult RawReader::ReadMetadata(MediaInfo* aInfo,
   return NS_OK;
 }
 
+bool
+RawReader::IsMediaSeekable()
+{
+  // not used
+  return true;
+}
+
  bool RawReader::DecodeAudioData()
 {
   NS_ASSERTION(mDecoder->OnStateMachineThread() || mDecoder->OnDecodeThread(),
@@ -248,7 +255,7 @@ nsresult RawReader::Seek(int64_t aTime, int64_t aStartTime, int64_t aEndTime, in
   nsresult rv = resource->Seek(nsISeekableStream::NS_SEEK_SET, offset.value());
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mVideoQueue.Erase();
+  mVideoQueue.Reset();
 
   while(mVideoQueue.GetSize() == 0) {
     bool keyframeSkip = false;

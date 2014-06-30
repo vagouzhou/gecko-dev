@@ -95,7 +95,7 @@ skip-if(B2G) == dynamic-pattern-02.svg pass.svg
 skip-if(B2G) == dynamic-pattern-contents-01.svg pass.svg
 skip-if(B2G) == dynamic-pattern-contents-02.svg pass.svg
 == dynamic-rect-01.svg dynamic-rect-01-ref.svg
-== dynamic-rect-02.svg dynamic-rect-02-ref.svg
+fuzzy-if(d2d&&layersGPUAccelerated,3,1200) == dynamic-rect-02.svg dynamic-rect-02-ref.svg # bug 776038 for Win7, Win8
 == dynamic-rect-03.svg dynamic-rect-03-ref.svg
 == dynamic-rect-04.xhtml pass.svg
 == dynamic-rect-05.svg pass.svg
@@ -107,7 +107,7 @@ skip-if(B2G) == dynamic-pattern-contents-02.svg pass.svg
 == dynamic-stroke-width-01.svg pass.svg
 == dynamic-switch-01.svg pass.svg
 == dynamic-text-01.svg dynamic-text-01-ref.svg
-fuzzy-if(d2d&&layersGPUAccelerated,2,12739) == dynamic-text-02.svg dynamic-text-02-ref.svg # bug 776038 for Win7
+fuzzy-if(d2d&&layersGPUAccelerated,3,12739) == dynamic-text-02.svg dynamic-text-02-ref.svg # bug 776038 for Win7, Win8
 fuzzy-if(d2d&&layersGPUAccelerated,2,10539) == dynamic-text-03.svg dynamic-text-03-ref.svg # bug 776038 for Win7
 random-if(/^Windows\x20NT\x205\.1/.test(http.oscpu)) fuzzy-if(/^Windows\x20NT\x206\.1/.test(http.oscpu),47,89) == dynamic-text-04.svg dynamic-text-04-ref.svg # bug 421587 for WinXP, bug 776038 for Win7
 skip-if(B2G) == dynamic-text-05.svg pass.svg
@@ -188,6 +188,8 @@ fuzzy-if(Android||B2G,9,980) == gradient-live-01d.svg gradient-live-01-ref.svg
 == lang-attribute-03.svg pass.svg
 == linearGradient-basic-01.svg pass.svg
 == linearGradient-basic-02.svg pass.svg
+# off-by-one fuzziness expected. OS X is broken with bad aliasing though (bug 1023640).
+fuzzy-if(cocoaWidget,15,19679) fuzzy-if(winWidget,1,8800) fuzzy-if(!cocoaWidget&&!winWidget,1,4000) == linearGradient-basic-03.svg linearGradient-basic-03-ref.svg
 == markers-and-group-opacity-01.svg markers-and-group-opacity-01-ref.svg
 == marker-attribute-01.svg pass.svg
 == marker-effects-01.svg marker-effects-01-ref.svg
@@ -197,6 +199,7 @@ pref(svg.marker-improvements.enabled,true) == marker-orientation-02.svg marker-o
 == mask-basic-01.svg pass.svg
 == mask-basic-02.svg mask-basic-02-ref.svg
 == mask-basic-03.svg pass.svg
+== mask-basic-04.svg pass.svg
 == mask-extref-dataURI-01.svg pass.svg
 == mask-containing-masked-content-01.svg pass.svg
 == mask-transformed-01.svg mask-transformed-01-ref.svg
@@ -207,9 +210,9 @@ pref(layout.css.masking.enabled,true) fuzzy-if(d2d,1,6400) == mask-type-03.svg m
 pref(layout.css.masking.enabled,true) fuzzy-if(d2d,1,6400) == mask-type-04.svg mask-type-01-ref.svg
 == nested-viewBox-01.svg pass.svg
 == nesting-invalid-01.svg nesting-invalid-01-ref.svg
-== non-scaling-stroke-01.svg non-scaling-stroke-01-ref.svg 
+== non-scaling-stroke-01.svg non-scaling-stroke-01-ref.svg
 fuzzy-if(Android||B2G,1,99) fuzzy-if(!contentSameGfxBackendAsCanvas,9,99) == non-scaling-stroke-02.svg non-scaling-stroke-02-ref.svg
-== non-scaling-stroke-03.svg non-scaling-stroke-03-ref.svg 
+== non-scaling-stroke-03.svg non-scaling-stroke-03-ref.svg
 == objectBoundingBox-and-clipPath.svg pass.svg
 # Bug 588684
 random-if(gtk2Widget) == objectBoundingBox-and-fePointLight-01.svg objectBoundingBox-and-fePointLight-01-ref.svg
@@ -225,7 +228,7 @@ random-if(gtk2Widget) == objectBoundingBox-and-fePointLight-02.svg objectBoundin
 skip-if(d2d) fuzzy-if(azureQuartz,1,99974) == opacity-and-gradient-02.svg opacity-and-gradient-02-ref.svg
 == opacity-and-pattern-01.svg pass.svg
 == opacity-and-transform-01.svg opacity-and-transform-01-ref.svg
-fails-if(B2G) fuzzy-if(Android&&AndroidVersion>=15,8,200) == outer-svg-border-and-padding-01.svg outer-svg-border-and-padding-01-ref.svg # B2G scrollbar difference
+fuzzy-if(Android&&AndroidVersion>=15,8,200) random-if(B2G&&browserIsRemote) == outer-svg-border-and-padding-01.svg outer-svg-border-and-padding-01-ref.svg
 == overflow-on-outer-svg-01.svg overflow-on-outer-svg-01-ref.svg
 == overflow-on-outer-svg-02a.xhtml overflow-on-outer-svg-02-ref.xhtml
 == overflow-on-outer-svg-02b.xhtml overflow-on-outer-svg-02-ref.xhtml
@@ -246,6 +249,7 @@ fuzzy-if(azureQuartz,6,47) == path-01.svg path-01-ref.svg
 == path-08.svg pass.svg
 == pathLength-01.svg pass.svg
 == pathLength-02.svg pass.svg
+== pattern-basic-01.svg pass.svg
 == pattern-invalid-01.svg pattern-invalid-01-ref.svg
 == pattern-live-01a.svg pattern-live-01-ref.svg
 == pattern-live-01b.svg pattern-live-01-ref.svg

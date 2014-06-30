@@ -9,18 +9,21 @@ TEST_DIRS += ['test']
 EXTRA_JS_MODULES += [
     'BrowserNewTabPreloader.jsm',
     'BrowserUITelemetry.jsm',
+    'Chat.jsm',
     'ContentClick.jsm',
     'ContentLinkHandler.jsm',
+    'ContentSearch.jsm',
     'CustomizationTabPreloader.jsm',
     'Feeds.jsm',
     'NetworkPrioritizer.jsm',
     'offlineAppCache.jsm',
+    'PanelFrame.jsm',
+    'RemotePrompt.jsm',
     'SharedFrame.jsm',
     'SitePermissions.jsm',
     'Social.jsm',
     'TabCrashReporter.jsm',
     'WebappManager.jsm',
-    'webrtcUI.jsm',
 ]
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
@@ -39,6 +42,7 @@ EXTRA_PP_JS_MODULES += [
     'AboutHome.jsm',
     'RecentWindow.jsm',
     'UITour.jsm',
+    'webrtcUI.jsm',
 ]
 
 if CONFIG['MOZILLA_OFFICIAL']:

@@ -6,7 +6,6 @@
 
 #include "AsyncFaviconHelpers.h"
 
-#include "nsICacheService.h"
 #include "nsICacheEntry.h"
 #include "nsICachingChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
@@ -500,7 +499,7 @@ AsyncFetchAndSetIconForPage::Run()
 ////////////////////////////////////////////////////////////////////////////////
 //// AsyncFetchAndSetIconFromNetwork
 
-NS_IMPL_ISUPPORTS_INHERITED3(
+NS_IMPL_ISUPPORTS_INHERITED(
   AsyncFetchAndSetIconFromNetwork
 , nsRunnable
 , nsIStreamListener

@@ -1,4 +1,4 @@
-# -*- Mode: Java; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+# -*- indent-tabs-mode: nil; js-indent-level: 4 -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
@@ -8,6 +8,7 @@ Components.utils.import("resource://gre/modules/DownloadUtils.jsm");
 Components.utils.import("resource://gre/modules/ctypes.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/LoadContextInfo.jsm");
+Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 
 var gAdvancedPane = {
   _inited: false,
@@ -300,78 +301,49 @@ var gAdvancedPane = {
   // Retrieves the amount of space currently used by disk cache
   updateActualCacheSize: function ()
   {
-    var sum = 0;
-    function updateUI(consumption) {
-      var actualSizeLabel = document.getElementById("actualDiskCacheSize");
-      var sizeStrings = DownloadUtils.convertByteUnits(consumption);
-      var prefStrBundle = document.getElementById("bundlePreferences");
-      var sizeStr = prefStrBundle.getFormattedString("actualDiskCacheSize", sizeStrings);
-      actualSizeLabel.value = sizeStr;
-    }
+    var actualSizeLabel = document.getElementById("actualDiskCacheSize");
+    var prefStrBundle = document.getElementById("bundlePreferences");
 
-    Visitor.prototype = {
-      expected: 0,
-      sum: 0,
-      QueryInterface: function listener_qi(iid) {
-        if (iid.equals(Ci.nsISupports) ||
-            iid.equals(Ci.nsICacheStorageVisitor)) {
-          return this;
-        }
-        throw Components.results.NS_ERROR_NO_INTERFACE;
+    // Needs to root the observer since cache service keeps only a weak reference.
+    this.observer = {
+      onNetworkCacheDiskConsumption: function(consumption) {
+        var size = DownloadUtils.convertByteUnits(consumption);
+        actualSizeLabel.value = prefStrBundle.getFormattedString("actualDiskCacheSize", size);
       },
-      onCacheStorageInfo: function(num, consumption)
-      {
-        this.sum += consumption;
-        if (!--this.expected)
-          updateUI(this.sum);
-      }
+
+      QueryInterface: XPCOMUtils.generateQI([
+        Components.interfaces.nsICacheStorageConsumptionObserver,
+        Components.interfaces.nsISupportsWeakReference
+      ])
     };
-    function Visitor(callbacksExpected) {
-      this.expected = callbacksExpected;
-    }
+
+    actualSizeLabel.value = prefStrBundle.getString("actualDiskCacheSizeCalculated");
 
     var cacheService =
       Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
                 .getService(Components.interfaces.nsICacheStorageService);
-    // non-anonymous
-    var storage1 = cacheService.diskCacheStorage(LoadContextInfo.default, false);
-    // anonymous
-    var storage2 = cacheService.diskCacheStorage(LoadContextInfo.anonymous, false);
-
-    // expect 2 callbacks
-    var visitor = new Visitor(2);
-    storage1.asyncVisitStorage(visitor, false /* Do not walk entries */);
-    storage2.asyncVisitStorage(visitor, false /* Do not walk entries */);
+    cacheService.asyncGetDiskConsumption(this.observer);
   },
 
   // Retrieves the amount of space currently used by offline cache
   updateActualAppCacheSize: function ()
   {
     var visitor = {
-      visitDevice: function (deviceID, deviceInfo)
+      onCacheStorageInfo: function (aEntryCount, aConsumption, aCapacity, aDiskDirectory)
       {
-        if (deviceID == "offline") {
-          var actualSizeLabel = document.getElementById("actualAppCacheSize");
-          var sizeStrings = DownloadUtils.convertByteUnits(deviceInfo.totalSize);
-          var prefStrBundle = document.getElementById("bundlePreferences");
-          var sizeStr = prefStrBundle.getFormattedString("actualAppCacheSize", sizeStrings);
-          actualSizeLabel.value = sizeStr;
-        }
-        // Do not enumerate entries
-        return false;
-      },
-
-      visitEntry: function (deviceID, entryInfo)
-      {
-        // Do not enumerate entries.
-        return false;
+        var actualSizeLabel = document.getElementById("actualAppCacheSize");
+        var sizeStrings = DownloadUtils.convertByteUnits(aConsumption);
+        var prefStrBundle = document.getElementById("bundlePreferences");
+        var sizeStr = prefStrBundle.getFormattedString("actualAppCacheSize", sizeStrings);
+        actualSizeLabel.value = sizeStr;
       }
     };
 
     var cacheService =
-      Components.classes["@mozilla.org/network/cache-service;1"]
-                .getService(Components.interfaces.nsICacheService);
-    cacheService.visitEntries(visitor);
+      Components.classes["@mozilla.org/netwerk/cache-storage-service;1"]
+                .getService(Components.interfaces.nsICacheStorageService);
+    var storage = cacheService.appCacheStorage(LoadContextInfo.default, null);
+    storage.asyncVisitStorage(visitor, false);
   },
 
   updateCacheSizeUI: function (smartSizeEnabled)

@@ -157,6 +157,9 @@ var NewPrefDialog = {
         break;
     }
 
+    // Ensure pref adds flushed to disk immediately
+    Services.prefs.savePrefFile(null);
+
     this.hide();
   },
 
@@ -420,6 +423,9 @@ var AboutConfig = {
     // Reset will handle any locked condition
     let pref = this._getPrefForNode(node);
     pref.reset();
+
+    // Ensure pref reset flushed to disk immediately
+    Services.prefs.savePrefFile(null);
   },
 
   // When we want to toggle a bool pref
@@ -536,6 +542,9 @@ Pref.prototype = {
       default:
         Services.prefs.setCharPref(this.name, aPrefValue);
     }
+
+    // Ensure pref change flushed to disk immediately
+    Services.prefs.savePrefFile(null);
   },
 
   get default() {

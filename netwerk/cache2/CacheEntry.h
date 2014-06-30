@@ -67,7 +67,8 @@ public:
   nsCString const &GetStorageID() const { return mStorageID; }
   nsCString const &GetEnhanceID() const { return mEnhanceID; }
   nsIURI* GetURI() const { return mURI; }
-  bool UsingDisk() const;
+  // Accessible at any time
+  bool IsUsingDisk() const { return mUseDisk; }
   bool SetUsingDisk(bool aUsingDisk);
   bool IsReferenced() const;
   bool IsFileDoomed();
@@ -99,6 +100,11 @@ public:
   static nsresult HashingKey(nsCSubstring const& aStorageID,
                              nsCSubstring const& aEnhanceID,
                              nsIURI* aURI,
+                             nsACString &aResult);
+
+  static nsresult HashingKey(nsCSubstring const& aStorageID,
+                             nsCSubstring const& aEnhanceID,
+                             nsCSubstring const& aURISpec,
                              nsACString &aResult);
 
   // Accessed only on the service management thread
@@ -202,7 +208,7 @@ private:
   bool Load(bool aTruncate, bool aPriority);
   void OnLoaded();
 
-  void RememberCallback(Callback const & aCallback);
+  void RememberCallback(Callback & aCallback, bool aBypassIfBusy);
   void InvokeCallbacksLock();
   void InvokeCallbacks();
   bool InvokeCallbacks(bool aReadOnly);
@@ -217,9 +223,18 @@ private:
   void OnHandleClosed(CacheEntryHandle const* aHandle);
 
 private:
+  friend class CacheEntryHandle;
+  // Increment/decrements the number of handles keeping this entry.
+  void AddHandleRef() { ++mHandlesCount; }
+  void ReleaseHandleRef() { --mHandlesCount; }
+  // Current number of handles keeping this entry.
+  uint32_t HandlesCount() const { return mHandlesCount; }
+
+private:
   friend class CacheOutputCloseListener;
   void OnOutputClosed();
 
+private:
   // Schedules a background operation on the management thread.
   // When executed on the management thread directly, the operation(s)
   // is (are) executed immediately.
@@ -236,8 +251,7 @@ private:
   mozilla::Mutex mLock;
 
   // Reflects the number of existing handles for this entry
-  friend class CacheEntryHandle;
-  ::mozilla::ThreadSafeAutoRefCnt mHandlersCount;
+  ::mozilla::ThreadSafeAutoRefCnt mHandlesCount;
 
   nsTArray<Callback> mCallbacks;
   nsCOMPtr<nsICacheEntryDoomCallback> mDoomCallback;
@@ -249,9 +263,7 @@ private:
   nsCString mStorageID;
 
   // Whether it's allowed to persist the data to disk
-  // Synchronized by the service management lock.
-  // Hence, leave it as a standalone boolean.
-  bool mUseDisk;
+  bool const mUseDisk;
 
   // Set when entry is doomed with AsyncDoom() or DoomAlreadyRemoved().
   // Left as a standalone flag to not bother with locking (there is no need).
@@ -325,12 +337,8 @@ private:
   } mBackgroundOperations;
 
   nsCOMPtr<nsISupports> mSecurityInfo;
-
   int64_t mPredictedDataSize;
-  uint32_t mDataSize; // ???
-
   mozilla::TimeStamp mLoadStart;
-
   nsCOMPtr<nsIThread> mReleaseThread;
 };
 
@@ -339,12 +347,12 @@ class CacheEntryHandle : public nsICacheEntry
 {
 public:
   CacheEntryHandle(CacheEntry* aEntry);
-  virtual ~CacheEntryHandle();
   CacheEntry* Entry() const { return mEntry; }
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_FORWARD_NSICACHEENTRY(mEntry->)
 private:
+  virtual ~CacheEntryHandle();
   nsRefPtr<CacheEntry> mEntry;
 };
 

@@ -13,10 +13,7 @@
 #include "md4.h"
 #include "mozilla/Likely.h"
 #include "mozilla/Telemetry.h"
-
-// Since the generic module doesn't support NTLMv2 and NTLMv1 is considered
-// a security threat, we disable the generic module completely.
-#define DISABLE_GENERIC_NTLM_MODULE 1
+#include "mozilla/Preferences.h"
 
 #ifdef PR_LOGGING
 static PRLogModuleInfo *
@@ -748,7 +745,7 @@ GenerateType3Msg(const nsString &domain,
 
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsNTLMAuthModule, nsIAuthModule)
+NS_IMPL_ISUPPORTS(nsNTLMAuthModule, nsIAuthModule)
 
 nsNTLMAuthModule::~nsNTLMAuthModule()
 {
@@ -758,16 +755,11 @@ nsNTLMAuthModule::~nsNTLMAuthModule()
 nsresult
 nsNTLMAuthModule::InitTest()
 {
-#if defined(DISABLE_GENERIC_NTLM_MODULE)
-  // Unconditionally disallow usage of the generic module.
-  return NS_ERROR_NOT_AVAILABLE;
-#else // Generic NTLM is enabled
   nsNSSShutDownPreventionLock locker;
   //
   // disable NTLM authentication when FIPS mode is enabled.
   //
   return PK11_IsFIPS() ? NS_ERROR_NOT_AVAILABLE : NS_OK;
-#endif
 }
 
 NS_IMETHODIMP

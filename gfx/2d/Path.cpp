@@ -278,8 +278,11 @@ FindInflectionApproximationRange(BezierControlPoints aControlPoints,
 
     if (cp21.x == 0 && cp21.y == 0) {
       // In this case s3 becomes lim[n->0] (cp41.x * n) / n - (cp41.y * n) / n = cp41.x - cp41.y.
-      *aMin = aT - CubicRoot(double(aTolerance / (cp41.x - cp41.y)));
-      *aMax = aT + CubicRoot(aTolerance / (cp41.x - cp41.y));
+
+      // Use the absolute value so that Min and Max will correspond with the
+      // minimum and maximum of the range.
+      *aMin = aT - CubicRoot(abs(aTolerance / (cp41.x - cp41.y)));
+      *aMax = aT + CubicRoot(abs(aTolerance / (cp41.x - cp41.y)));
       return;
     }
 
@@ -351,7 +354,7 @@ FindInflectionApproximationRange(BezierControlPoints aControlPoints,
  * I haven't looked into whether the formulation of the quadratic formula in
  * hain has any numerical advantages over the one used below.
  */
-static inline bool
+static inline void
 FindInflectionPoints(const BezierControlPoints &aControlPoints,
                      Float *aT1, Float *aT2, uint32_t *aCount)
 {
@@ -369,12 +372,24 @@ FindInflectionPoints(const BezierControlPoints &aControlPoints,
   if (a == 0) {
     // Not a quadratic equation.
     if (b == 0) {
-      // Instead of a linear equation we have a constant.
-      return false;
+      // Instead of a linear acceleration change we have a constant
+      // acceleration change. This means the equation has no solution
+      // and there are no inflection points, unless the constant is 0.
+      // In that case the curve is a straight line, essentially that means
+      // the easiest way to deal with is is by saying there's an inflection
+      // point at t == 0. The inflection point approximation range found will
+      // automatically extend into infinity.
+      if (c == 0) {
+        *aCount = 1;
+        *aT1 = 0;
+        return;
+      }
+      *aCount = 0;
+      return;
     }
     *aT1 = -c / b;
     *aCount = 1;
-    return true;
+    return;
   } else {
     Float discriminant = b * b - 4 * a * c;
 
@@ -408,7 +423,7 @@ FindInflectionPoints(const BezierControlPoints &aControlPoints,
     }
   }
 
-  return true;
+  return;
 }
 
 void
@@ -419,10 +434,7 @@ FlattenBezier(const BezierControlPoints &aControlPoints,
   Float t2;
   uint32_t count;
 
-  if (!FindInflectionPoints(aControlPoints, &t1, &t2, &count)) {
-    aSink->LineTo(aControlPoints.mCP4);
-    return;
-  }
+  FindInflectionPoints(aControlPoints, &t1, &t2, &count);
 
   // Check that at least one of the inflection points is inside [0..1]
   if (count == 0 || ((t1 < 0 || t1 > 1.0) && ((t2 < 0 || t2 > 1.0) || count == 1)) ) {

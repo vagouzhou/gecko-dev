@@ -22,6 +22,8 @@
 #include "js/Vector.h"
 #include "vm/RegExpObject.h"
 
+struct KeywordInfo;
+
 namespace js {
 namespace frontend {
 
@@ -43,6 +45,8 @@ enum TokenKind {
     TOK_NAME,                      // identifier
     TOK_NUMBER,                    // numeric constant
     TOK_STRING,                    // string constant
+    TOK_TEMPLATE_HEAD,             // start of template literal with substitutions
+    TOK_NO_SUBS_TEMPLATE,          // template literal without substitutions
     TOK_REGEXP,                    // RegExp constant
     TOK_TRUE,                      // true
     TOK_FALSE,                     // false
@@ -275,7 +279,9 @@ struct Token
     }
 
     void setAtom(JSAtom *atom) {
-        JS_ASSERT(type == TOK_STRING);
+        JS_ASSERT (type == TOK_STRING ||
+                   type == TOK_TEMPLATE_HEAD ||
+                   type == TOK_NO_SUBS_TEMPLATE);
         JS_ASSERT(!IsPoisonedPtr(atom));
         u.atom = atom;
     }
@@ -300,7 +306,9 @@ struct Token
     }
 
     JSAtom *atom() const {
-        JS_ASSERT(type == TOK_STRING);
+        JS_ASSERT (type == TOK_STRING ||
+                   type == TOK_TEMPLATE_HEAD ||
+                   type == TOK_NO_SUBS_TEMPLATE);
         return u.atom;
     }
 
@@ -493,6 +501,7 @@ class MOZ_STACK_CLASS TokenStream
                         //   we look for a regexp instead of just returning
                         //   TOK_DIV.
         KeywordIsName,  // Treat keywords as names by returning TOK_NAME.
+        TemplateTail,   // Treat next characters as part of a template string
     };
 
     // Get the next token from the stream, make it the current token, and
@@ -597,7 +606,7 @@ class MOZ_STACK_CLASS TokenStream
         //
         // This class is explicity ignored by the analysis, so don't add any
         // more pointers to GC things here!
-        Position(AutoKeepAtoms&) { }
+        explicit Position(AutoKeepAtoms&) { }
       private:
         Position(const Position&) MOZ_DELETE;
         friend class TokenStream;
@@ -614,7 +623,7 @@ class MOZ_STACK_CLASS TokenStream
     void advance(size_t position);
     void tell(Position *);
     void seek(const Position &pos);
-    void seek(const Position &pos, const TokenStream &other);
+    bool seek(const Position &pos, const TokenStream &other);
 
     size_t positionToOffset(const Position &pos) const {
         return pos.buf - userbuf.base();
@@ -654,7 +663,9 @@ class MOZ_STACK_CLASS TokenStream
     // null, report a SyntaxError ("if is a reserved identifier") and return
     // false. If ttp is non-null, return true with the keyword's TokenKind in
     // *ttp.
+    bool checkForKeyword(const KeywordInfo *kw, TokenKind *ttp);
     bool checkForKeyword(const jschar *s, size_t length, TokenKind *ttp);
+    bool checkForKeyword(JSAtom *atom, TokenKind *ttp);
 
     // This class maps a userbuf offset (which is 0-indexed) to a line number
     // (which is 1-indexed) and a column index (which is 0-indexed).
@@ -710,7 +721,7 @@ class MOZ_STACK_CLASS TokenStream
         SourceCoords(ExclusiveContext *cx, uint32_t ln);
 
         void add(uint32_t lineNum, uint32_t lineStartOffset);
-        void fill(const SourceCoords &other);
+        bool fill(const SourceCoords &other);
 
         bool isOnThisLine(uint32_t offset, uint32_t lineNum) const {
             uint32_t lineIndex = lineNumToIndex(lineNum);
@@ -747,8 +758,7 @@ class MOZ_STACK_CLASS TokenStream
     class TokenBuf {
       public:
         TokenBuf(ExclusiveContext *cx, const jschar *buf, size_t length)
-          : base_(buf), limit_(buf + length), ptr(buf),
-            skipBase(cx, &base_), skipLimit(cx, &limit_), skipPtr(cx, &ptr)
+          : base_(buf), limit_(buf + length), ptr(buf)
         { }
 
         bool hasRawChars() const {
@@ -816,7 +826,7 @@ class MOZ_STACK_CLASS TokenStream
 #endif
 
         static bool isRawEOLChar(int32_t c) {
-            return (c == '\n' || c == '\r' || c == LINE_SEPARATOR || c == PARA_SEPARATOR);
+            return c == '\n' || c == '\r' || c == LINE_SEPARATOR || c == PARA_SEPARATOR;
         }
 
         // Finds the next EOL, but stops once 'max' jschars have been scanned
@@ -827,12 +837,11 @@ class MOZ_STACK_CLASS TokenStream
         const jschar *base_;            // base of buffer
         const jschar *limit_;           // limit for quick bounds check
         const jschar *ptr;              // next char to get
-
-        // We are not yet moving strings
-        SkipRoot skipBase, skipLimit, skipPtr;
     };
 
     TokenKind getTokenInternal(Modifier modifier);
+
+    bool getStringOrTemplateToken(int qc, Token **tp);
 
     int32_t getChar();
     int32_t getCharIgnoreEOL();
@@ -898,15 +907,6 @@ class MOZ_STACK_CLASS TokenStream
     ExclusiveContext    *const cx;
     JSPrincipals        *const originPrincipals;
     StrictModeGetter    *strictModeGetter;  // used to test for strict mode
-
-    // The tokens array stores pointers to JSAtoms. These are rooted by the
-    // atoms table using AutoKeepAtoms in the Parser. This SkipRoot tells the
-    // exact rooting analysis to ignore the atoms in the tokens array.
-    SkipRoot            tokenSkip;
-
-    // Bug 846011
-    SkipRoot            linebaseSkip;
-    SkipRoot            prevLinebaseSkip;
 };
 
 // Steal one JSREPORT_* bit (see jsapi.h) to tell that arguments to the error

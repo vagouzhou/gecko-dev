@@ -25,6 +25,7 @@
 
 #include "mozilla/Attributes.h"
 
+#include "js/TracingAPI.h"
 #include "js/TypeDecls.h"
 
 class nsIRDFResource;
@@ -42,7 +43,6 @@ class nsIXULPrototypeScript;
 #include "nsURIHashKey.h"
 #include "nsInterfaceHashtable.h"
 
-struct JSTracer;
 struct PRLogModuleInfo;
 
 class nsRefMapEntry : public nsStringHashKey
@@ -138,7 +138,7 @@ public:
     bool OnDocumentParserError() MOZ_OVERRIDE;
 
     // nsINode interface overrides
-    virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+    virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
     // nsIDOMNode interface
     NS_FORWARD_NSIDOMNODE_TO_NSINODE
@@ -163,7 +163,7 @@ public:
     NS_DECL_NSIDOMXULDOCUMENT
 
     // nsICSSLoaderObserver
-    NS_IMETHOD StyleSheetLoaded(nsCSSStyleSheet* aSheet,
+    NS_IMETHOD StyleSheetLoaded(CSSStyleSheet* aSheet,
                                 bool aWasAlternate,
                                 nsresult aStatus) MOZ_OVERRIDE;
 
@@ -281,7 +281,7 @@ protected:
 
     already_AddRefed<nsPIWindowRoot> GetWindowRoot();
 
-    static NS_HIDDEN_(void) DirectionChanged(const char* aPrefName, void* aData);
+    static void DirectionChanged(const char* aPrefName, void* aData);
 
     // pseudo constants
     static int32_t gRefCnt;
@@ -298,8 +298,7 @@ protected:
     nsresult
     Persist(nsIContent* aElement, int32_t aNameSpaceID, nsIAtom* aAttribute);
 
-    virtual JSObject* WrapNode(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+    virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
     // IMPORTANT: The ownership implicit in the following member
     // variables has been explicitly checked and set using nsCOMPtr
@@ -337,7 +336,7 @@ protected:
      * An array of style sheets, that will be added (preserving order) to the
      * document after all of them are loaded (in DoneWalking).
      */
-    nsTArray<nsRefPtr<nsCSSStyleSheet> > mOverlaySheets;
+    nsTArray<nsRefPtr<CSSStyleSheet>> mOverlaySheets;
 
     nsCOMPtr<nsIDOMXULCommandDispatcher>     mCommandDispatcher; // [OWNER] of the focus tracker
 
@@ -461,7 +460,8 @@ protected:
      * If the current transcluded script is being compiled off thread, the
      * source for that script.
      */
-    nsString mOffThreadCompileString;
+    jschar* mOffThreadCompileStringBuf;
+    size_t mOffThreadCompileStringLength;
 
     /**
      * Check if a XUL template builder has already been hooked up.

@@ -20,7 +20,7 @@
  * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
  * OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. 
+ * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #ifndef assembler_jit_ExecutableAllocator_h
@@ -33,6 +33,7 @@
 
 #include "assembler/wtf/Platform.h"
 #include "jit/arm/Simulator-arm.h"
+#include "jit/mips/Simulator-mips.h"
 #include "js/HashTable.h"
 #include "js/Vector.h"
 
@@ -61,7 +62,7 @@ extern  "C" void sync_instruction_memory(caddr_t v, u_int len);
 #include <e32std.h>
 #endif
 
-#if WTF_CPU_MIPS && WTF_OS_LINUX
+#if WTF_CPU_MIPS && WTF_OS_LINUX && !JS_MIPS_SIMULATOR
 #include <sys/cachectl.h>
 #endif
 
@@ -72,6 +73,10 @@ extern  "C" void sync_instruction_memory(caddr_t v, u_int len);
 #else
 #define INITIAL_PROTECTION_FLAGS (PROT_READ | PROT_WRITE | PROT_EXEC)
 #endif
+
+namespace JSC {
+  enum CodeKind { ION_CODE = 0, BASELINE_CODE, REGEXP_CODE, OTHER_CODE };
+}
 
 #if ENABLE_ASSEMBLER
 
@@ -84,8 +89,6 @@ namespace JS {
 namespace JSC {
 
   class ExecutableAllocator;
-
-  enum CodeKind { ION_CODE = 0, BASELINE_CODE, REGEXP_CODE, OTHER_CODE };
 
   // These are reference-counted. A new one starts with a count of 1.
   class ExecutablePool {
@@ -118,8 +121,7 @@ public:
     void release(bool willDestroy = false)
     {
         JS_ASSERT(m_refCount != 0);
-        // XXX: disabled, see bug 654820.
-        //JS_ASSERT_IF(willDestroy, m_refCount == 1);
+        JS_ASSERT_IF(willDestroy, m_refCount == 1);
         if (--m_refCount == 0)
             js_delete(this);
     }
@@ -298,7 +300,7 @@ private:
 
         if ((std::numeric_limits<size_t>::max() - granularity) <= request)
             return OVERSIZE_ALLOCATION;
-        
+
         // Round up to next page boundary
         size_t size = request + (granularity - 1);
         size = size & ~(granularity - 1);
@@ -416,7 +418,7 @@ public:
     static void cacheFlush(void*, size_t)
     {
     }
-#elif defined(JS_ARM_SIMULATOR)
+#elif defined(JS_ARM_SIMULATOR) || defined(JS_MIPS_SIMULATOR)
     static void cacheFlush(void *code, size_t size)
     {
         js::jit::Simulator::FlushICache(code, size);

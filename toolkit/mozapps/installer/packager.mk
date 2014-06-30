@@ -104,19 +104,11 @@ endif # MOZ_FOLD_LIBS
 endif # MOZ_NATIVE_NSPR
 ifdef MOZ_SHARED_ICU
 ifeq ($(OS_TARGET), WINNT)
-ifdef MOZ_DEBUG
 JSSHELL_BINS += \
-  $(DIST)/bin/icudtd$(MOZ_ICU_VERSION).dll \
-  $(DIST)/bin/icuind$(MOZ_ICU_VERSION).dll \
-  $(DIST)/bin/icuucd$(MOZ_ICU_VERSION).dll \
+  $(DIST)/bin/icudt$(MOZ_ICU_DBG_SUFFIX)$(MOZ_ICU_VERSION).dll \
+  $(DIST)/bin/icuin$(MOZ_ICU_DBG_SUFFIX)$(MOZ_ICU_VERSION).dll \
+  $(DIST)/bin/icuuc$(MOZ_ICU_DBG_SUFFIX)$(MOZ_ICU_VERSION).dll \
   $(NULL)
-else
-JSSHELL_BINS += \
-  $(DIST)/bin/icudt$(MOZ_ICU_VERSION).dll \
-  $(DIST)/bin/icuin$(MOZ_ICU_VERSION).dll \
-  $(DIST)/bin/icuuc$(MOZ_ICU_VERSION).dll \
-  $(NULL)
-endif # MOZ_DEBUG
 else
 ifeq ($(OS_TARGET), Darwin)
 JSSHELL_BINS += \
@@ -358,6 +350,7 @@ UPLOAD_EXTRA_FILES += robocop.apk
 UPLOAD_EXTRA_FILES += fennec_ids.txt
 UPLOAD_EXTRA_FILES += geckoview_library/geckoview_library.zip
 UPLOAD_EXTRA_FILES += geckoview_library/geckoview_assets.zip
+UPLOAD_EXTRA_FILES += ../embedding/android/geckoview_example/geckoview_example.apk
 
 # Robocop/Robotium tests, Android Background tests, and Fennec need to
 # be signed with the same key, which means release signing them all.
@@ -397,11 +390,15 @@ ifdef NIGHTLY_BUILD
 ifndef MOZ_DISABLE_GECKOVIEW
 INNER_MAKE_GECKOVIEW_LIBRARY= \
   $(MAKE) -C ../mobile/android/geckoview_library package
+INNER_MAKE_GECKOVIEW_EXAMPLE= \
+	$(MAKE) -C ../embedding/android/geckoview_example package
 else
 INNER_MAKE_GECKOVIEW_LIBRARY=echo 'GeckoView library packaging is disabled'
+INNER_MAKE_GECKOVIEW_EXAMPLE=echo 'GeckoView example packaging is disabled'
 endif
 else
 INNER_MAKE_GECKOVIEW_LIBRARY=echo 'GeckoView library packaging is only enabled on Nightly'
+INNER_MAKE_GECKOVIEW_EXAMPLE=echo 'GeckoView example packaging is only enabled on Nightly'
 endif
 
 ifdef MOZ_OMX_PLUGIN
@@ -483,7 +480,8 @@ INNER_MAKE_PACKAGE	= \
   $(INNER_ROBOCOP_PACKAGE) && \
   $(INNER_BACKGROUND_TESTS_PACKAGE) && \
   $(INNER_BROWSER_TESTS_PACKAGE) && \
-  $(INNER_MAKE_GECKOVIEW_LIBRARY)
+  $(INNER_MAKE_GECKOVIEW_LIBRARY) && \
+  $(INNER_MAKE_GECKOVIEW_EXAMPLE)
 
 # Language repacks root the resources contained in assets/omni.ja
 # under assets/, but the repacks expect them to be rooted at /.
@@ -699,6 +697,16 @@ endif
 
 export NO_PKG_FILES USE_ELF_HACK ELF_HACK_FLAGS
 
+# A js binary is needed to perform verification of JavaScript minification.
+# We can only use the built binary when not cross-compiling. Environments
+# (such as release automation) can provide their own js binary to enable
+# verification when cross-compiling.
+ifndef JS_BINARY
+ifndef CROSS_COMPILE
+JS_BINARY = $(wildcard $(DIST)/bin/js)
+endif
+endif
+
 # Override the value of OMNIJAR_NAME from config.status with the value
 # set earlier in this file.
 
@@ -710,6 +718,9 @@ stage-package: $(MOZ_PKG_MANIFEST)
 		$(addprefix --removals ,$(MOZ_PKG_REMOVALS)) \
 		$(if $(filter-out 0,$(MOZ_PKG_FATAL_WARNINGS)),,--ignore-errors) \
 		$(if $(MOZ_PACKAGER_MINIFY),--minify) \
+		$(if $(MOZ_PACKAGER_MINIFY_JS),--minify-js \
+		  $(addprefix --js-binary ,$(JS_BINARY)) \
+		) \
 		$(if $(JARLOG_DIR),$(addprefix --jarlog ,$(wildcard $(JARLOG_FILE_AB_CD)))) \
 		$(if $(OPTIMIZEJARS),--optimizejars) \
 		$(addprefix --unify ,$(UNIFY_DIST)) \

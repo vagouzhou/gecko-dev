@@ -351,7 +351,7 @@ IDBCursor::ConvertDirection(mozilla::dom::IDBCursorDirection aDirection)
       return PREV_UNIQUE;
 
     default:
-      MOZ_ASSUME_UNREACHABLE("Unknown direction!");
+      MOZ_CRASH("Unknown direction!");
   }
 }
 
@@ -492,7 +492,7 @@ IDBCursor::ContinueInternal(const Key& aKey, int32_t aCount, ErrorResult& aRv)
       break;
 
     default:
-      MOZ_ASSUME_UNREACHABLE("Unknown cursor type!");
+      MOZ_CRASH("Unknown cursor type!");
   }
 
   nsresult rv = helper->DispatchToTransactionPool();
@@ -517,12 +517,12 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(IDBCursor)
   NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
-  NS_ASSERTION(tmp->mHaveCachedKey || JSVAL_IS_VOID(tmp->mCachedKey),
+  NS_ASSERTION(tmp->mHaveCachedKey || tmp->mCachedKey.isUndefined(),
                "Should have a cached key");
   NS_ASSERTION(tmp->mHaveCachedPrimaryKey ||
-               JSVAL_IS_VOID(tmp->mCachedPrimaryKey),
+               tmp->mCachedPrimaryKey.isUndefined(),
                "Should have a cached primary key");
-  NS_ASSERTION(tmp->mHaveCachedValue || JSVAL_IS_VOID(tmp->mCachedValue),
+  NS_ASSERTION(tmp->mHaveCachedValue || tmp->mCachedValue.isUndefined(),
                "Should have a cached value");
   NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mScriptOwner)
   NS_IMPL_CYCLE_COLLECTION_TRACE_JSVAL_MEMBER_CALLBACK(mCachedKey)
@@ -546,21 +546,21 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(IDBCursor)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(IDBCursor)
 
 JSObject*
-IDBCursor::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBCursor::WrapObject(JSContext* aCx)
 {
   MOZ_ASSERT(NS_IsMainThread());
 
   switch (mType) {
     case OBJECTSTORE:
     case INDEXOBJECT:
-      return IDBCursorWithValueBinding::Wrap(aCx, aScope, this);
+      return IDBCursorWithValueBinding::Wrap(aCx, this);
 
     case OBJECTSTOREKEY:
     case INDEXKEY:
-      return IDBCursorBinding::Wrap(aCx, aScope, this);
+      return IDBCursorBinding::Wrap(aCx, this);
 
     default:
-      MOZ_ASSUME_UNREACHABLE("Bad type!");
+      MOZ_CRASH("Bad type!");
   }
 }
 
@@ -583,7 +583,7 @@ IDBCursor::GetDirection() const
       return mozilla::dom::IDBCursorDirection::Prevunique;
 
     default:
-      MOZ_ASSUME_UNREACHABLE("Bad direction!");
+      MOZ_CRASH("Bad direction!");
   }
 }
 
@@ -606,18 +606,20 @@ IDBCursor::GetSource(OwningIDBObjectStoreOrIDBIndex& aSource) const
       break;
 
     default:
-      MOZ_ASSUME_UNREACHABLE("Bad type!");
+      MOZ_ASSERT_UNREACHABLE("Bad type!");
   }
 }
 
-JS::Value
-IDBCursor::GetKey(JSContext* aCx, ErrorResult& aRv)
+void
+IDBCursor::GetKey(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+                  ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!mKey.IsUnset() || !mHaveValue);
 
   if (!mHaveValue) {
-    return JSVAL_VOID;
+    aResult.setUndefined();
+    return;
   }
 
   if (!mHaveCachedKey) {
@@ -627,21 +629,26 @@ IDBCursor::GetKey(JSContext* aCx, ErrorResult& aRv)
     }
 
     aRv = mKey.ToJSVal(aCx, mCachedKey);
-    ENSURE_SUCCESS(aRv, JSVAL_VOID);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return;
+    }
 
     mHaveCachedKey = true;
   }
 
-  return mCachedKey;
+  JS::ExposeValueToActiveJS(mCachedKey);
+  aResult.set(mCachedKey);
 }
 
-JS::Value
-IDBCursor::GetPrimaryKey(JSContext* aCx, ErrorResult& aRv)
+void
+IDBCursor::GetPrimaryKey(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+                         ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
 
   if (!mHaveValue) {
-    return JSVAL_VOID;
+    aResult.setUndefined();
+    return;
   }
 
   if (!mHaveCachedPrimaryKey) {
@@ -655,22 +662,27 @@ IDBCursor::GetPrimaryKey(JSContext* aCx, ErrorResult& aRv)
     MOZ_ASSERT(!key.IsUnset());
 
     aRv = key.ToJSVal(aCx, mCachedPrimaryKey);
-    ENSURE_SUCCESS(aRv, JSVAL_VOID);
+    if (NS_WARN_IF(aRv.Failed())) {
+      return;
+    }
 
     mHaveCachedPrimaryKey = true;
   }
 
-  return mCachedPrimaryKey;
+  JS::ExposeValueToActiveJS(mCachedPrimaryKey);
+  aResult.set(mCachedPrimaryKey);
 }
 
-JS::Value
-IDBCursor::GetValue(JSContext* aCx, ErrorResult& aRv)
+void
+IDBCursor::GetValue(JSContext* aCx, JS::MutableHandle<JS::Value> aResult,
+                    ErrorResult& aRv)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mType == OBJECTSTORE || mType == INDEXOBJECT);
 
   if (!mHaveValue) {
-    return JSVAL_VOID;
+    aResult.setUndefined();
+    return;
   }
 
   if (!mHaveCachedValue) {
@@ -682,7 +694,7 @@ IDBCursor::GetValue(JSContext* aCx, ErrorResult& aRv)
     JS::Rooted<JS::Value> val(aCx);
     if (!IDBObjectStore::DeserializeValue(aCx, mCloneReadInfo, &val)) {
       aRv.Throw(NS_ERROR_DOM_DATA_CLONE_ERR);
-      return JSVAL_VOID;
+      return;
     }
 
     mCloneReadInfo.mCloneBuffer.clear();
@@ -691,7 +703,8 @@ IDBCursor::GetValue(JSContext* aCx, ErrorResult& aRv)
     mHaveCachedValue = true;
   }
 
-  return mCachedValue;
+  JS::ExposeValueToActiveJS(mCachedValue);
+  aResult.set(mCachedValue);
 }
 
 void
@@ -724,7 +737,7 @@ IDBCursor::Continue(JSContext* aCx,
         break;
 
       default:
-        MOZ_ASSUME_UNREACHABLE("Unknown direction type!");
+        MOZ_CRASH("Unknown direction type!");
     }
   }
 
@@ -983,7 +996,8 @@ CursorHelper::Dispatch(nsIEventTarget* aDatabaseThread)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
 
-  PROFILER_MAIN_THREAD_LABEL("IndexedDB", "CursorHelper::Dispatch");
+  PROFILER_MAIN_THREAD_LABEL("CursorHelper", "Dispatch",
+    js::ProfileEntry::Category::STORAGE);
 
   if (IndexedDatabaseManager::IsMainProcess()) {
     return AsyncConnectionHelper::Dispatch(aDatabaseThread);
@@ -1019,7 +1033,8 @@ ContinueHelper::DoDatabaseWork(mozIStorageConnection* aConnection)
   NS_ASSERTION(!NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_LABEL("IndexedDB", "ContinueHelper::DoDatabaseWork");
+  PROFILER_LABEL("ContinueHelper", "DoDatabaseWork",
+    js::ProfileEntry::Category::STORAGE);
 
   // We need to pick a query based on whether or not the cursor's mContinueToKey
   // is set. If it is unset then othing was passed to continue so we'll grab the
@@ -1101,8 +1116,8 @@ ContinueHelper::PackArgumentsForParentProcess(CursorRequestParams& aParams)
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(!IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_MAIN_THREAD_LABEL("IndexedDB",
-                             "ContinueHelper::PackArgumentsForParentProcess");
+  PROFILER_MAIN_THREAD_LABEL("ContinueHelper", "PackArgumentsForParentProcess",
+    js::ProfileEntry::Category::STORAGE);
 
   ContinueParams params;
 
@@ -1119,8 +1134,8 @@ ContinueHelper::SendResponseToChildProcess(nsresult aResultCode)
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_MAIN_THREAD_LABEL("IndexedDB",
-                             "ContinueHelper::SendResponseToChildProcess");
+  PROFILER_MAIN_THREAD_LABEL("ContinueHelper", "SendResponseToChildProcess",
+    js::ProfileEntry::Category::STORAGE);
 
   IndexedDBRequestParentBase* actor = mRequest->GetActorParent();
   NS_ASSERTION(actor, "How did we get this far without an actor?");
@@ -1131,7 +1146,7 @@ ContinueHelper::SendResponseToChildProcess(nsresult aResultCode)
     IDBDatabase* database = mTransaction->Database();
     NS_ASSERTION(database, "This should never be null!");
 
-    ContentParent* contentParent = database->GetContentParent();
+    nsIContentParent* contentParent = database->GetContentParent();
     NS_ASSERTION(contentParent, "This should never be null!");
 
     FileManager* fileManager = database->Manager();

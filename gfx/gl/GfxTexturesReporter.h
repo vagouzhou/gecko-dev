@@ -15,6 +15,8 @@ namespace gl {
 
 class GfxTexturesReporter MOZ_FINAL : public nsIMemoryReporter
 {
+    ~GfxTexturesReporter() {}
+
 public:
     NS_DECL_ISUPPORTS
 
@@ -39,10 +41,10 @@ public:
     // When memory is used/freed for tile textures, call this method to update
     // the value reported by this memory reporter.
     static void UpdateAmount(MemoryUse action, GLenum format, GLenum type,
-                             uint16_t tileSize);
+                             int32_t tileWidth, int32_t tileHeight);
 
     NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                              nsISupports* aData)
+                              nsISupports* aData, bool aAnonymize)
     {
         return MOZ_COLLECT_REPORT(
             "gfx-textures", KIND_OTHER, UNITS_BYTES, sAmount,

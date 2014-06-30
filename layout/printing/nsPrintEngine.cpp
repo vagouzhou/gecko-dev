@@ -10,7 +10,7 @@
 #include "nsCRT.h"
 
 #include "mozilla/AsyncEventDispatcher.h"
-#include "mozilla/Selection.h"
+#include "mozilla/dom/Selection.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsPIDOMWindow.h"
 #include "nsIDocShell.h"
@@ -216,8 +216,8 @@ protected:
   bool                    mSuppressed;
 };
 
-NS_IMPL_ISUPPORTS3(nsPrintEngine, nsIWebProgressListener,
-                   nsISupportsWeakReference, nsIObserver)
+NS_IMPL_ISUPPORTS(nsPrintEngine, nsIWebProgressListener,
+                  nsISupportsWeakReference, nsIObserver)
 
 //---------------------------------------------------
 //-- nsPrintEngine Class Impl
@@ -343,9 +343,13 @@ nsPrintEngine::InstallPrintPreviewListener()
 {
   if (!mPrt->mPPEventListeners) {
     nsCOMPtr<nsIDocShell> docShell = do_QueryReferent(mContainer);
-    nsCOMPtr<nsPIDOMWindow> win(do_GetInterface(docShell));
+    if (!docShell) {
+      return;
+    }
+
+    nsCOMPtr<nsPIDOMWindow> win(docShell->GetWindow());
     if (win) {
-      nsCOMPtr<EventTarget> target = do_QueryInterface(win->GetFrameElementInternal());
+      nsCOMPtr<EventTarget> target = win->GetFrameElementInternal();
       mPrt->mPPEventListeners = new nsPrintPreviewListener(target);
       mPrt->mPPEventListeners->AddListeners();
     }
@@ -362,12 +366,10 @@ nsPrintEngine::GetSeqFrameAndCountPagesInternal(nsPrintObject*  aPO,
 
   // Finds the SimplePageSequencer frame
   nsIPageSequenceFrame* seqFrame = aPO->mPresShell->GetPageSequenceFrame();
-  if (seqFrame) {
-    aSeqFrame = do_QueryFrame(seqFrame);
-  } else {
-    aSeqFrame = nullptr;
+  aSeqFrame = do_QueryFrame(seqFrame);
+  if (!aSeqFrame) {
+    return NS_ERROR_FAILURE;
   }
-  if (aSeqFrame == nullptr) return NS_ERROR_FAILURE;
 
   // first count the total number of pages
   aCount = 0;
@@ -1143,8 +1145,7 @@ nsPrintEngine::IsParentAFrameSet(nsIDocShell * aParent)
   bool isFrameSet = false;
   // only check to see if there is a frameset if there is
   // NO parent doc for this doc. meaning this parent is the root doc
-  nsCOMPtr<nsIDOMDocument> domDoc = do_GetInterface(aParent);
-  nsCOMPtr<nsIDocument> doc = do_QueryInterface(domDoc);
+  nsCOMPtr<nsIDocument> doc = aParent->GetDocument();
   if (doc) {
     nsIContent *rootElement = doc->GetRootElement();
     if (rootElement) {
@@ -1394,7 +1395,8 @@ nsPrintEngine::IsThereAnIFrameSelected(nsIDocShell* aDocShell,
       if (aDOMWin) {
         // Get the main docshell's DOMWin to see if it matches 
         // the frame that is selected
-        nsCOMPtr<nsIDOMWindow> domWin = do_GetInterface(aDocShell);
+        nsCOMPtr<nsIDOMWindow> domWin =
+         aDocShell ? aDocShell->GetWindow() : nullptr;
         if (domWin != aDOMWin) {
           iFrameIsSelected = true; // we have a selected IFRAME
         }
@@ -1913,7 +1915,7 @@ nsPrintEngine::OnStateChange(nsIWebProgress* aWebProgress,
 {
   nsAutoCString name;
   aRequest->GetName(name);
-  if (name.Equals("about:document-onload-blocker")) {
+  if (name.EqualsLiteral("about:document-onload-blocker")) {
     return NS_OK;
   }
   if (aStateFlags & STATE_START) {
@@ -2267,8 +2269,8 @@ nsPrintEngine::ReflowPrintObject(nsPrintObject * aPO)
         fprintf(fd, "Title: %s\n", docStr.get());
         fprintf(fd, "URL:   %s\n", urlStr.get());
         fprintf(fd, "--------------- Frames ----------------\n");
-        nsRefPtr<nsRenderingContext> renderingContext;
-        mPrt->mPrintDocDC->CreateRenderingContext(*getter_AddRefs(renderingContext));
+        nsRefPtr<nsRenderingContext> renderingContext =
+          mPrt->mPrintDocDC->CreateRenderingContext();
         RootFrameList(aPO->mPresContext, fd, 0);
         //DumpFrames(fd, aPO->mPresContext, renderingContext, theRootFrame, 0);
         fprintf(fd, "---------------------------------------\n\n");
@@ -2507,8 +2509,8 @@ nsPrintEngine::DoPrint(nsPrintObject * aPO)
         poPresContext->SetIsRenderingOnlySelection(true);
         // temporarily creating rendering context
         // which is needed to find the selection frames
-        nsRefPtr<nsRenderingContext> rc;
-        mPrt->mPrintDC->CreateRenderingContext(*getter_AddRefs(rc));
+        nsRefPtr<nsRenderingContext> rc =
+          mPrt->mPrintDC->CreateRenderingContext();
 
         // find the starting and ending page numbers
         // via the selection
@@ -3302,7 +3304,7 @@ nsPrintEngine::EnablePOsForPrinting()
         for (uint32_t i=0;i<mPrt->mPrintDocList.Length();i++) {
           nsPrintObject* po = mPrt->mPrintDocList.ElementAt(i);
           NS_ASSERTION(po, "nsPrintObject can't be null!");
-          nsCOMPtr<nsIDOMWindow> domWin = do_GetInterface(po->mDocShell);
+          nsCOMPtr<nsIDOMWindow> domWin = po->mDocShell->GetWindow();
           if (IsThereARangeSelection(domWin)) {
             mPrt->mCurrentFocusWin = domWin;
             SetPrintPO(po, true);
@@ -3813,8 +3815,8 @@ void DumpLayoutData(char*              aTitleStr,
     fprintf(fd, "URL:   %s\n", aURLStr?aURLStr:"");
     fprintf(fd, "--------------- Frames ----------------\n");
     fprintf(fd, "--------------- Frames ----------------\n");
-    nsRefPtr<nsRenderingContext> renderingContext;
-    aDC->CreateRenderingContext(*getter_AddRefs(renderingContext));
+    nsRefPtr<nsRenderingContext> renderingContext =
+      aDC->CreateRenderingContext();
     RootFrameList(aPresContext, fd, 0);
     //DumpFrames(fd, aPresContext, renderingContext, aRootFrame, 0);
     fprintf(fd, "---------------------------------------\n\n");

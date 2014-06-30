@@ -9,7 +9,7 @@
 #include "nsSVGFilters.h"
 
 nsresult NS_NewSVGFEDiffuseLightingElement(nsIContent **aResult,
-                                           already_AddRefed<nsINodeInfo>&& aNodeInfo);
+                                           already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
 namespace dom {
@@ -19,14 +19,13 @@ typedef nsSVGFELightingElement SVGFEDiffuseLightingElementBase;
 class SVGFEDiffuseLightingElement : public SVGFEDiffuseLightingElementBase
 {
   friend nsresult (::NS_NewSVGFEDiffuseLightingElement(nsIContent **aResult,
-                                                       already_AddRefed<nsINodeInfo>&& aNodeInfo));
+                                                       already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
 protected:
-  SVGFEDiffuseLightingElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  SVGFEDiffuseLightingElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : SVGFEDiffuseLightingElementBase(aNodeInfo)
   {
   }
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
 public:
   virtual FilterPrimitiveDescription
@@ -37,7 +36,7 @@ public:
   virtual bool AttributeAffectsRendering(
           int32_t aNameSpaceID, nsIAtom* aAttribute) const;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const;
 
   // WebIDL
   already_AddRefed<SVGAnimatedString> In1();

@@ -24,7 +24,7 @@ nsXBLEventHandler::~nsXBLEventHandler()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsXBLEventHandler, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsXBLEventHandler, nsIDOMEventListener)
 
 NS_IMETHODIMP
 nsXBLEventHandler::HandleEvent(nsIDOMEvent* aEvent)
@@ -71,7 +71,7 @@ nsXBLKeyEventHandler::nsXBLKeyEventHandler(nsIAtom* aEventType, uint8_t aPhase,
     mPhase(aPhase),
     mType(aType),
     mIsBoundToChrome(false),
-    mUsingXBLScope(false)
+    mUsingContentXBLScope(false)
 {
 }
 
@@ -79,7 +79,7 @@ nsXBLKeyEventHandler::~nsXBLKeyEventHandler()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsXBLKeyEventHandler, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsXBLKeyEventHandler, nsIDOMEventListener)
 
 bool
 nsXBLKeyEventHandler::ExecuteMatchedHandlers(nsIDOMKeyEvent* aKeyEvent,
@@ -97,7 +97,7 @@ nsXBLKeyEventHandler::ExecuteMatchedHandlers(nsIDOMKeyEvent* aKeyEvent,
     bool hasAllowUntrustedAttr = handler->HasAllowUntrustedAttr();
     if ((trustedEvent ||
         (hasAllowUntrustedAttr && handler->AllowUntrustedEvents()) ||
-        (!hasAllowUntrustedAttr && !mIsBoundToChrome && !mUsingXBLScope)) &&
+        (!hasAllowUntrustedAttr && !mIsBoundToChrome && !mUsingContentXBLScope)) &&
         handler->KeyEventMatched(aKeyEvent, aCharCode, aIgnoreShiftKey)) {
       handler->ExecuteHandler(target, aKeyEvent);
       executed = true;

@@ -27,6 +27,10 @@ class DocumentType;
 class DOMImplementation MOZ_FINAL : public nsIDOMDOMImplementation
                                   , public nsWrapperCache
 {
+  ~DOMImplementation()
+  {
+  }
+
 public:
   DOMImplementation(nsIDocument* aOwner,
                     nsIGlobalObject* aScriptObject,
@@ -41,10 +45,6 @@ public:
     SetIsDOMBinding();
   }
 
-  ~DOMImplementation()
-  {
-  }
-
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMImplementation)
 
@@ -53,8 +53,7 @@ public:
     return mOwner;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   // nsIDOMDOMImplementation
   NS_DECL_NSIDOMDOMIMPLEMENTATION

@@ -18,7 +18,7 @@ browser.jar:
 *       content/browser/aboutDialog.js                (content/aboutDialog.js)
         content/browser/aboutDialog.css               (content/aboutDialog.css)
         content/browser/aboutRobots.xhtml             (content/aboutRobots.xhtml)
-        content/browser/abouthome/aboutHome.xhtml     (content/abouthome/aboutHome.xhtml)
+*       content/browser/abouthome/aboutHome.xhtml     (content/abouthome/aboutHome.xhtml)
         content/browser/abouthome/aboutHome.js        (content/abouthome/aboutHome.js)
 *       content/browser/abouthome/aboutHome.css       (content/abouthome/aboutHome.css)
         content/browser/abouthome/snippet1.png        (content/abouthome/snippet1.png)
@@ -45,6 +45,11 @@ browser.jar:
         content/browser/abouthome/restore@2x.png       (content/abouthome/restore@2x.png)
         content/browser/abouthome/restore-large@2x.png (content/abouthome/restore-large@2x.png)
         content/browser/abouthome/mozilla@2x.png       (content/abouthome/mozilla@2x.png)
+
+        content/browser/aboutneterror/netError.xhtml   (content/aboutneterror/netError.xhtml)
+        content/browser/aboutneterror/netError.css     (content/aboutneterror/netError.css)
+        content/browser/aboutneterror/info.svg         (content/aboutneterror/info.svg)
+
 #ifdef MOZ_SERVICES_HEALTHREPORT
         content/browser/abouthealthreport/abouthealth.xhtml   (content/abouthealthreport/abouthealth.xhtml)
         content/browser/abouthealthreport/abouthealth.js      (content/abouthealthreport/abouthealth.js)
@@ -55,13 +60,12 @@ browser.jar:
         content/browser/aboutaccounts/aboutaccounts.css                       (content/aboutaccounts/aboutaccounts.css)
         content/browser/aboutaccounts/main.css                                (content/aboutaccounts/main.css)
         content/browser/aboutaccounts/normalize.css                           (content/aboutaccounts/normalize.css)
-        content/browser/aboutaccounts/fonts.css                               (content/aboutaccounts/fonts.css)
-        content/browser/aboutaccounts/fonts/clearsans-regular.woff            (content/aboutaccounts/fonts/clearsans-regular.woff)
-        content/browser/aboutaccounts/fonts/firasans-light.woff               (content/aboutaccounts/fonts/firasans-light.woff)
-        content/browser/aboutaccounts/fonts/firasans-regular.woff             (content/aboutaccounts/fonts/firasans-regular.woff)
         content/browser/aboutaccounts/images/fox.png                          (content/aboutaccounts/images/fox.png)
         content/browser/aboutaccounts/images/graphic_sync_intro.png           (content/aboutaccounts/images/graphic_sync_intro.png)
         content/browser/aboutaccounts/images/graphic_sync_intro@2x.png        (content/aboutaccounts/images/graphic_sync_intro@2x.png)
+
+        content/browser/certerror/aboutCertError.xhtml     (content/aboutcerterror/aboutCertError.xhtml)
+        content/browser/certerror/aboutCertError.css       (content/aboutcerterror/aboutCertError.css)
 
         content/browser/aboutRobots-icon.png          (content/aboutRobots-icon.png)
         content/browser/aboutRobots-widget-left.png   (content/aboutRobots-widget-left.png)
@@ -77,7 +81,6 @@ browser.jar:
         content/browser/newtab/newTab.xul             (content/newtab/newTab.xul)
 *       content/browser/newtab/newTab.js              (content/newtab/newTab.js)
         content/browser/newtab/newTab.css             (content/newtab/newTab.css)
-        content/browser/newtab/preloaderContent.js    (content/newtab/preloaderContent.js)
 *       content/browser/pageinfo/pageInfo.xul         (content/pageinfo/pageInfo.xul)
         content/browser/pageinfo/pageInfo.js          (content/pageinfo/pageInfo.js)
         content/browser/pageinfo/pageInfo.css         (content/pageinfo/pageInfo.css)
@@ -145,3 +148,5 @@ browser.jar:
         content/browser/blockedSite.xhtml               (content/blockedSite.xhtml)
 % overlay chrome://browser/content/browser.xul chrome://browser/content/report-phishing-overlay.xul
 #endif
+
+% override chrome://global/content/netError.xhtml chrome://browser/content/aboutneterror/netError.xhtml
