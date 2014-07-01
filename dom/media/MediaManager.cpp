@@ -1198,11 +1198,13 @@ public:
       }
       // Screen sharing
       {
+        VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
         ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
             &MediaEngine::EnumerateScreenDevices));
         final->MoveElementsFrom(*s);
       }
       {
+        VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
         ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
             &MediaEngine::EnumerateApplicationDevices));
         final->MoveElementsFrom(*s);
