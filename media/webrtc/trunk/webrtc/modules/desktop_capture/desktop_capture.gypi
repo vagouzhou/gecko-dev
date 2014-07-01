@@ -15,10 +15,13 @@
         '<(webrtc_root)/system_wrappers/source/system_wrappers.gyp:system_wrappers',
       ],
       'sources': [
+        "app_capturer.h",
+        "app_capturer.cc",
         "desktop_and_cursor_composer.cc",
         "desktop_and_cursor_composer.h",
         "desktop_capture_types.h",
         "desktop_capturer.h",
+        "desktop_device_info.cc",
         "desktop_frame.cc",
         "desktop_frame.h",
         "desktop_frame_win.cc",
