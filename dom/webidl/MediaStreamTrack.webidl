@@ -22,6 +22,7 @@ enum VideoFacingModeEnum {
 
 dictionary MediaTrackConstraintSet {
     VideoFacingModeEnum facingMode;
+    MozMediaSourceEnum mozMediaSource;
 };
 // MediaTrackConstraint = single-property-subset of MediaTrackConstraintSet
 // Implemented as full set. Test Object.keys(pair).length == 1
