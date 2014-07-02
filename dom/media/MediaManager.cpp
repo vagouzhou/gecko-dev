@@ -1206,14 +1206,12 @@ public:
       }
       {
       	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateScreenDevices,
-          mLoopbackVideoDevice.get()));
+          &MediaEngine::EnumerateScreenDevices));
       	final->MoveElementsFrom(*s);
       }
       {
       	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateApplicationDevices,
-          mLoopbackVideoDevice.get()));
+          &MediaEngine::EnumerateApplicationDevices));
       	final->MoveElementsFrom(*s);
       }
     }

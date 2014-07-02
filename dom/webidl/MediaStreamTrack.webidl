@@ -9,15 +9,7 @@
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
  */
- enum MozMediaSourceEnum {
-    "camera",
-    "screen",
-    "application"
-};
-
  dictionary MediaTrackConstraints : MediaTrackConstraintSet {
-     MozMediaSourceEnum mozMediaSource;
-
     sequence<DOMString> require;
     sequence<MediaTrackConstraintSet> advanced;
 
