@@ -81,6 +81,9 @@ struct VideoTrackConstraintsN :
     if (mFacingMode.WasPassed()) {
       Triage(Kind::FacingMode).mFacingMode.Construct(mFacingMode.Value());
     }
+    if (mMozMediaSource.WasPassed()) {
+        Triage(Kind::MozMediaSource).mMozMediaSource.Construct(mMozMediaSource.Value());
+    }
     // Reminder: add handling for new constraints both here & SatisfyConstraintSet
     Triage(Kind::Width).mWidth = mWidth;
     Triage(Kind::Height).mHeight = mHeight;

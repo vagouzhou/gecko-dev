@@ -21,6 +21,7 @@
 // TODO(jib): Remove in 6+ weeks (Bug 997365)
 dictionary MobileLegacyMediaTrackConstraintSet {
     VideoFacingModeEnum facingMode;
+    MozMediaSourceEnum mozMediaSource;
 };
 
 interface MediaStreamTrack {
