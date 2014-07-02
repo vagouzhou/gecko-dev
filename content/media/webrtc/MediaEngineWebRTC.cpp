@@ -186,7 +186,7 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
   }
 #endif  
 	
-EnableWebRtcLog();
+//EnableWebRtcLog();
   /*if (!videoEngine) {
     if (!(videoEngine = webrtc::VideoEngine::Create())) {
       return;
