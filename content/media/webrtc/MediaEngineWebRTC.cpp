@@ -33,6 +33,7 @@ GetUserMediaLog()
 #include "MediaEngineTabVideoSource.h"
 #include "nsITabSource.h"
 #include "MediaTrackConstraints.h"
+#include "browser_logging/WebRtcLog.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidJNIWrapper.h"
@@ -183,7 +184,9 @@ MediaEngineWebRTC::EnumerateCommonVideoDevices(nsTArray<nsRefPtr<MediaEngineVide
     LOG(("VieCapture:SetAndroidObjects Failed"));
     return;
   }
-#endif
+#endif  
+	
+EnableWebRtcLog();
   /*if (!videoEngine) {
     if (!(videoEngine = webrtc::VideoEngine::Create())) {
       return;

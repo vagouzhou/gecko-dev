@@ -370,46 +370,43 @@ DesktopCaptureImpl::~DesktopCaptureImpl()
         delete[] _deviceUniqueId;
 }
 
-int32_t DesktopCaptureImpl::RegisterCaptureDataCallback(
+void DesktopCaptureImpl::RegisterCaptureDataCallback(
                                         VideoCaptureDataCallback& dataCallBack)
 {
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
     _dataCallBack = &dataCallBack;
-
-    return 0;
 }
 
-int32_t DesktopCaptureImpl::DeRegisterCaptureDataCallback()
+void DesktopCaptureImpl::DeRegisterCaptureDataCallback()
 {
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
     _dataCallBack = NULL;
-    return 0;
 }
-int32_t DesktopCaptureImpl::RegisterCaptureCallback(VideoCaptureFeedBack& callBack)
+
+void DesktopCaptureImpl::RegisterCaptureCallback(VideoCaptureFeedBack& callBack)
 {
 
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
     _captureCallBack = &callBack;
-    return 0;
 }
-int32_t DesktopCaptureImpl::DeRegisterCaptureCallback()
+
+void DesktopCaptureImpl::DeRegisterCaptureCallback()
 {
 
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
     _captureCallBack = NULL;
-    return 0;
-
 }
-int32_t DesktopCaptureImpl::SetCaptureDelay(int32_t delayMS)
+
+void DesktopCaptureImpl::SetCaptureDelay(int32_t delayMS)
 {
     CriticalSectionScoped cs(&_apiCs);
     _captureDelay = delayMS;
-    return 0;
 }
+
 int32_t DesktopCaptureImpl::CaptureDelay()
 {
     CriticalSectionScoped cs(&_apiCs);
@@ -541,20 +538,23 @@ int32_t DesktopCaptureImpl::IncomingFrame(
     return 0;
 }
 
-int32_t DesktopCaptureImpl::IncomingFrameI420(
-    const VideoFrameI420& video_frame, int64_t captureTime) {
+int32_t DesktopCaptureImpl::IncomingI420VideoFrame(
+   I420VideoFrame* video_frame, int64_t captureTime) {
 
   CriticalSectionScoped cs(&_callBackCs);
-  int size_y = video_frame.height * video_frame.y_pitch;
-  int size_u = video_frame.u_pitch * ((video_frame.height + 1) / 2);
-  int size_v =  video_frame.v_pitch * ((video_frame.height + 1) / 2);
+  int stride_y = video_frame->stride(kYPlane);
+  int stride_u = video_frame->stride(kUPlane);
+  int stride_v = video_frame->stride(kVPlane);
+  int size_y = video_frame->height() * stride_y;
+  int size_u = stride_u * ((video_frame->height() + 1) / 2);
+  int size_v =  stride_v * ((video_frame->height() + 1) / 2);
   // TODO(mikhal): Can we use Swap here? This will do a memcpy.
-  int ret = _captureFrame.CreateFrame(size_y, video_frame.y_plane,
-                                      size_u, video_frame.u_plane,
-                                      size_v, video_frame.v_plane,
-                                      video_frame.width, video_frame.height,
-                                      video_frame.y_pitch, video_frame.u_pitch,
-                                      video_frame.v_pitch);
+  int ret = _captureFrame.CreateFrame(size_y, video_frame->buffer(kYPlane),
+                                      size_u, video_frame->buffer(kUPlane),
+                                      size_v, video_frame->buffer(kVPlane),
+                                      video_frame->width(), video_frame->height(),
+                                      stride_y, stride_u, stride_v);
+
   if (ret < 0) {
     WEBRTC_TRACE(webrtc::kTraceError, webrtc::kTraceVideoCapture, _id,
                  "Failed to create I420VideoFrame");
@@ -586,7 +586,7 @@ int32_t DesktopCaptureImpl::SetCaptureRotation(VideoCaptureRotation rotation) {
   return 0;
 }
 
-int32_t DesktopCaptureImpl::EnableFrameRateCallback(const bool enable)
+void DesktopCaptureImpl::EnableFrameRateCallback(const bool enable)
 {
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
@@ -595,15 +595,13 @@ int32_t DesktopCaptureImpl::EnableFrameRateCallback(const bool enable)
     {
         _lastFrameRateCallbackTime = TickTime::Now();
     }
-    return 0;
 }
 
-int32_t DesktopCaptureImpl::EnableNoPictureAlarm(const bool enable)
+void DesktopCaptureImpl::EnableNoPictureAlarm(const bool enable)
 {
     CriticalSectionScoped cs(&_apiCs);
     CriticalSectionScoped cs2(&_callBackCs);
     _noPictureAlarmCallBack = enable;
-    return 0;
 }
 
 void DesktopCaptureImpl::UpdateFrameCount()

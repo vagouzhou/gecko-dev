@@ -1038,7 +1038,7 @@ public:
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
       ScopedDeletePtr<SourceSet> sources (GetSources(backend, constraints,
           &MediaEngine::EnumerateVideoDevices));
- // XXX  What should we do for screen sharing here?  (Bug NNNNNN)
+        // XXX  What should we do for screen sharing here?  (Bug NNNNNN)
 
       if (!sources->Length()) {
         Fail(NS_LITERAL_STRING("NO_DEVICES_FOUND"));
@@ -1198,10 +1198,12 @@ public:
     ScopedDeletePtr<SourceSet> final(new SourceSet);
     if (IsOn(mConstraints.mVideo)) {
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
-      ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
+      {
+      	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
           &MediaEngine::EnumerateVideoDevices,
           mLoopbackVideoDevice.get()));
-      final->MoveElementsFrom(*s);
+      	final->MoveElementsFrom(*s);
+      }
       {
       	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
           &MediaEngine::EnumerateScreenDevices,
