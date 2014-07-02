@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,8 +6,30 @@
 
 "use strict";
 
-let promise = Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js", {}).Promise;
+let { Ci, Cu } = require("chrome");
+let Services = require("Services");
+let { ActorPool, createExtraActors, appendExtraActors } = require("devtools/server/actors/common");
+let { RootActor } = require("devtools/server/actors/root");
+let { AddonThreadActor, ThreadActor } = require("devtools/server/actors/script");
+let { DebuggerServer } = require("devtools/server/main");
+let DevToolsUtils = require("devtools/toolkit/DevToolsUtils");
+let { dbg_assert } = DevToolsUtils;
+
+let {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+
 XPCOMUtils.defineLazyModuleGetter(this, "AddonManager", "resource://gre/modules/AddonManager.jsm");
+
+// Assumptions on events module:
+// events needs to be dispatched synchronously,
+// by calling the listeners in the order or registration.
+XPCOMUtils.defineLazyGetter(this, "events", () => {
+  return require("sdk/event/core");
+});
+
+// Also depends on following symbols, shared by common scope with main.js:
+// DebuggerServer, CommonCreateExtraActors, CommonAppendExtraActors, ActorPool,
+// ThreadActor
 
 /**
  * Browser-specific actors.
@@ -25,6 +47,8 @@ function allAppShellDOMWindows(aWindowType)
     yield e.getNext();
   }
 }
+
+exports.allAppShellDOMWindows = allAppShellDOMWindows;
 
 /**
  * Retrieve the window type of the top-level window |aWindow|.
@@ -44,6 +68,8 @@ function sendShutdownEvent() {
     win.document.documentElement.dispatchEvent(evt);
   }
 }
+
+exports.sendShutdownEvent = sendShutdownEvent;
 
 /**
  * Construct a root actor appropriate for use in a server running in a
@@ -228,7 +254,7 @@ BrowserTabList.prototype.getList = function() {
     // For each tab in this XUL window, ensure that we have an actor for
     // it, reusing existing actors where possible. We actually iterate
     // over 'browser' XUL elements, and BrowserTabActor uses
-    // browser.contentWindow.wrappedJSObject as the debuggee global.
+    // browser.contentWindow as the debuggee global.
     for (let browser of this._getChildren(win)) {
       // Do we have an existing actor for this browser? If not, create one.
       let actor = this._actorByBrowser.get(browser);
@@ -470,6 +496,8 @@ BrowserTabList.prototype.onCloseWindow = DevToolsUtils.makeInfallible(function(a
   }, "BrowserTabList.prototype.onCloseWindow's delayed body"), 0);
 }, "BrowserTabList.prototype.onCloseWindow");
 
+exports.BrowserTabList = BrowserTabList;
+
 /**
  * Creates a tab actor for handling requests to a browser tab, like
  * attaching and detaching. TabActor respects the actor factories
@@ -484,15 +512,13 @@ BrowserTabList.prototype.onCloseWindow = DevToolsUtils.makeInfallible(function(a
  * @param aChromeEventHandler
  *        An object on which listen for DOMWindowCreated and pageshow events.
  */
-function TabActor(aConnection, aChromeEventHandler)
+function TabActor(aConnection)
 {
   this.conn = aConnection;
-  this._chromeEventHandler = aChromeEventHandler;
   this._tabActorPool = null;
   // A map of actor names to actor instances provided by extensions.
   this._extraActors = {};
-
-  this._onWindowCreated = this.onWindowCreated.bind(this);
+  this._exited = false;
 
   this.traits = { reconfigure: true };
 }
@@ -503,7 +529,7 @@ function TabActor(aConnection, aChromeEventHandler)
 TabActor.prototype = {
   traits: null,
 
-  get exited() { return !this._chromeEventHandler; },
+  get exited() { return this._exited; },
   get attached() { return !!this._attached; },
 
   _tabPool: null,
@@ -521,7 +547,19 @@ TabActor.prototype = {
    * An object on which listen for DOMWindowCreated and pageshow events.
    */
   get chromeEventHandler() {
-    return this._chromeEventHandler;
+    // TODO: bug 992778, fix docShell.chromeEventHandler in child processes
+    return this.docShell.chromeEventHandler ||
+           this.docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                        .getInterface(Ci.nsIContentFrameMessageManager);
+  },
+
+  /**
+   * Getter for the nsIMessageManager associated to the tab.
+   */
+  get messageManager() {
+    return this.docShell
+      .QueryInterface(Ci.nsIInterfaceRequestor)
+      .getInterface(Ci.nsIContentFrameMessageManager);
   },
 
   /**
@@ -532,12 +570,41 @@ TabActor.prototype = {
   },
 
   /**
+   * Getter for the list of all docshell in this tabActor
+   * @return {Array}
+   */
+  get docShells() {
+    let docShellsEnum = this.docShell.getDocShellEnumerator(
+      Ci.nsIDocShellTreeItem.typeAll,
+      Ci.nsIDocShell.ENUMERATE_FORWARDS
+    );
+
+    let docShells = [];
+    while (docShellsEnum.hasMoreElements()) {
+      docShells.push(docShellsEnum.getNext());
+    }
+
+    return docShells;
+  },
+
+  /**
    * Getter for the tab content's DOM window.
    */
   get window() {
     return this.docShell
       .QueryInterface(Ci.nsIInterfaceRequestor)
       .getInterface(Ci.nsIDOMWindow);
+  },
+
+  /**
+   * Getter for the list of all content DOM windows in this tabActor
+   * @return {Array}
+   */
+  get windows() {
+    return this.docShells.map(docShell => {
+      return docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                     .getInterface(Ci.nsIDOMWindow);
+    });
   },
 
   /**
@@ -623,7 +690,7 @@ TabActor.prototype = {
   disconnect: function BTA_disconnect() {
     this._detach();
     this._extraActors = null;
-    this._chromeEventHandler = null;
+    this._exited = true;
   },
 
   /**
@@ -634,17 +701,23 @@ TabActor.prototype = {
       return;
     }
 
+    // Tell the thread actor that the tab is closed, so that it may terminate
+    // instead of resuming the debuggee script.
+    if (this._attached) {
+      this.threadActor._tabClosed = true;
+    }
+
     if (this._detach()) {
       this.conn.send({ from: this.actorID,
                        type: "tabDetached" });
     }
 
-    this._chromeEventHandler = null;
+    this._exited = true;
   },
 
   /* Support for DebuggerServer.addTabActor. */
-  _createExtraActors: CommonCreateExtraActors,
-  _appendExtraActors: CommonAppendExtraActors,
+  _createExtraActors: createExtraActors,
+  _appendExtraActors: appendExtraActors,
 
   /**
    * Does the actual work of attching to a tab.
@@ -662,10 +735,8 @@ TabActor.prototype = {
     // ... and a pool for context-lifetime actors.
     this._pushContext();
 
-    // Watch for globals being created in this tab.
-    this.chromeEventHandler.addEventListener("DOMWindowCreated", this._onWindowCreated, true);
-    this.chromeEventHandler.addEventListener("pageshow", this._onWindowCreated, true);
     this._progressListener = new DebuggerProgressListener(this);
+    this._progressListener.watch(this.docShell);
 
     this._attached = true;
   },
@@ -700,17 +771,20 @@ TabActor.prototype = {
   /**
    * Does the actual work of detaching from a tab.
    *
-   * @returns false if the tab wasn't attached or true of detahing succeeds.
+   * @returns false if the tab wasn't attached or true of detaching succeeds.
    */
   _detach: function BTA_detach() {
     if (!this.attached) {
       return false;
     }
 
+    // Check for docShell availability, as it can be already gone
+    // during Firefox shutdown.
+    if (this.docShell) {
+      this._progressListener.unwatch(this.docShell);
+    }
     this._progressListener.destroy();
-
-    this.chromeEventHandler.removeEventListener("DOMWindowCreated", this._onWindowCreated, true);
-    this.chromeEventHandler.removeEventListener("pageshow", this._onWindowCreated, true);
+    this._progressListener = null;
 
     this._popContext();
 
@@ -718,7 +792,7 @@ TabActor.prototype = {
     this.conn.removeActorPool(this._tabPool);
     this._tabPool = null;
     if (this._tabActorPool) {
-      this.conn.removeActorPool(this._tabActorPool, true);
+      this.conn.removeActorPool(this._tabActorPool);
       this._tabActorPool = null;
     }
 
@@ -756,10 +830,12 @@ TabActor.prototype = {
    * Reload the page in this tab.
    */
   onReload: function(aRequest) {
+    let force = aRequest && aRequest.options && aRequest.options.force;
     // Wait a tick so that the response packet can be dispatched before the
     // subsequent navigation event packet.
     Services.tm.currentThread.dispatch(DevToolsUtils.makeInfallible(() => {
-      this.window.location.reload();
+      this.webNavigation.reload(force ? Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE
+                                      : Ci.nsIWebNavigation.LOAD_FLAGS_NONE);
     }, "TabActor.prototype.onReload's delayed body"), 0);
     return {};
   },
@@ -901,28 +977,121 @@ TabActor.prototype = {
    * debugging, which may have been disabled temporarily by the
    * DebuggerProgressListener.
    */
-  onWindowCreated:
-  DevToolsUtils.makeInfallible(function BTA_onWindowCreated(evt) {
-    // pageshow events for non-persisted pages have already been handled by a
-    // prior DOMWindowCreated event.
-    if (!this._attached || (evt.type == "pageshow" && !evt.persisted)) {
-      return;
-    }
-    if (evt.target === this.contentDocument) {
-      this.threadActor.clearDebuggees();
-      if (this.threadActor.dbg) {
-        this.threadActor.dbg.enabled = true;
-        this.threadActor.global = evt.target.defaultView.wrappedJSObject;
-        this.threadActor.maybePauseOnExceptions();
+  _windowReady: function (window) {
+    let isTopLevel = window == this.window;
+
+    events.emit(this, "window-ready", {
+      window: window,
+      isTopLevel: isTopLevel
+    });
+
+    // TODO bug 997119: move that code to ThreadActor by listening to window-ready
+    let threadActor = this.threadActor;
+    if (isTopLevel) {
+      threadActor.clearDebuggees();
+      if (threadActor.dbg) {
+        threadActor.dbg.enabled = true;
+        threadActor.global = window;
+        threadActor.maybePauseOnExceptions();
       }
     }
 
     // Refresh the debuggee list when a new window object appears (top window or
     // iframe).
-    if (this.threadActor.attached) {
-      this.threadActor.findGlobals();
+    if (threadActor.attached) {
+      threadActor.findGlobals();
     }
-  }, "TabActor.prototype.onWindowCreated"),
+  },
+
+  _windowDestroyed: function (window) {
+    events.emit(this, "window-destroyed", {
+      window: window,
+      isTopLevel: window == this.window
+    });
+  },
+
+  /**
+   * Start notifying server codebase and client about a new document
+   * being loaded in the currently targeted context.
+   */
+  _willNavigate: function (window, newURI, request) {
+    let isTopLevel = window == this.window;
+
+    // will-navigate event needs to be dispatched synchronously,
+    // by calling the listeners in the order or registration.
+    // This event fires once navigation starts,
+    // (all pending user prompts are dealt with),
+    // but before the first request starts.
+    events.emit(this, "will-navigate", {
+      window: window,
+      isTopLevel: isTopLevel,
+      newURI: newURI,
+      request: request
+    });
+
+    // We don't do anything for inner frames in TabActor.
+    // (we will only update thread actor on window-ready)
+    if (!isTopLevel) {
+      return;
+    }
+
+    // Proceed normally only if the debuggee is not paused.
+    // TODO bug 997119: move that code to ThreadActor by listening to will-navigate
+    let threadActor = this.threadActor;
+    if (request && threadActor.state == "paused") {
+      request.suspend();
+      threadActor.onResume();
+      threadActor.dbg.enabled = false;
+      this._pendingNavigation = request;
+    }
+    threadActor.disableAllBreakpoints();
+
+    this.conn.send({
+      from: this.actorID,
+      type: "tabNavigated",
+      url: newURI,
+      nativeConsoleAPI: true,
+      state: "start"
+    });
+  },
+
+  /**
+   * Notify server and client about a new document done loading in the current
+   * targeted context.
+   */
+  _navigate: function (window) {
+    let isTopLevel = window == this.window;
+
+    // navigate event needs to be dispatched synchronously,
+    // by calling the listeners in the order or registration.
+    // This event is fired once the document is loaded,
+    // after the load event, it's document ready-state is 'complete'.
+    events.emit(this, "navigate", {
+      window: window,
+      isTopLevel: isTopLevel
+    });
+
+    // We don't do anything for inner frames in TabActor.
+    // (we will only update thread actor on window-ready)
+    if (!isTopLevel) {
+      return;
+    }
+
+    // TODO bug 997119: move that code to ThreadActor by listening to navigate
+    let threadActor = this.threadActor;
+    if (threadActor.state == "running") {
+      threadActor.dbg.enabled = true;
+    }
+
+    this.conn.send({
+      from: this.actorID,
+      type: "tabNavigated",
+      url: this.url,
+      title: this.title,
+      nativeConsoleAPI: this.hasNativeConsoleAPI(this.window),
+      state: "stop"
+    });
+  },
 
   /**
    * Tells if the window.console object is native or overwritten by script in
@@ -934,9 +1103,15 @@ TabActor.prototype = {
    *         True if the window.console object is native, or false otherwise.
    */
   hasNativeConsoleAPI: function BTA_hasNativeConsoleAPI(aWindow) {
-    // Do not expose WebConsoleActor function directly as it is always
-    // loaded after the BrowserTabActor
-    return WebConsoleActor.prototype.hasNativeConsoleAPI(aWindow);
+    let isNative = false;
+    try {
+      // We are very explicitly examining the "console" property of
+      // the non-Xrayed object here.
+      let console = aWindow.wrappedJSObject.console;
+      isNative = console instanceof aWindow.Console;
+    }
+    catch (ex) { }
+    return isNative;
   }
 };
 
@@ -950,6 +1125,8 @@ TabActor.prototype.requestTypes = {
   "navigateTo": TabActor.prototype.onNavigateTo,
   "reconfigure": TabActor.prototype.onReconfigure
 };
+
+exports.TabActor = TabActor;
 
 /**
  * Creates a tab actor for handling requests to a single in-process
@@ -983,12 +1160,15 @@ Object.defineProperty(BrowserTabActor.prototype, "docShell", {
 
 Object.defineProperty(BrowserTabActor.prototype, "title", {
   get: function() {
-    let title = this.contentDocument.contentTitle;
+    let title = this.contentDocument.title || this._browser.contentTitle;
     // If contentTitle is empty (e.g. on a not-yet-restored tab), but there is a
     // tabbrowser (i.e. desktop Firefox, but not Fennec), we can use the label
     // as the title.
     if (!title && this._tabbrowser) {
-      title = this._tabbrowser._getTabForContentWindow(this.window).label;
+      let tab = this._tabbrowser._getTabForContentWindow(this.window);
+      if (tab) {
+        title = tab.label;
+      }
     }
     return title;
   },
@@ -1016,6 +1196,8 @@ BrowserTabActor.prototype.exit = function() {
   this._tabbrowser = null;
 };
 
+exports.BrowserTabActor = BrowserTabActor;
+
 /**
  * This actor is a shim that connects to a ContentActor in a remote
  * browser process. All RDP packets get forwarded using the message
@@ -1033,7 +1215,7 @@ function RemoteBrowserTabActor(aConnection, aBrowser)
 
 RemoteBrowserTabActor.prototype = {
   connect: function() {
-    return DebuggerServer.connectToChild(this._conn, this._browser.messageManager);
+    return DebuggerServer.connectToChild(this._conn, this._browser);
   },
 
   form: function() {
@@ -1092,11 +1274,15 @@ BrowserAddonList.prototype.onUninstalled = function (aAddon) {
   this._onListChanged();
 };
 
+exports.BrowserAddonList = BrowserAddonList;
+
 function BrowserAddonActor(aConnection, aAddon) {
   this.conn = aConnection;
   this._addon = aAddon;
-  this._contextPool = null;
+  this._contextPool = new ActorPool(this.conn);
+  this.conn.addActorPool(this._contextPool);
   this._threadActor = null;
+  this._global = null;
   AddonManager.addAddonListener(this);
 }
 
@@ -1119,31 +1305,62 @@ BrowserAddonActor.prototype = {
     return this._threadActor;
   },
 
+  get global() {
+    return this._global;
+  },
+
   form: function BAA_form() {
     dbg_assert(this.actorID, "addon should have an actorID.");
+    if (!this._consoleActor) {
+      let {AddonConsoleActor} = require("devtools/server/actors/webconsole");
+      this._consoleActor = new AddonConsoleActor(this._addon, this.conn, this);
+      this._contextPool.addActor(this._consoleActor);
+    }
 
     return {
       actor: this.actorID,
       id: this.id,
-      url: this.url
+      name: this._addon.name,
+      url: this.url,
+      debuggable: this._addon.isDebuggable,
+      consoleActor: this._consoleActor.actorID,
     };
   },
 
   disconnect: function BAA_disconnect() {
+    this.conn.removeActorPool(this._contextPool);
+    this._contextPool = null;
+    this._consoleActor = null;
+    this._addon = null;
+    this._global = null;
     AddonManager.removeAddonListener(this);
   },
 
-  onUninstalled: function BAA_onUninstalled(aAddon) {
-    if (aAddon != this._addon)
+  setOptions: function BAA_setOptions(aOptions) {
+    if ("global" in aOptions) {
+      this._global = aOptions.global;
+    }
+  },
+
+  onDisabled: function BAA_onDisabled(aAddon) {
+    if (aAddon != this._addon) {
       return;
+    }
+
+    this._global = null;
+  },
+
+  onUninstalled: function BAA_onUninstalled(aAddon) {
+    if (aAddon != this._addon) {
+      return;
+    }
 
     if (this.attached) {
       this.onDetach();
       this.conn.send({ from: this.actorID, type: "tabDetached" });
     }
 
-    this._addon = null;
-    AddonManager.removeAddonListener(this);
+    this.disconnect();
   },
 
   onAttach: function BAA_onAttach() {
@@ -1152,9 +1369,6 @@ BrowserAddonActor.prototype = {
     }
 
     if (!this.attached) {
-      this._contextPool = new ActorPool(this.conn);
-      this.conn.addActorPool(this._contextPool);
-
       this._threadActor = new AddonThreadActor(this.conn, this,
                                                this._addon.id);
       this._contextPool.addActor(this._threadActor);
@@ -1168,8 +1382,7 @@ BrowserAddonActor.prototype = {
       return { error: "wrongState" };
     }
 
-    this.conn.removeActorPool(this._contextPool);
-    this._contextPool = null;
+    this._contextPool.remoteActor(this._threadActor);
 
     this._threadActor = null;
 
@@ -1215,9 +1428,16 @@ BrowserAddonActor.prototype.requestTypes = {
  */
 function DebuggerProgressListener(aTabActor) {
   this._tabActor = aTabActor;
-  this._tabActor.webProgress.addProgressListener(this, Ci.nsIWebProgress.NOTIFY_STATE_ALL);
-  let EventEmitter = devtools.require("devtools/toolkit/event-emitter");
-  EventEmitter.decorate(this);
+  this._onWindowCreated = this.onWindowCreated.bind(this);
+  this._onWindowHidden = this.onWindowHidden.bind(this);
+
+  // Watch for windows destroyed (global observer that will need filtering)
+  Services.obs.addObserver(this, "inner-window-destroyed", false);
+
+  // XXX: for now we maintain the list of windows we know about in this instance
+  // so that we can discriminate windows we care about when observing
+  // inner-window-destroyed events. Bug 1016952 would remove the need for this.
+  this._knownWindowIDs = new Map();
 }
 
 DebuggerProgressListener.prototype = {
@@ -1227,70 +1447,154 @@ DebuggerProgressListener.prototype = {
     Ci.nsISupports,
   ]),
 
-  onStateChange:
-  DevToolsUtils.makeInfallible(function DPL_onStateChange(aProgress, aRequest, aFlag, aStatus) {
-    let isStart = aFlag & Ci.nsIWebProgressListener.STATE_START;
-    let isStop = aFlag & Ci.nsIWebProgressListener.STATE_STOP;
-    let isDocument = aFlag & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT;
-    let isNetwork = aFlag & Ci.nsIWebProgressListener.STATE_IS_NETWORK;
-    let isRequest = aFlag & Ci.nsIWebProgressListener.STATE_IS_REQUEST;
-    let isWindow = aFlag & Ci.nsIWebProgressListener.STATE_IS_WINDOW;
+  destroy: function() {
+    Services.obs.removeObserver(this, "inner-window-destroyed", false);
+    this._knownWindowIDs.clear();
+    this._knownWindowIDs = null;
+  },
 
-    // Skip non-interesting states.
-    if (!isWindow || !isNetwork ||
-        aProgress.DOMWindow != this._tabActor.window) {
+  watch: function(docShell) {
+    let webProgress = docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                              .getInterface(Ci.nsIWebProgress);
+    webProgress.addProgressListener(this, Ci.nsIWebProgress.NOTIFY_STATUS |
+                                          Ci.nsIWebProgress.NOTIFY_STATE_WINDOW |
+                                          Ci.nsIWebProgress.NOTIFY_STATE_DOCUMENT);
+
+    // TODO: fix docShell.chromeEventHandler in child processes!
+    let handler = docShell.chromeEventHandler ||
+                  docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                    .getInterface(Ci.nsIContentFrameMessageManager);
+
+    handler.addEventListener("DOMWindowCreated", this._onWindowCreated, true);
+    handler.addEventListener("pageshow", this._onWindowCreated, true);
+    handler.addEventListener("pagehide", this._onWindowHidden, true);
+
+    // Dispatch the _windowReady event on the tabActor for pre-existing windows
+    for (let win of this._getWindowsInDocShell(docShell)) {
+      this._tabActor._windowReady(win);
+      this._knownWindowIDs.set(this._getWindowID(win), win);
+    }
+  },
+
+  unwatch: function(docShell) {
+    let webProgress = docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                              .getInterface(Ci.nsIWebProgress);
+    webProgress.removeProgressListener(this);
+
+    // TODO: fix docShell.chromeEventHandler in child processes!
+    let handler = docShell.chromeEventHandler ||
+                  docShell.QueryInterface(Ci.nsIInterfaceRequestor)
+                    .getInterface(Ci.nsIContentFrameMessageManager);
+
+    handler.removeEventListener("DOMWindowCreated", this._onWindowCreated, true);
+    handler.removeEventListener("pageshow", this._onWindowCreated, true);
+    handler.removeEventListener("pagehide", this._onWindowHidden, true);
+
+    for (let win of this._getWindowsInDocShell(docShell)) {
+      this._knownWindowIDs.delete(this._getWindowID(win));
+    }
+  },
+
+  _getWindowsInDocShell: function(docShell) {
+    let docShellsEnum = docShell.getDocShellEnumerator(
+      Ci.nsIDocShellTreeItem.typeAll,
+      Ci.nsIDocShell.ENUMERATE_FORWARDS
+    );
+
+    let windows = [];
+    while (docShellsEnum.hasMoreElements()) {
+      let w = docShellsEnum.getNext().QueryInterface(Ci.nsIInterfaceRequestor)
+                                     .getInterface(Ci.nsIDOMWindow);
+      windows.push(w);
+    }
+    return windows;
+  },
+
+  _getWindowID: function(window) {
+    return window.QueryInterface(Ci.nsIInterfaceRequestor)
+                 .getInterface(Ci.nsIDOMWindowUtils)
+                 .currentInnerWindowID;
+  },
+
+  onWindowCreated: DevToolsUtils.makeInfallible(function(evt) {
+    if (!this._tabActor.attached) {
       return;
     }
 
-    if (isStart && aRequest instanceof Ci.nsIChannel) {
-      // Proceed normally only if the debuggee is not paused.
-      if (this._tabActor.threadActor.state == "paused") {
-        aRequest.suspend();
-        this._tabActor.threadActor.onResume();
-        this._tabActor.threadActor.dbg.enabled = false;
-        this._tabActor._pendingNavigation = aRequest;
-      }
-
-      let packet = {
-        from: this._tabActor.actorID,
-        type: "tabNavigated",
-        url: aRequest.URI.spec,
-        nativeConsoleAPI: true,
-        state: "start"
-      };
-      this._tabActor.threadActor.disableAllBreakpoints();
-      this._tabActor.conn.send(packet);
-      this.emit("will-navigate", packet);
-    } else if (isStop) {
-      if (this._tabActor.threadActor.state == "running") {
-        this._tabActor.threadActor.dbg.enabled = true;
-      }
-
-      let window = this._tabActor.window;
-      let packet = {
-        from: this._tabActor.actorID,
-        type: "tabNavigated",
-        url: this._tabActor.url,
-        title: this._tabActor.title,
-        nativeConsoleAPI: this._tabActor.hasNativeConsoleAPI(window),
-        state: "stop"
-      };
-      this._tabActor.conn.send(packet);
-      this.emit("navigate", packet);
-    }
-  }, "DebuggerProgressListener.prototype.onStateChange"),
-
-  /**
-   * Destroy the progress listener instance.
-   */
-  destroy: function DPL_destroy() {
-    try {
-      this._tabActor.webProgress.removeProgressListener(this);
-    } catch (ex) {
-      // This can throw during browser shutdown.
+    // pageshow events for non-persisted pages have already been handled by a
+    // prior DOMWindowCreated event. For persisted pages, act as if the window
+    // had just been created since it's been unfrozen from bfcache.
+    if (evt.type == "pageshow" && !evt.persisted) {
+      return;
     }
 
-    this._tabActor._progressListener = null;
-    this._tabActor = null;
-  }
+    let window = evt.target.defaultView;
+    this._tabActor._windowReady(window);
+
+    if (evt.type !== "pageshow") {
+      this._knownWindowIDs.set(this._getWindowID(window), window);
+    }
+  }, "DebuggerProgressListener.prototype.onWindowCreated"),
+
+  onWindowHidden: DevToolsUtils.makeInfallible(function(evt) {
+    if (!this._tabActor.attached) {
+      return;
+    }
+
+    // Only act as if the window has been destroyed if the 'pagehide' event
+    // was sent for a persisted window (persisted is set when the page is put
+    // and frozen in the bfcache). If the page isn't persisted, the observer's
+    // inner-window-destroyed event will handle it.
+    if (!evt.persisted) {
+      return;
+    }
+
+    let window = evt.target.defaultView;
+    this._tabActor._windowDestroyed(window);
+  }, "DebuggerProgressListener.prototype.onWindowHidden"),
+
+  observe: DevToolsUtils.makeInfallible(function(subject, topic) {
+    if (!this._tabActor.attached) {
+      return;
+    }
+
+    // Because this observer will be called for all inner-window-destroyed in
+    // the application, we need to filter out events for windows we are not
+    // watching
+    let innerID = subject.QueryInterface(Ci.nsISupportsPRUint64).data;
+    let window = this._knownWindowIDs.get(innerID);
+    if (window) {
+      this._knownWindowIDs.delete(innerID);
+      this._tabActor._windowDestroyed(window);
+    }
+  }, "DebuggerProgressListener.prototype.observe"),
+
+  onStateChange:
+  DevToolsUtils.makeInfallible(function(aProgress, aRequest, aFlag, aStatus) {
+    if (!this._tabActor.attached) {
+      return;
+    }
+
+    let isStart = aFlag & Ci.nsIWebProgressListener.STATE_START;
+    let isStop = aFlag & Ci.nsIWebProgressListener.STATE_STOP;
+    let isDocument = aFlag & Ci.nsIWebProgressListener.STATE_IS_DOCUMENT;
+    let isWindow = aFlag & Ci.nsIWebProgressListener.STATE_IS_WINDOW;
+
+    let window = aProgress.DOMWindow;
+    if (isDocument && isStart) {
+      let newURI = aRequest instanceof Ci.nsIChannel ? aRequest.URI.spec : null;
+      this._tabActor._willNavigate(window, newURI, aRequest);
+    }
+    if (isWindow && isStop) {
+      this._tabActor._navigate(window);
+    }
+  }, "DebuggerProgressListener.prototype.onStateChange")
+};
+
+exports.register = function(handle) {
+  handle.setRootActor(createRootActor);
+};
+
+exports.unregister = function(handle) {
+  handle.setRootActor(null);
 };

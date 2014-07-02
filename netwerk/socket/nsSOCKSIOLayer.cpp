@@ -64,7 +64,6 @@ class nsSOCKSSocketInfo : public nsISOCKSSocketInfo
 
 public:
     nsSOCKSSocketInfo();
-    virtual ~nsSOCKSSocketInfo() { HandshakeFinished(); }
 
     NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSISOCKSSOCKETINFO
@@ -84,6 +83,8 @@ public:
     void ForgetFD() { mFD = nullptr; }
 
 private:
+    virtual ~nsSOCKSSocketInfo() { HandshakeFinished(); }
+
     void HandshakeFinished(PRErrorCode err = 0);
     PRStatus StartDNS(PRFileDesc *fd);
     PRStatus ConnectToProxy(PRFileDesc *fd);
@@ -177,7 +178,7 @@ nsSOCKSSocketInfo::Init(int32_t version, int32_t family, const char *proxyHost, 
     mFlags           = flags;
 }
 
-NS_IMPL_ISUPPORTS2(nsSOCKSSocketInfo, nsISOCKSSocketInfo, nsIDNSListener)
+NS_IMPL_ISUPPORTS(nsSOCKSSocketInfo, nsISOCKSSocketInfo, nsIDNSListener)
 
 NS_IMETHODIMP 
 nsSOCKSSocketInfo::GetExternalProxyAddr(NetAddr * *aExternalProxyAddr)

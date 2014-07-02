@@ -1,4 +1,4 @@
-// -*- Mode: js2; tab-width: 2; indent-tabs-mode: nil; js2-basic-offset: 2; js2-skip-preprocessor-directives: t; js2-strict-trailing-comma-warning: nil -*-
+// -*- indent-tabs-mode: nil; js-indent-level: 2; js2-strict-trailing-comma-warning: nil -*-
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -12,7 +12,7 @@ Components.utils.import("resource://gre/modules/Geometry.jsm");
 // maximum drag distance in inches while axis locking can still be reverted
 const kAxisLockRevertThreshold = 0.8;
 
-// Same as NS_EVENT_STATE_ACTIVE from nsIEventStateManager.h
+// Same as NS_EVENT_STATE_ACTIVE from mozilla/EventStates.h
 const kStateActive = 0x00000001;
 
 // After a drag begins, kinetic panning is stopped if the drag doesn't become

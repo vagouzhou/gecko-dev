@@ -8,7 +8,7 @@
 #include "nsGkAtoms.h"
 #include "nsCOMPtr.h"
 #include "nsIDocument.h"
-#include "nsINodeInfo.h"
+#include "mozilla/dom/NodeInfo.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/DataTransfer.h"
 #include "mozilla/dom/HTMLButtonElement.h"
@@ -16,7 +16,7 @@
 #include "nsNodeInfoManager.h"
 #include "nsContentCreatorFunctions.h"
 #include "nsContentUtils.h"
-#include "nsEventStates.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/dom/DOMStringList.h"
 #include "nsIDOMDragEvent.h"
 #include "nsIDOMFileList.h"
@@ -43,9 +43,9 @@ nsFileControlFrame::nsFileControlFrame(nsStyleContext* aContext)
 
 
 void
-nsFileControlFrame::Init(nsIContent* aContent,
-                         nsIFrame*   aParent,
-                         nsIFrame*   aPrevInFlow)
+nsFileControlFrame::Init(nsIContent*       aContent,
+                         nsContainerFrame* aParent,
+                         nsIFrame*         aPrevInFlow)
 {
   nsBlockFrame::Init(aContent, aParent, aPrevInFlow);
 
@@ -118,7 +118,7 @@ nsFileControlFrame::CreateAnonymousContent(nsTArray<ContentInfo>& aElements)
   }
 
   // Create and setup the text showing the selected files.
-  nsCOMPtr<nsINodeInfo> nodeInfo;
+  nsRefPtr<NodeInfo> nodeInfo;
   nodeInfo = doc->NodeInfoManager()->GetNodeInfo(nsGkAtoms::label, nullptr,
                                                  kNameSpaceID_XUL,
                                                  nsIDOMNode::ELEMENT_NODE);
@@ -246,7 +246,7 @@ nsFileControlFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
 void
 nsFileControlFrame::SyncDisabledState()
 {
-  nsEventStates eventStates = mContent->AsElement()->State();
+  EventStates eventStates = mContent->AsElement()->State();
   if (eventStates.HasState(NS_EVENT_STATE_DISABLED)) {
     mBrowse->SetAttr(kNameSpaceID_None, nsGkAtoms::disabled, EmptyString(),
                      true);
@@ -274,7 +274,7 @@ nsFileControlFrame::AttributeChanged(int32_t  aNameSpaceID,
 }
 
 void
-nsFileControlFrame::ContentStatesChanged(nsEventStates aStates)
+nsFileControlFrame::ContentStatesChanged(EventStates aStates)
 {
   if (aStates.HasState(NS_EVENT_STATE_DISABLED)) {
     nsContentUtils::AddScriptRunner(new SyncDisabledStateEvent(this));
@@ -324,5 +324,5 @@ nsFileControlFrame::AccessibleType()
 ////////////////////////////////////////////////////////////
 // Mouse listener implementation
 
-NS_IMPL_ISUPPORTS1(nsFileControlFrame::MouseListener,
-                   nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(nsFileControlFrame::MouseListener,
+                  nsIDOMEventListener)

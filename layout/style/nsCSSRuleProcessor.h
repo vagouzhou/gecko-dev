@@ -13,13 +13,12 @@
 #define nsCSSRuleProcessor_h_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MemoryReporting.h"
 #include "nsIStyleRuleProcessor.h"
-#include "nsCSSStyleSheet.h"
 #include "nsTArray.h"
 #include "nsAutoPtr.h"
 #include "nsRuleWalker.h"
-#include "nsEventStates.h"
 
 struct CascadeEnumData;
 struct nsCSSSelector;
@@ -29,6 +28,11 @@ struct TreeMatchContext;
 class nsCSSKeyframesRule;
 class nsCSSPageRule;
 class nsCSSFontFeatureValuesRule;
+class nsCSSCounterStyleRule;
+
+namespace mozilla {
+class CSSStyleSheet;
+} // namespace mozilla
 
 /**
  * The CSS style rule processor provides a mechanism for sibling style
@@ -43,16 +47,16 @@ class nsCSSFontFeatureValuesRule;
 
 class nsCSSRuleProcessor: public nsIStyleRuleProcessor {
 public:
-  typedef nsTArray<nsRefPtr<nsCSSStyleSheet> > sheet_array_type;
+  typedef nsTArray<nsRefPtr<mozilla::CSSStyleSheet>> sheet_array_type;
 
   // aScopeElement must be non-null iff aSheetType is
   // nsStyleSet::eScopedDocSheet.
   nsCSSRuleProcessor(const sheet_array_type& aSheets,
                      uint8_t aSheetType,
                      mozilla::dom::Element* aScopeElement);
-  virtual ~nsCSSRuleProcessor();
 
-  NS_DECL_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_CLASS(nsCSSRuleProcessor)
 
 public:
   nsresult ClearRuleCascades();
@@ -77,13 +81,14 @@ public:
    * Helper to get the content state for a content node.  This may be
    * slightly adjusted from IntrinsicState().
    */
-  static nsEventStates GetContentState(mozilla::dom::Element* aElement,
-                                       const TreeMatchContext& aTreeMatchContext);
+  static mozilla::EventStates GetContentState(
+                                mozilla::dom::Element* aElement,
+                                const TreeMatchContext& aTreeMatchContext);
 
   /*
    * Helper to get the content state for :visited handling for an element
    */
-  static nsEventStates GetContentStateForVisitedHandling(
+  static mozilla::EventStates GetContentStateForVisitedHandling(
              mozilla::dom::Element* aElement,
              const TreeMatchContext& aTreeMatchContext,
              nsRuleWalker::VisitedHandlingType aVisitedHandling,
@@ -128,6 +133,9 @@ public:
   nsCSSKeyframesRule* KeyframesRuleForName(nsPresContext* aPresContext,
                                            const nsString& aName);
 
+  nsCSSCounterStyleRule* CounterStyleRuleForName(nsPresContext* aPresContext,
+                                                 const nsAString& aName);
+
   bool AppendPageRules(nsPresContext* aPresContext,
                        nsTArray<nsCSSPageRule*>& aArray);
 
@@ -157,17 +165,21 @@ public:
 #endif
 
   struct StateSelector {
-    StateSelector(nsEventStates aStates, nsCSSSelector* aSelector)
+    StateSelector(mozilla::EventStates aStates, nsCSSSelector* aSelector)
       : mStates(aStates),
         mSelector(aSelector)
     {}
 
-    nsEventStates mStates;
+    mozilla::EventStates mStates;
     nsCSSSelector* mSelector;
   };
 
+protected:
+  virtual ~nsCSSRuleProcessor();
+
 private:
-  static bool CascadeSheet(nsCSSStyleSheet* aSheet, CascadeEnumData* aData);
+  static bool CascadeSheet(mozilla::CSSStyleSheet* aSheet,
+                           CascadeEnumData* aData);
 
   RuleCascadeData* GetRuleCascade(nsPresContext* aPresContext);
   void RefreshRuleCascade(nsPresContext* aPresContext);
@@ -175,7 +187,9 @@ private:
   nsRestyleHint HasStateDependentStyle(ElementDependentRuleProcessorData* aData,
                                        mozilla::dom::Element* aStatefulElement,
                                        nsCSSPseudoElements::Type aPseudoType,
-                                       nsEventStates aStateMask);
+                                       mozilla::EventStates aStateMask);
+
+  void ClearSheets();
 
   // The sheet order here is the same as in nsStyleSet::mSheets
   sheet_array_type mSheets;

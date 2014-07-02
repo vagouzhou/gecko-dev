@@ -15,6 +15,8 @@
 #ifndef mozilla_widget_PuppetWidget_h__
 #define mozilla_widget_PuppetWidget_h__
 
+#include "mozilla/gfx/2D.h"
+#include "mozilla/RefPtr.h"
 #include "nsBaseScreen.h"
 #include "nsBaseWidget.h"
 #include "nsIScreenManager.h"
@@ -33,9 +35,12 @@ class TabChild;
 
 namespace widget {
 
+struct AutoCacheNativeKeyCommands;
+
 class PuppetWidget : public nsBaseWidget, public nsSupportsWeakReference
 {
   typedef mozilla::dom::TabChild TabChild;
+  typedef mozilla::gfx::DrawTarget DrawTarget;
   typedef nsBaseWidget Base;
 
   // The width and height of the "widget" are clamped to this.
@@ -136,21 +141,7 @@ public:
                           DoCommandCallback aCallback,
                           void* aCallbackData) MOZ_OVERRIDE;
 
-  void CacheNativeKeyCommands(const InfallibleTArray<mozilla::CommandInt>& aSingleLineCommands,
-                              const InfallibleTArray<mozilla::CommandInt>& aMultiLineCommands,
-                              const InfallibleTArray<mozilla::CommandInt>& aRichTextCommands)
-  {
-    mSingleLineCommands = aSingleLineCommands;
-    mMultiLineCommands = aMultiLineCommands;
-    mRichTextCommands = aRichTextCommands;
-  }
-
-  void ClearNativeKeyCommands()
-  {
-    mSingleLineCommands.Clear();
-    mMultiLineCommands.Clear();
-    mRichTextCommands.Clear();
-  }
+  friend struct AutoCacheNativeKeyCommands;
 
   //
   // nsBaseWidget methods we override
@@ -170,7 +161,6 @@ public:
                   LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
                   LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
                   bool* aAllowRetaining = nullptr);
-  virtual gfxASurface*      GetThebesSurface();
 
   NS_IMETHOD NotifyIME(const IMENotification& aIMENotification) MOZ_OVERRIDE;
   NS_IMETHOD_(void) SetInputContext(const InputContext& aContext,
@@ -195,6 +185,11 @@ public:
   virtual bool NeedsPaint() MOZ_OVERRIDE;
 
   virtual TabChild* GetOwningTabChild() MOZ_OVERRIDE { return mTabChild; }
+  virtual void ClearBackingScaleCache()
+  {
+    mDPI = -1;
+    mDefaultScale = -1;
+  }
 
 private:
   nsresult Paint();
@@ -232,7 +227,7 @@ private:
   bool mVisible;
   // XXX/cjones: keeping this around until we teach LayerManager to do
   // retained-content-only transactions
-  nsRefPtr<gfxASurface> mSurface;
+  mozilla::RefPtr<DrawTarget> mDrawTarget;
   // IME
   nsIMEUpdatePreference mIMEPreferenceOfParent;
   bool mIMEComposing;
@@ -250,9 +245,55 @@ private:
   double mDefaultScale;
 
   // Precomputed answers for ExecuteNativeKeyBinding
+  bool mNativeKeyCommandsValid;
   InfallibleTArray<mozilla::CommandInt> mSingleLineCommands;
   InfallibleTArray<mozilla::CommandInt> mMultiLineCommands;
   InfallibleTArray<mozilla::CommandInt> mRichTextCommands;
+};
+
+struct AutoCacheNativeKeyCommands
+{
+  AutoCacheNativeKeyCommands(PuppetWidget* aWidget)
+    : mWidget(aWidget)
+  {
+    mSavedValid = mWidget->mNativeKeyCommandsValid;
+    mSavedSingleLine = mWidget->mSingleLineCommands;
+    mSavedMultiLine = mWidget->mMultiLineCommands;
+    mSavedRichText = mWidget->mRichTextCommands;
+  }
+
+  void Cache(const InfallibleTArray<mozilla::CommandInt>& aSingleLineCommands,
+             const InfallibleTArray<mozilla::CommandInt>& aMultiLineCommands,
+             const InfallibleTArray<mozilla::CommandInt>& aRichTextCommands)
+  {
+    mWidget->mNativeKeyCommandsValid = true;
+    mWidget->mSingleLineCommands = aSingleLineCommands;
+    mWidget->mMultiLineCommands = aMultiLineCommands;
+    mWidget->mRichTextCommands = aRichTextCommands;
+  }
+
+  void CacheNoCommands()
+  {
+    mWidget->mNativeKeyCommandsValid = true;
+    mWidget->mSingleLineCommands.Clear();
+    mWidget->mMultiLineCommands.Clear();
+    mWidget->mRichTextCommands.Clear();
+  }
+
+  ~AutoCacheNativeKeyCommands()
+  {
+    mWidget->mNativeKeyCommandsValid = mSavedValid;
+    mWidget->mSingleLineCommands = mSavedSingleLine;
+    mWidget->mMultiLineCommands = mSavedMultiLine;
+    mWidget->mRichTextCommands = mSavedRichText;
+  }
+
+private:
+  PuppetWidget* mWidget;
+  bool mSavedValid;
+  InfallibleTArray<mozilla::CommandInt> mSavedSingleLine;
+  InfallibleTArray<mozilla::CommandInt> mSavedMultiLine;
+  InfallibleTArray<mozilla::CommandInt> mSavedRichText;
 };
 
 class PuppetScreen : public nsBaseScreen
@@ -271,9 +312,10 @@ public:
 
 class PuppetScreenManager MOZ_FINAL : public nsIScreenManager
 {
+    ~PuppetScreenManager();
+
 public:
     PuppetScreenManager();
-    ~PuppetScreenManager();
 
     NS_DECL_ISUPPORTS
     NS_DECL_NSISCREENMANAGER

@@ -21,8 +21,6 @@ public:
   NS_DECL_ISUPPORTS
   NS_DECL_IMGICONTAINER
 
-  virtual ~ImageWrapper() { }
-
   // Inherited methods from Image.
   virtual nsresult Init(const char* aMimeType, uint32_t aFlags) MOZ_OVERRIDE;
 
@@ -34,6 +32,10 @@ public:
   virtual size_t HeapSizeOfDecodedWithComputedFallback(mozilla::MallocSizeOf aMallocSizeOf) const MOZ_OVERRIDE;
   virtual size_t NonHeapSizeOfDecoded() const MOZ_OVERRIDE;
   virtual size_t OutOfProcessSizeOfDecoded() const MOZ_OVERRIDE;
+
+  virtual size_t HeapSizeOfVectorImageDocument(nsACString* aDocURL = nullptr) const MOZ_OVERRIDE {
+    return mInnerImage->HeapSizeOfVectorImageDocument(aDocURL);
+  }
 
   virtual void IncrementAnimationConsumers() MOZ_OVERRIDE;
   virtual void DecrementAnimationConsumers() MOZ_OVERRIDE;
@@ -66,6 +68,8 @@ protected:
   {
     NS_ABORT_IF_FALSE(aInnerImage, "Cannot wrap a null image");
   }
+
+  virtual ~ImageWrapper() { }
 
   /**
    * Returns a weak reference to the inner image wrapped by this ImageWrapper.

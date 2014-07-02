@@ -51,7 +51,7 @@
 #include "imgIRequest.h"
 #include "imgIContainer.h"
 #include "imgILoader.h"
-#include "nsINodeInfo.h"
+#include "mozilla/dom/NodeInfo.h"
 #include "nsContentUtils.h"
 #include "nsLayoutUtils.h"
 #include "nsIScrollableFrame.h"
@@ -66,9 +66,7 @@
 #include "nsAccessibilityService.h"
 #include "nsIWritablePropertyBag2.h"
 #endif
-#ifdef IBMBIDI
 #include "nsBidiUtils.h"
-#endif
 
 using namespace mozilla;
 using namespace mozilla::layout;
@@ -163,9 +161,9 @@ AdjustForBorderPadding(nsStyleContext* aContext, nsRect& aRect)
 }
 
 void
-nsTreeBodyFrame::Init(nsIContent*     aContent,
-                      nsIFrame*       aParent,
-                      nsIFrame*       aPrevInFlow)
+nsTreeBodyFrame::Init(nsIContent*       aContent,
+                      nsContainerFrame* aParent,
+                      nsIFrame*         aPrevInFlow)
 {
   nsLeafBoxFrame::Init(aContent, aParent, aPrevInFlow);
 
@@ -247,9 +245,7 @@ nsTreeBodyFrame::CalcMaxRowWidth()
   nsTreeColumn* col;
 
   nsRefPtr<nsRenderingContext> rc =
-    PresContext()->PresShell()->GetReferenceRenderingContext();
-  if (!rc)
-    return 0;
+    PresContext()->PresShell()->CreateReferenceRenderingContext();
 
   for (int32_t row = 0; row < mRowCount; ++row) {
     rowWidth = 0;
@@ -1177,9 +1173,7 @@ nsTreeBodyFrame::GetCoordsForCellItem(int32_t aRow, nsITreeColumn* aCol, const n
     AdjustForBorderPadding(cellContext, cellRect);
 
     nsRefPtr<nsRenderingContext> rc =
-      presContext->PresShell()->GetReferenceRenderingContext();
-    if (!rc)
-      return NS_ERROR_OUT_OF_MEMORY;
+      presContext->PresShell()->CreateReferenceRenderingContext();
 
     // Now we'll start making our way across the cell, starting at the edge of 
     // the cell and proceeding until we hit the right edge. |cellX| is the 
@@ -1520,9 +1514,7 @@ nsTreeBodyFrame::GetItemWithinCellAt(nscoord aX, const nsRect& aCellRect,
 
   nsPresContext* presContext = PresContext();
   nsRefPtr<nsRenderingContext> rc =
-    presContext->PresShell()->GetReferenceRenderingContext();
-  if (!rc)
-    return nsCSSAnonBoxes::moztreecell;
+    presContext->PresShell()->CreateReferenceRenderingContext();
 
   if (aColumn->IsPrimary()) {
     // If we're the primary column, we have indentation and a twisty.
@@ -1775,8 +1767,7 @@ nsTreeBodyFrame::IsCellCropped(int32_t aRow, nsITreeColumn* aCol, bool *_retval)
     return NS_ERROR_INVALID_ARG;
 
   nsRefPtr<nsRenderingContext> rc =
-    PresContext()->PresShell()->GetReferenceRenderingContext();
-  NS_ENSURE_TRUE(rc, NS_ERROR_FAILURE);
+    PresContext()->PresShell()->CreateReferenceRenderingContext();
 
   rv = GetCellWidth(aRow, col, rc, desiredSize, currentSize);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -2096,7 +2087,7 @@ nsTreeBodyFrame::GetTwistyRect(int32_t aRowIndex,
   if (useTheme) {
     nsIntSize minTwistySizePx(0,0);
     bool canOverride = true;
-    theme->GetMinimumWidgetSize(&aRenderingContext, this, twistyDisplayData->mAppearance,
+    theme->GetMinimumWidgetSize(aPresContext, this, twistyDisplayData->mAppearance,
                                 &minTwistySizePx, &canOverride);
 
     // GMWS() returns size in pixels, we need to convert it back to app units
@@ -2206,6 +2197,7 @@ nsTreeBodyFrame::GetImage(int32_t aRowIndex, nsTreeColumn* aCol, bool aUseContex
                                                 doc->GetDocumentURI(),
                                                 imgNotificationObserver,
                                                 nsIRequest::LOAD_NORMAL,
+                                                EmptyString(),
                                                 getter_AddRefs(imageRequest));
         NS_ENSURE_SUCCESS(rv, rv);
                                   
@@ -3389,7 +3381,8 @@ nsTreeBodyFrame::PaintTwisty(int32_t              aRowIndex,
         }
           
         // Paint the image.
-        nsLayoutUtils::DrawSingleUnscaledImage(&aRenderingContext, image,
+        nsLayoutUtils::DrawSingleUnscaledImage(&aRenderingContext,
+            aPresContext, image,
             GraphicsFilter::FILTER_NEAREST, pt, &aDirtyRect,
             imgIContainer::FLAG_NONE, &imageSize);
       }
@@ -3528,7 +3521,7 @@ nsTreeBodyFrame::PaintImage(int32_t              aRowIndex,
       ctx->PushGroup(gfxContentType::COLOR_ALPHA);
     }
 
-    nsLayoutUtils::DrawImage(&aRenderingContext, image,
+    nsLayoutUtils::DrawImage(&aRenderingContext, aPresContext, image,
         nsLayoutUtils::GetGraphicsFilterForFrame(this),
         wholeImageDest, destRect, destRect.TopLeft(), aDirtyRect,
         imgIContainer::FLAG_NONE);
@@ -3710,8 +3703,8 @@ nsTreeBodyFrame::PaintCheckbox(int32_t              aRowIndex,
     }
 
     // Paint the image.
-    nsLayoutUtils::DrawSingleUnscaledImage(&aRenderingContext, image,
-        GraphicsFilter::FILTER_NEAREST, pt, &aDirtyRect,
+    nsLayoutUtils::DrawSingleUnscaledImage(&aRenderingContext, aPresContext,
+        image, GraphicsFilter::FILTER_NEAREST, pt, &aDirtyRect,
         imgIContainer::FLAG_NONE, &imageSize);
   }
 }
@@ -3775,7 +3768,7 @@ nsTreeBodyFrame::PaintProgressMeter(int32_t              aRowIndex,
       image->GetHeight(&height);
       nsSize size(width*nsDeviceContext::AppUnitsPerCSSPixel(),
                   height*nsDeviceContext::AppUnitsPerCSSPixel());
-      nsLayoutUtils::DrawImage(&aRenderingContext, image,
+      nsLayoutUtils::DrawImage(&aRenderingContext, aPresContext, image,
           nsLayoutUtils::GetGraphicsFilterForFrame(this),
           nsRect(meterRect.TopLeft(), size), meterRect, meterRect.TopLeft(),
           aDirtyRect, imgIContainer::FLAG_NONE);
@@ -3796,7 +3789,7 @@ nsTreeBodyFrame::PaintProgressMeter(int32_t              aRowIndex,
       image->GetHeight(&height);
       nsSize size(width*nsDeviceContext::AppUnitsPerCSSPixel(),
                   height*nsDeviceContext::AppUnitsPerCSSPixel());
-      nsLayoutUtils::DrawImage(&aRenderingContext, image,
+      nsLayoutUtils::DrawImage(&aRenderingContext, aPresContext, image,
           nsLayoutUtils::GetGraphicsFilterForFrame(this),
           nsRect(meterRect.TopLeft(), size), meterRect, meterRect.TopLeft(),
           aDirtyRect, imgIContainer::FLAG_NONE);
@@ -4239,7 +4232,7 @@ nsTreeBodyFrame::GetBaseElement()
   while (parent) {
     nsIContent* content = parent->GetContent();
     if (content) {
-      nsINodeInfo* ni = content->NodeInfo();
+      dom::NodeInfo* ni = content->NodeInfo();
 
       if (ni->Equals(nsGkAtoms::tree, kNameSpaceID_XUL) ||
           (ni->Equals(nsGkAtoms::select) &&

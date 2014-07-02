@@ -31,8 +31,8 @@
 #include "nsProxyRelease.h"
 #include "nsNetUtil.h"
 #include "mozilla/Attributes.h"
-#include "TimeStamp.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TimeStamp.h"
 #include "prlog.h"
 
 #include "plbase64.h"
@@ -49,8 +49,8 @@ extern PRLogModuleInfo* gRtspLog;
 namespace mozilla {
 namespace net {
 
-NS_IMPL_ISUPPORTS1(RtspController,
-                   nsIStreamingProtocolController)
+NS_IMPL_ISUPPORTS(RtspController,
+                  nsIStreamingProtocolController)
 
 RtspController::RtspController(nsIChannel *channel)
   : mState(INIT)
@@ -330,6 +330,9 @@ RtspController::OnDisconnected(uint8_t index,
   if (mListener) {
     nsRefPtr<SendOnDisconnectedTask> task =
       new SendOnDisconnectedTask(mListener, index, reason);
+    // Break the cycle reference between the Listener (RtspControllerParent) and
+    // us.
+    mListener = nullptr;
     return NS_DispatchToMainThread(task);
   }
   return NS_ERROR_NOT_AVAILABLE;
@@ -363,6 +366,19 @@ RtspController::Init(nsIURI *aURI)
 
   mURI = aURI;
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+RtspController::PlaybackEnded()
+{
+  LOG(("RtspController::PlaybackEnded()"));
+  if (!mRtspSource.get()) {
+    MOZ_ASSERT(mRtspSource.get(), "mRtspSource should not be null!");
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  mRtspSource->playbackEnded();
   return NS_OK;
 }
 

@@ -28,16 +28,16 @@ public:
   {
     SetIsDOMBinding();
   }
-  ~SVGAnimatedAngle();
 
   // WebIDL
   nsSVGElement* GetParentObject() { return mSVGElement; }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
   already_AddRefed<SVGAngle> BaseVal();
   already_AddRefed<SVGAngle> AnimVal();
 
 protected:
+  ~SVGAnimatedAngle();
+
   nsSVGAngle* mVal; // kept alive because it belongs to content
   nsRefPtr<nsSVGElement> mSVGElement;
 };

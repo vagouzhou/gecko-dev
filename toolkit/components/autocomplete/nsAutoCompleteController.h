@@ -35,9 +35,10 @@ public:
   NS_DECL_NSITIMERCALLBACK
    
   nsAutoCompleteController();
-  virtual ~nsAutoCompleteController();
   
 protected:
+  virtual ~nsAutoCompleteController();
+
   nsresult OpenPopup();
   nsresult ClosePopup();
 
@@ -59,12 +60,11 @@ protected:
 
   nsresult GetResultAt(int32_t aIndex, nsIAutoCompleteResult** aResult,
                        int32_t* aRowIndex);
-  nsresult GetResultValueAt(int32_t aIndex, bool aValueOnly,
+  nsresult GetResultValueAt(int32_t aIndex, bool aGetFinalValue,
                             nsAString & _retval);
-  nsresult GetResultLabelAt(int32_t aIndex, bool aValueOnly,
-                            nsAString & _retval);
+  nsresult GetResultLabelAt(int32_t aIndex, nsAString & _retval);
 private:
-  nsresult GetResultValueLabelAt(int32_t aIndex, bool aValueOnly,
+  nsresult GetResultValueLabelAt(int32_t aIndex, bool aGetFinalValue,
                                  bool aGetValue, nsAString & _retval);
 protected:
 

@@ -4,12 +4,16 @@
 
 const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
-Components.utils.import("resource://gre/modules/Services.jsm");
-Components.utils.import("resource://gre/modules/Troubleshoot.jsm");
-Components.utils.import("resource://gre/modules/PluralForm.jsm");
-Components.utils.import("resource://gre/modules/ResetProfile.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/Troubleshoot.jsm");
+Cu.import("resource://gre/modules/ResetProfile.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "PluralForm",
+                                  "resource://gre/modules/PluralForm.jsm");
 
 window.addEventListener("load", function onload(event) {
+  try {
   window.removeEventListener("load", onload, false);
   Troubleshoot.snapshot(function (snapshot) {
     for (let prop in snapshotFormatters)
@@ -17,6 +21,9 @@ window.addEventListener("load", function onload(event) {
   });
   populateResetBox();
   setupEventListeners();
+  } catch (e) {
+    Cu.reportError("stack of load error for about:support: " + e + ": " + e.stack);
+  }
 }, false);
 
 // Each property in this object corresponds to a property in Troubleshoot.jsm's
@@ -135,6 +142,17 @@ let snapshotFormatters = {
           // Very long preference values can cause users problems when they
           // copy and paste them into some text editors.  Long values generally
           // aren't useful anyway, so truncate them to a reasonable length.
+          $.new("td", String(value).substr(0, 120), "pref-value"),
+        ]);
+      }
+    ));
+  },
+
+  lockedPreferences: function lockedPreferences(data) {
+    $.append($("locked-prefs-tbody"), sortedArrayFromObject(data).map(
+      function ([name, value]) {
+        return $.new("tr", [
+          $.new("td", name, "pref-name"),
           $.new("td", String(value).substr(0, 120), "pref-value"),
         ]);
       }
@@ -353,9 +371,7 @@ function copyRawDataToClipboard(button) {
         message: stringBundle().GetStringFromName("rawDataCopied"),
         duration: "short"
       };
-      Cc["@mozilla.org/android/bridge;1"].
-        getService(Ci.nsIAndroidBridge).
-        handleGeckoMessage(JSON.stringify(message));
+      Services.androidBridge.handleGeckoMessage(message);
 #endif
     });
   }
@@ -409,9 +425,7 @@ function copyContentsToClipboard() {
     message: stringBundle().GetStringFromName("textCopied"),
     duration: "short"
   };
-  Cc["@mozilla.org/android/bridge;1"].
-    getService(Ci.nsIAndroidBridge).
-    handleGeckoMessage(JSON.stringify(message));
+  Services.androidBridge.handleGeckoMessage(message);
 #endif
 }
 

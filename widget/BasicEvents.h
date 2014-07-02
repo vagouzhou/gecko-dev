@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "mozilla/dom/EventTarget.h"
+#include "mozilla/TimeStamp.h"
 #include "nsCOMPtr.h"
 #include "nsIAtom.h"
 #include "nsISupportsImpl.h"
@@ -35,6 +36,7 @@ enum nsEventStructType
   NS_TEXT_EVENT,                     // WidgetTextEvent
   NS_QUERY_CONTENT_EVENT,            // WidgetQueryContentEvent
   NS_SELECTION_EVENT,                // WidgetSelectionEvent
+  NS_EDITOR_INPUT_EVENT,             // InternalEditorInputEvent
 
   // MouseEvents.h
   NS_MOUSE_EVENT,                    // WidgetMouseEvent
@@ -119,6 +121,8 @@ enum nsEventStructType
 // HiDPI mode.
 #define NS_PLUGIN_RESOLUTION_CHANGED     (NS_WINDOW_START + 69)
 
+#define NS_LANGUAGECHANGE                (NS_WINDOW_START + 70)
+
 #define NS_MOUSE_MESSAGE_START          300
 #define NS_MOUSE_MOVE                   (NS_MOUSE_MESSAGE_START)
 #define NS_MOUSE_BUTTON_UP              (NS_MOUSE_MESSAGE_START + 1)
@@ -133,6 +137,7 @@ enum nsEventStructType
 #define NS_MOUSE_MOZHITTEST             (NS_MOUSE_MESSAGE_START + 33)
 #define NS_MOUSEENTER                   (NS_MOUSE_MESSAGE_START + 34)
 #define NS_MOUSELEAVE                   (NS_MOUSE_MESSAGE_START + 35)
+#define NS_MOUSE_MOZLONGTAP             (NS_MOUSE_MESSAGE_START + 36)
 
 // Pointer spec events
 #define NS_POINTER_EVENT_START          4400
@@ -166,8 +171,7 @@ enum nsEventStructType
 #define NS_FORM_RESET                   (NS_FORM_EVENT_START + 1)
 #define NS_FORM_CHANGE                  (NS_FORM_EVENT_START + 2)
 #define NS_FORM_SELECTED                (NS_FORM_EVENT_START + 3)
-#define NS_FORM_INPUT                   (NS_FORM_EVENT_START + 4)
-#define NS_FORM_INVALID                 (NS_FORM_EVENT_START + 5)
+#define NS_FORM_INVALID                 (NS_FORM_EVENT_START + 4)
 
 //Need separate focus/blur notifications for non-native widgets
 #define NS_FOCUS_EVENT_START            1300
@@ -318,7 +322,7 @@ enum nsEventStructType
 #define NS_RATECHANGE          (NS_MEDIA_EVENT_START+17)
 #define NS_DURATIONCHANGE      (NS_MEDIA_EVENT_START+18)
 #define NS_VOLUMECHANGE        (NS_MEDIA_EVENT_START+19)
-#define NS_MOZAUDIOAVAILABLE   (NS_MEDIA_EVENT_START+20)
+#define NS_NEED_KEY            (NS_MEDIA_EVENT_START+20)
 
 // paint notification events
 #define NS_NOTIFYPAINT_START    3400
@@ -474,6 +478,10 @@ enum nsEventStructType
 #define NS_GAMEPAD_END           (NS_GAMEPAD_START+4)
 #endif
 
+// input and beforeinput events.
+#define NS_EDITOR_EVENT_START    6100
+#define NS_EDITOR_INPUT          (NS_EDITOR_EVENT_START)
+
 namespace mozilla {
 
 /******************************************************************************
@@ -617,7 +625,7 @@ protected:
   WidgetEvent(bool aIsTrusted, uint32_t aMessage,
               nsEventStructType aStructType) :
     eventStructType(aStructType), message(aMessage), refPoint(0, 0),
-    lastRefPoint(0, 0), time(0), userType(0)
+    lastRefPoint(0, 0), time(0), timeStamp(TimeStamp::Now()), userType(0)
   {
     MOZ_COUNT_CTOR(WidgetEvent);
     mFlags.Clear();
@@ -634,7 +642,7 @@ protected:
 public:
   WidgetEvent(bool aIsTrusted, uint32_t aMessage) :
     eventStructType(NS_EVENT), message(aMessage), refPoint(0, 0),
-    lastRefPoint(0, 0), time(0), userType(0)
+    lastRefPoint(0, 0), time(0), timeStamp(TimeStamp::Now()), userType(0)
   {
     MOZ_COUNT_CTOR(WidgetEvent);
     mFlags.Clear();
@@ -676,6 +684,9 @@ public:
   // Elapsed time, in milliseconds, from a platform-specific zero time
   // to the time the message was created
   uint64_t time;
+  // Timestamp when the message was created. Set in parallel to 'time' until we
+  // determine if it is safe to drop 'time' (see bug 77992).
+  mozilla::TimeStamp timeStamp;
   // See BaseEventFlags definition for the detail.
   BaseEventFlags mFlags;
 
@@ -699,6 +710,7 @@ public:
     refPoint = aEvent.refPoint;
     // lastRefPoint doesn't need to be copied.
     time = aEvent.time;
+    timeStamp = aEvent.timeStamp;
     // mFlags should be copied manually if it's necessary.
     userType = aEvent.userType;
     // typeString should be copied manually if it's necessary.
@@ -885,6 +897,7 @@ public:
 
 enum Modifier
 {
+  MODIFIER_NONE       = 0x0000,
   MODIFIER_ALT        = 0x0001,
   MODIFIER_ALTGRAPH   = 0x0002,
   MODIFIER_CAPSLOCK   = 0x0004,
@@ -956,6 +969,19 @@ public:
     result->AssignInputEventData(*this, true);
     result->mFlags = mFlags;
     return result;
+  }
+
+
+  /**
+   * Returns a modifier of "Accel" virtual modifier which is used for shortcut
+   * key.
+   */
+  static Modifier AccelModifier();
+
+  // true indicates the accel key on the environment is down
+  bool IsAccel() const
+  {
+    return ((modifiers & AccelModifier()) != 0);
   }
 
   // true indicates the shift key is down
@@ -1058,6 +1084,18 @@ public:
 class InternalUIEvent : public WidgetGUIEvent
 {
 protected:
+  InternalUIEvent()
+    : detail(0)
+  {
+  }
+
+  InternalUIEvent(bool aIsTrusted, uint32_t aMessage, nsIWidget* aWidget,
+                  nsEventStructType aStructType)
+    : WidgetGUIEvent(aIsTrusted, aMessage, aWidget, aStructType)
+    , detail(0)
+  {
+  }
+
   InternalUIEvent(bool aIsTrusted, uint32_t aMessage,
                   nsEventStructType aStructType)
     : WidgetGUIEvent(aIsTrusted, aMessage, nullptr, aStructType)

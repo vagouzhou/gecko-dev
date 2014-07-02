@@ -21,6 +21,8 @@
 #include "nsIDOMHTMLInputElement.h"
 #include "nsRenderingContext.h"
 #include "nsGkAtoms.h"
+
+#include "mozilla/EventStates.h"
 #include "mozilla/Services.h"
 
 #include <gdk/gdkprivate.h>
@@ -31,8 +33,10 @@
 #include "gfxGdkNativeRenderer.h"
 #include <algorithm>
 
-NS_IMPL_ISUPPORTS_INHERITED2(nsNativeThemeGTK, nsNativeTheme, nsITheme,
-                                                              nsIObserver)
+using namespace mozilla;
+
+NS_IMPL_ISUPPORTS_INHERITED(nsNativeThemeGTK, nsNativeTheme, nsITheme,
+                                                             nsIObserver)
 
 static int gLastGdkError;
 
@@ -218,7 +222,7 @@ nsNativeThemeGTK::GetGtkWidgetAndState(uint8_t aWidgetType, nsIFrame* aFrame,
         stateFrame = aFrame = aFrame->GetParent();
       }
 
-      nsEventStates eventState = GetContentState(stateFrame, aWidgetType);
+      EventStates eventState = GetContentState(stateFrame, aWidgetType);
 
       aState->disabled = IsDisabled(aFrame, eventState) || IsReadOnly(aFrame);
       aState->active  = eventState.HasState(NS_EVENT_STATE_ACTIVE);
@@ -227,6 +231,17 @@ nsNativeThemeGTK::GetGtkWidgetAndState(uint8_t aWidgetType, nsIFrame* aFrame,
       aState->isDefault = IsDefaultButton(aFrame);
       aState->canDefault = FALSE; // XXX fix me
       aState->depressed = FALSE;
+
+      if (aWidgetType == NS_THEME_FOCUS_OUTLINE) {
+        aState->disabled = FALSE;
+        aState->active  = FALSE;
+        aState->inHover = FALSE;
+        aState->isDefault = FALSE;
+        aState->canDefault = FALSE;
+
+        aState->focused = TRUE;
+        aState->depressed = TRUE; // see moz_gtk_entry_paint()
+      }
 
       if (IsFrameContentNodeInNamespace(aFrame, kNameSpaceID_XUL)) {
         // For these widget types, some element (either a child or parent)
@@ -352,6 +367,9 @@ nsNativeThemeGTK::GetGtkWidgetAndState(uint8_t aWidgetType, nsIFrame* aFrame,
     if (aWidgetFlags)
       *aWidgetFlags = (aWidgetType == NS_THEME_BUTTON) ? GTK_RELIEF_NORMAL : GTK_RELIEF_NONE;
     aGtkWidgetType = MOZ_GTK_BUTTON;
+    break;
+  case NS_THEME_FOCUS_OUTLINE:
+    aGtkWidgetType = MOZ_GTK_ENTRY;
     break;
   case NS_THEME_CHECKBOX:
   case NS_THEME_RADIO:
@@ -551,7 +569,7 @@ nsNativeThemeGTK::GetGtkWidgetAndState(uint8_t aWidgetType, nsIFrame* aFrame,
   case NS_THEME_PROGRESSBAR_CHUNK_VERTICAL:
     {
       nsIFrame* stateFrame = aFrame->GetParent();
-      nsEventStates eventStates = GetContentState(stateFrame, aWidgetType);
+      EventStates eventStates = GetContentState(stateFrame, aWidgetType);
 
       aGtkWidgetType = IsIndeterminateProgress(stateFrame, eventStates)
                          ? (stateFrame->StyleDisplay()->mOrient == NS_STYLE_ORIENT_VERTICAL)
@@ -724,6 +742,13 @@ nsNativeThemeGTK::GetExtraSizeForWidget(nsIFrame* aFrame, uint8_t aWidgetType,
         aExtra->left = left;
         return true;
       }
+    }
+  case NS_THEME_FOCUS_OUTLINE:
+    {
+      moz_gtk_get_focus_outline_size(&aExtra->left, &aExtra->top);
+      aExtra->right = aExtra->left;
+      aExtra->bottom = aExtra->top;
+      return true;
     }
   case NS_THEME_TAB :
     {
@@ -1021,7 +1046,7 @@ nsNativeThemeGTK::GetWidgetOverflow(nsDeviceContext* aContext,
 }
 
 NS_IMETHODIMP
-nsNativeThemeGTK::GetMinimumWidgetSize(nsRenderingContext* aContext,
+nsNativeThemeGTK::GetMinimumWidgetSize(nsPresContext* aPresContext,
                                        nsIFrame* aFrame, uint8_t aWidgetType,
                                        nsIntSize* aResult, bool* aIsOverridable)
 {
@@ -1211,7 +1236,7 @@ nsNativeThemeGTK::GetMinimumWidgetSize(nsRenderingContext* aContext,
     {
       // Just include our border, and let the box code augment the size.
       nsIntMargin border;
-      nsNativeThemeGTK::GetWidgetBorder(aContext->DeviceContext(),
+      nsNativeThemeGTK::GetWidgetBorder(aFrame->PresContext()->DeviceContext(),
                                         aFrame, aWidgetType, &border);
       aResult->width = border.left + border.right;
       aResult->height = border.top + border.bottom;
@@ -1423,6 +1448,8 @@ nsNativeThemeGTK::ThemeSupportsWidget(nsPresContext* aPresContext,
     return (!aFrame || IsFrameContentNodeInNamespace(aFrame, kNameSpaceID_XUL)) &&
            !IsWidgetStyled(aPresContext, aFrame, aWidgetType);
 
+  case NS_THEME_FOCUS_OUTLINE:
+    return true;
   }
 
   return false;
@@ -1468,10 +1495,10 @@ nsNativeThemeGTK::GetWidgetTransparency(nsIFrame* aFrame, uint8_t aWidgetType)
 {
   switch (aWidgetType) {
   // These widgets always draw a default background.
+#if (MOZ_WIDGET_GTK == 2)
   case NS_THEME_SCROLLBAR_TRACK_VERTICAL:
   case NS_THEME_SCROLLBAR_TRACK_HORIZONTAL:
   case NS_THEME_TOOLBAR:
-#if (MOZ_WIDGET_GTK == 2)
   case NS_THEME_MENUBAR:
 #endif
   case NS_THEME_MENUPOPUP:

@@ -15,15 +15,17 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
-Cu.import("resource://gre/modules/FxAccountsClient.jsm");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
-Cu.import("resource://gre/modules/FxAccountsUtils.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "FxAccountsClient",
+  "resource://gre/modules/FxAccountsClient.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "jwcrypto",
   "resource://gre/modules/identity/jwcrypto.jsm");
 
 // All properties exposed by the public FxAccounts API.
 let publicProperties = [
+  "accountStatus",
   "getAccountsClient",
   "getAccountsSignInURI",
   "getAccountsSignUpURI",
@@ -98,7 +100,11 @@ AccountState.prototype = {
 
     return this.fxaInternal.signedInUserStorage.get().then(
       user => {
-        log.debug("getUserAccountData -> " + JSON.stringify(user));
+        if (logPII) {
+          // don't stringify unless it will be written. We should replace this
+          // check with param substitutions added in bug 966674
+          log.debug("getUserAccountData -> " + JSON.stringify(user));
+        }
         if (user && user.version == this.version) {
           log.debug("setting signed in user");
           this.signedInUser = user;
@@ -130,7 +136,11 @@ AccountState.prototype = {
 
 
   getCertificate: function(data, keyPair, mustBeValidUntil) {
-    log.debug("getCertificate" + JSON.stringify(this.signedInUser));
+    if (logPII) {
+      // don't stringify unless it will be written. We should replace this
+      // check with param substitutions added in bug 966674
+      log.debug("getCertificate" + JSON.stringify(this.signedInUser));
+    }
     // TODO: get the lifetime from the cert's .exp field
     if (this.cert && this.cert.validUntil > mustBeValidUntil) {
       log.debug(" getCertificate already had one");
@@ -142,6 +152,7 @@ AccountState.prototype = {
                                                  keyPair.serializedPublicKey,
                                                  CERT_LIFETIME).then(
       cert => {
+        log.debug("getCertificate got a new one: " + !!cert);
         this.cert = {
           cert: cert,
           validUntil: willBeValidUntil
@@ -192,13 +203,54 @@ AccountState.prototype = {
     if (!this.isCurrent) {
       log.info("An accountState promise was rejected, but we are ignoring that" +
                "reason and rejecting it due to a different user being signed in." +
-               "Originally rejected with: " + reason);
+               "Originally rejected with: " + error);
       return Promise.reject(new Error("A different user signed in"));
     }
     return Promise.reject(error);
   },
 
 }
+
+/**
+ * Copies properties from a given object to another object.
+ *
+ * @param from (object)
+ *        The object we read property descriptors from.
+ * @param to (object)
+ *        The object that we set property descriptors on.
+ * @param options (object) (optional)
+ *        {keys: [...]}
+ *          Lets the caller pass the names of all properties they want to be
+ *          copied. Will copy all properties of the given source object by
+ *          default.
+ *        {bind: object}
+ *          Lets the caller specify the object that will be used to .bind()
+ *          all function properties we find to. Will bind to the given target
+ *          object by default.
+ */
+function copyObjectProperties(from, to, opts = {}) {
+  let keys = (opts && opts.keys) || Object.keys(from);
+  let thisArg = (opts && opts.bind) || to;
+
+  for (let prop of keys) {
+    let desc = Object.getOwnPropertyDescriptor(from, prop);
+
+    if (typeof(desc.value) == "function") {
+      desc.value = desc.value.bind(thisArg);
+    }
+
+    if (desc.get) {
+      desc.get = desc.get.bind(thisArg);
+    }
+
+    if (desc.set) {
+      desc.set = desc.set.bind(thisArg);
+    }
+
+    Object.defineProperty(to, prop, desc);
+  }
+}
+
 /**
  * The public API's constructor.
  */
@@ -209,11 +261,11 @@ this.FxAccounts = function (mockInternal) {
   // Copy all public properties to the 'external' object.
   let prototype = FxAccountsInternal.prototype;
   let options = {keys: publicProperties, bind: internal};
-  FxAccountsUtils.copyObjectProperties(prototype, external, options);
+  copyObjectProperties(prototype, external, options);
 
   // Copy all of the mock's properties to the internal object.
   if (mockInternal && !mockInternal.onlySetInternal) {
-    FxAccountsUtils.copyObjectProperties(mockInternal, internal);
+    copyObjectProperties(mockInternal, internal);
   }
 
   if (mockInternal) {
@@ -249,8 +301,6 @@ function FxAccountsInternal() {
   this.currentTimer = null;
   this.currentAccountState = new AccountState(this);
 
-  this.fxAccountsClient = new FxAccountsClient();
-
   // We don't reference |profileDir| in the top-level module scope
   // as we may be imported before we know where it is.
   this.signedInUserStorage = new JSONStorage({
@@ -268,6 +318,15 @@ FxAccountsInternal.prototype = {
    * The current data format's version number.
    */
   version: DATA_FORMAT_VERSION,
+
+  _fxAccountsClient: null,
+
+  get fxAccountsClient() {
+    if (!this._fxAccountsClient) {
+      this._fxAccountsClient = new FxAccountsClient();
+    }
+    return this._fxAccountsClient;
+  },
 
   /**
    * Return the current time in milliseconds as an integer.  Allows tests to
@@ -304,7 +363,10 @@ FxAccountsInternal.prototype = {
    * Once the user's email is verified, we can request the keys
    */
   fetchKeys: function fetchKeys(keyFetchToken) {
-    log.debug("fetchKeys: " + keyFetchToken);
+    log.debug("fetchKeys: " + !!keyFetchToken);
+    if (logPII) {
+      log.debug("fetchKeys - the token is " + keyFetchToken);
+    }
     return this.fxAccountsClient.accountKeys(keyFetchToken);
   },
 
@@ -450,12 +512,54 @@ FxAccountsInternal.prototype = {
     this.currentAccountState = new AccountState(this);
   },
 
-  signOut: function signOut() {
-    this.abortExistingFlow();
-    this.currentAccountState.signedInUser = null; // clear in-memory cache
-    return this.signedInUserStorage.set(null).then(() => {
+  accountStatus: function accountStatus() {
+    return this.currentAccountState.getUserAccountData().then(data => {
+      if (!data) {
+        return false;
+      }
+      return this.fxAccountsClient.accountStatus(data.uid);
+    });
+  },
+
+  signOut: function signOut(localOnly) {
+    let currentState = this.currentAccountState;
+    let sessionToken;
+    return currentState.getUserAccountData().then(data => {
+      // Save the session token for use in the call to signOut below.
+      sessionToken = data && data.sessionToken;
+      return this._signOutLocal();
+    }).then(() => {
+      // FxAccountsManager calls here, then does its own call
+      // to FxAccountsClient.signOut().
+      if (!localOnly) {
+        // Wrap this in a promise so *any* errors in signOut won't
+        // block the local sign out. This is *not* returned.
+        Promise.resolve().then(() => {
+          // This can happen in the background and shouldn't block
+          // the user from signing out. The server must tolerate
+          // clients just disappearing, so this call should be best effort.
+          return this._signOutServer(sessionToken);
+        }).then(null, err => {
+          log.error("Error during remote sign out of Firefox Accounts: " + err);
+        });
+      }
+    }).then(() => {
       this.notifyObservers(ONLOGOUT_NOTIFICATION);
     });
+  },
+
+  /**
+   * This function should be called in conjunction with a server-side
+   * signOut via FxAccountsClient.
+   */
+  _signOutLocal: function signOutLocal() {
+    this.abortExistingFlow();
+    this.currentAccountState.signedInUser = null; // clear in-memory cache
+    return this.signedInUserStorage.set(null);
+  },
+
+  _signOutServer: function signOutServer(sessionToken) {
+    return this.fxAccountsClient.signOut(sessionToken);
   },
 
   /**
@@ -479,35 +583,47 @@ FxAccountsInternal.prototype = {
    */
   getKeys: function() {
     let currentState = this.currentAccountState;
-    return currentState.getUserAccountData().then((data) => {
-      if (!data) {
+    return currentState.getUserAccountData().then((userData) => {
+      if (!userData) {
         throw new Error("Can't get keys; User is not signed in");
       }
-      if (data.kA && data.kB) {
-        return data;
+      if (userData.kA && userData.kB) {
+        return userData;
       }
       if (!currentState.whenKeysReadyDeferred) {
         currentState.whenKeysReadyDeferred = Promise.defer();
-        this.fetchAndUnwrapKeys(data.keyFetchToken).then(data => {
-          if (!data.kA || !data.kB) {
-            currentState.whenKeysReadyDeferred.reject(
-              new Error("user data missing kA or kB")
-            );
-            return;
-          }
-          currentState.whenKeysReadyDeferred.resolve(data);
-        });
+        if (userData.keyFetchToken) {
+          this.fetchAndUnwrapKeys(userData.keyFetchToken).then(
+            (dataWithKeys) => {
+              if (!dataWithKeys.kA || !dataWithKeys.kB) {
+                currentState.whenKeysReadyDeferred.reject(
+                  new Error("user data missing kA or kB")
+                );
+                return;
+              }
+              currentState.whenKeysReadyDeferred.resolve(dataWithKeys);
+            },
+            (err) => {
+              currentState.whenKeysReadyDeferred.reject(err);
+            }
+          );
+        } else {
+          currentState.whenKeysReadyDeferred.reject('No keyFetchToken');
+        }
       }
       return currentState.whenKeysReadyDeferred.promise;
     }).then(result => currentState.resolve(result));
    },
 
   fetchAndUnwrapKeys: function(keyFetchToken) {
-    log.debug("fetchAndUnwrapKeys: token: " + keyFetchToken);
+    if (logPII) {
+      log.debug("fetchAndUnwrapKeys: token: " + keyFetchToken);
+    }
     let currentState = this.currentAccountState;
     return Task.spawn(function* task() {
       // Sign out if we don't have a key fetch token.
       if (!keyFetchToken) {
+        log.warn("improper fetchAndUnwrapKeys() call: token missing");
         yield this.signOut();
         return null;
       }
@@ -526,13 +642,19 @@ FxAccountsInternal.prototype = {
       let kB_hex = CryptoUtils.xor(CommonUtils.hexToBytes(data.unwrapBKey),
                                    wrapKB);
 
-      log.debug("kB_hex: " + kB_hex);
+      if (logPII) {
+        log.debug("kB_hex: " + kB_hex);
+      }
       data.kA = CommonUtils.bytesAsHex(kA);
       data.kB = CommonUtils.bytesAsHex(kB_hex);
 
       delete data.keyFetchToken;
+      delete data.unwrapBKey;
 
-      log.debug("Keys Obtained: kA=" + data.kA + ", kB=" + data.kB);
+      log.debug("Keys Obtained: kA=" + !!data.kA + ", kB=" + !!data.kB);
+      if (logPII) {
+        log.debug("Keys Obtained: kA=" + data.kA + ", kB=" + data.kB);
+      }
 
       yield currentState.setUserAccountData(data);
       // We are now ready for business. This should only be invoked once
@@ -560,7 +682,10 @@ FxAccountsInternal.prototype = {
         log.error("getAssertionFromCert: " + err);
         d.reject(err);
       } else {
-        log.debug("getAssertionFromCert returning signed: " + signed);
+        log.debug("getAssertionFromCert returning signed: " + !!signed);
+        if (logPII) {
+          log.debug("getAssertionFromCert returning signed: " + signed);
+        }
         d.resolve(signed);
       }
     });
@@ -568,7 +693,10 @@ FxAccountsInternal.prototype = {
   },
 
   getCertificateSigned: function(sessionToken, serializedPublicKey, lifetime) {
-    log.debug("getCertificateSigned: " + sessionToken + " " + serializedPublicKey);
+    log.debug("getCertificateSigned: " + !!sessionToken + " " + !!serializedPublicKey);
+    if (logPII) {
+      log.debug("getCertificateSigned: " + sessionToken + " " + serializedPublicKey);
+    }
     return this.fxAccountsClient.signCertificate(
       sessionToken,
       JSON.parse(serializedPublicKey),
@@ -606,8 +734,14 @@ FxAccountsInternal.prototype = {
     // Login is truly complete once keys have been fetched, so once getKeys()
     // obtains and stores kA and kB, it will fire the onverified observer
     // notification.
-    return this.whenVerified(data)
-      .then(() => this.getKeys());
+
+    // The callers of startVerifiedCheck never consume a returned promise (ie,
+    // this is simply kicking off a background fetch) so we must add a rejection
+    // handler to avoid runtime warnings about the rejection not being handled.
+    this.whenVerified(data).then(
+      () => this.getKeys(),
+      err => log.info("startVerifiedCheck promise was rejected: " + err)
+    );
   },
 
   whenVerified: function(data) {
@@ -625,9 +759,9 @@ FxAccountsInternal.prototype = {
     );
   },
 
-  notifyObservers: function(topic) {
+  notifyObservers: function(topic, data) {
     log.debug("Notifying observers of " + topic);
-    Services.obs.notifyObservers(null, topic, null);
+    Services.obs.notifyObservers(null, topic, data);
   },
 
   // XXX - pollEmailStatus should maybe be on the AccountState object?
@@ -640,6 +774,13 @@ FxAccountsInternal.prototype = {
       this.pollTimeRemaining = this.POLL_SESSION;
       if (!currentState.whenVerifiedDeferred) {
         currentState.whenVerifiedDeferred = Promise.defer();
+        // This deferred might not end up with any handlers (eg, if sync
+        // is yet to start up.)  This might cause "A promise chain failed to
+        // handle a rejection" messages, so add an error handler directly
+        // on the promise to log the error.
+        currentState.whenVerifiedDeferred.promise.then(null, err => {
+          log.info("the wait for user verification was stopped: " + err);
+        });
       }
     }
 
@@ -660,26 +801,40 @@ FxAccountsInternal.prototype = {
                 currentState.whenVerifiedDeferred.resolve(data);
                 delete currentState.whenVerifiedDeferred;
               }
+              // Tell FxAccountsManager to clear its cache
+              this.notifyObservers(ON_FXA_UPDATE_NOTIFICATION, ONVERIFIED_NOTIFICATION);
             });
         } else {
-          log.debug("polling with step = " + this.POLL_STEP);
-          this.pollTimeRemaining -= this.POLL_STEP;
-          log.debug("time remaining: " + this.pollTimeRemaining);
-          if (this.pollTimeRemaining > 0) {
-            this.currentTimer = setTimeout(() => {
-              this.pollEmailStatus(currentState, sessionToken, "timer")}, this.POLL_STEP);
-            log.debug("started timer " + this.currentTimer);
-          } else {
-            if (currentState.whenVerifiedDeferred) {
-              currentState.whenVerifiedDeferred.reject(
-                new Error("User email verification timed out.")
-              );
-              delete currentState.whenVerifiedDeferred;
-            }
-          }
+          // Poll email status again after a short delay.
+          this.pollEmailStatusAgain(currentState, sessionToken);
+        }
+      }, error => {
+        // The server will return 401 if a request parameter is erroneous or
+        // if the session token expired. Let's continue polling otherwise.
+        if (!error || !error.code || error.code != 401) {
+          this.pollEmailStatusAgain(currentState, sessionToken);
         }
       });
-    },
+  },
+
+  // Poll email status after a short timeout.
+  pollEmailStatusAgain: function (currentState, sessionToken) {
+    log.debug("polling with step = " + this.POLL_STEP);
+    this.pollTimeRemaining -= this.POLL_STEP;
+    log.debug("time remaining: " + this.pollTimeRemaining);
+    if (this.pollTimeRemaining > 0) {
+      this.currentTimer = setTimeout(() => {
+        this.pollEmailStatus(currentState, sessionToken, "timer");
+      }, this.POLL_STEP);
+      log.debug("started timer " + this.currentTimer);
+    } else {
+      if (currentState.whenVerifiedDeferred) {
+        let error = new Error("User email verification timed out.")
+        currentState.whenVerifiedDeferred.reject(error);
+        delete currentState.whenVerifiedDeferred;
+      }
+    }
+  },
 
   // Return the URI of the remote UI flows.
   getAccountsSignUpURI: function() {

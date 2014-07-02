@@ -77,6 +77,10 @@ static nsresult pref_InitInitialObjects(void);
 static nsresult pref_LoadPrefsInDirList(const char *listId);
 static nsresult ReadExtensionPrefs(nsIFile *aFile);
 
+static const char kTelemetryPref[] = "toolkit.telemetry.enabled";
+static const char kOldTelemetryPref[] = "toolkit.telemetry.enabledPreRelease";
+static const char kChannelPref[] = "app.update.channel";
+
 Preferences* Preferences::sPreferences = nullptr;
 nsIPrefBranch* Preferences::sRootBranch = nullptr;
 nsIPrefBranch* Preferences::sDefaultRootBranch = nullptr;
@@ -150,7 +154,7 @@ public:
   nsTArray<void*> mClosures;
 };
 
-NS_IMPL_ISUPPORTS1(ValueObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(ValueObserver, nsIObserver)
 
 NS_IMETHODIMP
 ValueObserver::Observe(nsISupports     *aSubject,
@@ -180,6 +184,36 @@ struct CacheData {
 static nsTArray<nsAutoPtr<CacheData> >* gCacheData = nullptr;
 static nsRefPtrHashtable<ValueObserverHashKey,
                          ValueObserver>* gObserverTable = nullptr;
+
+#ifdef DEBUG
+static bool
+HaveExistingCacheFor(void* aPtr)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  if (gCacheData) {
+    for (size_t i = 0, count = gCacheData->Length(); i < count; ++i) {
+      if ((*gCacheData)[i]->cacheLocation == aPtr) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static void
+AssertNotAlreadyCached(const char* aPrefType,
+                       const char* aPref,
+                       void* aPtr)
+{
+  if (HaveExistingCacheFor(aPtr)) {
+    fprintf_stderr(stderr,
+      "Attempt to add a %s pref cache for preference '%s' at address '%p'"
+      "was made. However, a pref was already cached at this address.\n",
+      aPrefType, aPref, aPtr);
+    MOZ_ASSERT(false, "Should not have an existing pref cache for this address");
+  }
+}
+#endif
 
 static size_t
 SizeOfObserverEntryExcludingThis(ValueObserverHashKey* aKey,
@@ -236,7 +270,7 @@ protected:
                                         void* aClosure);
 };
 
-NS_IMPL_ISUPPORTS1(PreferenceServiceReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(PreferenceServiceReporter, nsIMemoryReporter)
 
 struct PreferencesReferentCount {
   PreferencesReferentCount() : numStrong(0), numWeakAlive(0), numWeakDead(0) {}
@@ -289,7 +323,8 @@ MOZ_DEFINE_MALLOC_SIZE_OF(PreferenceServiceMallocSizeOf)
 
 NS_IMETHODIMP
 PreferenceServiceReporter::CollectReports(nsIMemoryReporterCallback* aCb,
-                                          nsISupports* aClosure)
+                                          nsISupports* aClosure,
+                                          bool aAnonymize)
 {
 #define REPORT(_path, _kind, _units, _amount, _desc)                          \
     do {                                                                      \
@@ -588,6 +623,12 @@ Preferences::ReadUserPrefs(nsIFile *aFile)
     // A user pref file is optional.
     // Ignore all errors related to it, so we retain 'rv' value :-|
     (void) UseUserPrefFile();
+
+    // Migrate the old prerelease telemetry pref
+    if (!Preferences::GetBool(kOldTelemetryPref, true)) {
+      Preferences::SetBool(kTelemetryPref, false);
+      Preferences::ClearUser(kOldTelemetryPref);
+    }
 
     NotifyServiceObservers(NS_PREFSERVICE_READ_TOPIC_ID);
   } else {
@@ -1151,7 +1192,7 @@ static nsresult pref_LoadPrefsInDirList(const char *listId)
     path->GetNativeLeafName(leaf);
 
     // Do we care if a file provided by this process fails to load?
-    if (Substring(leaf, leaf.Length() - 4).Equals(NS_LITERAL_CSTRING(".xpi")))
+    if (Substring(leaf, leaf.Length() - 4).EqualsLiteral(".xpi"))
       ReadExtensionPrefs(path);
     else
       pref_LoadPrefsInDir(path, nullptr, 0);
@@ -1297,6 +1338,23 @@ static nsresult pref_InitInitialObjects()
 
   rv = pref_LoadPrefsInDirList(NS_APP_PREFS_DEFAULTS_DIR_LIST);
   NS_ENSURE_SUCCESS(rv, rv);
+
+  // Set up the correct default for toolkit.telemetry.enabled.
+  // If this build has MOZ_TELEMETRY_ON_BY_DEFAULT *or* we're on the beta
+  // channel, telemetry is on by default, otherwise not. This is necessary
+  // so that beta users who are testing final release builds don't flipflop
+  // defaults.
+  if (Preferences::GetDefaultType(kTelemetryPref) == PREF_INVALID) {
+    bool prerelease = false;
+#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
+    prerelease = true;
+#else
+    if (Preferences::GetDefaultCString(kChannelPref).EqualsLiteral("beta")) {
+      prerelease = true;
+    }
+#endif
+    PREF_SetBoolPref(kTelemetryPref, prerelease, true);
+  }
 
   NS_CreateServicesFromCategory(NS_PREFSERVICE_APPDEFAULTS_TOPIC_ID,
                                 nullptr, NS_PREFSERVICE_APPDEFAULTS_TOPIC_ID);
@@ -1691,6 +1749,9 @@ Preferences::AddBoolVarCache(bool* aCache,
                              bool aDefault)
 {
   NS_ASSERTION(aCache, "aCache must not be NULL");
+#ifdef DEBUG
+  AssertNotAlreadyCached("bool", aPref, aCache);
+#endif
   *aCache = GetBool(aPref, aDefault);
   CacheData* data = new CacheData();
   data->cacheLocation = aCache;
@@ -1713,6 +1774,9 @@ Preferences::AddIntVarCache(int32_t* aCache,
                             int32_t aDefault)
 {
   NS_ASSERTION(aCache, "aCache must not be NULL");
+#ifdef DEBUG
+  AssertNotAlreadyCached("int", aPref, aCache);
+#endif
   *aCache = Preferences::GetInt(aPref, aDefault);
   CacheData* data = new CacheData();
   data->cacheLocation = aCache;
@@ -1735,6 +1799,9 @@ Preferences::AddUintVarCache(uint32_t* aCache,
                              uint32_t aDefault)
 {
   NS_ASSERTION(aCache, "aCache must not be NULL");
+#ifdef DEBUG
+  AssertNotAlreadyCached("uint", aPref, aCache);
+#endif
   *aCache = Preferences::GetUint(aPref, aDefault);
   CacheData* data = new CacheData();
   data->cacheLocation = aCache;
@@ -1757,6 +1824,9 @@ Preferences::AddFloatVarCache(float* aCache,
                              float aDefault)
 {
   NS_ASSERTION(aCache, "aCache must not be NULL");
+#ifdef DEBUG
+  AssertNotAlreadyCached("float", aPref, aCache);
+#endif
   *aCache = Preferences::GetFloat(aPref, aDefault);
   CacheData* data = new CacheData();
   data->cacheLocation = aCache;

@@ -45,6 +45,12 @@ const UNKNOWN_XPCOM_ABI               = "unknownABI";
 const UPDATE_REQUEST_VERSION          = 2;
 const CATEGORY_UPDATE_PARAMS          = "extension-update-params";
 
+const XMLURI_BLOCKLIST                = "http://www.mozilla.org/2006/addons-blocklist";
+
+const KEY_PROFILEDIR                  = "ProfD";
+const KEY_APPDIR                      = "XCurProcD";
+const FILE_BLOCKLIST                  = "blocklist.xml";
+
 const BRANCH_REGEXP                   = /^([^\.]+\.[0-9]+[a-z]*).*/gi;
 const PREF_EM_CHECK_COMPATIBILITY_BASE = "extensions.checkCompatibility";
 #ifdef MOZ_COMPATIBILITY_NIGHTLY
@@ -61,10 +67,14 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/AsyncShutdown.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+                                  "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Promise",
                                   "resource://gre/modules/Promise.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "AddonRepository",
                                   "resource://gre/modules/addons/AddonRepository.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "FileUtils",
+                                  "resource://gre/modules/FileUtils.jsm");
 
 XPCOMUtils.defineLazyGetter(this, "CertUtils", function certUtilsLazyGetter() {
   let certUtils = {};
@@ -469,7 +479,6 @@ var AddonManagerInternal = {
   // Store telemetry details per addon provider
   telemetryDetails: {},
 
-
   // A read-only wrapper around the types dictionary
   typesProxy: Proxy.create({
     getOwnPropertyDescriptor: function typesProxy_getOwnPropertyDescriptor(aName) {
@@ -521,6 +530,88 @@ var AddonManagerInternal = {
     this.TelemetryTimestamps.add(name, value);
   },
 
+  validateBlocklist: function AMI_validateBlocklist() {
+    let appBlocklist = FileUtils.getFile(KEY_APPDIR, [FILE_BLOCKLIST]);
+
+    // If there is no application shipped blocklist then there is nothing to do
+    if (!appBlocklist.exists())
+      return;
+
+    let profileBlocklist = FileUtils.getFile(KEY_PROFILEDIR, [FILE_BLOCKLIST]);
+
+    // If there is no blocklist in the profile then copy the application shipped
+    // one there
+    if (!profileBlocklist.exists()) {
+      try {
+        appBlocklist.copyTo(profileBlocklist.parent, FILE_BLOCKLIST);
+      }
+      catch (e) {
+        logger.warn("Failed to copy the application shipped blocklist to the profile", e);
+      }
+      return;
+    }
+
+    let fileStream = Cc["@mozilla.org/network/file-input-stream;1"].
+                     createInstance(Ci.nsIFileInputStream);
+    try {
+      let cstream = Cc["@mozilla.org/intl/converter-input-stream;1"].
+                    createInstance(Ci.nsIConverterInputStream);
+      fileStream.init(appBlocklist, FileUtils.MODE_RDONLY, FileUtils.PERMS_FILE, 0);
+      cstream.init(fileStream, "UTF-8", 0, 0);
+
+      let data = "";
+      let str = {};
+      let read = 0;
+      do {
+        read = cstream.readString(0xffffffff, str);
+        data += str.value;
+      } while (read != 0);
+
+      let parser = Cc["@mozilla.org/xmlextras/domparser;1"].
+                   createInstance(Ci.nsIDOMParser);
+      var doc = parser.parseFromString(data, "text/xml");
+    }
+    catch (e) {
+      logger.warn("Application shipped blocklist could not be loaded", e);
+      return;
+    }
+    finally {
+      try {
+        fileStream.close();
+      }
+      catch (e) {
+        logger.warn("Unable to close blocklist file stream", e);
+      }
+    }
+
+    // If the namespace is incorrect then ignore the application shipped
+    // blocklist
+    if (doc.documentElement.namespaceURI != XMLURI_BLOCKLIST) {
+      logger.warn("Application shipped blocklist has an unexpected namespace (" +
+                  doc.documentElement.namespaceURI + ")");
+      return;
+    }
+
+    // If there is no lastupdate information then ignore the application shipped
+    // blocklist
+    if (!doc.documentElement.hasAttribute("lastupdate"))
+      return;
+
+    // If the application shipped blocklist is older than the profile blocklist
+    // then do nothing
+    if (doc.documentElement.getAttribute("lastupdate") <=
+        profileBlocklist.lastModifiedTime)
+      return;
+
+    // Otherwise copy the application shipped blocklist to the profile
+    try {
+      appBlocklist.copyTo(profileBlocklist.parent, FILE_BLOCKLIST);
+    }
+    catch (e) {
+      logger.warn("Failed to copy the application shipped blocklist to the profile", e);
+    }
+  },
+
   /**
    * Initializes the AddonManager, loading any known providers and initializing
    * them.
@@ -559,6 +650,7 @@ var AddonManagerInternal = {
                                    Services.appinfo.platformVersion);
         Services.prefs.setIntPref(PREF_BLOCKLIST_PINGCOUNTVERSION,
                                   (appChanged === undefined ? 0 : -1));
+        this.validateBlocklist();
       }
 
 #ifndef MOZ_COMPATIBILITY_NIGHTLY
@@ -605,18 +697,29 @@ var AddonManagerInternal = {
       try {
         defaultProvidersEnabled = Services.prefs.getBoolPref(PREF_DEFAULT_PROVIDERS_ENABLED);
       } catch (e) {}
+      AddonManagerPrivate.recordSimpleMeasure("default_providers", defaultProvidersEnabled);
 
       // Ensure all default providers have had a chance to register themselves
       if (defaultProvidersEnabled) {
-        DEFAULT_PROVIDERS.forEach(function(url) {
+        for (let url of DEFAULT_PROVIDERS) {
           try {
-            Components.utils.import(url, {});
+            let scope = {};
+            Components.utils.import(url, scope);
+            // Sanity check - make sure the provider exports a symbol that
+            // has a 'startup' method
+            let syms = Object.keys(scope);
+            if ((syms.length < 1) ||
+                (typeof scope[syms[0]].startup != "function")) {
+              logger.warn("Provider " + url + " has no startup()");
+              AddonManagerPrivate.recordException("AMI", "provider " + url, "no startup()");
+            }
+            logger.debug("Loaded provider scope for " + url + ": " + Object.keys(scope).toSource());
           }
           catch (e) {
             AddonManagerPrivate.recordException("AMI", "provider " + url + " load failed", e);
             logger.error("Exception loading default provider \"" + url + "\"", e);
           }
-        });
+        };
       }
 
       // Load any providers registered in the category manager
@@ -772,6 +875,7 @@ var AddonManagerInternal = {
           provider[aMethod].apply(provider, aArgs);
       }
       catch (e) {
+        AddonManagerPrivate.recordException("AMI", "provider " + aMethod, e);
         logger.error("Exception calling provider " + aMethod, e);
       }
     }
@@ -1029,120 +1133,116 @@ var AddonManagerInternal = {
   /**
    * Performs a background update check by starting an update for all add-ons
    * that can be updated.
+   * @return Promise{null} Resolves when the background update check is complete
+   *                       (the resulting addon installations may still be in progress).
    */
   backgroundUpdateCheck: function AMI_backgroundUpdateCheck() {
     if (!gStarted)
       throw Components.Exception("AddonManager is not initialized",
                                  Cr.NS_ERROR_NOT_INITIALIZED);
 
-    let hotfixID = this.hotfixID;
+    logger.debug("Background update check beginning");
 
-    let checkHotfix = hotfixID &&
-                      Services.prefs.getBoolPref(PREF_APP_UPDATE_ENABLED) &&
-                      Services.prefs.getBoolPref(PREF_APP_UPDATE_AUTO);
+    return Task.spawn(function* backgroundUpdateTask() {
+      let hotfixID = this.hotfixID;
 
-    if (!this.updateEnabled && !checkHotfix)
-      return;
+      let checkHotfix = hotfixID &&
+                        Services.prefs.getBoolPref(PREF_APP_UPDATE_ENABLED) &&
+                        Services.prefs.getBoolPref(PREF_APP_UPDATE_AUTO);
 
-    Services.obs.notifyObservers(null, "addons-background-update-start", null);
+      if (!this.updateEnabled && !checkHotfix)
+        return;
 
-    // Start this from one to ensure the whole of this function completes before
-    // we can send the complete notification. Some parts can in some cases
-    // complete synchronously before later parts have a chance to increment
-    // pendingUpdates.
-    let pendingUpdates = 1;
+      Services.obs.notifyObservers(null, "addons-background-update-start", null);
 
-    function notifyComplete() {
-      if (--pendingUpdates == 0) {
-        Services.obs.notifyObservers(null,
-                                     "addons-background-update-complete",
-                                     null);
-      }
-    }
+      if (this.updateEnabled) {
+        let scope = {};
+        Components.utils.import("resource://gre/modules/LightweightThemeManager.jsm", scope);
+        scope.LightweightThemeManager.updateCurrentTheme();
 
-    if (this.updateEnabled) {
-      let scope = {};
-      Components.utils.import("resource://gre/modules/LightweightThemeManager.jsm", scope);
-      scope.LightweightThemeManager.updateCurrentTheme();
-
-      pendingUpdates++;
-      this.getAllAddons(function getAddonsCallback(aAddons) {
-        // If there is a known hotfix then exclude it from the list of add-ons to update.
-        var ids = [a.id for each (a in aAddons) if (a.id != hotfixID)];
+        let allAddons = yield new Promise((resolve, reject) => this.getAllAddons(resolve));
 
         // Repopulate repository cache first, to ensure compatibility overrides
         // are up to date before checking for addon updates.
-        AddonRepository.backgroundUpdateCheck(
-                     ids, function BUC_backgroundUpdateCheckCallback() {
-          pendingUpdates += aAddons.length;
-          aAddons.forEach(function BUC_forEachCallback(aAddon) {
-            if (aAddon.id == hotfixID) {
-              notifyComplete();
-              return;
-            }
+        yield AddonRepository.backgroundUpdateCheck();
 
-            // Check all add-ons for updates so that any compatibility updates will
-            // be applied
-            aAddon.findUpdates({
+        // Keep track of all the async add-on updates happening in parallel
+        let updates = [];
+
+        for (let addon of allAddons) {
+          if (addon.id == hotfixID) {
+            continue;
+          }
+
+          // Check all add-ons for updates so that any compatibility updates will
+          // be applied
+          updates.push(new Promise((resolve, reject) => {
+            addon.findUpdates({
               onUpdateAvailable: function BUC_onUpdateAvailable(aAddon, aInstall) {
                 // Start installing updates when the add-on can be updated and
                 // background updates should be applied.
+                logger.debug("Found update for add-on ${id}", aAddon);
                 if (aAddon.permissions & AddonManager.PERM_CAN_UPGRADE &&
                     AddonManager.shouldAutoUpdate(aAddon)) {
+                  // XXX we really should resolve when this install is done,
+                  // not when update-available check completes, no?
+                  logger.debug("Starting install of ${id}", aAddon);
                   aInstall.install();
                 }
               },
 
-              onUpdateFinished: notifyComplete
+              onUpdateFinished: aAddon => { logger.debug("onUpdateFinished for ${id}", aAddon); resolve(); }
             }, AddonManager.UPDATE_WHEN_PERIODIC_UPDATE);
-          });
-
-          notifyComplete();
-        });
-      });
-    }
-
-    if (checkHotfix) {
-      var hotfixVersion = "";
-      try {
-        hotfixVersion = Services.prefs.getCharPref(PREF_EM_HOTFIX_LASTVERSION);
+          }));
+        }
+        yield Promise.all(updates);
       }
-      catch (e) { }
 
-      let url = null;
-      if (Services.prefs.getPrefType(PREF_EM_HOTFIX_URL) == Ci.nsIPrefBranch.PREF_STRING)
-        url = Services.prefs.getCharPref(PREF_EM_HOTFIX_URL);
-      else
-        url = Services.prefs.getCharPref(PREF_EM_UPDATE_BACKGROUND_URL);
+      if (checkHotfix) {
+        var hotfixVersion = "";
+        try {
+          hotfixVersion = Services.prefs.getCharPref(PREF_EM_HOTFIX_LASTVERSION);
+        }
+        catch (e) { }
 
-      // Build the URI from a fake add-on data.
-      url = AddonManager.escapeAddonURI({
-        id: hotfixID,
-        version: hotfixVersion,
-        userDisabled: false,
-        appDisabled: false
-      }, url);
+        let url = null;
+        if (Services.prefs.getPrefType(PREF_EM_HOTFIX_URL) == Ci.nsIPrefBranch.PREF_STRING)
+          url = Services.prefs.getCharPref(PREF_EM_HOTFIX_URL);
+        else
+          url = Services.prefs.getCharPref(PREF_EM_UPDATE_BACKGROUND_URL);
 
-      pendingUpdates++;
-      Components.utils.import("resource://gre/modules/addons/AddonUpdateChecker.jsm");
-      AddonUpdateChecker.checkForUpdates(hotfixID, null, url, {
-        onUpdateCheckComplete: function BUC_onUpdateCheckComplete(aUpdates) {
-          let update = AddonUpdateChecker.getNewestCompatibleUpdate(aUpdates);
-          if (!update) {
-            notifyComplete();
-            return;
-          }
+        // Build the URI from a fake add-on data.
+        url = AddonManager.escapeAddonURI({
+          id: hotfixID,
+          version: hotfixVersion,
+          userDisabled: false,
+          appDisabled: false
+        }, url);
 
-          // If the available version isn't newer than the last installed
-          // version then ignore it.
-          if (Services.vc.compare(hotfixVersion, update.version) >= 0) {
-            notifyComplete();
-            return;
-          }
+        Components.utils.import("resource://gre/modules/addons/AddonUpdateChecker.jsm");
+        let update = null;
+        try {
+          let foundUpdates = yield new Promise((resolve, reject) => {
+            AddonUpdateChecker.checkForUpdates(hotfixID, null, url, {
+              onUpdateCheckComplete: resolve,
+              onUpdateCheckError: reject
+            });
+          });
+          update = AddonUpdateChecker.getNewestCompatibleUpdate(foundUpdates);
+        } catch (e) {
+          // AUC.checkForUpdates already logged the error
+        }
 
-          logger.debug("Downloading hotfix version " + update.version);
-          AddonManager.getInstallForURL(update.updateURL,
-                                       function BUC_getInstallForURL(aInstall) {
+        // Check that we have a hotfix update, and it's newer than the one we already
+        // have installed (if any)
+        if (update) {
+          if (Services.vc.compare(hotfixVersion, update.version) < 0) {
+            logger.debug("Downloading hotfix version " + update.version);
+            let aInstall = yield new Promise((resolve, reject) =>
+              AddonManager.getInstallForURL(update.updateURL, resolve,
+                "application/x-xpinstall", update.updateHash, null,
+                null, update.version));
+
             aInstall.addListener({
               onDownloadEnded: function BUC_onDownloadEnded(aInstall) {
                 try {
@@ -1160,7 +1260,7 @@ var AddonManagerInternal = {
                 }
                 catch (e) {
                   logger.warn("The hotfix add-on was not signed by the expected " +
-                       "certificate and so will not be installed.");
+                       "certificate and so will not be installed.", e);
                   aInstall.cancel();
                 }
               },
@@ -1180,17 +1280,15 @@ var AddonManagerInternal = {
             });
 
             aInstall.install();
+          }
+        }
+      }
 
-            notifyComplete();
-          }, "application/x-xpinstall", update.updateHash, null,
-             null, update.version);
-        },
-
-        onUpdateCheckError: notifyComplete
-      });
-    }
-
-    notifyComplete();
+      logger.debug("Background update check complete");
+      Services.obs.notifyObservers(null,
+                                   "addons-background-update-complete",
+                                   null);
+    }.bind(this));
   },
 
   /**
@@ -2229,7 +2327,7 @@ this.AddonManagerPrivate = {
   },
 
   backgroundUpdateCheck: function AMP_backgroundUpdateCheck() {
-    AddonManagerInternal.backgroundUpdateCheck();
+    return AddonManagerInternal.backgroundUpdateCheck();
   },
 
   addStartupChange: function AMP_addStartupChange(aType, aID) {
@@ -2317,7 +2415,25 @@ this.AddonManagerPrivate = {
     return {
       done: () => this.recordSimpleMeasure(aName, Date.now() - startTime)
     };
-  }
+  },
+
+  /**
+   * Helper to call update listeners when no update is available.
+   *
+   * This can be used as an implementation for Addon.findUpdates() when
+   * no update mechanism is available.
+   */
+  callNoUpdateListeners: function (addon, listener, reason, appVersion, platformVersion) {
+    if ("onNoCompatibilityUpdateAvailable" in listener) {
+      safeCall(listener.onNoCompatibilityUpdateAvailable.bind(listener), addon);
+    }
+    if ("onNoUpdateAvailable" in listener) {
+      safeCall(listener.onNoUpdateAvailable.bind(listener), addon);
+    }
+    if ("onUpdateFinished" in listener) {
+      safeCall(listener.onUpdateFinished.bind(listener), addon);
+    }
+  },
 };
 
 /**

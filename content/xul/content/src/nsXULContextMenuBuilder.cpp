@@ -24,8 +24,8 @@ nsXULContextMenuBuilder::~nsXULContextMenuBuilder()
 {
 }
 
-NS_IMPL_CYCLE_COLLECTION_4(nsXULContextMenuBuilder, mFragment, mDocument,
-                           mCurrentNode, mElements)
+NS_IMPL_CYCLE_COLLECTION(nsXULContextMenuBuilder, mFragment, mDocument,
+                         mCurrentNode, mElements)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsXULContextMenuBuilder)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsXULContextMenuBuilder)
@@ -208,7 +208,7 @@ nsXULContextMenuBuilder::CreateElement(nsIAtom* aTag,
 {
   *aResult = nullptr;
 
-  nsCOMPtr<nsINodeInfo> nodeInfo = mDocument->NodeInfoManager()->GetNodeInfo(
+  nsRefPtr<mozilla::dom::NodeInfo> nodeInfo = mDocument->NodeInfoManager()->GetNodeInfo(
     aTag, nullptr, kNameSpaceID_XUL, nsIDOMNode::ELEMENT_NODE);
 
   nsresult rv = NS_NewElement(aResult, nodeInfo.forget(), NOT_FROM_PARSER);

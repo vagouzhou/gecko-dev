@@ -14,6 +14,7 @@
 #include "CompositorChild.h"            // for CompositorChild
 #include "gfxContext.h"                 // for gfxContext, etc
 #include "gfxPlatform.h"                // for gfxPlatform
+#include "gfxPrefs.h"                   // for gfxPrefs::LayersTileWidth/Height
 #include "gfxRect.h"                    // for gfxRect
 #include "mozilla/Attributes.h"         // for MOZ_THIS_IN_INITIALIZER_LIST
 #include "mozilla/MathAlgorithms.h"     // for Abs
@@ -31,10 +32,10 @@
 
 #define ALOG(...)  __android_log_print(ANDROID_LOG_INFO, "SimpleTiles", __VA_ARGS__)
 
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace layers {
+
+using namespace mozilla::gfx;
 
 void
 SimpleTiledLayerBuffer::PaintThebes(const nsIntRegion& aNewValidRegion,
@@ -52,7 +53,8 @@ SimpleTiledLayerBuffer::PaintThebes(const nsIntRegion& aNewValidRegion,
   // If this region is empty XMost() - 1 will give us a negative value.
   NS_ASSERTION(!aPaintRegion.GetBounds().IsEmpty(), "Empty paint region\n");
 
-  PROFILER_LABEL("SimpleTiledLayerBuffer", "PaintThebesUpdate");
+  PROFILER_LABEL("SimpleTiledLayerBuffer", "PaintThebesUpdate",
+    js::ProfileEntry::Category::GRAPHICS);
 
   Update(aNewValidRegion, aPaintRegion);
 
@@ -73,8 +75,10 @@ SimpleTiledLayerBuffer::ValidateTile(SimpleTiledLayerTile aTile,
                                      const nsIntPoint& aTileOrigin,
                                      const nsIntRegion& aDirtyRegion)
 {
-  PROFILER_LABEL("SimpleTiledLayerBuffer", "ValidateTile");
-  static gfx::IntSize kTileSize(TILEDLAYERBUFFER_TILE_SIZE, TILEDLAYERBUFFER_TILE_SIZE);
+  PROFILER_LABEL("SimpleTiledLayerBuffer", "ValidateTile",
+    js::ProfileEntry::Category::GRAPHICS);
+
+  static gfx::IntSize kTileSize(gfxPrefs::LayersTileWidth(), gfxPrefs::LayersTileHeight());
 
   gfx::SurfaceFormat tileFormat = gfxPlatform::GetPlatform()->Optimal2DFormatForContent(GetContentType());
 
@@ -89,19 +93,17 @@ SimpleTiledLayerBuffer::ValidateTile(SimpleTiledLayerTile aTile,
     return SimpleTiledLayerTile();
   }
 
-  if (!textureClient->Lock(OPEN_WRITE)) {
+  if (!textureClient->Lock(OpenMode::OPEN_READ_WRITE)) {
     NS_WARNING("TextureClient lock failed");
     return SimpleTiledLayerTile();
   }
 
-  TextureClientSurface *textureClientSurf = textureClient->AsTextureClientSurface();
-  if (!textureClientSurf) {
+  if (!textureClient->CanExposeDrawTarget()) {
     doBufferedDrawing = false;
   }
 
   RefPtr<DrawTarget> drawTarget;
 
-  nsRefPtr<gfxImageSurface> clientAsImageSurface;
   unsigned char *bufferData = nullptr;
 
   // these are set/updated differently based on doBufferedDrawing
@@ -109,27 +111,29 @@ SimpleTiledLayerBuffer::ValidateTile(SimpleTiledLayerTile aTile,
   nsIntRegion drawRegion;
   nsIntRegion invalidateRegion;
 
-  if (doBufferedDrawing) {
-    // try to obtain the TextureClient as an ImageSurface, so that we can
-    // access the pixels directly
-    nsRefPtr<gfxASurface> asurf = textureClientSurf->GetAsSurface();
-    clientAsImageSurface = asurf ? asurf->GetAsImageSurface() : nullptr;
-    if (clientAsImageSurface) {
-      int32_t bufferStride = clientAsImageSurface->Stride();
+  RefPtr<DrawTarget> srcDT;
+  uint8_t* srcData = nullptr;
+  int32_t srcStride = 0;
+  gfx::IntSize srcSize;
+  gfx::SurfaceFormat srcFormat = gfx::SurfaceFormat::UNKNOWN;
 
+  if (doBufferedDrawing) {
+    // try to directly access the pixels of the TextureClient
+    srcDT = textureClient->BorrowDrawTarget();
+    if (srcDT->LockBits(&srcData, &srcSize, &srcStride, &srcFormat)) {
       if (!aTile.mCachedBuffer) {
-        aTile.mCachedBuffer = SharedBuffer::Create(clientAsImageSurface->GetDataSize());
+        aTile.mCachedBuffer = SharedBuffer::Create(srcStride * srcSize.height);
         fullPaint = true;
       }
       bufferData = (unsigned char*) aTile.mCachedBuffer->Data();
 
       drawTarget = gfxPlatform::GetPlatform()->CreateDrawTargetForData(bufferData,
                                                                        kTileSize,
-                                                                       bufferStride,
+                                                                       srcStride,
                                                                        tileFormat);
 
       if (fullPaint) {
-        drawBounds = nsIntRect(aTileOrigin.x, aTileOrigin.y, GetScaledTileLength(), GetScaledTileLength());
+        drawBounds = nsIntRect(aTileOrigin.x, aTileOrigin.y, GetScaledTileSize().width, GetScaledTileSize().height);
         drawRegion = nsIntRegion(drawBounds);
       } else {
         drawBounds = aDirtyRegion.GetBounds();
@@ -146,10 +150,10 @@ SimpleTiledLayerBuffer::ValidateTile(SimpleTiledLayerTile aTile,
 
   // this might get set above if we couldn't extract out a buffer
   if (!doBufferedDrawing) {
-    drawTarget = textureClient->AsTextureClientDrawTarget()->GetAsDrawTarget();
+    drawTarget = textureClient->BorrowDrawTarget();
 
     fullPaint = true;
-    drawBounds = nsIntRect(aTileOrigin.x, aTileOrigin.y, GetScaledTileLength(), GetScaledTileLength());
+    drawBounds = nsIntRect(aTileOrigin.x, aTileOrigin.y, GetScaledTileSize().width, GetScaledTileSize().height);
     drawRegion = nsIntRegion(drawBounds);
 
     if (GetContentType() == gfxContentType::COLOR_ALPHA)
@@ -169,14 +173,15 @@ SimpleTiledLayerBuffer::ValidateTile(SimpleTiledLayerTile aTile,
             mCallbackData);
 
   ctxt = nullptr;
-  drawTarget = nullptr;
 
   if (doBufferedDrawing) {
-    memcpy(clientAsImageSurface->Data(), bufferData, clientAsImageSurface->GetDataSize());
-    clientAsImageSurface = nullptr;
+    memcpy(srcData, bufferData, srcSize.height * srcStride);
     bufferData = nullptr;
+    srcDT->ReleaseBits(srcData);
+    srcDT = nullptr;
   }
 
+  drawTarget = nullptr;
   textureClient->Unlock();
 
   if (!mCompositableClient->AddTextureClient(textureClient)) {
@@ -242,9 +247,11 @@ SimpleTiledContentClient::UseTiledLayerBuffer()
   mTiledBuffer.ClearPaintedRegion();
 }
 
-SimpleClientTiledThebesLayer::SimpleClientTiledThebesLayer(ClientLayerManager* aManager)
+SimpleClientTiledThebesLayer::SimpleClientTiledThebesLayer(ClientLayerManager* aManager,
+                                                           ClientLayerManager::ThebesLayerCreationHint aCreationHint)
   : ThebesLayer(aManager,
-                static_cast<ClientLayer*>(MOZ_THIS_IN_INITIALIZER_LIST()))
+                static_cast<ClientLayer*>(MOZ_THIS_IN_INITIALIZER_LIST()),
+                aCreationHint)
   , mContentClient()
 {
   MOZ_COUNT_CTOR(SimpleClientTiledThebesLayer);

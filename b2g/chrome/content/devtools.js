@@ -7,7 +7,7 @@
 const DEVELOPER_HUD_LOG_PREFIX = 'DeveloperHUD';
 
 XPCOMUtils.defineLazyGetter(this, 'devtools', function() {
-  const {devtools} = Cu.import("resource://gre/modules/devtools/Loader.jsm", {});
+  const {devtools} = Cu.import('resource://gre/modules/devtools/Loader.jsm', {});
   return devtools;
 });
 
@@ -16,17 +16,18 @@ XPCOMUtils.defineLazyGetter(this, 'DebuggerClient', function() {
 });
 
 XPCOMUtils.defineLazyGetter(this, 'WebConsoleUtils', function() {
-  return devtools.require("devtools/toolkit/webconsole/utils").Utils;
+  return devtools.require('devtools/toolkit/webconsole/utils').Utils;
 });
 
 XPCOMUtils.defineLazyGetter(this, 'EventLoopLagFront', function() {
-  return devtools.require("devtools/server/actors/eventlooplag").EventLoopLagFront;
+  return devtools.require('devtools/server/actors/eventlooplag').EventLoopLagFront;
 });
 
 XPCOMUtils.defineLazyGetter(this, 'MemoryFront', function() {
-  return devtools.require("devtools/server/actors/memory").MemoryFront;
+  return devtools.require('devtools/server/actors/memory').MemoryFront;
 });
 
+Cu.import('resource://gre/modules/AppFrames.jsm');
 
 /**
  * The Developer HUD is an on-device developer tool that displays widgets,
@@ -36,9 +37,8 @@ XPCOMUtils.defineLazyGetter(this, 'MemoryFront', function() {
 let developerHUD = {
 
   _targets: new Map(),
-  _frames: new Map(),
   _client: null,
-  _webappsActor: null,
+  _conn: null,
   _watchers: [],
   _logging: true,
 
@@ -47,7 +47,7 @@ let developerHUD = {
    * on app frames that are being tracked. A watcher must implement the
    * `trackTarget(target)` and `untrackTarget(target)` methods, register
    * observed metrics with `target.register(metric)`, and keep them up-to-date
-   * with `target.update(metric, value, message)` when necessary.
+   * with `target.update(metric, message)` when necessary.
    */
   registerWatcher: function dwp_registerWatcher(watcher) {
     this._watchers.unshift(watcher);
@@ -61,32 +61,27 @@ let developerHUD = {
       RemoteDebugger.start();
     }
 
-    this._client = new DebuggerClient(DebuggerServer.connectPipe());
-    this._client.connect((type, traits) => {
+    // We instantiate a local debugger connection so that watchers can use our
+    // DebuggerClient to send requests to tab actors (e.g. the consoleActor).
+    // Note the special usage of the private _serverConnection, which we need
+    // to call connectToChild and set up child process actors on a frame we
+    // intend to track. These actors will use the connection to communicate with
+    // our DebuggerServer in the parent process.
+    let transport = DebuggerServer.connectPipe();
+    this._conn = transport._serverConnection;
+    this._client = new DebuggerClient(transport);
 
-      // FIXME(Bug 962577) see below.
-      this._client.listTabs((res) => {
-        this._webappsActor = res.webappsActor;
+    for (let w of this._watchers) {
+      if (w.init) {
+        w.init(this._client);
+      }
+    }
 
-        for (let w of this._watchers) {
-          if (w.init) {
-            w.init(this._client);
-          }
-        }
+    AppFrames.addObserver(this);
 
-        Services.obs.addObserver(this, 'remote-browser-shown', false);
-        Services.obs.addObserver(this, 'inprocess-browser-shown', false);
-        Services.obs.addObserver(this, 'message-manager-disconnect', false);
-
-        let systemapp = document.querySelector('#systemapp');
-        this.trackFrame(systemapp);
-
-        let frames = systemapp.contentWindow.document.querySelectorAll('iframe[mozapp]');
-        for (let frame of frames) {
-          this.trackFrame(frame);
-        }
-      });
-    });
+    for (let frame of AppFrames.list()) {
+      this.trackFrame(frame);
+    }
 
     SettingsListener.observe('hud.logging', this._logging, enabled => {
       this._logging = enabled;
@@ -101,9 +96,7 @@ let developerHUD = {
       this.untrackFrame(frame);
     }
 
-    Services.obs.removeObserver(this, 'remote-browser-shown');
-    Services.obs.removeObserver(this, 'inprocess-browser-shown');
-    Services.obs.removeObserver(this, 'message-manager-disconnect');
+    AppFrames.removeObserver(this);
 
     this._client.close();
     delete this._client;
@@ -117,17 +110,8 @@ let developerHUD = {
     if (this._targets.has(frame))
       return;
 
-    // FIXME(Bug 962577) Factor getAppActor out of webappsActor.
-    this._client.request({
-      to: this._webappsActor,
-      type: 'getAppActor',
-      manifestURL: frame.appManifestURL
-    }, (res) => {
-      if (res.error) {
-        return;
-      }
-
-      let target = new Target(frame, res.actor);
+    DebuggerServer.connectToChild(this._conn, frame).then(actor => {
+      let target = new Target(frame, actor);
       this._targets.set(frame, target);
 
       for (let w of this._watchers) {
@@ -148,41 +132,12 @@ let developerHUD = {
     }
   },
 
-  observe: function dwp_observe(subject, topic, data) {
-    if (!this._client)
-      return;
+  onAppFrameCreated: function (frame, isFirstAppFrame) {
+    this.trackFrame(frame);
+  },
 
-    let frame;
-
-    switch(topic) {
-
-      // listen for frame creation in OOP (device) as well as in parent process (b2g desktop)
-      case 'remote-browser-shown':
-      case 'inprocess-browser-shown':
-        let frameLoader = subject;
-        // get a ref to the app <iframe>
-        frameLoader.QueryInterface(Ci.nsIFrameLoader);
-        // Ignore notifications that aren't from a BrowserOrApp
-        if (!frameLoader.ownerIsBrowserOrAppFrame) {
-          return;
-        }
-        frame = frameLoader.ownerElement;
-        if (!frame.appManifestURL) // Ignore all frames but app frames
-          return;
-        this.trackFrame(frame);
-        this._frames.set(frameLoader.messageManager, frame);
-        break;
-
-      // Every time an iframe is destroyed, its message manager also is
-      case 'message-manager-disconnect':
-        let mm = subject;
-        frame = this._frames.get(mm);
-        if (!frame)
-          return;
-        this.untrackFrame(frame);
-        this._frames.delete(mm);
-        break;
-    }
+  onAppFrameDestroyed: function (frame, isLastAppFrame) {
+    this.untrackFrame(frame);
   },
 
   log: function dwp_log(message) {
@@ -218,15 +173,24 @@ Target.prototype = {
    * Modify one of a target's metrics, and send out an event to notify relevant
    * parties (e.g. the developer HUD, automated tests, etc).
    */
-  update: function target_update(metric, value = 0, message) {
+  update: function target_update(metric, message) {
+    if (!metric.name) {
+      throw new Error('Missing metric.name');
+    }
+
+    if (!metric.value) {
+      metric.value = 0;
+    }
+
     let metrics = this.metrics;
-    metrics.set(metric, value);
+    if (metrics) {
+      metrics.set(metric.name, metric.value);
+    }
 
     let data = {
       metrics: [], // FIXME(Bug 982066) Remove this field.
       manifest: this.frame.appManifestURL,
       metric: metric,
-      value: value,
       message: message
     };
 
@@ -248,7 +212,8 @@ Target.prototype = {
    * to be incremented.
    */
   bump: function target_bump(metric, message) {
-    this.update(metric, this.metrics.get(metric) + 1, message);
+    metric.value = (this.metrics.get(metric.name) || 0) + 1;
+    this.update(metric, message);
   },
 
   /**
@@ -256,7 +221,8 @@ Target.prototype = {
    * anymore.
    */
   clear: function target_clear(metric) {
-    this.update(metric, 0);
+    metric.value = 0;
+    this.update(metric);
   },
 
   /**
@@ -269,7 +235,14 @@ Target.prototype = {
   },
 
   _send: function target_send(data) {
-    shell.sendEvent(this.frame, 'developer-hud-update', Cu.cloneInto(data, this.frame));
+    let frame = this.frame;
+
+    let systemapp = document.querySelector('#systemapp');
+    if (this.frame === systemapp) {
+      frame = getContentWindow();
+    }
+
+    shell.sendEvent(frame, 'developer-hud-update', Cu.cloneInto(data, frame));
   }
 
 };
@@ -315,7 +288,7 @@ let consoleWatcher = {
 
         // If unwatched, remove any existing widgets for that metric.
         for (let target of this._targets.values()) {
-          target.clear(metric);
+          target.clear({name: metric});
         }
       });
     }
@@ -353,7 +326,7 @@ let consoleWatcher = {
 
   consoleListener: function cw_consoleListener(type, packet) {
     let target = this._targets.get(packet.from);
-    let metric;
+    let metric = {};
     let output = '';
 
     switch (packet.type) {
@@ -362,15 +335,15 @@ let consoleWatcher = {
         let pageError = packet.pageError;
 
         if (pageError.warning || pageError.strict) {
-          metric = 'warnings';
+          metric.name = 'warnings';
           output += 'warning (';
         } else {
-          metric = 'errors';
+          metric.name = 'errors';
           output += 'error (';
         }
 
         if (this._security.indexOf(pageError.category) > -1) {
-          metric = 'security';
+          metric.name = 'security';
         }
 
         let {errorMessage, sourceName, category, lineNumber, columnNumber} = pageError;
@@ -382,12 +355,12 @@ let consoleWatcher = {
         switch (packet.message.level) {
 
           case 'error':
-            metric = 'errors';
+            metric.name = 'errors';
             output += 'error (console)';
             break;
 
           case 'warn':
-            metric = 'warnings';
+            metric.name = 'warnings';
             output += 'warning (console)';
             break;
 
@@ -397,18 +370,22 @@ let consoleWatcher = {
         break;
 
       case 'reflowActivity':
-        metric = 'reflows';
+        metric.name = 'reflows';
 
-        let {start, end, sourceURL} = packet;
+        let {start, end, sourceURL, interruptible} = packet;
+        metric.interruptible = interruptible;
         let duration = Math.round((end - start) * 100) / 100;
         output += 'reflow: ' + duration + 'ms';
         if (sourceURL) {
           output += ' ' + this.formatSourceURL(packet);
         }
         break;
+
+      default:
+        return;
     }
 
-    if (!this._watching[metric]) {
+    if (!this._watching[metric.name]) {
       return;
     }
 
@@ -454,7 +431,7 @@ let eventLoopLagWatcher = {
         fronts.get(target).start();
       } else {
         fronts.get(target).stop();
-        target.clear('jank');
+        target.clear({name: 'jank'});
       }
     }
   },
@@ -466,7 +443,7 @@ let eventLoopLagWatcher = {
     this._fronts.set(target, front);
 
     front.on('event-loop-lag', time => {
-      target.update('jank', time, 'jank: ' + time + 'ms');
+      target.update({name: 'jank', value: time}, 'jank: ' + time + 'ms');
     });
 
     if (this._active) {
@@ -494,6 +471,8 @@ let memoryWatcher = {
   _fronts: new Map(),
   _timers: new Map(),
   _watching: {
+    uss: false,
+    appmemory: false,
     jsobjects: false,
     jsstrings: false,
     jsother: false,
@@ -511,60 +490,72 @@ let memoryWatcher = {
       let category = key;
       SettingsListener.observe('hud.' + category, false, watch => {
         watching[category] = watch;
+        this.update();
       });
     }
+  },
 
-    SettingsListener.observe('hud.appmemory', false, enabled => {
-      if (this._active = enabled) {
-        for (let target of this._fronts.keys()) {
-          this.measure(target);
-        }
-      } else {
-        for (let target of this._fronts.keys()) {
-          clearTimeout(this._timers.get(target));
-          target.clear('memory');
-        }
+  update: function mw_update() {
+    let watching = this._watching;
+    let active = watching.memory || watching.uss;
+
+    if (this._active) {
+      for (let target of this._fronts.keys()) {
+        if (!watching.appmemory) target.clear({name: 'memory'});
+        if (!watching.uss) target.clear({name: 'uss'});
+        if (!active) clearTimeout(this._timers.get(target));
       }
-    });
+    } else if (active) {
+      for (let target of this._fronts.keys()) {
+        this.measure(target);
+      }
+    }
+    this._active = active;
   },
 
   measure: function mw_measure(target) {
-
-    // TODO Also track USS (bug #976024).
-
     let watch = this._watching;
     let front = this._fronts.get(target);
 
-    front.measure().then((data) => {
+    if (watch.uss) {
+      front.residentUnique().then(value => {
+        target.update({name: 'uss', value: value});
+      }, err => {
+        console.error(err);
+      });
+    }
 
-      let total = 0;
-      if (watch.jsobjects) {
-        total += parseInt(data.jsObjectsSize);
-      }
-      if (watch.jsstrings) {
-        total += parseInt(data.jsStringsSize);
-      }
-      if (watch.jsother) {
-        total += parseInt(data.jsOtherSize);
-      }
-      if (watch.dom) {
-        total += parseInt(data.domSize);
-      }
-      if (watch.style) {
-        total += parseInt(data.styleSize);
-      }
-      if (watch.other) {
-        total += parseInt(data.otherSize);
-      }
-      // TODO Also count images size (bug #976007).
+    if (watch.appmemory) {
+      front.measure().then(data => {
+        let total = 0;
+        if (watch.jsobjects) {
+          total += parseInt(data.jsObjectsSize);
+        }
+        if (watch.jsstrings) {
+          total += parseInt(data.jsStringsSize);
+        }
+        if (watch.jsother) {
+          total += parseInt(data.jsOtherSize);
+        }
+        if (watch.dom) {
+          total += parseInt(data.domSize);
+        }
+        if (watch.style) {
+          total += parseInt(data.styleSize);
+        }
+        if (watch.other) {
+          total += parseInt(data.otherSize);
+        }
+        // TODO Also count images size (bug #976007).
 
-      target.update('memory', total);
-      let duration = parseInt(data.jsMilliseconds) + parseInt(data.nonJSMilliseconds);
-      let timer = setTimeout(() => this.measure(target), 100 * duration);
-      this._timers.set(target, timer);
-    }, (err) => {
-      console.error(err);
-    });
+        target.update({name: 'memory', value: total});
+      }, err => {
+        console.error(err);
+      });
+    }
+
+    let timer = setTimeout(() => this.measure(target), 300);
+    this._timers.set(target, timer);
   },
 
   trackTarget: function mw_trackTarget(target) {

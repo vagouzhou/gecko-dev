@@ -10,7 +10,7 @@
 #include "nsSVGNumber2.h"
 
 nsresult NS_NewSVGFEPointLightElement(nsIContent **aResult,
-                                      already_AddRefed<nsINodeInfo>&& aNodeInfo);
+                                      already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
 namespace dom {
@@ -20,21 +20,20 @@ typedef SVGFELightElement SVGFEPointLightElementBase;
 class SVGFEPointLightElement : public SVGFEPointLightElementBase
 {
   friend nsresult (::NS_NewSVGFEPointLightElement(nsIContent **aResult,
-                                                  already_AddRefed<nsINodeInfo>&& aNodeInfo));
+                                                  already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
 protected:
-  SVGFEPointLightElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  SVGFEPointLightElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : SVGFEPointLightElementBase(aNodeInfo)
   {
   }
-  virtual JSObject* WrapNode(JSContext *cx,
-                             JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *cx) MOZ_OVERRIDE;
 
 public:
   virtual AttributeMap ComputeLightAttributes(nsSVGFilterInstance* aInstance) MOZ_OVERRIDE;
   virtual bool AttributeAffectsRendering(
           int32_t aNameSpaceID, nsIAtom* aAttribute) const MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   // WebIDL
   already_AddRefed<SVGAnimatedNumber> X();

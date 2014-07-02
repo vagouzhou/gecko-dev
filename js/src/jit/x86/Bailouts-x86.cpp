@@ -67,16 +67,21 @@ class BailoutStack
 
 IonBailoutIterator::IonBailoutIterator(const JitActivationIterator &activations,
                                        BailoutStack *bailout)
-  : IonFrameIterator(activations),
+  : JitFrameIterator(activations),
     machine_(bailout->machine())
 {
     uint8_t *sp = bailout->parentStackPointer();
     uint8_t *fp = sp + bailout->frameSize();
 
+    kind_ = Kind_BailoutIterator;
     current_ = fp;
-    type_ = IonFrame_OptimizedJS;
+    type_ = JitFrame_IonJS;
     topFrameSize_ = current_ - sp;
-    topIonScript_ = script()->ionScript();
+    switch (mode_) {
+      case SequentialExecution: topIonScript_ = script()->ionScript(); break;
+      case ParallelExecution: topIonScript_ = script()->parallelIonScript(); break;
+      default: MOZ_ASSUME_UNREACHABLE("No such execution mode");
+    }
 
     if (bailout->frameClass() == FrameSizeClass::None()) {
         snapshotOffset_ = bailout->snapshotOffset();
@@ -102,15 +107,16 @@ IonBailoutIterator::IonBailoutIterator(const JitActivationIterator &activations,
 
 IonBailoutIterator::IonBailoutIterator(const JitActivationIterator &activations,
                                        InvalidationBailoutStack *bailout)
-  : IonFrameIterator(activations),
+  : JitFrameIterator(activations),
     machine_(bailout->machine())
 {
+    kind_ = Kind_BailoutIterator;
     returnAddressToFp_ = bailout->osiPointReturnAddress();
     topIonScript_ = bailout->ionScript();
     const OsiIndex *osiIndex = topIonScript_->getOsiIndex(returnAddressToFp_);
 
     current_ = (uint8_t*) bailout->fp();
-    type_ = IonFrame_OptimizedJS;
+    type_ = JitFrame_IonJS;
     topFrameSize_ = current_ - bailout->sp();
     snapshotOffset_ = osiIndex->snapshotOffset();
 }

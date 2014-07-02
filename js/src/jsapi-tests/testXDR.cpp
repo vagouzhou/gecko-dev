@@ -30,7 +30,8 @@ CompileScriptForPrincipalsVersionOrigin(JSContext *cx, JS::HandleObject obj,
     options.setOriginPrincipals(originPrincipals)
            .setFileAndLine(filename, lineno)
            .setVersion(version);
-    JSScript *script = JS::Compile(cx, obj, options, chars, nchars);
+    JS::RootedScript script(cx);
+    JS::Compile(cx, obj, options, chars, nchars, &script);
     free(chars);
     return script;
 }
@@ -46,7 +47,7 @@ FreezeThaw(JSContext *cx, JS::HandleScript script)
 
     // thaw
     JSScript *script2 = JS_DecodeScript(cx, memory, nbytes,
-                                        script->principals(), script->originPrincipals());
+                                        script->originPrincipals());
     js_free(memory);
     return script2;
 }
@@ -70,7 +71,6 @@ FreezeThaw(JSContext *cx, JS::HandleObject funobj)
     // thaw
     JSScript *script = GetScript(cx, funobj);
     JSObject *funobj2 = JS_DecodeInterpretedFunction(cx, memory, nbytes,
-                                                     script->principals(),
                                                      script->originPrincipals());
     js_free(memory);
     return funobj2;
@@ -136,7 +136,7 @@ JSScript *createScriptViaXDR(JSPrincipals *orig, int testCase)
     }
 
     JS::RootedValue v(cx);
-    bool ok = JS_ExecuteScript(cx, global, script, v.address());
+    bool ok = JS_ExecuteScript(cx, global, script, &v);
     if (!ok || !v.isObject())
         return nullptr;
     JS::RootedObject funobj(cx, &v.toObject());
@@ -163,8 +163,8 @@ BEGIN_TEST(testXDR_bug506491)
     // compile
     JS::CompileOptions options(cx);
     options.setFileAndLine(__FILE__, __LINE__);
-    JS::RootedScript script(cx, JS_CompileScript(cx, global, s, strlen(s),
-                                                 options));
+    JS::RootedScript script(cx);
+    CHECK(JS_CompileScript(cx, global, s, strlen(s), options, &script));
     CHECK(script);
 
     script = FreezeThaw(cx, script);
@@ -172,13 +172,13 @@ BEGIN_TEST(testXDR_bug506491)
 
     // execute
     JS::RootedValue v2(cx);
-    CHECK(JS_ExecuteScript(cx, global, script, v2.address()));
+    CHECK(JS_ExecuteScript(cx, global, script, &v2));
 
     // try to break the Block object that is the parent of f
     JS_GC(rt);
 
     // confirm
-    EVAL("f() === 'ok';\n", v2.address());
+    EVAL("f() === 'ok';\n", &v2);
     JS::RootedValue trueval(cx, JSVAL_TRUE);
     CHECK_SAME(v2, trueval);
     return true;
@@ -190,14 +190,15 @@ BEGIN_TEST(testXDR_bug516827)
     // compile an empty script
     JS::CompileOptions options(cx);
     options.setFileAndLine(__FILE__, __LINE__);
-    JS::RootedScript script(cx, JS_CompileScript(cx, global, "", 0, options));
+    JS::RootedScript script(cx);
+    CHECK(JS_CompileScript(cx, global, "", 0, options, &script));
     CHECK(script);
 
     script = FreezeThaw(cx, script);
     CHECK(script);
 
     // execute with null result meaning no result wanted
-    CHECK(JS_ExecuteScript(cx, global, script, nullptr));
+    CHECK(JS_ExecuteScript(cx, global, script));
     return true;
 }
 END_TEST(testXDR_bug516827)
@@ -213,8 +214,8 @@ BEGIN_TEST(testXDR_source)
     for (const char **s = samples; *s; s++) {
         JS::CompileOptions options(cx);
         options.setFileAndLine(__FILE__, __LINE__);
-        JS::RootedScript script(cx, JS_CompileScript(cx, global, *s, strlen(*s),
-                                                     options));
+        JS::RootedScript script(cx);
+        CHECK(JS_CompileScript(cx, global, *s, strlen(*s), options, &script));
         CHECK(script);
         script = FreezeThaw(cx, script);
         CHECK(script);
@@ -239,7 +240,7 @@ BEGIN_TEST(testXDR_sourceMap)
     for (const char **sm = sourceMaps; *sm; sm++) {
         JS::CompileOptions options(cx);
         options.setFileAndLine(__FILE__, __LINE__);
-        script = JS_CompileScript(cx, global, "", 0, options);
+        CHECK(JS_CompileScript(cx, global, "", 0, options, &script));
         CHECK(script);
 
         size_t len = strlen(*sm);

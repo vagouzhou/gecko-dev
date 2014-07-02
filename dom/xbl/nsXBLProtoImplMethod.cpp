@@ -104,7 +104,8 @@ nsXBLProtoImplMethod::InstallMember(JSContext* aCx,
   MOZ_ASSERT(js::IsObjectInContextCompartment(aTargetClassObject, aCx));
 
   JS::Rooted<JSObject*> globalObject(aCx, JS_GetGlobalForObject(aCx, aTargetClassObject));
-  MOZ_ASSERT(xpc::IsInXBLScope(globalObject) ||
+  MOZ_ASSERT(xpc::IsInContentXBLScope(globalObject) ||
+             xpc::IsInAddonScope(globalObject) ||
              globalObject == xpc::GetXBLScope(aCx, globalObject));
 
   JS::Rooted<JSObject*> jsMethodObject(aCx, GetCompiledMethod());
@@ -114,11 +115,10 @@ nsXBLProtoImplMethod::InstallMember(JSContext* aCx,
     JS::Rooted<JSObject*> method(aCx, JS_CloneFunctionObject(aCx, jsMethodObject, globalObject));
     NS_ENSURE_TRUE(method, NS_ERROR_OUT_OF_MEMORY);
 
-    JS::Rooted<JS::Value> value(aCx, JS::ObjectValue(*method));
     if (!::JS_DefineUCProperty(aCx, aTargetClassObject,
                                static_cast<const jschar*>(mName),
-                               name.Length(), value,
-                               nullptr, nullptr, JSPROP_ENUMERATE)) {
+                               name.Length(), method,
+                               JSPROP_ENUMERATE)) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
   }
@@ -265,7 +265,7 @@ nsXBLProtoImplMethod::Write(nsIObjectOutputStream* aStream)
 }
 
 nsresult
-nsXBLProtoImplAnonymousMethod::Execute(nsIContent* aBoundElement)
+nsXBLProtoImplAnonymousMethod::Execute(nsIContent* aBoundElement, JSAddonId* aAddonId)
 {
   NS_PRECONDITION(IsCompiled(), "Can't execute uncompiled method");
 
@@ -296,8 +296,7 @@ nsXBLProtoImplAnonymousMethod::Execute(nsIContent* aBoundElement)
   JS::Rooted<JSObject*> globalObject(cx, global->GetGlobalJSObject());
 
   JS::Rooted<JS::Value> v(cx);
-  nsresult rv = nsContentUtils::WrapNative(cx, globalObject, aBoundElement, &v);
-
+  nsresult rv = nsContentUtils::WrapNative(cx, aBoundElement, &v);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Use nsCxPusher to make sure we call ScriptEvaluated when we're done.
@@ -310,7 +309,7 @@ nsXBLProtoImplAnonymousMethod::Execute(nsIContent* aBoundElement)
   MOZ_ASSERT(cx == nsContentUtils::GetCurrentJSContext());
 
   JS::Rooted<JSObject*> thisObject(cx, &v.toObject());
-  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetXBLScopeOrGlobal(cx, globalObject));
+  JS::Rooted<JSObject*> scopeObject(cx, xpc::GetScopeForXBLExecution(cx, globalObject, aAddonId));
   NS_ENSURE_TRUE(scopeObject, NS_ERROR_OUT_OF_MEMORY);
 
   JSAutoCompartment ac(cx, scopeObject);

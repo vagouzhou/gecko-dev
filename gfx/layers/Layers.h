@@ -23,6 +23,7 @@
 #include "mozilla/DebugOnly.h"          // for DebugOnly
 #include "mozilla/EventForwards.h"      // for nsPaintEvent
 #include "mozilla/RefPtr.h"             // for TemporaryRef
+#include "mozilla/StyleAnimationValue.h" // for StyleAnimationValue, etc
 #include "mozilla/TimeStamp.h"          // for TimeStamp, TimeDuration
 #include "mozilla/gfx/BaseMargin.h"     // for BaseMargin
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
@@ -40,14 +41,12 @@
 #include "nsRegion.h"                   // for nsIntRegion
 #include "nsSize.h"                     // for nsIntSize
 #include "nsString.h"                   // for nsCString
-#include "nsStyleAnimation.h"           // for nsStyleAnimation::Value, etc
 #include "nsTArray.h"                   // for nsTArray
 #include "nsTArrayForwardDeclare.h"     // for InfallibleTArray
 #include "nscore.h"                     // for nsACString, nsAString
 #include "prlog.h"                      // for PRLogModuleInfo
 #include "gfx2DGlue.h"
 
-class gfxASurface;
 class gfxContext;
 
 extern uint8_t gLayerManagerLayerBuilder;
@@ -55,6 +54,7 @@ extern uint8_t gLayerManagerLayerBuilder;
 namespace mozilla {
 
 class FrameLayerBuilder;
+class StyleAnimationValue;
 class WebGLContext;
 
 namespace gl {
@@ -70,11 +70,16 @@ namespace css {
 class ComputedTimingFunction;
 }
 
+namespace dom {
+class OverfillCallback;
+}
+
 namespace layers {
 
 class Animation;
 class AnimationData;
 class AsyncPanZoomController;
+class ClientLayerManager;
 class CommonLayerAttributes;
 class Layer;
 class ThebesLayer;
@@ -165,6 +170,11 @@ static void LayerManagerUserDataDestroy(void *data)
 class LayerManager {
   NS_INLINE_DECL_REFCOUNTING(LayerManager)
 
+protected:
+  typedef mozilla::gfx::DrawTarget DrawTarget;
+  typedef mozilla::gfx::IntSize IntSize;
+  typedef mozilla::gfx::SurfaceFormat SurfaceFormat;
+
 public:
   LayerManager()
     : mDestroyed(false)
@@ -174,7 +184,6 @@ public:
   {
     InitLog();
   }
-  virtual ~LayerManager() {}
 
   /**
    * Release layers and resources held by this layer manager, and mark
@@ -194,6 +203,9 @@ public:
   { return nullptr; }
 
   virtual LayerManagerComposite* AsLayerManagerComposite()
+  { return nullptr; }
+
+  virtual ClientLayerManager* AsClientLayerManager()
   { return nullptr; }
 
   /**
@@ -351,6 +363,13 @@ public:
   };
 
   /**
+   * Returns true if aLayer is optimized for the given ThebesLayerCreationHint.
+   */
+  virtual bool IsOptimizedFor(ThebesLayer* aLayer,
+                              ThebesLayerCreationHint aCreationHint)
+  { return true; }
+
+  /**
    * CONSTRUCTION PHASE ONLY
    * Create a ThebesLayer for this manager's layer tree.
    */
@@ -421,21 +440,28 @@ public:
   virtual LayersBackend GetBackendType() = 0;
 
   /**
-   * Creates a surface which is optimized for inter-operating with this layer
-   * manager.
+   * Type of layers backend that will be used to composite this layer tree.
+   * When compositing is done remotely, then this returns the layers type
+   * of the compositor.
    */
-  virtual already_AddRefed<gfxASurface>
-    CreateOptimalSurface(const gfx::IntSize &aSize,
-                         gfxImageFormat imageFormat);
+  virtual LayersBackend GetCompositorBackendType() { return GetBackendType(); }
 
   /**
-   * Creates a surface for alpha masks which is optimized for inter-operating
-   * with this layer manager. In contrast to CreateOptimalSurface, this surface
-   * is optimised for drawing alpha only and we assume that drawing the mask
-   * is fairly simple.
+   * Creates a DrawTarget which is optimized for inter-operating with this
+   * layer manager.
    */
-  virtual already_AddRefed<gfxASurface>
-    CreateOptimalMaskSurface(const gfx::IntSize &aSize);
+  virtual TemporaryRef<DrawTarget>
+    CreateOptimalDrawTarget(const IntSize &aSize,
+                            SurfaceFormat imageFormat);
+
+  /**
+   * Creates a DrawTarget for alpha masks which is optimized for inter-
+   * operating with this layer manager. In contrast to CreateOptimalDrawTarget,
+   * this surface is optimised for drawing alpha only and we assume that
+   * drawing the mask is fairly simple.
+   */
+  virtual TemporaryRef<DrawTarget>
+    CreateOptimalMaskDrawTarget(const IntSize &aSize);
 
   /**
    * Creates a DrawTarget for use with canvas which is optimized for
@@ -532,14 +558,18 @@ public:
 
   /**
    * Dump information about this layer manager and its managed tree to
-   * aFile, which defaults to stderr.
+   * aStream.
    */
-  void Dump(FILE* aFile=nullptr, const char* aPrefix="", bool aDumpHtml=false);
+  void Dump(std::stringstream& aStream, const char* aPrefix="", bool aDumpHtml=false);
   /**
-   * Dump information about just this layer manager itself to aFile,
-   * which defaults to stderr.
+   * Dump information about just this layer manager itself to aStream
    */
-  void DumpSelf(FILE* aFile=nullptr, const char* aPrefix="");
+  void DumpSelf(std::stringstream& aStream, const char* aPrefix="");
+  void Dump() {
+    std::stringstream ss;
+    Dump(ss);
+    printf_stderr("%s", ss.str().c_str());
+  }
 
   /**
    * Log information about this layer manager and its managed tree to
@@ -595,10 +625,23 @@ public:
   virtual bool IsCompositingCheap() { return true; }
 
   bool IsInTransaction() const { return mInTransaction; }
+  virtual bool RequestOverfill(mozilla::dom::OverfillCallback* aCallback) { return true; }
+  virtual void RunOverfillCallback(const uint32_t aOverfill) { }
 
   virtual void SetRegionToClear(const nsIntRegion& aRegion)
   {
     mRegionToClear = aRegion;
+  }
+
+  virtual bool SupportsMixBlendModes(EnumSet<gfx::CompositionOp>& aMixBlendModes)
+  {
+    return false;
+  }
+
+  bool SupportsMixBlendMode(gfx::CompositionOp aMixBlendMode)
+  {
+    EnumSet<gfx::CompositionOp> modes(aMixBlendMode);
+    return SupportsMixBlendModes(modes);
   }
 
 protected:
@@ -609,9 +652,12 @@ protected:
 
   nsIntRegion mRegionToClear;
 
-  // Print interesting information about this into aTo.  Internally
+  // Protected destructor, to discourage deletion outside of Release():
+  virtual ~LayerManager() {}
+
+  // Print interesting information about this into aStreamo.  Internally
   // used to implement Dump*() and Log*().
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   static void InitLog();
   static PRLogModuleInfo* sLog;
@@ -641,8 +687,8 @@ private:
 typedef InfallibleTArray<Animation> AnimationArray;
 
 struct AnimData {
-  InfallibleTArray<nsStyleAnimation::Value> mStartValues;
-  InfallibleTArray<nsStyleAnimation::Value> mEndValues;
+  InfallibleTArray<mozilla::StyleAnimationValue> mStartValues;
+  InfallibleTArray<mozilla::StyleAnimationValue> mEndValues;
   InfallibleTArray<nsAutoPtr<mozilla::css::ComputedTimingFunction> > mFunctions;
 };
 
@@ -665,8 +711,6 @@ public:
     TYPE_SHADOW,
     TYPE_THEBES
   };
-
-  virtual ~Layer();
 
   /**
    * Returns the LayerManager this Layer belongs to. Note that the layer
@@ -803,7 +847,7 @@ public:
       Mutated();
     }
   }
-  
+
   void DeprecatedSetMixBlendMode(gfxContext::GraphicsOperator aMixBlendMode)
   {
     SetMixBlendMode(gfx::CompositionOpForOp(aMixBlendMode));
@@ -817,7 +861,7 @@ public:
       Mutated();
     }
   }
-  
+
   bool GetForceIsolatedGroup() const
   {
     return mForceIsolatedGroup;
@@ -1221,13 +1265,13 @@ public:
    * to and excluding the nearest ancestor that has UseIntermediateSurface() set.
    */
   float GetEffectiveOpacity();
-  
+
   /**
    * Returns the blendmode of this layer.
    */
   gfx::CompositionOp GetEffectiveMixBlendMode();
   gfxContext::GraphicsOperator DeprecatedGetEffectiveMixBlendMode();
-  
+
   /**
    * This returns the effective transform computed by
    * ComputeEffectiveTransforms. Typically this is a transform that transforms
@@ -1288,14 +1332,13 @@ public:
 
   /**
    * Dump information about this layer manager and its managed tree to
-   * aFile, which defaults to stderr.
+   * aStream.
    */
-  void Dump(FILE* aFile=nullptr, const char* aPrefix="", bool aDumpHtml=false);
+  void Dump(std::stringstream& aStream, const char* aPrefix="", bool aDumpHtml=false);
   /**
-   * Dump information about just this layer manager itself to aFile,
-   * which defaults to stderr.
+   * Dump information about just this layer manager itself to aStream.
    */
-  void DumpSelf(FILE* aFile=nullptr, const char* aPrefix="");
+  void DumpSelf(std::stringstream& aStream, const char* aPrefix="");
 
   /**
    * Log information about this layer manager and its managed tree to
@@ -1308,12 +1351,12 @@ public:
    */
   void LogSelf(const char* aPrefix="");
 
-  // Print interesting information about this into aTo.  Internally
-  // used to implement Dump*() and Log*().  If subclasses have
+  // Print interesting information about this into aStream. Internally
+  // used to implement Dump*() and Log*(). If subclasses have
   // additional interesting properties, they should override this with
   // an implementation that first calls the base implementation then
   // appends additional info to aTo.
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   static bool IsLogEnabled() { return LayerManager::IsLogEnabled(); }
 
@@ -1357,6 +1400,9 @@ public:
 
 protected:
   Layer(LayerManager* aManager, void* aImplData);
+
+  // Protected destructor, to discourage deletion outside of Release():
+  virtual ~Layer();
 
   /**
    * We can snap layer transforms for two reasons:
@@ -1518,6 +1564,8 @@ public:
     ComputeEffectiveTransformForMaskLayer(aTransformToSurface);
   }
 
+  LayerManager::ThebesLayerCreationHint GetCreationHint() const { return mCreationHint; }
+
   bool UsedForReadback() { return mUsedForReadback; }
   void SetUsedForReadback(bool aUsed) { mUsedForReadback = aUsed; }
   /**
@@ -1531,16 +1579,18 @@ public:
   gfxPoint GetResidualTranslation() const { return mResidualTranslation; }
 
 protected:
-  ThebesLayer(LayerManager* aManager, void* aImplData)
+  ThebesLayer(LayerManager* aManager, void* aImplData,
+              LayerManager::ThebesLayerCreationHint aCreationHint = LayerManager::NONE)
     : Layer(aManager, aImplData)
     , mValidRegion()
+    , mCreationHint(aCreationHint)
     , mUsedForReadback(false)
     , mAllowResidualTranslation(false)
   {
     mContentFlags = 0; // Clear NO_TEXT, NO_TEXT_OVER_TRANSPARENT
   }
 
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   /**
    * ComputeEffectiveTransforms snaps the ideal transform to get mEffectiveTransform.
@@ -1549,6 +1599,10 @@ protected:
    */
   gfxPoint mResidualTranslation;
   nsIntRegion mValidRegion;
+  /**
+   * The creation hint that was used when constructing this layer.
+   */
+  const LayerManager::ThebesLayerCreationHint mCreationHint;
   /**
    * Set when this ThebesLayer is participating in readback, i.e. some
    * ReadbackLayer (may) be getting its background from this layer.
@@ -1612,6 +1666,22 @@ public:
   void SetAsyncPanZoomController(AsyncPanZoomController *controller);
   AsyncPanZoomController* GetAsyncPanZoomController() const;
 
+  /**
+   * CONSTRUCTION PHASE ONLY
+   * Set the ViewID of the ContainerLayer to which overscroll should be handed
+   * off. A value of NULL_SCROLL_ID means that the default handoff-parent-finding
+   * behaviour should be used (i.e. walk up the layer tree to find the next
+   * scrollable ancestor layer).
+   */
+  void SetScrollHandoffParentId(FrameMetrics::ViewID aScrollParentId)
+  {
+    if (mScrollHandoffParentId != aScrollParentId) {
+      MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) ScrollHandoffParentId", this));
+      mScrollHandoffParentId = aScrollParentId;
+      Mutated();
+    }
+  }
+
   void SetPreScale(float aXScale, float aYScale)
   {
     if (mPreXScale == aXScale && mPreYScale == aYScale) {
@@ -1636,6 +1706,17 @@ public:
     Mutated();
   }
 
+  void SetBackgroundColor(const gfxRGBA& aColor)
+  {
+    if (mBackgroundColor == aColor) {
+      return;
+    }
+
+    MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) BackgroundColor", this));
+    mBackgroundColor = aColor;
+    Mutated();
+  }
+
   virtual void FillSpecificAttributes(SpecificLayerAttributes& aAttrs);
 
   void SortChildrenBy3DZOrder(nsTArray<Layer*>& aArray);
@@ -1648,10 +1729,13 @@ public:
   virtual Layer* GetFirstChild() const { return mFirstChild; }
   virtual Layer* GetLastChild() const { return mLastChild; }
   const FrameMetrics& GetFrameMetrics() const { return mFrameMetrics; }
+  FrameMetrics::ViewID GetScrollHandoffParentId() const { return mScrollHandoffParentId; }
   float GetPreXScale() const { return mPreXScale; }
   float GetPreYScale() const { return mPreYScale; }
   float GetInheritedXScale() const { return mInheritedXScale; }
   float GetInheritedYScale() const { return mInheritedYScale; }
+  
+  gfxRGBA GetBackgroundColor() const { return mBackgroundColor; }
 
   MOZ_LAYER_DECL_NAME("ContainerLayer", TYPE_CONTAINER)
 
@@ -1692,10 +1776,14 @@ public:
    */
   bool SupportsComponentAlphaChildren() { return mSupportsComponentAlphaChildren; }
 
+  /**
+   * Returns true if aLayer or any layer in its parent chain has the opaque
+   * content flag set.
+   */
+  static bool HasOpaqueAncestorLayer(Layer* aLayer);
+
 protected:
   friend class ReadbackProcessor;
-
-  static bool HasOpaqueAncestorLayer(Layer* aLayer);
 
   void DidInsertChild(Layer* aLayer);
   void DidRemoveChild(Layer* aLayer);
@@ -1709,22 +1797,35 @@ protected:
   void DefaultComputeEffectiveTransforms(const gfx::Matrix4x4& aTransformToSurface);
 
   /**
+   * A default implementation to compute and set the value for SupportsComponentAlphaChildren().
+   *
+   * If aNeedsSurfaceCopy is provided, then it is set to true if the caller needs to copy the background
+   * up into the intermediate surface created, false otherwise.
+   */
+  void DefaultComputeSupportsComponentAlphaChildren(bool* aNeedsSurfaceCopy = nullptr);
+
+  /**
    * Loops over the children calling ComputeEffectiveTransforms on them.
    */
   void ComputeEffectiveTransformsForChildren(const gfx::Matrix4x4& aTransformToSurface);
 
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   Layer* mFirstChild;
   Layer* mLastChild;
   FrameMetrics mFrameMetrics;
   nsRefPtr<AsyncPanZoomController> mAPZC;
+  FrameMetrics::ViewID mScrollHandoffParentId;
   float mPreXScale;
   float mPreYScale;
   // The resolution scale inherited from the parent layer. This will already
   // be part of mTransform.
   float mInheritedXScale;
   float mInheritedYScale;
+  // This is currently set and used only for scrollable container layers.
+  // When multi-layer-apz (bug 967844) is implemented, this is likely to move
+  // elsewhere (e.g. to Layer).
+  gfxRGBA mBackgroundColor;
   bool mUseIntermediateSurface;
   bool mSupportsComponentAlphaChildren;
   bool mMayHaveReadbackChild;
@@ -1783,7 +1884,7 @@ protected:
       mColor(0.0, 0.0, 0.0, 0.0)
   {}
 
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   nsIntRect mBounds;
   gfxRGBA mColor;
@@ -1808,11 +1909,12 @@ public:
       , mStream(nullptr)
       , mTexID(0)
       , mSize(0,0)
-      , mIsGLAlphaPremult(false)
+      , mHasAlpha(false)
+      , mIsGLAlphaPremult(true)
     { }
 
     // One of these two must be specified for Canvas2D, but never both
-    mozilla::gfx::DrawTarget *mDrawTarget; // a DrawTarget for the canvas contents
+    mozilla::gfx::DrawTarget* mDrawTarget; // a DrawTarget for the canvas contents
     mozilla::gl::GLContext* mGLContext; // or this, for GL.
 
     // Canvas/SkiaGL uses this
@@ -1823,6 +1925,9 @@ public:
 
     // The size of the canvas content
     nsIntSize mSize;
+
+    // Whether the canvas drawingbuffer has an alpha channel.
+    bool mHasAlpha;
 
     // Whether mGLContext contains data that is alpha-premultiplied.
     bool mIsGLAlphaPremult;
@@ -1938,7 +2043,7 @@ protected:
     , mDirty(false)
   {}
 
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   void FireDidTransactionCallback()
   {
@@ -2055,7 +2160,7 @@ protected:
     : ContainerLayer(aManager, aImplData) , mId(0)
   {}
 
-  virtual nsACString& PrintInfo(nsACString& aTo, const char* aPrefix);
+  virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
   Layer* mTempReferent;
   // 0 is a special value that means "no ID".

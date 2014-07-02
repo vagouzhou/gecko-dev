@@ -67,7 +67,7 @@ let SearchEnginesProvider = {
       return;
     }
     let match = { token: token,
-                  // TODO (bug 557665): searchForm should provide an usable
+                  // TODO (bug 990799): searchForm should provide an usable
                   // url with affiliate code, if available.
                   url: engine.searchForm,
                   title: engine.name,
@@ -126,7 +126,7 @@ this.PriorityUrlProvider = Object.freeze({
     matches.delete(token);
   },
 
-  getMatchingSpec: function (searchToken) {
+  getMatch: function (searchToken) {
     return Task.spawn(function* () {
       yield promiseInitialized();
       for (let [token, match] of matches.entries()) {

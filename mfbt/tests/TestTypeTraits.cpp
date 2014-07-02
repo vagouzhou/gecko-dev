@@ -6,6 +6,7 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/TypeTraits.h"
 
+using mozilla::AddLvalueReference;
 using mozilla::IsArray;
 using mozilla::IsBaseOf;
 using mozilla::IsClass;
@@ -19,6 +20,7 @@ using mozilla::IsSigned;
 using mozilla::IsUnsigned;
 using mozilla::MakeSigned;
 using mozilla::MakeUnsigned;
+using mozilla::RemoveExtent;
 
 static_assert(!IsArray<bool>::value, "bool not an array");
 static_assert(IsArray<bool[]>::value, "bool[] is an array");
@@ -151,6 +153,16 @@ static_assert(IsSigned<const volatile long double>::value,
 static_assert(!IsUnsigned<const volatile long double>::value,
               "const volatile long double shouldn't be unsigned");
 
+class NotIntConstructible
+{
+  NotIntConstructible(int) MOZ_DELETE;
+};
+
+static_assert(!IsSigned<NotIntConstructible>::value,
+              "non-arithmetic types are not signed");
+static_assert(!IsUnsigned<NotIntConstructible>::value,
+              "non-arithmetic types are not unsigned");
+
 namespace CPlusPlus11IsBaseOf {
 
 // Adapted from C++11 § 20.9.6.
@@ -162,16 +174,16 @@ struct D : private B1, private B2 {};
 static void
 StandardIsBaseOfTests()
 {
-  MOZ_ASSERT((IsBaseOf<B, D>::value) == true);
-  MOZ_ASSERT((IsBaseOf<const B, D>::value) == true);
-  MOZ_ASSERT((IsBaseOf<B, const D>::value) == true);
-  MOZ_ASSERT((IsBaseOf<B, const B>::value) == true);
-  MOZ_ASSERT((IsBaseOf<D, B>::value) == false);
-  MOZ_ASSERT((IsBaseOf<B&, D&>::value) == false);
-  MOZ_ASSERT((IsBaseOf<B[3], D[3]>::value) == false);
+  static_assert((IsBaseOf<B, D>::value) == true, "IsBaseOf fails on diamond");
+  static_assert((IsBaseOf<const B, D>::value) == true, "IsBaseOf fails on diamond plus constness change");
+  static_assert((IsBaseOf<B, const D>::value) == true, "IsBaseOf fails on diamond plus constness change");
+  static_assert((IsBaseOf<B, const B>::value) == true, "IsBaseOf fails on constness change");
+  static_assert((IsBaseOf<D, B>::value) == false, "IsBaseOf got the direction of inheritance wrong");
+  static_assert((IsBaseOf<B&, D&>::value) == false, "IsBaseOf should return false on references");
+  static_assert((IsBaseOf<B[3], D[3]>::value) == false, "IsBaseOf should return false on arrays");
   // We fail at the following test.  To fix it, we need to specialize IsBaseOf
   // for all built-in types.
-  // MOZ_ASSERT((IsBaseOf<int, int>::value) == false);
+  // static_assert((IsBaseOf<int, int>::value) == false);
 }
 
 } /* namespace CPlusPlus11IsBaseOf */
@@ -186,23 +198,23 @@ class F : public B, public E { };
 static void
 TestIsBaseOf()
 {
-  MOZ_ASSERT((IsBaseOf<A, B>::value),
+  static_assert((IsBaseOf<A, B>::value),
              "A is a base of B");
-  MOZ_ASSERT((!IsBaseOf<B, A>::value),
+  static_assert((!IsBaseOf<B, A>::value),
              "B is not a base of A");
-  MOZ_ASSERT((IsBaseOf<A, C>::value),
+  static_assert((IsBaseOf<A, C>::value),
              "A is a base of C");
-  MOZ_ASSERT((!IsBaseOf<C, A>::value),
+  static_assert((!IsBaseOf<C, A>::value),
              "C is not a base of A");
-  MOZ_ASSERT((IsBaseOf<A, F>::value),
+  static_assert((IsBaseOf<A, F>::value),
              "A is a base of F");
-  MOZ_ASSERT((!IsBaseOf<F, A>::value),
+  static_assert((!IsBaseOf<F, A>::value),
              "F is not a base of A");
-  MOZ_ASSERT((!IsBaseOf<A, D>::value),
+  static_assert((!IsBaseOf<A, D>::value),
              "A is not a base of D");
-  MOZ_ASSERT((!IsBaseOf<D, A>::value),
+  static_assert((!IsBaseOf<D, A>::value),
              "D is not a base of A");
-  MOZ_ASSERT((IsBaseOf<B, B>::value),
+  static_assert((IsBaseOf<B, B>::value),
              "B is the same as B (and therefore, a base of B)");
 }
 
@@ -210,36 +222,47 @@ static void
 TestIsConvertible()
 {
   // Pointer type convertibility
-  MOZ_ASSERT((IsConvertible<A*, A*>::value),
+  static_assert((IsConvertible<A*, A*>::value),
              "A* should convert to A*");
-  MOZ_ASSERT((IsConvertible<B*, A*>::value),
+  static_assert((IsConvertible<B*, A*>::value),
              "B* should convert to A*");
-  MOZ_ASSERT((!IsConvertible<A*, B*>::value),
+  static_assert((!IsConvertible<A*, B*>::value),
              "A* shouldn't convert to B*");
-  MOZ_ASSERT((!IsConvertible<A*, C*>::value),
+  static_assert((!IsConvertible<A*, C*>::value),
              "A* shouldn't convert to C*");
-  MOZ_ASSERT((!IsConvertible<A*, D*>::value),
+  static_assert((!IsConvertible<A*, D*>::value),
              "A* shouldn't convert to unrelated D*");
-  MOZ_ASSERT((!IsConvertible<D*, A*>::value),
+  static_assert((!IsConvertible<D*, A*>::value),
              "D* shouldn't convert to unrelated A*");
 
   // Instance type convertibility
-  MOZ_ASSERT((IsConvertible<A, A>::value),
+  static_assert((IsConvertible<A, A>::value),
              "A is A");
-  MOZ_ASSERT((IsConvertible<B, A>::value),
+  static_assert((IsConvertible<B, A>::value),
              "B converts to A");
-  MOZ_ASSERT((!IsConvertible<D, A>::value),
+  static_assert((!IsConvertible<D, A>::value),
              "D and A are unrelated");
-  MOZ_ASSERT((!IsConvertible<A, D>::value),
+  static_assert((!IsConvertible<A, D>::value),
              "A and D are unrelated");
 
   // These cases seem to require C++11 support to properly implement them, so
   // for now just disable them.
-  //MOZ_ASSERT((!IsConvertible<C*, A*>::value),
+  //static_assert((!IsConvertible<C*, A*>::value),
   //           "C* shouldn't convert to A* (private inheritance)");
-  //MOZ_ASSERT((!IsConvertible<C, A>::value),
+  //static_assert((!IsConvertible<C, A>::value),
   //           "C doesn't convert to A (private inheritance)");
 }
+
+static_assert(IsSame<AddLvalueReference<int>::Type, int&>::value,
+              "not adding & to int correctly");
+static_assert(IsSame<AddLvalueReference<volatile int&>::Type, volatile int&>::value,
+              "not adding & to volatile int& correctly");
+static_assert(IsSame<AddLvalueReference<void*>::Type, void*&>::value,
+              "not adding & to void* correctly");
+static_assert(IsSame<AddLvalueReference<void>::Type, void>::value,
+              "void shouldn't be transformed by AddLvalueReference");
+static_assert(IsSame<AddLvalueReference<struct S1&&>::Type, struct S1&>::value,
+              "not reference-collapsing struct S1&& & to struct S1& correctly");
 
 static_assert(IsSame<MakeSigned<const unsigned char>::Type, const signed char>::value,
               "const unsigned char won't signify correctly");
@@ -291,6 +314,29 @@ static_assert(IsSame<MakeUnsigned<volatile char>::Type, volatile unsigned char>:
               "volatile char won't unsignify correctly");
 static_assert(IsSame<MakeUnsigned<const char>::Type, const unsigned char>::value,
               "const char won't unsignify correctly");
+
+static_assert(IsSame<RemoveExtent<int>::Type, int>::value,
+              "removing extent from non-array must return the non-array");
+static_assert(IsSame<RemoveExtent<const int[]>::Type, const int>::value,
+              "removing extent from unknown-bound array must return element type");
+static_assert(IsSame<RemoveExtent<volatile int[5]>::Type, volatile int>::value,
+              "removing extent from known-bound array must return element type");
+static_assert(IsSame<RemoveExtent<long[][17]>::Type, long[17]>::value,
+              "removing extent from multidimensional array must return element type");
+
+/*
+ * Android's broken [u]intptr_t inttype macros are broken because its PRI*PTR
+ * macros are defined as "ld", but sizeof(long) is 8 and sizeof(intptr_t)
+ * is 4 on 32-bit Android. We redefine Android's PRI*PTR macros in
+ * IntegerPrintfMacros.h and assert here that our new definitions match the
+ * actual type sizes seen at compile time.
+ */
+#if defined(ANDROID) && !defined(__LP64__)
+static_assert(mozilla::IsSame<int, intptr_t>::value,
+              "emulated PRI[di]PTR definitions will be wrong");
+static_assert(mozilla::IsSame<unsigned int, uintptr_t>::value,
+              "emulated PRI[ouxX]PTR definitions will be wrong");
+#endif
 
 int
 main()

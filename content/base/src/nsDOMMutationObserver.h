@@ -31,25 +31,23 @@ using mozilla::dom::MutationObservingInfo;
 class nsDOMMutationRecord : public nsISupports,
                             public nsWrapperCache
 {
+  virtual ~nsDOMMutationRecord() {}
+
 public:
   nsDOMMutationRecord(nsIAtom* aType, nsISupports* aOwner)
-  : mType(aType), mOwner(aOwner)
+  : mType(aType), mAttrNamespace(NullString()), mPrevValue(NullString()), mOwner(aOwner)
   {
-    mAttrNamespace.SetIsVoid(PR_TRUE);
-    mPrevValue.SetIsVoid(PR_TRUE);
     SetIsDOMBinding();
   }
-  virtual ~nsDOMMutationRecord() {}
 
   nsISupports* GetParentObject() const
   {
     return mOwner;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE
   {
-    return mozilla::dom::MutationRecordBinding::Wrap(aCx, aScope, this);
+    return mozilla::dom::MutationRecordBinding::Wrap(aCx, this);
   }
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -272,6 +270,9 @@ private:
 
 class nsMutationReceiver : public nsMutationReceiverBase
 {
+protected:
+  virtual ~nsMutationReceiver() { Disconnect(false); }
+
 public:
   nsMutationReceiver(nsINode* aTarget, nsDOMMutationObserver* aObserver);
 
@@ -282,8 +283,6 @@ public:
                  "Shouldn't create deep observer hierarchies!");
     aParent->AddClone(this);
   }
-
-  virtual ~nsMutationReceiver() { Disconnect(false); }
 
   nsMutationReceiver* GetParent()
   {
@@ -350,7 +349,6 @@ public:
   {
     SetIsDOMBinding();
   }
-  virtual ~nsDOMMutationObserver();
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsDOMMutationObserver)
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_DOM_MUTATION_OBSERVER_IID)
@@ -360,10 +358,9 @@ public:
               mozilla::dom::MutationCallback& aCb,
               mozilla::ErrorResult& aRv);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE
   {
-    return mozilla::dom::MutationObserverBinding::Wrap(aCx, aScope, this);
+    return mozilla::dom::MutationObserverBinding::Wrap(aCx, this);
   }
 
   nsISupports* GetParentObject() const
@@ -421,6 +418,8 @@ public:
 
   static void Shutdown();
 protected:
+  virtual ~nsDOMMutationObserver();
+
   friend class nsMutationReceiver;
   friend class nsAutoMutationBatch;
   nsMutationReceiver* GetReceiverFor(nsINode* aNode, bool aMayCreate);

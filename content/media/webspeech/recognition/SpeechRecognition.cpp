@@ -17,8 +17,7 @@
 #include "AudioSegment.h"
 #include "endpointer.h"
 
-#include "GeneratedEvents.h"
-#include "nsIDOMSpeechRecognitionEvent.h"
+#include "mozilla/dom/SpeechRecognitionEvent.h"
 #include "nsIObserverService.h"
 #include "nsServiceManagerUtils.h"
 
@@ -60,15 +59,15 @@ GetSpeechRecognitionLog()
 
 NS_INTERFACE_MAP_BEGIN(SpeechRecognition)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(SpeechRecognition, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(SpeechRecognition, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(SpeechRecognition, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(SpeechRecognition, DOMEventTargetHelper)
 
 struct SpeechRecognition::TestConfig SpeechRecognition::mTestConfig;
 
 SpeechRecognition::SpeechRecognition(nsPIDOMWindow* aOwnerWindow)
-  : nsDOMEventTargetHelper(aOwnerWindow)
+  : DOMEventTargetHelper(aOwnerWindow)
   , mEndpointer(kSAMPLE_RATE)
   , mAudioSamplesPerChunk(mEndpointer.FrameSize())
   , mSpeechDetectionTimer(do_CreateInstance(NS_TIMER_CONTRACTID))
@@ -106,9 +105,9 @@ SpeechRecognition::SetState(FSMState state)
 }
 
 JSObject*
-SpeechRecognition::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+SpeechRecognition::WrapObject(JSContext* aCx)
 {
-  return SpeechRecognitionBinding::Wrap(aCx, aScope, this);
+  return SpeechRecognitionBinding::Wrap(aCx, this);
 }
 
 already_AddRefed<SpeechRecognition>
@@ -467,20 +466,20 @@ SpeechRecognition::NotifyFinalResult(SpeechEvent* aEvent)
 {
   ResetAndEnd();
 
-  nsCOMPtr<nsIDOMEvent> domEvent;
-  NS_NewDOMSpeechRecognitionEvent(getter_AddRefs(domEvent), nullptr, nullptr, nullptr);
+  SpeechRecognitionEventInit init;
+  init.mBubbles = true;
+  init.mCancelable = false;
+  // init.mResultIndex = 0;
+  init.mResults = aEvent->mRecognitionResultList;
+  init.mInterpretation = NS_LITERAL_STRING("NOT_IMPLEMENTED");
+  // init.mEmma = nullptr;
 
-  nsCOMPtr<nsIDOMSpeechRecognitionEvent> srEvent = do_QueryInterface(domEvent);
-  nsRefPtr<SpeechRecognitionResultList> rlist = aEvent->mRecognitionResultList;
-  nsCOMPtr<nsISupports> ilist = do_QueryInterface(rlist);
-  srEvent->InitSpeechRecognitionEvent(NS_LITERAL_STRING("result"),
-                                      true, false, 0, ilist,
-                                      NS_LITERAL_STRING("NOT_IMPLEMENTED"),
-                                      nullptr);
-  domEvent->SetTrusted(true);
+  nsRefPtr<SpeechRecognitionEvent> event =
+    SpeechRecognitionEvent::Constructor(this, NS_LITERAL_STRING("result"), init);
+  event->SetTrusted(true);
 
   bool defaultActionEnabled;
-  this->DispatchEvent(domEvent, &defaultActionEnabled);
+  this->DispatchEvent(event, &defaultActionEnabled);
 }
 
 void
@@ -711,14 +710,12 @@ SpeechRecognition::Start(ErrorResult& aRv)
   rv = mRecognitionService->Initialize(this->asWeakPtr());
   NS_ENSURE_SUCCESS_VOID(rv);
 
-  AutoSafeJSContext cx;
   MediaStreamConstraints constraints;
   constraints.mAudio.SetAsBoolean() = true;
 
   if (!mTestConfig.mFakeFSMEvents) {
     MediaManager* manager = MediaManager::Get();
-    manager->GetUserMedia(cx,
-                          false,
+    manager->GetUserMedia(false,
                           GetOwner(),
                           constraints,
                           new GetUserMediaSuccessCallback(this),
@@ -940,7 +937,7 @@ SpeechEvent::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(SpeechRecognition::GetUserMediaSuccessCallback, nsIDOMGetUserMediaSuccessCallback)
+NS_IMPL_ISUPPORTS(SpeechRecognition::GetUserMediaSuccessCallback, nsIDOMGetUserMediaSuccessCallback)
 
 NS_IMETHODIMP
 SpeechRecognition::GetUserMediaSuccessCallback::OnSuccess(nsISupports* aStream)
@@ -950,14 +947,14 @@ SpeechRecognition::GetUserMediaSuccessCallback::OnSuccess(nsISupports* aStream)
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(SpeechRecognition::GetUserMediaErrorCallback, nsIDOMGetUserMediaErrorCallback)
+NS_IMPL_ISUPPORTS(SpeechRecognition::GetUserMediaErrorCallback, nsIDOMGetUserMediaErrorCallback)
 
 NS_IMETHODIMP
 SpeechRecognition::GetUserMediaErrorCallback::OnError(const nsAString& aError)
 {
   SpeechRecognitionErrorCode errorCode;
 
-  if (aError.Equals(NS_LITERAL_STRING("PERMISSION_DENIED"))) {
+  if (aError.EqualsLiteral("PERMISSION_DENIED")) {
     errorCode = SpeechRecognitionErrorCode::Not_allowed;
   } else {
     errorCode = SpeechRecognitionErrorCode::Audio_capture;

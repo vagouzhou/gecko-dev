@@ -28,8 +28,7 @@ public:
   // TextTrackCueList WebIDL
   TextTrackCueList(nsISupports* aParent);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const
   {
@@ -56,6 +55,8 @@ public:
   void GetArray(nsTArray<nsRefPtr<TextTrackCue> >& aCues);
 
 private:
+  ~TextTrackCueList();
+
   nsCOMPtr<nsISupports> mParent;
 
   // A sorted list of TextTrackCues sorted by earliest start time. If the start

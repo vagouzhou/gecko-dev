@@ -9,6 +9,8 @@
 #include "nsSize.h"
 #include "VorbisUtils.h"
 #include "ImageContainer.h"
+#include "SharedThreadPool.h"
+#include "mozilla/Preferences.h"
 
 #include <stdint.h>
 
@@ -26,6 +28,14 @@ CheckedInt64 FramesToUsecs(int64_t aFrames, uint32_t aRate) {
 // audio rate.
 CheckedInt64 UsecsToFrames(int64_t aUsecs, uint32_t aRate) {
   return (CheckedInt64(aUsecs) * aRate) / USECS_PER_S;
+}
+
+nsresult SecondsToUsecs(double aSeconds, int64_t& aOutUsecs) {
+  if (aSeconds * double(USECS_PER_S) > INT64_MAX) {
+    return NS_ERROR_FAILURE;
+  }
+  aOutUsecs = int64_t(aSeconds * double(USECS_PER_S));
+  return NS_OK;
 }
 
 static int32_t ConditionDimension(float aValue)
@@ -180,6 +190,12 @@ IsValidVideoRegion(const nsIntSize& aFrame, const nsIntRect& aPicture,
     aDisplay.height <= PlanarYCbCrImage::MAX_DIMENSION &&
     aDisplay.width * aDisplay.height <= MAX_VIDEO_WIDTH * MAX_VIDEO_HEIGHT &&
     aDisplay.width * aDisplay.height != 0;
+}
+
+TemporaryRef<SharedThreadPool> GetMediaDecodeThreadPool()
+{
+  return SharedThreadPool::Get(NS_LITERAL_CSTRING("Media Decode"),
+                               Preferences::GetUint("media.num-decode-threads", 25));
 }
 
 } // end namespace mozilla

@@ -146,7 +146,7 @@ DOMProxyHandler::EnsureExpandoObject(JSContext* cx, JS::Handle<JSObject*> obj)
 }
 
 bool
-DOMProxyHandler::isExtensible(JSContext *cx, JS::Handle<JSObject*> proxy, bool *extensible)
+DOMProxyHandler::isExtensible(JSContext *cx, JS::Handle<JSObject*> proxy, bool *extensible) const
 {
   // always extensible per WebIDL
   *extensible = true;
@@ -154,7 +154,7 @@ DOMProxyHandler::isExtensible(JSContext *cx, JS::Handle<JSObject*> proxy, bool *
 }
 
 bool
-DOMProxyHandler::preventExtensions(JSContext *cx, JS::Handle<JSObject*> proxy)
+DOMProxyHandler::preventExtensions(JSContext *cx, JS::Handle<JSObject*> proxy) const
 {
   // Throw a TypeError, per WebIDL.
   JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr,
@@ -166,10 +166,9 @@ bool
 BaseDOMProxyHandler::getPropertyDescriptor(JSContext* cx,
                                            JS::Handle<JSObject*> proxy,
                                            JS::Handle<jsid> id,
-                                           MutableHandle<JSPropertyDescriptor> desc,
-                                           unsigned flags)
+                                           MutableHandle<JSPropertyDescriptor> desc) const
 {
-  if (!getOwnPropertyDescriptor(cx, proxy, id, desc, flags)) {
+  if (!getOwnPropertyDescriptor(cx, proxy, id, desc)) {
     return false;
   }
   if (desc.object()) {
@@ -185,12 +184,12 @@ BaseDOMProxyHandler::getPropertyDescriptor(JSContext* cx,
     return true;
   }
 
-  return JS_GetPropertyDescriptorById(cx, proto, id, 0, desc);
+  return JS_GetPropertyDescriptorById(cx, proto, id, desc);
 }
 
 bool
 DOMProxyHandler::defineProperty(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
-                                MutableHandle<JSPropertyDescriptor> desc, bool* defined)
+                                MutableHandle<JSPropertyDescriptor> desc, bool* defined) const
 {
   if (desc.hasGetterObject() && desc.setter() == JS_StrictPropertyStub) {
     return JS_ReportErrorFlagsAndNumber(cx,
@@ -214,8 +213,24 @@ DOMProxyHandler::defineProperty(JSContext* cx, JS::Handle<JSObject*> proxy, JS::
 }
 
 bool
+DOMProxyHandler::set(JSContext *cx, Handle<JSObject*> proxy, Handle<JSObject*> receiver,
+                     Handle<jsid> id, bool strict, MutableHandle<JS::Value> vp) const
+{
+  MOZ_ASSERT(!xpc::WrapperFactory::IsXrayWrapper(proxy),
+             "Should not have a XrayWrapper here");
+  bool done;
+  if (!setCustom(cx, proxy, id, vp, &done)) {
+    return false;
+  }
+  if (done) {
+    return true;
+  }
+  return mozilla::dom::BaseDOMProxyHandler::set(cx, proxy, receiver, id, strict, vp);
+}
+
+bool
 DOMProxyHandler::delete_(JSContext* cx, JS::Handle<JSObject*> proxy,
-                         JS::Handle<jsid> id, bool* bp)
+                         JS::Handle<jsid> id, bool* bp) const
 {
   JS::Rooted<JSObject*> expando(cx);
   if (!xpc::WrapperFactory::IsXrayWrapper(proxy) && (expando = GetExpandoObject(proxy))) {
@@ -228,31 +243,47 @@ DOMProxyHandler::delete_(JSContext* cx, JS::Handle<JSObject*> proxy,
 
 bool
 BaseDOMProxyHandler::enumerate(JSContext* cx, JS::Handle<JSObject*> proxy,
-                               AutoIdVector& props)
+                               AutoIdVector& props) const
 {
   JS::Rooted<JSObject*> proto(cx);
   if (!JS_GetPrototype(cx, proxy, &proto))  {
     return false;
   }
-  return getOwnPropertyNames(cx, proxy, props) &&
+  return keys(cx, proxy, props) &&
          (!proto || js::GetPropertyNames(cx, proto, 0, &props));
 }
 
 bool
 BaseDOMProxyHandler::watch(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
-                           JS::Handle<JSObject*> callable)
+                           JS::Handle<JSObject*> callable) const
 {
   return js::WatchGuts(cx, proxy, id, callable);
 }
 
 bool
-BaseDOMProxyHandler::unwatch(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id)
+BaseDOMProxyHandler::unwatch(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id) const
 {
   return js::UnwatchGuts(cx, proxy, id);
 }
 
 bool
-DOMProxyHandler::has(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id, bool* bp)
+BaseDOMProxyHandler::getOwnPropertyNames(JSContext* cx,
+                                         JS::Handle<JSObject*> proxy,
+                                         JS::AutoIdVector& props) const
+{
+  return ownPropNames(cx, proxy, JSITER_OWNONLY | JSITER_HIDDEN, props);
+}
+
+bool
+BaseDOMProxyHandler::keys(JSContext* cx,
+                          JS::Handle<JSObject*> proxy,
+                          JS::AutoIdVector& props) const
+{
+  return ownPropNames(cx, proxy, JSITER_OWNONLY, props);
+}
+
+bool
+DOMProxyHandler::has(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id, bool* bp) const
 {
   if (!hasOwn(cx, proxy, id, bp)) {
     return false;
@@ -293,6 +324,14 @@ IdToInt32(JSContext* cx, JS::Handle<jsid> id)
   }
 
   return i;
+}
+
+bool
+DOMProxyHandler::setCustom(JSContext* cx, JS::Handle<JSObject*> proxy, JS::Handle<jsid> id,
+                           JS::MutableHandle<JS::Value> vp, bool *done) const
+{
+  *done = false;
+  return true;
 }
 
 } // namespace dom

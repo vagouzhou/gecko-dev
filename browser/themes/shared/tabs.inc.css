@@ -4,7 +4,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 %endif
 
-%define tabHeight 31px
 %define tabCurveWidth 30px
 %define tabCurveHalfWidth 15px
 
@@ -21,7 +20,7 @@
 }
 
 #tabbrowser-tabs {
-  min-height: @tabHeight@;
+  min-height: @tabMinHeight@;
 }
 
 .tabbrowser-tab,
@@ -77,12 +76,30 @@
   list-style-image: url("chrome://mozapps/skin/places/defaultFavicon.png");
 }
 
-.tab-throbber {
+@keyframes throbber-loading {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes throbber-connecting {
+  from {
+    transform: rotate(360deg);
+  }
+}
+
+.tab-throbber[busy] {
   list-style-image: url("chrome://browser/skin/tabbrowser/connecting.png");
+  animation-duration: 960ms;
+  animation-iteration-count: infinite;
+  animation-name: throbber-connecting;
+  animation-timing-function: linear;
 }
 
 .tab-throbber[progress] {
   list-style-image: url("chrome://browser/skin/tabbrowser/loading.png");
+  animation-duration: 800ms;
+  animation-name: throbber-loading;
 }
 
 .tab-throbber:not([pinned]),
@@ -113,13 +130,50 @@
   -moz-padding-start: @tabCurveHalfWidth@;
 }
 
+/* Tab Overflow */
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-start-indicator:not([collapsed]),
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-end-indicator:not([collapsed]) {
+  background-image: url(chrome://browser/skin/tabbrowser/tab-overflow-indicator.png);
+  background-size: 100% 100%;
+  width: 14px;
+  margin-bottom: @tabToolbarNavbarOverlap@;
+  pointer-events: none;
+  position: relative;
+  z-index: 3; /* the selected tab's z-index + 1 */
+}
+
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-start-indicator:-moz-locale-dir(rtl),
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-end-indicator:-moz-locale-dir(ltr) {
+  transform: scaleX(-1);
+}
+
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-start-indicator:not([collapsed]) {
+  -moz-margin-start: -2px;
+  -moz-margin-end: -12px;
+}
+
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-end-indicator:not([collapsed]) {
+  -moz-margin-start: -12px;
+  -moz-margin-end: -2px;
+}
+
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-start-indicator[collapsed],
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-end-indicator[collapsed] {
+  opacity: 0;
+}
+
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-start-indicator,
+.tabbrowser-arrowscrollbox > .arrowscrollbox-overflow-end-indicator {
+  transition: opacity 150ms ease;
+}
+
 .tab-background-start[selected=true]::after,
 .tab-background-start[selected=true]::before,
 .tab-background-start,
 .tab-background-end,
 .tab-background-end[selected=true]::after,
 .tab-background-end[selected=true]::before {
-  min-height: @tabHeight@;
+  min-height: @tabMinHeight@;
   width: @tabCurveWidth@;
 }
 
@@ -227,20 +281,6 @@
 
 /* End selected tab */
 
-/* Background tabs */
-
-/* Decrease the height of the hoverable region of background tabs whenever the tabs are at the top
-   of the window (e.g. no menubar, tabs in titlebar, etc.) to make it easier to drag the window by
-   the titlebar. We don't need this in fullscreen since window dragging is not an issue there. */
-%ifdef XP_MACOSX
-#main-window[tabsintitlebar][sizemode="maximized"] .tab-background-middle:not([selected=true]),
-%endif
-#main-window[tabsintitlebar]:not([sizemode="maximized"]):not([inFullscreen]) #toolbar-menubar:-moz-any([autohide="true"][inactive], :not([autohide])) + #TabsToolbar .tab-background-middle:not([selected=true]) {
-  clip-path: url(chrome://browser/content/browser.xul#tab-hover-clip-path);
-}
-
-/* End background tabs */
-
 /* new tab button border and gradient on hover */
 .tabbrowser-tab:hover > .tab-stack > .tab-background:not([selected=true]),
 .tabs-newtab-button:hover {
@@ -273,7 +313,7 @@
 
 .tabbrowser-tab[pinned][titlechanged]:not([selected="true"]) > .tab-stack > .tab-content {
   background-image: radial-gradient(farthest-corner at center bottom, rgb(255,255,255) 3%, rgba(186,221,251,0.75) 20%, rgba(127,179,255,0.25) 40%, rgba(127,179,255,0) 70%);
-  background-position: center bottom 1px;
+  background-position: center bottom @tabToolbarNavbarOverlap@;
   background-repeat: no-repeat;
   background-size: 85% 100%;
 }
@@ -286,12 +326,11 @@
   -moz-margin-start: -1.5px;
   -moz-margin-end: -1.5px;
   background-image: url(chrome://browser/skin/tabbrowser/tab-separator.png);
-  background-position: left bottom;
+  background-position: left bottom @tabToolbarNavbarOverlap@;
   background-repeat: no-repeat;
   background-size: 3px 100%;
   content: "";
   display: -moz-box;
-  margin-bottom: 1px;
   width: 3px;
 }
 

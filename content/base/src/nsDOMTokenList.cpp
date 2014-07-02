@@ -29,7 +29,7 @@ nsDOMTokenList::nsDOMTokenList(Element* aElement, nsIAtom* aAttrAtom)
 
 nsDOMTokenList::~nsDOMTokenList() { }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(nsDOMTokenList)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(nsDOMTokenList, mElement)
 
 NS_INTERFACE_MAP_BEGIN(nsDOMTokenList)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
@@ -39,12 +39,6 @@ NS_INTERFACE_MAP_END
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsDOMTokenList)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsDOMTokenList)
-
-void
-nsDOMTokenList::DropReference()
-{
-  mElement = nullptr;
-}
 
 const nsAttrValue*
 nsDOMTokenList::GetParsedAttr()
@@ -152,7 +146,8 @@ nsDOMTokenList::AddInternal(const nsAttrValue* aAttr,
     if (oneWasAdded ||
         (!resultStr.IsEmpty() &&
         !nsContentUtils::IsHTMLWhitespace(resultStr.Last()))) {
-      resultStr.Append(NS_LITERAL_STRING(" ") + aToken);
+      resultStr.Append(' ');
+      resultStr.Append(aToken);
     } else {
       resultStr.Append(aToken);
     }
@@ -315,8 +310,8 @@ nsDOMTokenList::Stringify(nsAString& aResult)
 }
 
 JSObject*
-nsDOMTokenList::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+nsDOMTokenList::WrapObject(JSContext *cx)
 {
-  return DOMTokenListBinding::Wrap(cx, scope, this);
+  return DOMTokenListBinding::Wrap(cx, this);
 }
 

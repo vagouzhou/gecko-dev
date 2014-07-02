@@ -51,19 +51,19 @@ nsDOMCaretPosition::GetClientRect() const
 
   NS_ASSERTION(domRange, "unable to retrieve valid dom range from CaretPosition");
 
-  rect = domRange->GetBoundingClientRect();
+  rect = domRange->GetBoundingClientRect(false);
 
   return rect.forget();
 }
 
 JSObject*
-nsDOMCaretPosition::WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope)
+nsDOMCaretPosition::WrapObject(JSContext *aCx)
 {
-  return mozilla::dom::CaretPositionBinding::Wrap(aCx, aScope, this);
+  return mozilla::dom::CaretPositionBinding::Wrap(aCx, this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_2(nsDOMCaretPosition,
-                                        mOffsetNode, mAnonymousContentNode)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(nsDOMCaretPosition,
+                                      mOffsetNode, mAnonymousContentNode)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsDOMCaretPosition)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsDOMCaretPosition)

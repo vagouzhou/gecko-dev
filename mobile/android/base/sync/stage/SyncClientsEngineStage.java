@@ -317,10 +317,11 @@ public class SyncClientsEngineStage extends AbstractSessionManagingSyncStage {
   @Override
   public void execute() throws NoSuchStageException {
     // We can be disabled just for this sync.
-    boolean disabledThisSync = session.config.stagesToSync != null &&
-                               !session.config.stagesToSync.contains(STAGE_NAME);
-    if (disabledThisSync) {
+    boolean enabledThisSync = session.isEngineLocallyEnabled(STAGE_NAME);
+    if (!enabledThisSync) {
+      // These log messages look best when they match the messages in ServerSyncStage.
       Logger.debug(LOG_TAG, "Stage " + STAGE_NAME + " disabled just for this sync.");
+      Logger.info(LOG_TAG, "Skipping stage " + STAGE_NAME + ".");
       session.advance();
       return;
     }
@@ -352,6 +353,7 @@ public class SyncClientsEngineStage extends AbstractSessionManagingSyncStage {
     this.resetLocal();
   }
 
+  @Override
   public Integer getStorageVersion() {
     return VersionConstants.CLIENTS_ENGINE_VERSION;
   }
@@ -392,6 +394,11 @@ public class SyncClientsEngineStage extends AbstractSessionManagingSyncStage {
 
     long lastUpload = session.config.getPersistedServerClientRecordTimestamp();   // Defaults to 0.
     if (lastUpload == 0) {
+      return true;
+    }
+
+    if (session.getClientsDelegate().getLastModifiedTimestamp() > lastUpload) {
+      // Something's changed locally since we last uploaded.
       return true;
     }
 

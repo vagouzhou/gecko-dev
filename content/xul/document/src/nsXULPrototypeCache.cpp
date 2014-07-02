@@ -7,7 +7,6 @@
 
 #include "plstr.h"
 #include "nsXULPrototypeDocument.h"
-#include "nsCSSStyleSheet.h"
 #include "nsIServiceManager.h"
 #include "nsIURI.h"
 
@@ -22,8 +21,9 @@
 #include "nsNetUtil.h"
 #include "nsAppDirectoryServiceDefs.h"
 
-#include "js/Tracer.h"
+#include "js/TracingAPI.h"
 
+#include "mozilla/CSSStyleSheet.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/scache/StartupCache.h"
 #include "mozilla/scache/StartupCacheUtils.h"
@@ -80,7 +80,7 @@ nsXULPrototypeCache::~nsXULPrototypeCache()
 }
 
 
-NS_IMPL_ISUPPORTS1(nsXULPrototypeCache, nsIObserver)
+NS_IMPL_ISUPPORTS(nsXULPrototypeCache, nsIObserver)
 
 /* static */ nsXULPrototypeCache*
 nsXULPrototypeCache::GetInstance()
@@ -172,7 +172,7 @@ nsXULPrototypeCache::PutPrototype(nsXULPrototypeDocument* aDocument)
 }
 
 nsresult
-nsXULPrototypeCache::PutStyleSheet(nsCSSStyleSheet* aStyleSheet)
+nsXULPrototypeCache::PutStyleSheet(CSSStyleSheet* aStyleSheet)
 {
     nsIURI* uri = aStyleSheet->GetSheetURI();
 
@@ -239,7 +239,7 @@ FlushSkinXBL(nsIURI* aKey, nsRefPtr<nsXBLDocumentInfo>& aDocInfo, void* aClosure
 }
 
 static PLDHashOperator
-FlushSkinSheets(nsIURI* aKey, nsRefPtr<nsCSSStyleSheet>& aSheet, void* aClosure)
+FlushSkinSheets(nsIURI* aKey, nsRefPtr<CSSStyleSheet>& aSheet, void* aClosure)
 {
   nsAutoCString str;
   aSheet->GetSheetURI()->GetPath(str);

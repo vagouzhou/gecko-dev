@@ -39,8 +39,8 @@ enum nsLinkState {
 
 // IID for the nsIContent interface
 #define NS_ICONTENT_IID \
-{ 0x4b05faf2, 0x12e0, 0x4f56, \
-  { 0xb5, 0x2e, 0x3e, 0xb6, 0xad, 0x9c, 0x6e, 0xbe } }
+{ 0xc534a378, 0x7b5f, 0x43a4, \
+  { 0xaf, 0x65, 0x5f, 0xfe, 0xea, 0xd6, 0x00, 0xfb } }
 
 /**
  * A node of content in a document's content model. This interface
@@ -54,7 +54,7 @@ public:
   // If you're using the external API, the only thing you can know about
   // nsIContent is that it exists with an IID
 
-  nsIContent(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  nsIContent(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : nsINode(aNodeInfo)
   {
     MOZ_ASSERT(mNodeInfo);
@@ -70,9 +70,11 @@ public:
    * appended to a parent, this will be called after the node has been added to
    * the parent's child list and before nsIDocumentObserver notifications for
    * the addition are dispatched.
-   * @param aDocument The new document for the content node.  Must match the
-   *                  current document of aParent, if aParent is not null.
-   *                  May not be null if aParent is null.
+   * @param aDocument The new document for the content node.  May not be null
+   *                  if aParent is null.  Must match the current document of
+   *                  aParent, if aParent is not null (note that
+   *                  aParent->GetCurrentDoc() can be null, in which case this
+   *                  must also be null).
    * @param aParent The new parent for the content node.  May be null if the
    *                node is being bound as a direct child of the document.
    * @param aBindingParent The new binding parent for the content node.
@@ -175,7 +177,7 @@ public:
   {
     NS_ASSERTION(!HasFlag(NODE_IS_NATIVE_ANONYMOUS_ROOT) ||
                  (HasFlag(NODE_IS_ANONYMOUS_ROOT) &&
-                  HasFlag(NODE_IS_IN_ANONYMOUS_SUBTREE)),
+                  HasFlag(NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE)),
                  "Some flags seem to be missing!");
     return HasFlag(NODE_IS_NATIVE_ANONYMOUS_ROOT);
   }
@@ -192,7 +194,7 @@ public:
    */
   void SetIsNativeAnonymousRoot()
   {
-    SetFlags(NODE_IS_ANONYMOUS_ROOT | NODE_IS_IN_ANONYMOUS_SUBTREE |
+    SetFlags(NODE_IS_ANONYMOUS_ROOT | NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE |
              NODE_IS_NATIVE_ANONYMOUS_ROOT);
   }
 
@@ -240,7 +242,7 @@ public:
                   static_cast<nsIContent*>(SubtreeRoot())->IsInNativeAnonymousSubtree()),
                  "Must have binding parent when in native anonymous subtree which is in document.\n"
                  "Native anonymous subtree which is not in document must have native anonymous root.");
-    return IsInNativeAnonymousSubtree() || GetBindingParent() != nullptr;
+    return IsInNativeAnonymousSubtree() || (!HasFlag(NODE_IS_IN_SHADOW_TREE) && GetBindingParent() != nullptr);
   }
 
   /**
@@ -262,7 +264,7 @@ public:
    * Get the NodeInfo for this element
    * @return the nodes node info
    */
-  inline nsINodeInfo* NodeInfo() const
+  inline mozilla::dom::NodeInfo* NodeInfo() const
   {
     return mNodeInfo;
   }
@@ -317,13 +319,6 @@ public:
     return mNodeInfo->Equals(nsGkAtoms::children, kNameSpaceID_XBL) &&
            GetBindingParent();
   }
-
-  /**
-   * Returns an atom holding the name of the attribute of type ID on
-   * this content node (if applicable).  Returns null for non-element
-   * content nodes.
-   */
-  virtual nsIAtom *GetIDAttributeName() const = 0;
 
   /**
    * Set attribute values. All attribute values are assumed to have a
@@ -534,6 +529,14 @@ public:
   virtual bool TextIsOnlyWhitespace() = 0;
 
   /**
+   * Method to see if the text node contains data that is useful
+   * for a translation: i.e., it consists of more than just whitespace,
+   * digits and punctuation.
+   * NOTE: Always returns false for elements.
+   */
+  virtual bool HasTextForTranslation() = 0;
+
+  /**
    * Append the text content to aResult.
    * NOTE: This asserts and returns for elements
    */
@@ -659,6 +662,20 @@ public:
    * @return The ShadowRoot that is the root of the node tree.
    */
   virtual mozilla::dom::ShadowRoot *GetContainingShadow() const = 0;
+
+  /**
+   * Gets an array of destination insertion points where this content
+   * is distributed by web component distribution algorithms.
+   * The array is created if it does not already exist.
+   */
+  virtual nsTArray<nsIContent*> &DestInsertionPoints() = 0;
+
+  /**
+   * Same as DestInsertionPoints except that this method will return
+   * null if the array of destination insertion points does not already
+   * exist.
+   */
+  virtual nsTArray<nsIContent*> *GetExistingDestInsertionPoints() const = 0;
 
   /**
    * Gets the insertion parent element of the XBL binding.
@@ -807,8 +824,7 @@ public:
 
   /**
    * Get the ID of this content node (the atom corresponding to the
-   * value of the null-namespace attribute whose name is given by
-   * GetIDAttributeName().  This may be null if there is no ID.
+   * value of the id attribute).  This may be null if there is no ID.
    */
   nsIAtom* GetID() const {
     if (HasID()) {
@@ -819,8 +835,7 @@ public:
 
   /**
    * Get the class list of this content node (this corresponds to the
-   * value of the null-namespace attribute whose name is given by
-   * GetClassAttributeName()).  This may be null if there are no
+   * value of the class attribute).  This may be null if there are no
    * classes, but that's not guaranteed.
    */
   const nsAttrValue* GetClasses() const {
@@ -868,10 +883,10 @@ public:
    */
   nsIFrame* GetPrimaryFrame() const
   {
-    return IsInDoc() ? mPrimaryFrame : nullptr;
+    return (IsInDoc() || HasFlag(NODE_IS_IN_SHADOW_TREE)) ? mPrimaryFrame : nullptr;
   }
   void SetPrimaryFrame(nsIFrame* aFrame) {
-    NS_ASSERTION(IsInDoc(), "This will end badly!");
+    MOZ_ASSERT(IsInDoc() || HasFlag(NODE_IS_IN_SHADOW_TREE), "This will end badly!");
     NS_PRECONDITION(!aFrame || !mPrimaryFrame || aFrame == mPrimaryFrame,
                     "Losing track of existing primary frame");
     mPrimaryFrame = aFrame;
@@ -919,7 +934,7 @@ public:
   }
 
   // Overloaded from nsINode
-  virtual already_AddRefed<nsIURI> GetBaseURI() const MOZ_OVERRIDE;
+  virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const MOZ_OVERRIDE;
 
   virtual nsresult PreHandleEvent(
                      mozilla::EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
@@ -933,14 +948,14 @@ protected:
    * Hook for implementing GetID.  This is guaranteed to only be
    * called if HasID() is true.
    */
-  virtual nsIAtom* DoGetID() const = 0;
+  nsIAtom* DoGetID() const;
 
 private:
   /**
    * Hook for implementing GetClasses.  This is guaranteed to only be
    * called if the NODE_MAY_HAVE_CLASS flag is set.
    */
-  virtual const nsAttrValue* DoGetClasses() const = 0;
+  const nsAttrValue* DoGetClasses() const;
 
 public:
 #ifdef DEBUG

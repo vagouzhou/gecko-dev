@@ -54,8 +54,8 @@ _MOZBUILD_EXTERNAL_VARIABLES := \
   JAR_MANIFEST \
   JAVA_JAR_TARGETS \
   JS_MODULES_PATH \
+  LD_VERSION_SCRIPT \
   LIBRARY_NAME \
-  LIBXUL_LIBRARY \
   MODULE \
   MSVC_ENABLE_PGO \
   NO_DIST_INSTALL \
@@ -73,6 +73,7 @@ _MOZBUILD_EXTERNAL_VARIABLES := \
 
 _DEPRECATED_VARIABLES := \
   ANDROID_RESFILES \
+  LIBXUL_LIBRARY \
   MOCHITEST_A11Y_FILES \
   MOCHITEST_BROWSER_FILES \
   MOCHITEST_BROWSER_FILES_PARTS \
@@ -193,16 +194,6 @@ endif
 CONFIG_TOOLS	= $(MOZ_BUILD_ROOT)/config
 AUTOCONF_TOOLS	= $(topsrcdir)/build/autoconf
 
-# Disable MOZ_PSEUDO_DERECURSE when it contains no-pymake and we're running
-# pymake. This can be removed when no-pymake is removed from the default in
-# build/autoconf/compiler-opts.m4.
-ifdef .PYMAKE
-comma = ,
-ifneq (,$(filter no-pymake,$(subst $(comma), ,$(MOZ_PSEUDO_DERECURSE))))
-MOZ_PSEUDO_DERECURSE :=
-endif
-endif
-
 # Disable MOZ_PSEUDO_DERECURSE on PGO builds until it's fixed.
 ifneq (,$(MOZ_PROFILE_USE)$(MOZ_PROFILE_GENERATE))
 MOZ_PSEUDO_DERECURSE :=
@@ -236,10 +227,6 @@ CXX := $(CXX_WRAPPER) $(CXX)
 MKDIR ?= mkdir
 SLEEP ?= sleep
 TOUCH ?= touch
-
-ifdef .PYMAKE
-PYCOMMANDPATH += $(PYTHON_SITE_PACKAGES)
-endif
 
 PYTHON_PATH = $(PYTHON) $(topsrcdir)/config/pythonpath.py
 
@@ -294,7 +281,7 @@ else # ! MOZ_DEBUG
 ifdef MOZ_DEBUG_SYMBOLS
 OS_CXXFLAGS += -UDEBUG -DNDEBUG
 OS_CFLAGS += -UDEBUG -DNDEBUG
-ifdef HAVE_64BIT_OS
+ifdef HAVE_64BIT_BUILD
 OS_LDFLAGS += -DEBUG -OPT:REF,ICF
 else
 OS_LDFLAGS += -DEBUG -OPT:REF
@@ -307,7 +294,7 @@ endif
 #
 ifneq (,$(NS_TRACE_MALLOC)$(MOZ_DMD))
 MOZ_OPTIMIZE_FLAGS=-Zi -Od -UDEBUG -DNDEBUG
-ifdef HAVE_64BIT_OS
+ifdef HAVE_64BIT_BUILD
 OS_LDFLAGS = -DEBUG -OPT:REF,ICF
 else
 OS_LDFLAGS = -DEBUG -OPT:REF
@@ -340,10 +327,7 @@ _ENABLE_PIC=1
 # Determine if module being compiled is destined
 # to be merged into libxul
 
-ifneq (,$(filter xul,$(FINAL_LIBRARY) $(LIBRARY_NAME)))
-  ifdef LIBXUL_LIBRARY
-    $(error LIBRARY_NAME or FINAL_LIBRARY is "xul", LIBXUL_LIBRARY is implied)
-  endif
+ifneq (,$(filter xul xul-%,$(FINAL_LIBRARY) $(LIBRARY_NAME)))
   LIBXUL_LIBRARY := 1
 endif
 
@@ -351,7 +335,7 @@ ifdef LIBXUL_LIBRARY
 ifdef IS_COMPONENT
 $(error IS_COMPONENT is set, but is not compatible with LIBXUL_LIBRARY)
 endif
-ifneq (xul,$(LIBRARY_NAME))
+ifeq (,$(filter xul xul-%,$(LIBRARY_NAME)))
 FORCE_STATIC_LIB=1
 endif
 endif
@@ -722,9 +706,6 @@ endif # NSINSTALL_BIN
 
 ifeq (,$(CROSS_COMPILE)$(filter-out WINNT, $(OS_ARCH)))
 INSTALL = $(NSINSTALL) -t
-ifdef .PYMAKE
-install_cmd = $(NSINSTALL_NATIVECMD) -t $(1)
-endif # .PYMAKE
 
 else
 
@@ -841,6 +822,7 @@ endif
 define CHECK_BINARY
 $(call CHECK_STDCXX,$(1))
 $(call CHECK_TEXTREL,$(1))
+$(call LOCAL_CHECKS,$(1))
 endef
 
 # autoconf.mk sets OBJ_SUFFIX to an error to avoid use before including
@@ -889,6 +871,9 @@ export NONASCII
 
 ifdef MOZ_GTK2_CFLAGS
 MOZ_GTK2_CFLAGS := -I$(topsrcdir)/widget/gtk/compat $(MOZ_GTK2_CFLAGS)
+endif
+ifdef MOZ_GTK3_CFLAGS
+MOZ_GTK3_CFLAGS := -I$(topsrcdir)/widget/gtk/compat-gtk3 $(MOZ_GTK3_CFLAGS)
 endif
 
 DEFINES += -DNO_NSPR_10_SUPPORT

@@ -7,6 +7,8 @@
 #include "mozilla/ArrayUtils.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventListenerManager.h"
+#include "mozilla/EventStateManager.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/Likely.h"
 
@@ -50,6 +52,7 @@
 #include "nsScriptLoader.h"
 #include "nsRuleData.h"
 #include "nsIPrincipal.h"
+#include "nsContainerFrame.h"
 
 #include "nsPresState.h"
 #include "nsILayoutHistoryState.h"
@@ -60,7 +63,6 @@
 #include "nsString.h"
 #include "nsUnicharUtils.h"
 #include "nsGkAtoms.h"
-#include "nsEventStateManager.h"
 #include "nsIDOMEvent.h"
 #include "nsDOMCSSDeclaration.h"
 #include "nsITextControlFrame.h"
@@ -164,14 +166,14 @@ private:
 
 class nsGenericHTMLElementTearoff : public nsIDOMElementCSSInlineStyle
 {
+  virtual ~nsGenericHTMLElementTearoff()
+  {
+  }
+
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 
   nsGenericHTMLElementTearoff(nsGenericHTMLElement *aElement)
     : mElement(aElement)
-  {
-  }
-
-  virtual ~nsGenericHTMLElementTearoff()
   {
   }
 
@@ -188,14 +190,14 @@ private:
   nsRefPtr<nsGenericHTMLElement> mElement;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(nsGenericHTMLElementTearoff, mElement)
+NS_IMPL_CYCLE_COLLECTION(nsGenericHTMLElementTearoff, mElement)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsGenericHTMLElementTearoff)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsGenericHTMLElementTearoff)
 
 NS_INTERFACE_TABLE_HEAD(nsGenericHTMLElementTearoff)
-  NS_INTERFACE_TABLE_INHERITED1(nsGenericHTMLElementTearoff,
-                                nsIDOMElementCSSInlineStyle)
+  NS_INTERFACE_TABLE_INHERITED(nsGenericHTMLElementTearoff,
+                               nsIDOMElementCSSInlineStyle)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(nsGenericHTMLElementTearoff)
 NS_INTERFACE_MAP_END_AGGREGATED(mElement)
 
@@ -507,10 +509,10 @@ nsGenericHTMLElement::UpdateEditableState(bool aNotify)
   nsStyledElement::UpdateEditableState(aNotify);
 }
 
-nsEventStates
+EventStates
 nsGenericHTMLElement::IntrinsicState() const
 {
-  nsEventStates state = nsGenericHTMLElementBase::IntrinsicState();
+  EventStates state = nsGenericHTMLElementBase::IntrinsicState();
 
   if (GetDirectionality() == eDir_RTL) {
     state |= NS_EVENT_STATE_RTL;
@@ -766,7 +768,7 @@ nsGenericHTMLElement::GetEventListenerManagerForAttr(nsIAtom* aAttrName,
 #define FORWARDED_EVENT(name_, id_, type_, struct_) \
        || nsGkAtoms::on##name_ == aAttrName
 #define WINDOW_EVENT FORWARDED_EVENT
-#include "nsEventNameList.h" // IWYU pragma: keep
+#include "mozilla/EventNameList.h" // IWYU pragma: keep
 #undef WINDOW_EVENT
 #undef FORWARDED_EVENT
 #undef EVENT
@@ -872,7 +874,7 @@ nsGenericHTMLElement::SetOn##name_(EventHandlerNonNull* handler)              \
                                                                               \
   return nsINode::SetOn##name_(handler);                                      \
 }
-#include "nsEventNameList.h" // IWYU pragma: keep
+#include "mozilla/EventNameList.h" // IWYU pragma: keep
 #undef ERROR_EVENT
 #undef FORWARDED_EVENT
 #undef EVENT
@@ -989,7 +991,7 @@ nsGenericHTMLElement::ParseAttribute(int32_t aNamespaceID,
     }
   
     if (aAttribute == nsGkAtoms::tabindex) {
-      return aResult.ParseIntWithBounds(aValue, -32768, 32767);
+      return aResult.ParseIntValue(aValue);
     }
 
     if (aAttribute == nsGkAtoms::name) {
@@ -1712,7 +1714,7 @@ nsGenericHTMLElement::GetURIAttr(nsIAtom* aAttr, nsIAtom* aBaseAttr, nsIURI** aU
 nsGenericHTMLElement::IsScrollGrabAllowed(JSContext*, JSObject*)
 {
   // Only allow scroll grabbing in chrome and certified apps.
-  nsIPrincipal* prin = nsContentUtils::GetSubjectPrincipal();
+  nsIPrincipal* prin = nsContentUtils::SubjectPrincipal();
   return nsContentUtils::IsSystemPrincipal(prin) ||
     prin->GetAppStatus() == nsIPrincipal::APP_STATUS_CERTIFIED;
 }
@@ -1903,7 +1905,7 @@ nsGenericHTMLElement::TouchEventsEnabled(JSContext* /* unused */, JSObject* /* u
 
 //----------------------------------------------------------------------
 
-nsGenericHTMLFormElement::nsGenericHTMLFormElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+nsGenericHTMLFormElement::nsGenericHTMLFormElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
   , mForm(nullptr)
   , mFieldSet(nullptr)
@@ -1923,9 +1925,9 @@ nsGenericHTMLFormElement::~nsGenericHTMLFormElement()
   NS_ASSERTION(!mForm, "mForm should be null at this point!");
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(nsGenericHTMLFormElement,
-                             nsGenericHTMLElement,
-                             nsIFormControl)
+NS_IMPL_ISUPPORTS_INHERITED(nsGenericHTMLFormElement,
+                            nsGenericHTMLElement,
+                            nsIFormControl)
 
 mozilla::dom::ParentObject
 nsGenericHTMLFormElement::GetParentObject() const
@@ -2300,13 +2302,13 @@ nsGenericHTMLFormElement::IsHTMLFocusable(bool aWithMouse,
   return false;
 }
 
-nsEventStates
+EventStates
 nsGenericHTMLFormElement::IntrinsicState() const
 {
   // If you add attribute-dependent states here, you need to add them them to
   // AfterSetAttr too.  And add them to AfterSetAttr for all subclasses that
   // implement IntrinsicState() and are affected by that attribute.
-  nsEventStates state = nsGenericHTMLElement::IntrinsicState();
+  EventStates state = nsGenericHTMLElement::IntrinsicState();
 
   if (CanBeDisabled()) {
     // :enabled/:disabled
@@ -2572,9 +2574,8 @@ bool
 nsGenericHTMLFormElement::IsLabelable() const
 {
   // TODO: keygen should be in that list, see bug 101019.
-  // TODO: NS_FORM_INPUT_HIDDEN should be removed, see bug 597650.
   uint32_t type = GetType();
-  return type & NS_FORM_INPUT_ELEMENT ||
+  return (type & NS_FORM_INPUT_ELEMENT && type != NS_FORM_INPUT_HIDDEN) ||
          type & NS_FORM_BUTTON_ELEMENT ||
          // type == NS_FORM_KEYGEN ||
          type == NS_FORM_OUTPUT ||
@@ -2711,7 +2712,7 @@ nsGenericHTMLElement::RegUnRegAccessKey(bool aDoReg)
   nsPresContext *presContext = GetPresContext();
 
   if (presContext) {
-    nsEventStateManager *esm = presContext->EventStateManager();
+    EventStateManager* esm = presContext->EventStateManager();
 
     // Register or unregister as appropriate.
     if (aDoReg) {
@@ -2925,7 +2926,7 @@ nsGenericHTMLElement::ChangeEditableState(int32_t aChange)
 //----------------------------------------------------------------------
 
 nsGenericHTMLFormElementWithState::nsGenericHTMLFormElementWithState(
-    already_AddRefed<nsINodeInfo>& aNodeInfo
+    already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo
   )
   : nsGenericHTMLFormElement(aNodeInfo)
 {
@@ -3034,37 +3035,36 @@ nsGenericHTMLFormElementWithState::RestoreFormControlState()
 }
 
 void
-nsGenericHTMLFormElementWithState::NodeInfoChanged(nsINodeInfo* aOldNodeInfo)
+nsGenericHTMLFormElementWithState::NodeInfoChanged(mozilla::dom::NodeInfo* aOldNodeInfo)
 {
   mStateKey.SetIsVoid(true);
 }
 
-JS::Value
+void
 nsGenericHTMLElement::GetItemValue(JSContext* aCx, JSObject* aScope,
+                                   JS::MutableHandle<JS::Value> aRetval,
                                    ErrorResult& aError)
 {
   JS::Rooted<JSObject*> scope(aCx, aScope);
   if (!HasAttr(kNameSpaceID_None, nsGkAtoms::itemprop)) {
-    return JS::NullValue();
+    aRetval.setNull();
+    return;
   }
 
   if (ItemScope()) {
     JS::Rooted<JS::Value> v(aCx);
-    if (!mozilla::dom::WrapObject(aCx, scope, this, &v)) {
+    JSAutoCompartment ac(aCx, scope);
+    if (!mozilla::dom::WrapObject(aCx, this, aRetval)) {
       aError.Throw(NS_ERROR_FAILURE);
-      return JS::UndefinedValue();
     }
-    return v;
+    return;
   }
 
   nsString string;
   GetItemValueText(string);
-  JS::Rooted<JS::Value> v(aCx);
-  if (!xpc::NonVoidStringToJsval(aCx, string, &v)) {
+  if (!xpc::NonVoidStringToJsval(aCx, string, aRetval)) {
     aError.Throw(NS_ERROR_FAILURE);
-    return JS::UndefinedValue();
   }
-  return v;
 }
 
 NS_IMETHODIMP
@@ -3137,51 +3137,6 @@ nsGenericHTMLElement::SetItemValueText(const nsAString& text)
 }
 
 static void
-nsDOMSettableTokenListPropertyDestructor(void *aObject, nsIAtom *aProperty,
-                                         void *aPropertyValue, void *aData)
-{
-  nsDOMSettableTokenList* list =
-    static_cast<nsDOMSettableTokenList*>(aPropertyValue);
-  list->DropReference();
-  NS_RELEASE(list);
-}
-
-nsDOMSettableTokenList*
-nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom)
-{
-  nsDOMSettableTokenList* list = nullptr;
-  if (HasProperties()) {
-    list = static_cast<nsDOMSettableTokenList*>(GetProperty(aAtom));
-  }
-  if (!list) {
-    list = new nsDOMSettableTokenList(this, aAtom);
-    NS_ADDREF(list);
-    SetProperty(aAtom, list, nsDOMSettableTokenListPropertyDestructor);
-  }
-  return list;
-}
-
-void
-nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom, nsIVariant** aResult)
-{
-  nsISupports* itemType = GetTokenList(aAtom);
-  nsCOMPtr<nsIWritableVariant> out = new nsVariant();
-  out->SetAsInterface(NS_GET_IID(nsISupports), itemType);
-  out.forget(aResult);
-}
-
-nsresult
-nsGenericHTMLElement::SetTokenList(nsIAtom* aAtom, nsIVariant* aValue)
-{
-  nsDOMSettableTokenList* itemType = GetTokenList(aAtom);
-  nsAutoString string;
-  aValue->GetAsAString(string);
-  ErrorResult rv;
-  itemType->SetValue(string, rv);
-  return rv.ErrorCode();
-}
-
-static void
 HTMLPropertiesCollectionDestructor(void *aObject, nsIAtom *aProperty,
                                    void *aPropertyValue, void *aData)
 {
@@ -3211,7 +3166,7 @@ nsGenericHTMLElement::GetProperties(nsISupports** aProperties)
 }
 
 nsSize
-nsGenericHTMLElement::GetWidthHeightForImage(imgIRequest *aImageRequest)
+nsGenericHTMLElement::GetWidthHeightForImage(nsRefPtr<imgRequestProxy>& aImageRequest)
 {
   nsSize size(0,0);
 

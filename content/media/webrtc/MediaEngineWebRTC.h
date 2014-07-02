@@ -40,8 +40,11 @@
 #include "webrtc/voice_engine/include/voe_volume_control.h"
 #include "webrtc/voice_engine/include/voe_external_media.h"
 #include "webrtc/voice_engine/include/voe_audio_processing.h"
+#include "webrtc/voice_engine/include/voe_call_report.h"
 
 // Video Engine
+// conflicts with #include of scoped_ptr.h
+#undef FF
 #include "webrtc/video_engine/include/vie_base.h"
 #include "webrtc/video_engine/include/vie_codec.h"
 #include "webrtc/video_engine/include/vie_render.h"
@@ -56,6 +59,7 @@
 #endif
 
 #include "NullTransport.h"
+#include "AudioOutputObserver.h"
 
 namespace mozilla {
 
@@ -136,18 +140,18 @@ public:
   }
 #endif
 
-  ~MediaEngineWebRTCVideoSource() { Shutdown(); }
-
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
-  virtual nsresult Allocate(const MediaEnginePrefs &aPrefs);
+  virtual nsresult Allocate(const VideoTrackConstraintsN &aConstraints,
+                            const MediaEnginePrefs &aPrefs);
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
-                          bool aNoiseOn, uint32_t aNoise) { return NS_OK; };
+                          bool aNoiseOn, uint32_t aNoise,
+                          int32_t aPlayoutDelay) { return NS_OK; };
   virtual void NotifyPull(MediaStreamGraph* aGraph,
                           SourceMediaStream *aSource,
                           TrackID aId,
@@ -170,8 +174,9 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
 
   void OnHardwareStateChange(HardwareState aState);
+  void GetRotation();
   bool OnNewPreviewFrame(layers::Image* aImage, uint32_t aWidth, uint32_t aHeight);
-  void OnError(CameraErrorContext aContext, CameraError aError);
+  void OnUserError(UserContext aContext, nsresult aError);
   void OnTakePictureComplete(uint8_t* aData, uint32_t aLength, const nsAString& aMimeType);
 
   void AllocImpl();
@@ -202,6 +207,9 @@ public:
     return NS_OK;
   }
 
+protected:
+  ~MediaEngineWebRTCVideoSource() { Shutdown(); }
+
 private:
   static const unsigned int KMaxDeviceNameLength = 128;
   static const unsigned int KMaxUniqueIdLength = 256;
@@ -212,9 +220,12 @@ private:
 
   // Engine variables.
 #ifdef MOZ_B2G_CAMERA
-  nsRefPtr<ICameraControl> mCameraControl;
   mozilla::ReentrantMonitor mCallbackMonitor; // Monitor for camera callback handling
-  nsRefPtr<nsIDOMFile> mLastCapture;
+  // This is only modified on MainThread (AllocImpl and DeallocImpl)
+  nsRefPtr<ICameraControl> mCameraControl;
+  nsCOMPtr<nsIDOMFile> mLastCapture;
+
+  // These are protected by mMonitor below
   int mRotation;
   int mCameraAngle; // See dom/base/ScreenOrientation.h
   bool mBackCamera;
@@ -248,7 +259,11 @@ private:
   nsString mDeviceName;
   nsString mUniqueId;
 
-  void ChooseCapability(const MediaEnginePrefs &aPrefs);
+  void ChooseCapability(const VideoTrackConstraintsN &aConstraints,
+                        const MediaEnginePrefs &aPrefs);
+
+  void GuessCapability(const VideoTrackConstraintsN &aConstraints,
+                       const MediaEnginePrefs &aPrefs);
 };
     class MediaEngineWebRTCScreenSource : public MediaEngineWebRTCVideoSource{
     public:
@@ -286,15 +301,18 @@ class MediaEngineWebRTCAudioSource : public MediaEngineAudioSource,
 public:
   MediaEngineWebRTCAudioSource(webrtc::VoiceEngine* aVoiceEnginePtr, int aIndex,
     const char* name, const char* uuid)
-    : mVoiceEngine(aVoiceEnginePtr)
+    : mSamples(0)
+    , mVoiceEngine(aVoiceEnginePtr)
     , mMonitor("WebRTCMic.Monitor")
     , mCapIndex(aIndex)
     , mChannel(-1)
     , mInitDone(false)
+    , mStarted(false)
     , mEchoOn(false), mAgcOn(false), mNoiseOn(false)
     , mEchoCancel(webrtc::kEcDefault)
     , mAGC(webrtc::kAgcDefault)
     , mNoiseSuppress(webrtc::kNsDefault)
+    , mPlayoutDelay(0)
     , mNullTransport(nullptr) {
     MOZ_ASSERT(aVoiceEnginePtr);
     mState = kReleased;
@@ -302,19 +320,20 @@ public:
     mDeviceUUID.Assign(NS_ConvertUTF8toUTF16(uuid));
     Init();
   }
-  ~MediaEngineWebRTCAudioSource() { Shutdown(); }
 
   virtual void GetName(nsAString&);
   virtual void GetUUID(nsAString&);
 
-  virtual nsresult Allocate(const MediaEnginePrefs &aPrefs);
+  virtual nsresult Allocate(const AudioTrackConstraintsN &aConstraints,
+                            const MediaEnginePrefs &aPrefs);
   virtual nsresult Deallocate();
   virtual nsresult Start(SourceMediaStream*, TrackID);
   virtual nsresult Stop(SourceMediaStream*, TrackID);
   virtual nsresult Snapshot(uint32_t aDuration, nsIDOMFile** aFile);
   virtual nsresult Config(bool aEchoOn, uint32_t aEcho,
                           bool aAgcOn, uint32_t aAGC,
-                          bool aNoiseOn, uint32_t aNoise);
+                          bool aNoiseOn, uint32_t aNoise,
+                          int32_t aPlayoutDelay);
 
   virtual void NotifyPull(MediaStreamGraph* aGraph,
                           SourceMediaStream *aSource,
@@ -333,6 +352,15 @@ public:
 
   NS_DECL_THREADSAFE_ISUPPORTS
 
+protected:
+  ~MediaEngineWebRTCAudioSource() { Shutdown(); }
+
+  // mSamples is an int to avoid conversions when comparing/etc to
+  // samplingFreq & length. Making mSamples protected instead of private is a
+  // silly way to avoid -Wunused-private-field warnings when PR_LOGGING is not
+  // #defined. mSamples is not actually expected to be used by a derived class.
+  int mSamples;
+
 private:
   static const unsigned int KMaxDeviceNameLength = 128;
   static const unsigned int KMaxUniqueIdLength = 256;
@@ -345,6 +373,7 @@ private:
   ScopedCustomReleasePtr<webrtc::VoEExternalMedia> mVoERender;
   ScopedCustomReleasePtr<webrtc::VoENetwork> mVoENetwork;
   ScopedCustomReleasePtr<webrtc::VoEAudioProcessing> mVoEProcessing;
+  ScopedCustomReleasePtr<webrtc::VoECallReport> mVoECallReport;
 
   // mMonitor protects mSources[] access/changes, and transitions of mState
   // from kStarted to kStopped (which are combined with EndTrack()).
@@ -356,6 +385,7 @@ private:
   int mChannel;
   TrackID mTrackID;
   bool mInitDone;
+  bool mStarted;
 
   nsString mDeviceName;
   nsString mDeviceUUID;
@@ -364,6 +394,7 @@ private:
   webrtc::EcModes  mEchoCancel;
   webrtc::AgcModes mAGC;
   webrtc::NsModes  mNoiseSuppress;
+  int32_t mPlayoutDelay;
 
   NullTransport *mNullTransport;
 };
@@ -372,12 +403,6 @@ class MediaEngineWebRTC : public MediaEngine
 {
 public:
   MediaEngineWebRTC(MediaEnginePrefs &aPrefs);
-  ~MediaEngineWebRTC() {
-    Shutdown();
-#ifdef MOZ_B2G_CAMERA
-    AsyncLatencyLogger::Get()->Release();
-#endif
-  }
 
   // Clients should ensure to clean-up sources video/audio sources
   // before invoking Shutdown on this class.
@@ -393,6 +418,15 @@ protected:
                                      bool& aEngineInit,
                                      dom::MozMediaSourceEnum);
 private:
+  ~MediaEngineWebRTC() {
+    Shutdown();
+#ifdef MOZ_B2G_CAMERA
+    AsyncLatencyLogger::Get()->Release();
+#endif
+    // XXX
+    gFarendObserver = nullptr;
+  }
+
   Mutex mMutex;
     webrtc::Config mConfigScreen;
     webrtc::Config mConfigApplication;

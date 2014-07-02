@@ -23,9 +23,9 @@ class nsFileControlFrame : public nsBlockFrame,
 public:
   nsFileControlFrame(nsStyleContext* aContext);
 
-  virtual void Init(nsIContent* aContent,
-                    nsIFrame*   aParent,
-                    nsIFrame*   aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
                                 const nsRect&           aDirtyRect,
@@ -49,7 +49,7 @@ public:
   virtual nsresult AttributeChanged(int32_t         aNameSpaceID,
                                     nsIAtom*        aAttribute,
                                     int32_t         aModType) MOZ_OVERRIDE;
-  virtual void ContentStatesChanged(nsEventStates aStates) MOZ_OVERRIDE;
+  virtual void ContentStatesChanged(mozilla::EventStates aStates) MOZ_OVERRIDE;
   virtual bool IsLeaf() const MOZ_OVERRIDE
   {
     return true;
@@ -77,13 +77,14 @@ protected:
     MouseListener(nsFileControlFrame* aFrame)
      : mFrame(aFrame)
     {}
-    virtual ~MouseListener() {}
 
     void ForgetFrame() {
       mFrame = nullptr;
     }
 
   protected:
+    virtual ~MouseListener() {}
+
     nsFileControlFrame* mFrame;
   };
 

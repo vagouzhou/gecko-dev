@@ -26,6 +26,10 @@
 #include "AndroidBridge.h"
 #endif
 
+#ifdef MOZ_WIDGET_GONK
+#include <cutils/properties.h>
+#endif
+
 #include "ft2build.h"
 #include FT_FREETYPE_H
 #include FT_MODULE_H
@@ -36,67 +40,40 @@ using namespace mozilla::gfx;
 
 static FT_Library gPlatformFTLibrary = nullptr;
 
-class FreetypeReporter MOZ_FINAL : public nsIMemoryReporter
+class FreetypeReporter MOZ_FINAL : public nsIMemoryReporter,
+                                   public CountingAllocatorBase<FreetypeReporter>
 {
 public:
     NS_DECL_ISUPPORTS
 
-    FreetypeReporter()
+    static void* Malloc(FT_Memory, long size)
     {
-#ifdef DEBUG
-        // There must be only one instance of this class, due to |sAmount|
-        // being static.
-        static bool hasRun = false;
-        MOZ_ASSERT(!hasRun);
-        hasRun = true;
-#endif
+        return CountingMalloc(size);
     }
 
-    MOZ_DEFINE_MALLOC_SIZE_OF_ON_ALLOC(MallocSizeOfOnAlloc)
-    MOZ_DEFINE_MALLOC_SIZE_OF_ON_FREE(MallocSizeOfOnFree)
-
-    static void* CountingAlloc(FT_Memory, long size)
+    static void Free(FT_Memory, void* p)
     {
-        void *p = malloc(size);
-        sAmount += MallocSizeOfOnAlloc(p);
-        return p;
-    }
-
-    static void CountingFree(FT_Memory, void* p)
-    {
-        sAmount -= MallocSizeOfOnFree(p);
-        free(p);
+        return CountingFree(p);
     }
 
     static void*
-    CountingRealloc(FT_Memory, long cur_size, long new_size, void* p)
+    Realloc(FT_Memory, long cur_size, long new_size, void* p)
     {
-        sAmount -= MallocSizeOfOnFree(p);
-        void *pnew = realloc(p, new_size);
-        if (pnew) {
-            sAmount += MallocSizeOfOnAlloc(pnew);
-        } else {
-            // realloc failed;  undo the decrement from above
-            sAmount += MallocSizeOfOnAlloc(p);
-        }
-        return pnew;
+        return CountingRealloc(p, new_size);
     }
 
     NS_IMETHOD CollectReports(nsIHandleReportCallback* aHandleReport,
-                              nsISupports* aData)
+                              nsISupports* aData, bool aAnonymize)
     {
         return MOZ_COLLECT_REPORT(
-            "explicit/freetype", KIND_HEAP, UNITS_BYTES, sAmount,
+            "explicit/freetype", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory used by Freetype.");
     }
-
-private:
-    static int64_t sAmount;
 };
 
-NS_IMPL_ISUPPORTS1(FreetypeReporter, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(FreetypeReporter, nsIMemoryReporter)
 
-int64_t FreetypeReporter::sAmount = 0;
+template<> Atomic<size_t> CountingAllocatorBase<FreetypeReporter>::sAmount(0);
 
 static FT_MemoryRec_ sFreetypeMemoryRecord;
 
@@ -104,9 +81,9 @@ gfxAndroidPlatform::gfxAndroidPlatform()
 {
     // A custom allocator.  It counts allocations, enabling memory reporting.
     sFreetypeMemoryRecord.user    = nullptr;
-    sFreetypeMemoryRecord.alloc   = FreetypeReporter::CountingAlloc;
-    sFreetypeMemoryRecord.free    = FreetypeReporter::CountingFree;
-    sFreetypeMemoryRecord.realloc = FreetypeReporter::CountingRealloc;
+    sFreetypeMemoryRecord.alloc   = FreetypeReporter::Malloc;
+    sFreetypeMemoryRecord.free    = FreetypeReporter::Free;
+    sFreetypeMemoryRecord.realloc = FreetypeReporter::Realloc;
 
     // These two calls are equivalent to FT_Init_FreeType(), but allow us to
     // provide a custom memory allocator.
@@ -129,6 +106,11 @@ gfxAndroidPlatform::gfxAndroidPlatform()
         mOffscreenFormat = gfxImageFormat::RGB16_565;
     }
 
+#ifdef MOZ_WIDGET_GONK
+    char propQemu[PROPERTY_VALUE_MAX];
+    property_get("ro.kernel.qemu", propQemu, "");
+    mIsInGonkEmulator = !strncmp(propQemu, "1", 1);
+#endif
 }
 
 gfxAndroidPlatform::~gfxAndroidPlatform()
@@ -194,8 +176,8 @@ gfxAndroidPlatform::GetCommonFallbackFonts(const uint32_t aCh,
     static const char kMotoyaLMaru[] = "MotoyaLMaru";
 
     if (IS_IN_BMP(aCh)) {
-        // try language-specific "Droid Sans *" fonts for certain blocks,
-        // as most devices probably have these
+        // try language-specific "Droid Sans *" and "Noto Sans *" fonts for
+        // certain blocks, as most devices probably have these
         uint8_t block = (aCh >> 8) & 0xff;
         switch (block) {
         case 0x05:
@@ -206,12 +188,15 @@ gfxAndroidPlatform::GetCommonFallbackFonts(const uint32_t aCh,
             aFontList.AppendElement("Droid Sans Arabic");
             break;
         case 0x09:
+            aFontList.AppendElement("Noto Sans Devanagari");
             aFontList.AppendElement("Droid Sans Devanagari");
             break;
         case 0x0b:
+            aFontList.AppendElement("Noto Sans Tamil");
             aFontList.AppendElement("Droid Sans Tamil");
             break;
         case 0x0e:
+            aFontList.AppendElement("Noto Sans Thai");
             aFontList.AppendElement("Droid Sans Thai");
             break;
         case 0x10: case 0x2d:
@@ -263,22 +248,6 @@ gfxAndroidPlatform::UpdateFontList()
 }
 
 nsresult
-gfxAndroidPlatform::ResolveFontName(const nsAString& aFontName,
-                                    FontResolverCallback aCallback,
-                                    void *aClosure,
-                                    bool& aAborted)
-{
-    nsAutoString resolvedName;
-    if (!gfxPlatformFontList::PlatformFontList()->
-             ResolveFontName(aFontName, resolvedName)) {
-        aAborted = false;
-        return NS_OK;
-    }
-    aAborted = !(*aCallback)(resolvedName, aClosure);
-    return NS_OK;
-}
-
-nsresult
 gfxAndroidPlatform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
 {
     gfxPlatformFontList::PlatformFontList()->GetStandardFamilyName(aFontName, aFamilyName);
@@ -320,11 +289,11 @@ gfxAndroidPlatform::IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlag
 }
 
 gfxFontGroup *
-gfxAndroidPlatform::CreateFontGroup(const nsAString &aFamilies,
-                               const gfxFontStyle *aStyle,
-                               gfxUserFontSet* aUserFontSet)
+gfxAndroidPlatform::CreateFontGroup(const FontFamilyList& aFontFamilyList,
+                                    const gfxFontStyle *aStyle,
+                                    gfxUserFontSet* aUserFontSet)
 {
-    return new gfxFontGroup(aFamilies, aStyle, aUserFontSet);
+    return new gfxFontGroup(aFontFamilyList, aStyle, aUserFontSet);
 }
 
 FT_Library
@@ -340,6 +309,14 @@ gfxAndroidPlatform::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
     return gfxPlatformFontList::PlatformFontList()->MakePlatformFont(aProxyEntry,
                                                                      aFontData,
                                                                      aLength);
+}
+
+gfxFontEntry*
+gfxAndroidPlatform::LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
+                                    const nsAString& aFontName)
+{
+    return gfxPlatformFontList::PlatformFontList()->LookupLocalFont(aProxyEntry,
+                                                                    aFontName);
 }
 
 TemporaryRef<ScaledFont>

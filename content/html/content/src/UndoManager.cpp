@@ -14,7 +14,8 @@
 #include "nsIVariant.h"
 #include "nsVariant.h"
 #include "nsINode.h"
-#include "nsIDOMDOMTransactionEvent.h"
+#include "mozilla/dom/DOMTransactionEvent.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "nsContentUtils.h"
 #include "jsapi.h"
 #include "nsIDocument.h"
@@ -110,6 +111,8 @@ class UndoAttrChanged : public UndoTxn {
   UndoAttrChanged(mozilla::dom::Element* aElement, int32_t aNameSpaceID,
                   nsIAtom* aAttribute, int32_t aModType);
 protected:
+  ~UndoAttrChanged() {}
+
   nsresult SaveRedoState();
   nsCOMPtr<nsIContent> mElement;
   int32_t mNameSpaceID;
@@ -119,7 +122,7 @@ protected:
   nsString mUndoValue;
 };
 
-NS_IMPL_CYCLE_COLLECTION_2(UndoAttrChanged, mElement, mAttrAtom)
+NS_IMPL_CYCLE_COLLECTION(UndoAttrChanged, mElement, mAttrAtom)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UndoAttrChanged)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -218,6 +221,8 @@ class UndoTextChanged : public UndoTxn {
   UndoTextChanged(nsIContent* aContent,
                   CharacterDataChangeInfo* aChange);
 protected:
+  ~UndoTextChanged() {}
+
   void SaveRedoState();
   nsCOMPtr<nsIContent> mContent;
   UndoCharacterChangedData mChange;
@@ -225,7 +230,7 @@ protected:
   nsString mUndoValue;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(UndoTextChanged, mContent)
+NS_IMPL_CYCLE_COLLECTION(UndoTextChanged, mContent)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UndoTextChanged)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -330,11 +335,12 @@ class UndoContentAppend : public UndoTxn {
   NS_IMETHOD UndoTransaction();
   UndoContentAppend(nsIContent* aContent);
 protected:
+  ~UndoContentAppend() {}
   nsCOMPtr<nsIContent> mContent;
   nsCOMArray<nsIContent> mChildren;
 };
 
-NS_IMPL_CYCLE_COLLECTION_2(UndoContentAppend, mContent, mChildren)
+NS_IMPL_CYCLE_COLLECTION(UndoContentAppend, mContent, mChildren)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UndoContentAppend)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -400,12 +406,13 @@ class UndoContentInsert : public UndoTxn {
   UndoContentInsert(nsIContent* aContent, nsIContent* aChild,
                     int32_t aInsertIndex);
 protected:
+  ~UndoContentInsert() {}
   nsCOMPtr<nsIContent> mContent;
   nsCOMPtr<nsIContent> mChild;
   nsCOMPtr<nsIContent> mNextNode;
 };
 
-NS_IMPL_CYCLE_COLLECTION_3(UndoContentInsert, mContent, mChild, mNextNode)
+NS_IMPL_CYCLE_COLLECTION(UndoContentInsert, mContent, mChild, mNextNode)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UndoContentInsert)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -488,12 +495,13 @@ class UndoContentRemove : public UndoTxn {
   UndoContentRemove(nsIContent* aContent, nsIContent* aChild,
                     int32_t aInsertIndex);
 protected:
+  ~UndoContentRemove() {}
   nsCOMPtr<nsIContent> mContent;
   nsCOMPtr<nsIContent> mChild;
   nsCOMPtr<nsIContent> mNextNode;
 };
 
-NS_IMPL_CYCLE_COLLECTION_3(UndoContentRemove, mContent, mChild, mNextNode)
+NS_IMPL_CYCLE_COLLECTION(UndoContentRemove, mContent, mChild, mNextNode)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(UndoContentRemove)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -596,7 +604,7 @@ protected:
                                       // reference.
 };
 
-NS_IMPL_ISUPPORTS1(UndoMutationObserver, nsIMutationObserver)
+NS_IMPL_ISUPPORTS(UndoMutationObserver, nsIMutationObserver)
 
 bool
 UndoMutationObserver::IsManagerForMutation(nsIContent* aContent)
@@ -733,6 +741,7 @@ class FunctionCallTxn : public UndoTxn {
   NS_IMETHOD UndoTransaction();
   FunctionCallTxn(DOMTransaction* aTransaction, uint32_t aFlags);
 protected:
+  ~FunctionCallTxn() {}
   /**
    * Call a function member on the transaction object with the
    * specified function name.
@@ -741,7 +750,7 @@ protected:
   uint32_t mFlags;
 };
 
-NS_IMPL_CYCLE_COLLECTION_1(FunctionCallTxn, mTransaction)
+NS_IMPL_CYCLE_COLLECTION(FunctionCallTxn, mTransaction)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(FunctionCallTxn)
   NS_INTERFACE_MAP_ENTRY(nsITransaction)
@@ -820,7 +829,7 @@ protected:
 // UndoManager
 /////////////////////////////////////////////////
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_2(UndoManager, mTxnManager, mHostNode)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(UndoManager, mTxnManager, mHostNode)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(UndoManager)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(UndoManager)
 
@@ -1142,48 +1151,22 @@ UndoManager::DispatchTransactionEvent(JSContext* aCx, const nsAString& aType,
     return;
   }
 
-  nsRefPtr<Event> event = mHostNode->OwnerDoc()->CreateEvent(
-    NS_LITERAL_STRING("domtransaction"), aRv);
-  if (aRv.Failed()) {
+  JS::Rooted<JS::Value> array(aCx);
+  if (!ToJSValue(aCx, items, &array)) {
     return;
   }
 
-  nsCOMPtr<nsIWritableVariant> transactions = new nsVariant();
+  RootedDictionary<DOMTransactionEventInit> init(aCx);
+  init.mBubbles = true;
+  init.mCancelable = false;
+  init.mTransactions = array;
 
-  // Unwrap the DOMTransactions into jsvals, then convert
-  // to nsIVariant then put into a nsIVariant array. Arrays in XPIDL suck.
-  nsCOMArray<nsIVariant> keepAlive;
-  nsTArray<nsIVariant*> transactionItems;
-  for (uint32_t i = 0; i < items.Length(); i++) {
-    JS::Rooted<JS::Value> txVal(aCx, JS::ObjectValue(*items[i]->Callback()));
-    if (!JS_WrapValue(aCx, &txVal)) {
-      aRv.Throw(NS_ERROR_OUT_OF_MEMORY);
-      return;
-    }
-    nsCOMPtr<nsIVariant> txVariant;
-    nsresult rv =
-      nsContentUtils::XPConnect()->JSToVariant(aCx, txVal,
-                                               getter_AddRefs(txVariant));
-    if (NS_SUCCEEDED(rv)) {
-      keepAlive.AppendObject(txVariant);
-      transactionItems.AppendElement(txVariant.get());
-    }
-  }
+  nsRefPtr<DOMTransactionEvent> event =
+    DOMTransactionEvent::Constructor(mHostNode, aType, init);
 
-  transactions->SetAsArray(nsIDataType::VTYPE_INTERFACE_IS,
-                           &NS_GET_IID(nsIVariant),
-                           transactionItems.Length(),
-                           transactionItems.Elements());
-
-  nsCOMPtr<nsIDOMDOMTransactionEvent> ptEvent = do_QueryInterface(event);
-  if (ptEvent &&
-      NS_SUCCEEDED(ptEvent->InitDOMTransactionEvent(aType, true, false,
-                                                    transactions))) {
-    event->SetTrusted(true);
-    event->SetTarget(mHostNode);
-    EventDispatcher::DispatchDOMEvent(mHostNode, nullptr, event,
-                                      nullptr, nullptr);
-  }
+  event->SetTrusted(true);
+  EventDispatcher::DispatchDOMEvent(mHostNode, nullptr, event,
+                                    nullptr, nullptr);
 }
 
 void

@@ -23,7 +23,7 @@ function test()
     ok(msg, "output message found");
 
     let anchor = msg.querySelector("a");
-    let body = msg.querySelector(".body");
+    let body = msg.querySelector(".message-body");
     ok(anchor, "object anchor");
     ok(body, "message body");
     ok(body.textContent.contains('testProp: "testValue"'), "message text check");
@@ -56,14 +56,14 @@ function test()
 
     jsterm.clearOutput();
 
-    msg = yield execute("window");
+    msg = yield execute("window.location");
     ok(msg, "output message found");
 
-    body = msg.querySelector(".body");
+    body = msg.querySelector(".message-body");
     ok(body, "message body");
     anchor = msg.querySelector("a");
     ok(anchor, "object anchor");
-    ok(body.textContent.contains("Window \u2192 http://example.com/browser/"),
+    ok(body.textContent.contains("Location \u2192 http://example.com/browser/"),
        "message text check");
 
     msg.scrollIntoView();
@@ -76,7 +76,7 @@ function test()
     ok(vview, "variables view object");
 
     yield findVariableViewProperties(vviewVar, [
-      { name: "foo", value: "globalFooBug783499" },
+      { name: "host", value: "example.com" },
     ], { webconsole: hud });
 
     vview.window.focus();

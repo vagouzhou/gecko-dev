@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
-/* vim: set ts=4 sw=4 et tw=99 ft=cpp: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -35,7 +35,7 @@ Filter(JSContext *cx, HandleObject wrapper, AutoIdVector &props)
     for (size_t n = 0; n < props.length(); ++n) {
         id = props[n];
         if (Policy::check(cx, wrapper, id, Wrapper::GET))
-            props[w++] = id;
+            props[w++].set(id);
         else if (JS_IsExceptionPending(cx))
             return false;
     }
@@ -60,11 +60,10 @@ template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::getPropertyDescriptor(JSContext *cx, HandleObject wrapper,
                                                       HandleId id,
-                                                      JS::MutableHandle<JSPropertyDescriptor> desc,
-                                                      unsigned flags)
+                                                      JS::MutableHandle<JSPropertyDescriptor> desc) const
 {
     assertEnteredPolicy(cx, wrapper, id, BaseProxyHandler::GET | BaseProxyHandler::SET);
-    if (!Base::getPropertyDescriptor(cx, wrapper, id, desc, flags))
+    if (!Base::getPropertyDescriptor(cx, wrapper, id, desc))
         return false;
     return FilterSetter<Policy>(cx, wrapper, id, desc);
 }
@@ -73,11 +72,10 @@ template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::getOwnPropertyDescriptor(JSContext *cx, HandleObject wrapper,
                                                          HandleId id,
-                                                         JS::MutableHandle<JSPropertyDescriptor> desc,
-                                                         unsigned flags)
+                                                         JS::MutableHandle<JSPropertyDescriptor> desc) const
 {
     assertEnteredPolicy(cx, wrapper, id, BaseProxyHandler::GET | BaseProxyHandler::SET);
-    if (!Base::getOwnPropertyDescriptor(cx, wrapper, id, desc, flags))
+    if (!Base::getOwnPropertyDescriptor(cx, wrapper, id, desc))
         return false;
     return FilterSetter<Policy>(cx, wrapper, id, desc);
 }
@@ -85,7 +83,7 @@ FilteringWrapper<Base, Policy>::getOwnPropertyDescriptor(JSContext *cx, HandleOb
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::getOwnPropertyNames(JSContext *cx, HandleObject wrapper,
-                                                    AutoIdVector &props)
+                                                    AutoIdVector &props) const
 {
     assertEnteredPolicy(cx, wrapper, JSID_VOID, BaseProxyHandler::ENUMERATE);
     return Base::getOwnPropertyNames(cx, wrapper, props) &&
@@ -95,7 +93,7 @@ FilteringWrapper<Base, Policy>::getOwnPropertyNames(JSContext *cx, HandleObject 
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::enumerate(JSContext *cx, HandleObject wrapper,
-                                          AutoIdVector &props)
+                                          AutoIdVector &props) const
 {
     assertEnteredPolicy(cx, wrapper, JSID_VOID, BaseProxyHandler::ENUMERATE);
     return Base::enumerate(cx, wrapper, props) &&
@@ -105,7 +103,7 @@ FilteringWrapper<Base, Policy>::enumerate(JSContext *cx, HandleObject wrapper,
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::keys(JSContext *cx, HandleObject wrapper,
-                                     AutoIdVector &props)
+                                     AutoIdVector &props) const
 {
     assertEnteredPolicy(cx, wrapper, JSID_VOID, BaseProxyHandler::ENUMERATE);
     return Base::keys(cx, wrapper, props) &&
@@ -115,7 +113,7 @@ FilteringWrapper<Base, Policy>::keys(JSContext *cx, HandleObject wrapper,
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::iterate(JSContext *cx, HandleObject wrapper,
-                                        unsigned flags, MutableHandleValue vp)
+                                        unsigned flags, MutableHandleValue vp) const
 {
     assertEnteredPolicy(cx, wrapper, JSID_VOID, BaseProxyHandler::ENUMERATE);
     // We refuse to trigger the iterator hook across chrome wrappers because
@@ -128,7 +126,7 @@ FilteringWrapper<Base, Policy>::iterate(JSContext *cx, HandleObject wrapper,
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::nativeCall(JSContext *cx, JS::IsAcceptableThis test,
-                                           JS::NativeImpl impl, JS::CallArgs args)
+                                           JS::NativeImpl impl, JS::CallArgs args) const
 {
     if (Policy::allowNativeCall(cx, test, impl))
         return Base::Permissive::nativeCall(cx, test, impl, args);
@@ -138,7 +136,7 @@ FilteringWrapper<Base, Policy>::nativeCall(JSContext *cx, JS::IsAcceptableThis t
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::defaultValue(JSContext *cx, HandleObject obj,
-                                             JSType hint, MutableHandleValue vp)
+                                             JSType hint, MutableHandleValue vp) const
 {
     return Base::defaultValue(cx, obj, hint, vp);
 }
@@ -149,7 +147,7 @@ template<>
 bool
 FilteringWrapper<CrossCompartmentSecurityWrapper, GentlyOpaque>
                 ::defaultValue(JSContext *cx, HandleObject obj,
-                               JSType hint, MutableHandleValue vp)
+                               JSType hint, MutableHandleValue vp) const
 {
     JSString *str = JS_NewStringCopyZ(cx, "[Opaque]");
     if (!str)
@@ -162,7 +160,7 @@ FilteringWrapper<CrossCompartmentSecurityWrapper, GentlyOpaque>
 template <typename Base, typename Policy>
 bool
 FilteringWrapper<Base, Policy>::enter(JSContext *cx, HandleObject wrapper,
-                                      HandleId id, Wrapper::Action act, bool *bp)
+                                      HandleId id, Wrapper::Action act, bool *bp) const
 {
     // This is a super ugly hacky to get around Xray Resolve wonkiness.
     //
@@ -193,12 +191,12 @@ FilteringWrapper<Base, Policy>::enter(JSContext *cx, HandleObject wrapper,
 #define NNXOW FilteringWrapper<CrossCompartmentSecurityWrapper, Opaque>
 #define NNXOWC FilteringWrapper<CrossCompartmentSecurityWrapper, OpaqueWithCall>
 #define GO FilteringWrapper<CrossCompartmentSecurityWrapper, GentlyOpaque>
-template<> XOW XOW::singleton(0);
-template<> DXOW DXOW::singleton(0);
-template<> NNXOW NNXOW::singleton(0);
-template<> NNXOWC NNXOWC::singleton(0);
+template<> const XOW XOW::singleton(0);
+template<> const DXOW DXOW::singleton(0);
+template<> const NNXOW NNXOW::singleton(0);
+template<> const NNXOWC NNXOWC::singleton(0);
 
-template<> GO GO::singleton(0);
+template<> const GO GO::singleton(0);
 
 template class XOW;
 template class DXOW;

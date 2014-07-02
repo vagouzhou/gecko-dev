@@ -7,14 +7,13 @@
 #include "Voicemail.h"
 
 #include "mozilla/dom/MozVoicemailBinding.h"
+#include "mozilla/dom/MozVoicemailEvent.h"
 #include "nsIDOMMozVoicemailStatus.h"
-#include "nsIDOMMozVoicemailEvent.h"
 
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
 #include "nsDOMClassInfo.h"
 #include "nsServiceManagerUtils.h"
-#include "GeneratedEvents.h"
 
 #define NS_RILCONTENTHELPER_CONTRACTID "@mozilla.org/ril/content-helper;1"
 const char* kPrefRilNumRadioInterfaces = "ril.numRadioInterfaces";
@@ -42,11 +41,11 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(Voicemail::Listener, nsIVoicemailListener)
+NS_IMPL_ISUPPORTS(Voicemail::Listener, nsIVoicemailListener)
 
 Voicemail::Voicemail(nsPIDOMWindow* aWindow,
                      nsIVoicemailProvider* aProvider)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , mProvider(aProvider)
 {
   mListener = new Listener(this);
@@ -64,9 +63,9 @@ Voicemail::~Voicemail()
 }
 
 JSObject*
-Voicemail::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+Voicemail::WrapObject(JSContext* aCx)
 {
-  return MozVoicemailBinding::Wrap(aCx, aScope, this);
+  return MozVoicemailBinding::Wrap(aCx, this);
 }
 
 bool
@@ -164,15 +163,14 @@ Voicemail::GetDisplayName(const Optional<uint32_t>& aServiceId, nsString& aDispl
 NS_IMETHODIMP
 Voicemail::NotifyStatusChanged(nsIDOMMozVoicemailStatus* aStatus)
 {
-  nsCOMPtr<nsIDOMEvent> event;
-  NS_NewDOMMozVoicemailEvent(getter_AddRefs(event), this, nullptr, nullptr);
+  MozVoicemailEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mStatus = aStatus;
 
-  nsCOMPtr<nsIDOMMozVoicemailEvent> ce = do_QueryInterface(event);
-  nsresult rv = ce->InitMozVoicemailEvent(NS_LITERAL_STRING("statuschanged"),
-                                          false, false, aStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return DispatchTrustedEvent(ce);
+  nsRefPtr<MozVoicemailEvent> event =
+    MozVoicemailEvent::Constructor(this, NS_LITERAL_STRING("statuschanged"), init);
+  return DispatchTrustedEvent(event);
 }
 
 nsresult

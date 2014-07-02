@@ -58,10 +58,9 @@ Library::Name(JSContext* cx, unsigned argc, jsval *vp)
 
   Value arg = args[0];
   JSString* str = nullptr;
-  if (JSVAL_IS_STRING(arg)) {
-    str = JSVAL_TO_STRING(arg);
-  }
-  else {
+  if (arg.isString()) {
+    str = arg.toString();
+  } else {
     JS_ReportError(cx, "name argument must be a string");
     return false;
   }
@@ -96,22 +95,22 @@ Library::Create(JSContext* cx, jsval path_, JSCTypesCallbacks* callbacks)
   if (!JS_DefineFunctions(cx, libraryObj, sLibraryFunctions))
     return nullptr;
 
-  if (!JSVAL_IS_STRING(path)) {
+  if (!path.isString()) {
     JS_ReportError(cx, "open takes a string argument");
     return nullptr;
   }
 
   PRLibSpec libSpec;
-  RootedFlatString pathStr(cx, JS_FlattenString(cx, JSVAL_TO_STRING(path)));
+  RootedFlatString pathStr(cx, JS_FlattenString(cx, path.toString()));
   if (!pathStr)
+    return nullptr;
+  AutoStableStringChars pathStrChars(cx);
+  if (!pathStrChars.initTwoByte(cx, pathStr))
     return nullptr;
 #ifdef XP_WIN
   // On Windows, converting to native charset may corrupt path string.
   // So, we have to use Unicode path directly.
-  char16ptr_t pathChars = JS_GetFlatStringChars(pathStr);
-  if (!pathChars)
-    return nullptr;
-
+  char16ptr_t pathChars = pathStrChars.twoByteChars();
   libSpec.value.pathname_u = pathChars;
   libSpec.type = PR_LibSpec_PathnameU;
 #else
@@ -119,8 +118,8 @@ Library::Create(JSContext* cx, jsval path_, JSCTypesCallbacks* callbacks)
   // provided.
   char* pathBytes;
   if (callbacks && callbacks->unicodeToNative) {
-    pathBytes = 
-      callbacks->unicodeToNative(cx, pathStr->chars(), pathStr->length());
+    pathBytes =
+      callbacks->unicodeToNative(cx, pathStrChars.twoByteChars(), pathStr->length());
     if (!pathBytes)
       return nullptr;
 
@@ -128,7 +127,7 @@ Library::Create(JSContext* cx, jsval path_, JSCTypesCallbacks* callbacks)
     // Fallback: assume the platform native charset is UTF-8. This is true
     // for Mac OS X, Android, and probably Linux.
     size_t nbytes =
-      GetDeflatedUTF8StringLength(cx, pathStr->chars(), pathStr->length());
+      GetDeflatedUTF8StringLength(cx, pathStrChars.twoByteChars(), pathStr->length());
     if (nbytes == (size_t) -1)
       return nullptr;
 
@@ -136,7 +135,7 @@ Library::Create(JSContext* cx, jsval path_, JSCTypesCallbacks* callbacks)
     if (!pathBytes)
       return nullptr;
 
-    ASSERT_OK(DeflateStringToUTF8Buffer(cx, pathStr->chars(),
+    ASSERT_OK(DeflateStringToUTF8Buffer(cx, pathStrChars.twoByteChars(),
                 pathStr->length(), pathBytes, &nbytes));
     pathBytes[nbytes] = 0;
   }
@@ -179,7 +178,7 @@ Library::GetLibrary(JSObject* obj)
   JS_ASSERT(IsLibrary(obj));
 
   jsval slot = JS_GetReservedSlot(obj, SLOT_LIBRARY);
-  return static_cast<PRLibrary*>(JSVAL_TO_PRIVATE(slot));
+  return static_cast<PRLibrary*>(slot.toPrivate());
 }
 
 static void
@@ -273,7 +272,7 @@ Library::Declare(JSContext* cx, unsigned argc, jsval* vp)
   //    back will be of type 'type', and will point into the symbol data.
   //    This data will be both readable and writable via the usual CData
   //    accessors. If 'type' is a PointerType to a FunctionType, the result will
-  //    be a function pointer, as with 1). 
+  //    be a function pointer, as with 1).
   if (args.length() < 2) {
     JS_ReportError(cx, "declare requires at least two arguments");
     return false;

@@ -1,6 +1,8 @@
-<!-- This Source Code Form is subject to the terms of the Mozilla Public
-   - License, v. 2.0. If a copy of the MPL was not distributed with this file,
-   - You can obtain one at http://mozilla.org/MPL/2.0/.  -->
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+<!-- Applications panel -->
 
 <script type="application/javascript"
         src="chrome://browser/content/preferences/in-content/applications.js"/>
@@ -55,7 +57,18 @@
   <key key="&focusSearch2.key;" modifiers="accel" oncommand="gApplicationsPane.focusFilterBox();"/>
 </keyset>
 
-<vbox data-category="paneApplications" hidden="true" flex="1">
+<hbox id="header-application"
+      class="header"
+      hidden="true"
+      data-category="paneApplications">
+  <image class="header-icon"/>
+  <label class="header-name">&paneApplications.title;</label>
+</hbox>
+
+<vbox id="applicationsContent"
+      data-category="paneApplications"
+      hidden="true"
+      flex="1">
   <hbox>
     <textbox id="filter" flex="1"
              type="search"

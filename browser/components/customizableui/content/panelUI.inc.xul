@@ -33,7 +33,7 @@
           <toolbarbutton id="PanelUI-help" label="&helpMenu.label;"
                          closemenu="none"
                          tooltiptext="&appMenuHelp.tooltip;"
-                         oncommand="PanelUI.showHelpView(this.parentNode);"/>
+                         oncommand="PanelUI.showHelpView(this);"/>
           <toolbarseparator/>
           <toolbarbutton id="PanelUI-quit"
 #ifdef XP_WIN
@@ -58,6 +58,7 @@
                        label="&appMenuHistory.viewSidebar.label;"
                        type="checkbox"
                        class="subviewbutton"
+                       key="key_gotoHistory"
                        oncommand="toggleSidebar('viewHistorySidebar'); PanelUI.hide();">
           <observes element="viewHistorySidebar" attribute="checked"/>
         </toolbarbutton>
@@ -101,6 +102,7 @@
         <toolbarbutton id="panelMenu_viewBookmarksSidebar"
                        label="&viewBookmarksSidebar2.label;"
                        class="subviewbutton"
+                       key="viewBookmarksSidebarKb"
                        oncommand="toggleSidebar('viewBookmarksSidebar'); PanelUI.hide();">
           <observes element="viewBookmarksSidebar" attribute="checked"/>
         </toolbarbutton>
@@ -138,6 +140,10 @@
     </panelview>
 
     <panelview id="PanelUI-socialapi" flex="1"/>
+
+#ifdef MOZ_LOOP
+    <panelview id="PanelUI-loopapi" flex="1"/>
+#endif
 
     <panelview id="PanelUI-feeds" flex="1" oncommand="FeedHandler.subscribeToFeed(null, event);">
       <label value="&feedsMenu.label;" class="panel-subview-header"/>

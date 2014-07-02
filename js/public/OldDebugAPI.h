@@ -20,11 +20,12 @@
 #include "js/TypeDecls.h"
 
 class JSAtom;
-class JSFreeOp;
+struct JSFreeOp;
 
 namespace js {
 class InterpreterFrame;
-class ScriptFrameIter;
+class FrameIter;
+class ScriptSource;
 }
 
 // Raw JSScript* because this needs to be callable from a signal handler.
@@ -39,18 +40,20 @@ namespace JS {
 class FrameDescription
 {
   public:
-    explicit FrameDescription(const js::ScriptFrameIter& iter);
+    explicit FrameDescription(const js::FrameIter& iter);
+    FrameDescription(const FrameDescription &rhs);
+    ~FrameDescription();
 
     unsigned lineno() {
-        if (!linenoComputed) {
+        if (!linenoComputed_) {
             lineno_ = JS_PCToLineNumber(nullptr, script_, pc_);
-            linenoComputed = true;
+            linenoComputed_ = true;
         }
         return lineno_;
     }
 
     const char *filename() const {
-        return JS_GetScriptFilename(script_);
+        return filename_;
     }
 
     JSFlatString *funDisplayName() const {
@@ -67,11 +70,22 @@ class FrameDescription
     }
 
   private:
-    Heap<JSScript*> script_;
+    void operator=(const FrameDescription &) MOZ_DELETE;
+
+    // These fields are always initialized:
     Heap<JSString*> funDisplayName_;
-    jsbytecode *pc_;
+    const char *filename_;
+
+    // One of script_ xor scriptSource_ is non-null.
+    Heap<JSScript*> script_;
+    js::ScriptSource *scriptSource_;
+
+    // For script_-having frames, lineno_ is lazily computed as an optimization.
+    bool linenoComputed_;
     unsigned lineno_;
-    bool linenoComputed;
+
+    // pc_ is non-null iff script_ is non-null. If !pc_, linenoComputed_ = true.
+    jsbytecode *pc_;
 };
 
 struct StackDescription
@@ -199,7 +213,7 @@ JS_SetDebugMode(JSContext *cx, bool debug);
 
 /* Turn on single step mode. */
 extern JS_PUBLIC_API(bool)
-JS_SetSingleStepMode(JSContext *cx, JSScript *script, bool singleStep);
+JS_SetSingleStepMode(JSContext *cx, JS::HandleScript script, bool singleStep);
 
 /* The closure argument will be marked. */
 extern JS_PUBLIC_API(bool)
@@ -276,12 +290,6 @@ JS_GetFunctionScript(JSContext *cx, JS::HandleFunction fun);
 
 extern JS_PUBLIC_API(JSNative)
 JS_GetFunctionNative(JSContext *cx, JSFunction *fun);
-
-extern JS_PUBLIC_API(JSPrincipals *)
-JS_GetScriptPrincipals(JSScript *script);
-
-extern JS_PUBLIC_API(JSPrincipals *)
-JS_GetScriptOriginPrincipals(JSScript *script);
 
 JS_PUBLIC_API(JSFunction *)
 JS_GetScriptFunction(JSContext *cx, JSScript *script);
@@ -430,7 +438,7 @@ class JS_PUBLIC_API(JSBrokenFrameIterator)
     void *data_;
 
   public:
-    JSBrokenFrameIterator(JSContext *cx);
+    explicit JSBrokenFrameIterator(JSContext *cx);
     ~JSBrokenFrameIterator();
 
     bool done() const;
@@ -532,7 +540,7 @@ extern JS_PUBLIC_API(bool)
 JS_DefineDebuggerObject(JSContext *cx, JS::HandleObject obj);
 
 extern JS_PUBLIC_API(void)
-JS_DumpPCCounts(JSContext *cx, JSScript *script);
+JS_DumpPCCounts(JSContext *cx, JS::HandleScript script);
 
 extern JS_PUBLIC_API(void)
 JS_DumpCompartmentPCCounts(JSContext *cx);

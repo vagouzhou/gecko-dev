@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -6,9 +6,8 @@
 "use strict";
 
 const { Cc, Ci, Cu, Cr } = require("chrome");
-const promise = require("sdk/core/promise");
+const { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
 const EventEmitter = require("devtools/toolkit/event-emitter");
-
 const { DevToolsUtils } = Cu.import("resource://gre/modules/devtools/DevToolsUtils.jsm", {});
 
 function DebuggerPanel(iframeWindow, toolbox) {
@@ -60,7 +59,7 @@ DebuggerPanel.prototype = {
         return this;
       })
       .then(null, function onError(aReason) {
-        DevToolsUtils.reportException("DebuggerPane.prototype.open", aReason);
+        DevToolsUtils.reportException("DebuggerPanel.prototype.open", aReason);
       });
   },
 

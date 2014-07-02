@@ -19,6 +19,8 @@
 #include <ui/Fence.h>
 #endif
 
+#include "mozilla/layers/GrallocTextureClient.h"
+#include "mozilla/layers/TextureClient.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Types.h"
 #include "mozilla/Monitor.h"
@@ -42,6 +44,7 @@ PRLogModuleInfo *gOmxDecoderLog;
 using namespace MPAPI;
 using namespace mozilla;
 using namespace mozilla::gfx;
+using namespace mozilla::layers;
 
 namespace mozilla {
 
@@ -190,43 +193,6 @@ private:
   bool    mCompleted;
 };
 
-namespace layers {
-
-VideoGraphicBuffer::VideoGraphicBuffer(const android::wp<android::OmxDecoder> aOmxDecoder,
-                                       android::MediaBuffer *aBuffer,
-                                       SurfaceDescriptor& aDescriptor)
-  : GraphicBufferLocked(aDescriptor),
-    mMediaBuffer(aBuffer),
-    mOmxDecoder(aOmxDecoder)
-{
-  mMediaBuffer->add_ref();
-}
-
-VideoGraphicBuffer::~VideoGraphicBuffer()
-{
-  MOZ_ASSERT(!mMediaBuffer);
-}
-
-void
-VideoGraphicBuffer::Unlock()
-{
-  android::sp<android::OmxDecoder> omxDecoder = mOmxDecoder.promote();
-  if (omxDecoder.get()) {
-    // Post kNotifyPostReleaseVideoBuffer message to OmxDecoder via ALooper.
-    // The message is delivered to OmxDecoder on ALooper thread.
-    // MediaBuffer::release() could take a very long time.
-    // PostReleaseVideoBuffer() prevents long time locking.
-    omxDecoder->PostReleaseVideoBuffer(mMediaBuffer, mReleaseFenceHandle);
-  } else {
-    NS_WARNING("OmxDecoder is not present");
-    if (mMediaBuffer) {
-      mMediaBuffer->release();
-    }
-  }
-  mMediaBuffer = nullptr;
-}
-
-}
 }
 
 namespace android {
@@ -396,6 +362,12 @@ bool OmxDecoder::Init(sp<MediaExtractor>& extractor) {
 
   if (audioTrackIndex != -1) {
     mAudioTrack = extractor->getTrack(audioTrackIndex);
+
+#ifdef MOZ_AUDIO_OFFLOAD
+    // mAudioTrack is be used by OMXCodec. For offloaded audio track, using same
+    // object gives undetermined behavior. So get a new track
+    mAudioOffloadTrack = extractor->getTrack(audioTrackIndex);
+#endif
   }
   return true;
 }
@@ -452,18 +424,6 @@ bool OmxDecoder::TryLoad() {
 
   // read audio metadata
   if (mAudioSource.get()) {
-    // For RTSP, we don't read the audio source for now.
-    // The metadata of RTSP will be obtained through SDP at connection time.
-    if (mResource->GetRtspPointer()) {
-      sp<MetaData> meta = mAudioSource->getFormat();
-      if (!meta->findInt32(kKeyChannelCount, &mAudioChannels) ||
-          !meta->findInt32(kKeySampleRate, &mAudioSampleRate)) {
-        NS_WARNING("Couldn't get audio metadata from OMX decoder");
-        return false;
-      }
-      return true;
-    }
-
     // To reliably get the channel and sample rate data we need to read from the
     // audio source until we get a INFO_FORMAT_CHANGE status
     status_t err = mAudioSource->read(&mAudioBuffer);
@@ -534,7 +494,11 @@ bool OmxDecoder::AllocateMediaResources()
     // is currently used, and for formats this code is currently used
     // for (h.264).  So if we don't get a hardware decoder, just give
     // up.
+#ifdef MOZ_OMX_WEBM_DECODER
+    int flags = 0;//fallback to omx sw decoder if there is no hw decoder
+#else
     int flags = kHardwareCodecsOnly;
+#endif//MOZ_OMX_WEBM_DECODER
 
     if (isInEmulator()) {
       // If we are in emulator, allow to fall back to software.
@@ -653,6 +617,20 @@ bool OmxDecoder::SetVideoFormat() {
   if (!mVideoSource->getFormat()->findInt32(kKeySliceHeight, &mVideoSliceHeight)) {
     mVideoSliceHeight = mVideoHeight;
     NS_WARNING("slice height not available, assuming height");
+  }
+
+  // Since ICS, valid video side is caluculated from kKeyCropRect.
+  // kKeyWidth means decoded video buffer width.
+  // kKeyHeight means decoded video buffer height.
+  // On some hardwares, decoded video buffer and valid video size are different.
+  int32_t crop_left, crop_top, crop_right, crop_bottom;
+  if (mVideoSource->getFormat()->findRect(kKeyCropRect,
+                                          &crop_left,
+                                          &crop_top,
+                                          &crop_right,
+                                          &crop_bottom)) {
+    mVideoWidth = crop_right - crop_left + 1;
+    mVideoHeight = crop_bottom - crop_top + 1;
   }
 
   if (!mVideoSource->getFormat()->findInt32(kKeyRotation, &mVideoRotation)) {
@@ -801,6 +779,7 @@ bool OmxDecoder::ReadVideo(VideoFrame *aFrame, int64_t aTimeUs,
   if (aDoSeek) {
     {
       Mutex::Autolock autoLock(mSeekLock);
+      ReleaseAllPendingVideoBuffersLocked();
       mIsVideoSeeking = true;
     }
     MediaSource::ReadOptions options;
@@ -837,20 +816,21 @@ bool OmxDecoder::ReadVideo(VideoFrame *aFrame, int64_t aTimeUs,
       unreadable = 0;
     }
 
-    mozilla::layers::SurfaceDescriptor *descriptor = nullptr;
+    RefPtr<mozilla::layers::TextureClient> textureClient;
     if ((mVideoBuffer->graphicBuffer().get())) {
-      descriptor = mNativeWindow->getSurfaceDescriptorFromBuffer(mVideoBuffer->graphicBuffer().get());
+      textureClient = mNativeWindow->getTextureClientFromBuffer(mVideoBuffer->graphicBuffer().get());
     }
 
-    if (descriptor) {
-      // Change the descriptor's size to video's size. There are cases that
-      // GraphicBuffer's size and actual video size is different.
-      // See Bug 850566.
-      mozilla::layers::SurfaceDescriptorGralloc newDescriptor = descriptor->get_SurfaceDescriptorGralloc();
-      newDescriptor.size() = IntSize(mVideoWidth, mVideoHeight);
+    if (textureClient) {
+      // Manually increment reference count to keep MediaBuffer alive
+      // during TextureClient is in use.
+      mVideoBuffer->add_ref();
+      GrallocTextureClientOGL* grallocClient = static_cast<GrallocTextureClientOGL*>(textureClient.get());
+      grallocClient->SetMediaBuffer(mVideoBuffer);
+      // Set recycle callback for TextureClient
+      textureClient->SetRecycleCallback(OmxDecoder::RecycleCallback, this);
 
-      mozilla::layers::SurfaceDescriptor descWrapper(newDescriptor);
-      aFrame->mGraphicBuffer = new mozilla::layers::VideoGraphicBuffer(this, mVideoBuffer, descWrapper);
+      aFrame->mGraphicBuffer = textureClient;
       aFrame->mRotation = mVideoRotation;
       aFrame->mTimeUs = timeUs;
       aFrame->mKeyFrame = keyFrame;
@@ -1097,6 +1077,16 @@ void OmxDecoder::ReleaseAllPendingVideoBuffersLocked()
     buffer->release();
   }
   releasingVideoBuffers.clear();
+}
+
+/* static */ void
+OmxDecoder::RecycleCallback(TextureClient* aClient, void* aClosure)
+{
+  OmxDecoder* decoder = static_cast<OmxDecoder*>(aClosure);
+  GrallocTextureClientOGL* client = static_cast<GrallocTextureClientOGL*>(aClient);
+
+  aClient->ClearRecycleCallback();
+  decoder->PostReleaseVideoBuffer(client->GetMediaBuffer(), client->GetReleaseFenceHandle());
 }
 
 int64_t OmxDecoder::ProcessCachedData(int64_t aOffset, bool aWaitForCompletion)

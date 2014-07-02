@@ -112,8 +112,8 @@ nsPlainTextSerializer::~nsPlainTextSerializer()
   NS_WARN_IF_FALSE(mHeadLevel == 0, "Wrong head level!");
 }
 
-NS_IMPL_ISUPPORTS1(nsPlainTextSerializer,
-                   nsIContentSerializer)
+NS_IMPL_ISUPPORTS(nsPlainTextSerializer,
+                  nsIContentSerializer)
 
 
 NS_IMETHODIMP 
@@ -182,13 +182,8 @@ nsPlainTextSerializer::Init(uint32_t aFlags, uint32_t aWrapColumn,
     }
   }
 
-  // XXX We should let the caller pass this in.
-  if (Preferences::GetBool("browser.frames.enabled")) {
-    mFlags &= ~nsIDocumentEncoder::OutputNoFramesContent;
-  }
-  else {
-    mFlags |= nsIDocumentEncoder::OutputNoFramesContent;
-  }
+  // XXX We should let the caller decide whether to do this or not
+  mFlags &= ~nsIDocumentEncoder::OutputNoFramesContent;
 
   return NS_OK;
 }
@@ -278,7 +273,8 @@ nsPlainTextSerializer::AppendText(nsIContent* aText,
     return NS_ERROR_FAILURE;
   }
   
-  int32_t endoffset = (aEndOffset == -1) ? frag->GetLength() : aEndOffset;
+  int32_t fragLength = frag->GetLength();
+  int32_t endoffset = (aEndOffset == -1) ? fragLength : std::min(aEndOffset, fragLength);
   NS_ASSERTION(aStartOffset <= endoffset, "A start offset is beyond the end of the text fragment!");
 
   int32_t length = endoffset - aStartOffset;
@@ -1393,7 +1389,7 @@ nsPlainTextSerializer::EndLine(bool aSoftlinebreak, bool aBreakBySpace)
     // If breaker character is ASCII space with RFC 3676 support (delsp=yes),
     // add twice space.
     if ((mFlags & nsIDocumentEncoder::OutputFormatDelSp) && aBreakBySpace)
-      mCurrentLine.Append(NS_LITERAL_STRING("  "));
+      mCurrentLine.AppendLiteral("  ");
     else
       mCurrentLine.Append(char16_t(' '));
   }
@@ -1607,7 +1603,7 @@ nsPlainTextSerializer::Write(const nsAString& aStr)
         }
       }
 
-      mCurrentLine.AssignLiteral("");
+      mCurrentLine.Truncate();
       if (mFlags & nsIDocumentEncoder::OutputFormatFlowed) {
         if ((outputLineBreak || !spacesOnly) && // bugs 261467,125928
             !stringpart.EqualsLiteral("-- ") &&

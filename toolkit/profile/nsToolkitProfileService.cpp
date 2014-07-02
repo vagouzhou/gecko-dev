@@ -53,9 +53,9 @@ public:
     nsRefPtr<nsToolkitProfile> mNext;
     nsToolkitProfile          *mPrev;
 
+private:
     ~nsToolkitProfile() { }
 
-private:
     nsToolkitProfile(const nsACString& aName,
                      nsIFile* aRootDir,
                      nsIFile* aLocalDir,
@@ -82,9 +82,10 @@ public:
                   nsIProfileUnlocker* *aUnlocker);
 
     nsToolkitProfileLock() { }
-    ~nsToolkitProfileLock();
 
 private:
+    ~nsToolkitProfileLock();
+
     nsRefPtr<nsToolkitProfile> mProfile;
     nsCOMPtr<nsIFile> mDirectory;
     nsCOMPtr<nsIFile> mLocalDirectory;
@@ -94,6 +95,7 @@ private:
 
 class nsToolkitProfileFactory MOZ_FINAL : public nsIFactory
 {
+    ~nsToolkitProfileFactory() {}
 public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSIFACTORY
@@ -122,7 +124,7 @@ private:
         gService = nullptr;
     }
 
-    NS_HIDDEN_(nsresult) Init();
+    nsresult Init();
 
     nsresult CreateTimesInternal(nsIFile *profileDir);
 
@@ -183,7 +185,7 @@ nsToolkitProfile::nsToolkitProfile(const nsACString& aName,
     }
 }
 
-NS_IMPL_ISUPPORTS1(nsToolkitProfile, nsIToolkitProfile)
+NS_IMPL_ISUPPORTS(nsToolkitProfile, nsIToolkitProfile)
 
 NS_IMETHODIMP
 nsToolkitProfile::GetRootDir(nsIFile* *aResult)
@@ -284,7 +286,7 @@ nsToolkitProfile::Lock(nsIProfileUnlocker* *aUnlocker, nsIProfileLock* *aResult)
     return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsToolkitProfileLock, nsIProfileLock)
+NS_IMPL_ISUPPORTS(nsToolkitProfileLock, nsIProfileLock)
 
 nsresult
 nsToolkitProfileLock::Init(nsToolkitProfile* aProfile, nsIProfileUnlocker* *aUnlocker)
@@ -374,8 +376,8 @@ nsToolkitProfileLock::~nsToolkitProfileLock()
 nsToolkitProfileService*
 nsToolkitProfileService::gService = nullptr;
 
-NS_IMPL_ISUPPORTS1(nsToolkitProfileService,
-                   nsIToolkitProfileService)
+NS_IMPL_ISUPPORTS(nsToolkitProfileService,
+                  nsIToolkitProfileService)
 
 nsresult
 nsToolkitProfileService::Init()
@@ -524,8 +526,8 @@ nsToolkitProfileService::GetProfiles(nsISimpleEnumerator* *aResult)
     return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsToolkitProfileService::ProfileEnumerator,
-                   nsISimpleEnumerator)
+NS_IMPL_ISUPPORTS(nsToolkitProfileService::ProfileEnumerator,
+                  nsISimpleEnumerator)
 
 NS_IMETHODIMP
 nsToolkitProfileService::ProfileEnumerator::HasMoreElements(bool* aResult)
@@ -745,7 +747,7 @@ nsToolkitProfileService::CreateProfileInternal(nsIFile* aRootDir,
     nsCOMPtr<nsIFile> localDir;
 
     bool isRelative;
-    rv = mAppData->Contains(rootDir, true, &isRelative);
+    rv = mAppData->Contains(rootDir, &isRelative);
     if (NS_SUCCEEDED(rv) && isRelative) {
         nsAutoCString path;
         rv = rootDir->GetRelativeDescriptor(mAppData, path);
@@ -912,7 +914,7 @@ nsToolkitProfileService::Flush()
     while (cur) {
         // if the profile dir is relative to appdir...
         bool isRelative;
-        rv = mAppData->Contains(cur->mRootDir, true, &isRelative);
+        rv = mAppData->Contains(cur->mRootDir, &isRelative);
         if (NS_SUCCEEDED(rv) && isRelative) {
             // we use a relative descriptor
             rv = cur->mRootDir->GetRelativeDescriptor(mAppData, path);
@@ -957,7 +959,7 @@ nsToolkitProfileService::Flush()
     return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS1(nsToolkitProfileFactory, nsIFactory)
+NS_IMPL_ISUPPORTS(nsToolkitProfileFactory, nsIFactory)
 
 NS_IMETHODIMP
 nsToolkitProfileFactory::CreateInstance(nsISupports* aOuter, const nsID& aIID,

@@ -17,7 +17,6 @@
 #include "mozilla/StaticPtr.h"
 #include "nsIMemoryReporter.h"
 #include "gfx2DGlue.h"
-#include "gfxASurface.h"
 #include "gfxPattern.h"  // Workaround for flaw in bug 921753 part 2.
 #include "gfxDrawable.h"
 #include "gfxPlatform.h"
@@ -110,10 +109,12 @@ private:
  * A CachedSurface associates a surface with a key that uniquely identifies that
  * surface.
  */
-class CachedSurface : public RefCounted<CachedSurface>
+class CachedSurface
 {
+  ~CachedSurface() {}
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(CachedSurface)
+  NS_INLINE_DECL_REFCOUNTING(CachedSurface)
+
   CachedSurface(DrawTarget*       aTarget,
                 const IntSize     aTargetSize,
                 const Cost        aCost,
@@ -156,10 +157,12 @@ private:
  * destroyed or invalidated. Since this will happen frequently, it makes sense
  * to make it cheap by storing the surfaces for each image separately.
  */
-class ImageSurfaceCache : public RefCounted<ImageSurfaceCache>
+class ImageSurfaceCache
 {
+  ~ImageSurfaceCache() {}
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(ImageSurfaceCache)
+  NS_INLINE_DECL_REFCOUNTING(ImageSurfaceCache)
+
   typedef nsRefPtrHashtable<nsGenericHashKey<SurfaceKey>, CachedSurface> SurfaceTable;
 
   bool IsEmpty() const { return mSurfaces.Count() == 0; }
@@ -220,6 +223,7 @@ public:
       os->AddObserver(mMemoryPressureObserver, "memory-pressure", false);
   }
 
+private:
   virtual ~SurfaceCacheImpl()
   {
     nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
@@ -229,6 +233,7 @@ public:
     UnregisterWeakMemoryReporter(this);
   }
 
+public:
   void InitMemoryReporter() {
     RegisterWeakMemoryReporter(this);
   }
@@ -365,7 +370,8 @@ public:
   }
 
   NS_IMETHOD
-  CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData)
+  CollectReports(nsIHandleReportCallback* aHandleReport, nsISupports* aData,
+                 bool aAnonymize)
   {
     return MOZ_COLLECT_REPORT(
       "imagelib-surface-cache", KIND_OTHER, UNITS_BYTES,
@@ -413,8 +419,6 @@ private:
   {
     NS_DECL_ISUPPORTS
 
-    virtual ~MemoryPressureObserver() { }
-
     NS_IMETHOD Observe(nsISupports*, const char* aTopic, const char16_t*)
     {
       if (sInstance && strcmp(aTopic, "memory-pressure") == 0) {
@@ -422,6 +426,9 @@ private:
       }
       return NS_OK;
     }
+
+  private:
+    virtual ~MemoryPressureObserver() { }
   };
 
 
@@ -433,8 +440,8 @@ private:
   Cost                                                      mAvailableCost;
 };
 
-NS_IMPL_ISUPPORTS1(SurfaceCacheImpl, nsIMemoryReporter)
-NS_IMPL_ISUPPORTS1(SurfaceCacheImpl::MemoryPressureObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(SurfaceCacheImpl, nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(SurfaceCacheImpl::MemoryPressureObserver, nsIObserver)
 
 ///////////////////////////////////////////////////////////////////////////////
 // Public API
@@ -533,10 +540,12 @@ SurfaceCache::Discard(Image* aImageKey)
 /* static */ void
 SurfaceCache::DiscardAll()
 {
-  MOZ_ASSERT(sInstance, "Should be initialized");
   MOZ_ASSERT(NS_IsMainThread());
 
-  return sInstance->DiscardAll();
+  if (sInstance) {
+    sInstance->DiscardAll();
+  }
+  // nothing to discard
 }
 
 } // namespace image

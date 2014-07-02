@@ -11,7 +11,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(HR)
 namespace mozilla {
 namespace dom {
 
-HTMLHRElement::HTMLHRElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLHRElement::HTMLHRElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
 {
 }
@@ -20,8 +20,8 @@ HTMLHRElement::~HTMLHRElement()
 {
 }
 
-NS_IMPL_ISUPPORTS_INHERITED1(HTMLHRElement, nsGenericHTMLElement,
-                             nsIDOMHTMLHRElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLHRElement, nsGenericHTMLElement,
+                            nsIDOMHTMLHRElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLHRElement)
 
@@ -257,9 +257,9 @@ HTMLHRElement::GetAttributeMappingFunction() const
 }
 
 JSObject*
-HTMLHRElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLHRElement::WrapNode(JSContext* aCx)
 {
-  return HTMLHRElementBinding::Wrap(aCx, aScope, this);
+  return HTMLHRElementBinding::Wrap(aCx, this);
 }
 
 } // namespace mozilla

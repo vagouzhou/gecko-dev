@@ -474,10 +474,15 @@ exports.Type = Type;
  */
 
 let projectLargeInt = function projectLargeInt(x) {
-  return parseInt(x.toString(), 10);
+  let str = x.toString();
+  let rv = parseInt(str, 10);
+  if (rv.toString() !== str) {
+    throw new TypeError("Number " + str + " cannot be projected to a double");
+  }
+  return rv;
 };
 let projectLargeUInt = function projectLargeUInt(x) {
-  return parseInt(x.toString(), 10);
+  return projectLargeInt(x);
 };
 let projectValue = function projectValue(x) {
   if (!(x instanceof ctypes.CData)) {
@@ -1248,6 +1253,7 @@ function OSError(operation, path = "") {
   this.operation = operation;
   this.path = path;
 }
+OSError.prototype = Object.create(Error.prototype);
 exports.OSError = OSError;
 
 

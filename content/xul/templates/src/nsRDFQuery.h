@@ -39,6 +39,8 @@ public:
 
 class nsRDFQuery MOZ_FINAL : public nsITemplateRDFQuery
 {
+    ~nsRDFQuery() { Finish(); }
+
 public:
 
     nsRDFQuery(nsXULTemplateQueryProcessorRDF* aProcessor)
@@ -47,8 +49,6 @@ public:
         mRoot(nullptr),
         mCachedResults(nullptr)
     { }
-
-    ~nsRDFQuery() { Finish(); }
 
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
     NS_DECL_CYCLE_COLLECTION_CLASS(nsRDFQuery)
@@ -124,6 +124,6 @@ protected:
     void Finish();
 };
 
-NS_DEFINE_STATIC_IID_ACCESSOR(nsRDFQuery, NS_ITEMPLATERDFQUERY_IID)
+NS_DEFINE_STATIC_IID_ACCESSOR(nsITemplateRDFQuery, NS_ITEMPLATERDFQUERY_IID)
 
 #endif // nsRDFQuery_h__

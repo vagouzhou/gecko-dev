@@ -165,7 +165,7 @@ public:
   void SetWakeLock(bool aLock);
 
   mozilla::gl::GLContext* GLContext();
-  
+
   // For ANPOpenGL
   class TextureInfo {
   public:
@@ -226,7 +226,6 @@ public:
                              nsNPAPIPluginStreamListener** listener);
 
   nsNPAPIPluginInstance();
-  virtual ~nsNPAPIPluginInstance();
 
   // To be called when an instance becomes orphaned, when
   // it's plugin is no longer guaranteed to be around.
@@ -302,6 +301,8 @@ public:
   }
 
 protected:
+
+  virtual ~nsNPAPIPluginInstance();
 
   nsresult GetTagType(nsPluginTagType *result);
   nsresult GetAttributes(uint16_t& n, const char*const*& names,

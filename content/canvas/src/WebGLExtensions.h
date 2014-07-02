@@ -24,7 +24,6 @@ class WebGLExtensionBase
 {
 public:
     WebGLExtensionBase(WebGLContext*);
-    virtual ~WebGLExtensionBase();
 
     WebGLContext *GetParentObject() const {
         return Context();
@@ -36,17 +35,18 @@ public:
     NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(WebGLExtensionBase)
 
 protected:
+    virtual ~WebGLExtensionBase();
+
     bool mIsLost;
 };
 
 #define DECL_WEBGL_EXTENSION_GOOP                                           \
-    virtual JSObject* WrapObject(JSContext *cx,                             \
-                                 JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+    virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE;
 
 #define IMPL_WEBGL_EXTENSION_GOOP(WebGLExtensionType) \
     JSObject* \
-    WebGLExtensionType::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope) { \
-        return dom::WebGLExtensionType##Binding::Wrap(cx, scope, this); \
+    WebGLExtensionType::WrapObject(JSContext *cx) { \
+        return dom::WebGLExtensionType##Binding::Wrap(cx, this); \
     }
 
 class WebGLExtensionCompressedTextureATC
@@ -306,6 +306,18 @@ public:
     void VertexAttribDivisorANGLE(GLuint index, GLuint divisor);
 
     static bool IsSupported(const WebGLContext* context);
+
+    DECL_WEBGL_EXTENSION_GOOP
+};
+
+class WebGLExtensionBlendMinMax
+    : public WebGLExtensionBase
+{
+public:
+    WebGLExtensionBlendMinMax(WebGLContext*);
+    virtual ~WebGLExtensionBlendMinMax();
+
+    static bool IsSupported(const WebGLContext*);
 
     DECL_WEBGL_EXTENSION_GOOP
 };

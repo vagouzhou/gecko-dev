@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -27,7 +27,7 @@ const SEARCH_TOKEN_FLAG = "#";
 const SEARCH_LINE_FLAG = ":";
 const SEARCH_VARIABLE_FLAG = "*";
 const SEARCH_AUTOFILL = [SEARCH_GLOBAL_FLAG, SEARCH_FUNCTION_FLAG, SEARCH_TOKEN_FLAG];
-const EDITOR_VARIABLE_HOVER_DELAY = 350; // ms
+const EDITOR_VARIABLE_HOVER_DELAY = 750; // ms
 const EDITOR_VARIABLE_POPUP_POSITION = "topcenter bottomleft";
 const TOOLBAR_ORDER_POPUP_POSITION = "topcenter bottomleft";
 
@@ -236,11 +236,18 @@ let DebuggerView = {
       this._onEditorLoad(aCallback);
     });
 
-    this.editor.on("gutterClick", (ev, line) => {
-      if (this.editor.hasBreakpoint(line)) {
-        this.editor.removeBreakpoint(line);
-      } else {
-        this.editor.addBreakpoint(line);
+    this.editor.on("gutterClick", (ev, line, button) => {
+      // A right-click shouldn't do anything but keep track of where
+      // it was clicked.
+      if(button == 2) {
+        this.clickedLine = line;
+      }
+      else {
+        if (this.editor.hasBreakpoint(line)) {
+          this.editor.removeBreakpoint(line);
+        } else {
+          this.editor.addBreakpoint(line);
+        }
       }
     });
   },
@@ -370,8 +377,7 @@ let DebuggerView = {
    *        The source object coming from the active thread.
    * @param object aFlags
    *        Additional options for setting the source. Supported options:
-   *          - force: boolean allowing whether we can get the selected url's
-   *                   text again.
+   *          - force: boolean forcing all text to be reshown in the editor
    * @return object
    *         A promise that is resolved after the source text has been set.
    */
@@ -390,8 +396,7 @@ let DebuggerView = {
     this._setEditorText(L10N.getStr("loadingText"));
     this._editorSource = { url: aSource.url, promise: deferred.promise };
 
-    DebuggerController.SourceScripts.getText(aSource)
-                                    .then(([, aText, aContentType]) => {
+    DebuggerController.SourceScripts.getText(aSource).then(([, aText, aContentType]) => {
       // Avoid setting an unexpected source. This may happen when switching
       // very fast between sources that haven't been fetched yet.
       if (this._editorSource.url != aSource.url) {
@@ -442,8 +447,7 @@ let DebuggerView = {
    *          - noDebug: don't set the debug location at the specified line
    *          - align: string specifying whether to align the specified line
    *                   at the "top", "center" or "bottom" of the editor
-   *          - force: boolean allowing whether we can get the selected url's
-   *                   text again
+   *          - force: boolean forcing all text to be reshown in the editor
    * @return object
    *         A promise that is resolved after the source text has been set.
    */
@@ -469,8 +473,7 @@ let DebuggerView = {
 
     // Make sure the requested source client is shown in the editor, then
     // update the source editor's caret position and debug location.
-    return this._setEditorSource(sourceForm, aFlags)
-               .then(([,, aContentType]) => {
+    return this._setEditorSource(sourceForm, aFlags).then(([,, aContentType]) => {
       // Record the contentType learned from fetching
       sourceForm.contentType = aContentType;
       // Line numbers in the source editor should start from 1. If invalid

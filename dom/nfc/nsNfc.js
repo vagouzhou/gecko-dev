@@ -17,7 +17,6 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/ObjectWrapper.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this,
                                    "appsService",
@@ -55,15 +54,7 @@ MozNFCTag.prototype = {
 
   initialize: function(aWindow, aSessionToken) {
     this._window = aWindow;
-    this.setSessionToken(aSessionToken);
-  },
-
-  // ChromeOnly interface
-  setSessionToken: function setSessionToken(aSessionToken) {
-    debug("Setting session token.");
     this.session = aSessionToken;
-    // report to NFC worker:
-    this._nfcContentHelper.setSessionToken(aSessionToken);
   },
 
   _techTypesMap: null,
@@ -110,15 +101,7 @@ MozNFCPeer.prototype = {
 
   initialize: function(aWindow, aSessionToken) {
     this._window = aWindow;
-    this.setSessionToken(aSessionToken);
-  },
-
-  // ChromeOnly interface
-  setSessionToken: function setSessionToken(aSessionToken) {
-    debug("Setting session token.");
     this.session = aSessionToken;
-    // report to NFC worker:
-    return this._nfcContentHelper.setSessionToken(aSessionToken);
   },
 
   // NFCPeer interface:
@@ -129,7 +112,7 @@ MozNFCPeer.prototype = {
 
   sendFile: function sendFile(blob) {
     let data = {
-      "blob": blob.slice()
+      "blob": blob
     };
     return this._nfcContentHelper.sendFile(this._window,
                                            Cu.cloneInto(data, this._window),
@@ -166,8 +149,9 @@ mozNfc.prototype = {
     this._window = aWindow;
   },
 
-  // Only System Process can call the following interfaces
-  // 'checkP2PRegistration' , 'notifyUserAcceptedP2P' , 'notifySendFileStatus'
+  // Only apps which have nfc-manager permission can call the following interfaces
+  // 'checkP2PRegistration' , 'notifyUserAcceptedP2P' , 'notifySendFileStatus',
+  // 'startPoll', 'stopPoll', and 'powerOff'.
   checkP2PRegistration: function checkP2PRegistration(manifestUrl) {
     // Get the AppID and pass it to ContentHelper
     let appID = appsService.getAppLocalIdByManifestURL(manifestUrl);
@@ -185,28 +169,36 @@ mozNfc.prototype = {
                                                 status, requestId);
   },
 
+  startPoll: function startPoll() {
+    return this._nfcContentHelper.startPoll(this._window);
+  },
+
+  stopPoll: function stopPoll() {
+    return this._nfcContentHelper.stopPoll(this._window);
+  },
+
+  powerOff: function powerOff() {
+    return this._nfcContentHelper.powerOff(this._window);
+  },
+
   getNFCTag: function getNFCTag(sessionToken) {
     let obj = new MozNFCTag();
-    let nfcTag = this._window.MozNFCTag._create(this._window, obj);
-    if (nfcTag) {
-      obj.initialize(this._window, sessionToken);
-      return nfcTag;
-    } else {
-      debug("Error: Unable to create NFCTag");
-      return null;
+    obj.initialize(this._window, sessionToken);
+    if (this._nfcContentHelper.setSessionToken(sessionToken)) {
+      return this._window.MozNFCTag._create(this._window, obj);
     }
+    throw new Error("Unable to create NFCTag object, Reason:  Bad SessionToken " +
+                     sessionToken);
   },
 
   getNFCPeer: function getNFCPeer(sessionToken) {
     let obj = new MozNFCPeer();
-    let nfcPeer = this._window.MozNFCPeer._create(this._window, obj);
-    if (nfcPeer) {
-      obj.initialize(this._window, sessionToken);
-      return nfcPeer;
-    } else {
-      debug("Error: Unable to create NFCPeer");
-      return null;
+    obj.initialize(this._window, sessionToken);
+    if (this._nfcContentHelper.setSessionToken(sessionToken)) {
+      return this._window.MozNFCPeer._create(this._window, obj);
     }
+    throw new Error("Unable to create NFCPeer object, Reason:  Bad SessionToken " +
+                     sessionToken);
   },
 
   // get/set onpeerready

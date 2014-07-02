@@ -9,7 +9,7 @@
 #include "nsSVGFilters.h"
 
 nsresult NS_NewSVGFETileElement(nsIContent **aResult,
-                                already_AddRefed<nsINodeInfo>&& aNodeInfo);
+                                already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
 namespace mozilla {
 namespace dom {
@@ -19,14 +19,13 @@ typedef nsSVGFE SVGFETileElementBase;
 class SVGFETileElement : public SVGFETileElementBase
 {
   friend nsresult (::NS_NewSVGFETileElement(nsIContent **aResult,
-                                            already_AddRefed<nsINodeInfo>&& aNodeInfo));
+                                            already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo));
 protected:
-  SVGFETileElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  SVGFETileElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : SVGFETileElementBase(aNodeInfo)
   {
   }
-  virtual JSObject* WrapNode(JSContext *cx,
-                             JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *cx) MOZ_OVERRIDE;
 
 public:
   virtual bool SubregionIsUnionOfRegions() { return false; }
@@ -41,7 +40,7 @@ public:
   virtual nsSVGString& GetResultImageName() MOZ_OVERRIDE { return mStringAttributes[RESULT]; }
   virtual void GetSourceImageNames(nsTArray<nsSVGStringInfo>& aSources) MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   // WebIDL
   already_AddRefed<SVGAnimatedString> In1();

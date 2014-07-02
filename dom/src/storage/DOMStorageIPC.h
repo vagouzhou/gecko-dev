@@ -25,12 +25,13 @@ class DOMLocalStorageManager;
 class DOMStorageDBChild MOZ_FINAL : public DOMStorageDBBridge
                                   , public PStorageChild
 {
-public:
-  DOMStorageDBChild(DOMLocalStorageManager* aManager);
   virtual ~DOMStorageDBChild();
 
-  NS_IMETHOD_(nsrefcnt) AddRef(void);
-  NS_IMETHOD_(nsrefcnt) Release(void);
+public:
+  DOMStorageDBChild(DOMLocalStorageManager* aManager);
+
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void);
+  NS_IMETHOD_(MozExternalRefCountType) Release(void);
 
   void AddIPDLReference();
   void ReleaseIPDLReference();
@@ -108,16 +109,17 @@ private:
 class DOMStorageDBParent MOZ_FINAL : public PStorageParent
                                    , public DOMStorageObserverSink
 {
+  virtual ~DOMStorageDBParent();
+
 public:
   DOMStorageDBParent();
-  virtual ~DOMStorageDBParent();
 
   virtual mozilla::ipc::IProtocol*
   CloneProtocol(Channel* aChannel,
                 mozilla::ipc::ProtocolCloneContext* aCtx) MOZ_OVERRIDE;
 
-  NS_IMETHOD_(nsrefcnt) AddRef(void);
-  NS_IMETHOD_(nsrefcnt) Release(void);
+  NS_IMETHOD_(MozExternalRefCountType) AddRef(void);
+  NS_IMETHOD_(MozExternalRefCountType) Release(void);
 
   void AddIPDLReference();
   void ReleaseIPDLReference();
@@ -171,6 +173,7 @@ public:
 
 private:
   // IPC
+  virtual void ActorDestroy(ActorDestroyReason aWhy) MOZ_OVERRIDE;
   bool RecvAsyncPreload(const nsCString& aScope, const bool& aPriority);
   bool RecvPreload(const nsCString& aScope, const uint32_t& aAlreadyLoadedCount,
                    InfallibleTArray<nsString>* aKeys, InfallibleTArray<nsString>* aValues,

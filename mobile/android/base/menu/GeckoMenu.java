@@ -8,13 +8,13 @@ import org.mozilla.gecko.AppConstants;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.util.ThreadUtils;
 import org.mozilla.gecko.util.ThreadUtils.AssertBehavior;
+import org.mozilla.gecko.widget.GeckoActionProvider;
 
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.view.ActionProvider;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -45,11 +45,14 @@ public class GeckoMenu extends ListView
     private static final AssertBehavior THREAD_ASSERT_BEHAVIOR = AppConstants.RELEASE_BUILD ? AssertBehavior.NONE : AssertBehavior.THROW;
 
     /*
-     * A callback for a menu item selected event.
+     * A callback for a menu item click/long click event.
      */
     public static interface Callback {
-        // Called when a menu item is selected, with the actual menu item as the argument.
-        public boolean onMenuItemSelected(MenuItem item);
+        // Called when a menu item is clicked, with the actual menu item as the argument.
+        public boolean onMenuItemClick(MenuItem item);
+
+        // Called when a menu item is long-clicked, with the actual menu item as the argument.
+        public boolean onMenuItemLongClick(MenuItem item);
     }
 
     /*
@@ -122,8 +125,8 @@ public class GeckoMenu extends ListView
     public GeckoMenu(Context context, AttributeSet attrs, int defStyle) {
         super(context, attrs, defStyle);
 
-        setLayoutParams(new LayoutParams(LayoutParams.FILL_PARENT,
-                                         LayoutParams.FILL_PARENT));
+        setLayoutParams(new LayoutParams(LayoutParams.MATCH_PARENT,
+                                         LayoutParams.MATCH_PARENT));
 
         // Attach an adapter.
         mAdapter = new MenuItemsAdapter();
@@ -221,11 +224,25 @@ public class GeckoMenu extends ListView
                     handleMenuItemClick(menuItem);
                 }
             });
+            ((MenuItemActionBar) actionView).setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    handleMenuItemLongClick(menuItem);
+                    return true;
+                }
+            });
         } else if (actionView instanceof MenuItemActionView) {
             ((MenuItemActionView) actionView).setMenuItemClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
                     handleMenuItemClick(menuItem);
+                }
+            });
+            ((MenuItemActionView) actionView).setMenuItemLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View view) {
+                    handleMenuItemLongClick(menuItem);
+                    return true;
                 }
             });
         }
@@ -542,7 +559,7 @@ public class GeckoMenu extends ListView
             close();
         } else if (item.hasSubMenu()) {
             // Refresh the submenu for the provider.
-            ActionProvider provider = item.getActionProvider();
+            GeckoActionProvider provider = item.getGeckoActionProvider();
             if (provider != null) {
                 GeckoSubMenu subMenu = new GeckoSubMenu(getContext());
                 subMenu.setShowIcons(true);
@@ -555,7 +572,17 @@ public class GeckoMenu extends ListView
             showMenu(subMenu);
         } else {
             close();
-            mCallback.onMenuItemSelected(item);
+            mCallback.onMenuItemClick(item);
+        }
+    }
+
+    private void handleMenuItemLongClick(GeckoMenuItem item) {
+        if(!item.isEnabled()) {
+            return;
+        }
+
+        if(mCallback != null) {
+            mCallback.onMenuItemLongClick(item);
         }
     }
 
@@ -738,7 +765,7 @@ public class GeckoMenu extends ListView
 
         @Override
         public int getItemViewType(int position) {
-            return getItem(position).getActionProvider() == null ? VIEW_TYPE_DEFAULT : VIEW_TYPE_ACTION_MODE;
+            return getItem(position).getGeckoActionProvider() == null ? VIEW_TYPE_DEFAULT : VIEW_TYPE_ACTION_MODE;
         }
 
         @Override

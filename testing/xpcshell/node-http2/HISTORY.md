@@ -1,6 +1,43 @@
 Version history
 ===============
 
+### 2.6.0 (2014-06-18) ###
+
+* Upgrade to the latest draft: [draft-ietf-httpbis-http2-13]
+
+[draft-ietf-httpbis-http2-13]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-13
+
+### 2.5.3 (2014-06-15) ###
+
+* Exposing API to send ALTSVC frames
+
+### 2.5.2 (2014-05-25) ###
+
+* Fix a bug that occurs when the ALPN negotiation is unsuccessful
+
+### 2.5.1 (2014-05-25) ###
+
+* Support for node 0.11.x
+* New cipher suite priority list with comformant ciphers on the top (only available in node >=0.11.x)
+
+### 2.5.0 (2014-04-24) ###
+
+* Upgrade to the latest draft: [draft-ietf-httpbis-http2-12]
+
+[draft-ietf-httpbis-http2-12]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-12
+
+### 2.4.0 (2014-04-16) ###
+
+* Upgrade to the latest draft: [draft-ietf-httpbis-http2-11]
+
+[draft-ietf-httpbis-http2-11]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-11
+
+### 2.3.0 (2014-03-12) ###
+
+* Upgrade to the latest draft: [draft-ietf-httpbis-http2-10]
+
+[draft-ietf-httpbis-http2-10]: http://tools.ietf.org/html/draft-ietf-httpbis-http2-10
+
 ### 2.2.0 (2013-12-25) ###
 
 * Upgrade to the latest draft: [draft-ietf-httpbis-http2-09]

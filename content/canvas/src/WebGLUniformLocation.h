@@ -19,9 +19,6 @@ class WebGLUniformLocation MOZ_FINAL
 public:
     WebGLUniformLocation(WebGLContext *context, WebGLProgram *program, GLint location, const WebGLUniformInfo& info);
 
-    ~WebGLUniformLocation() {
-    }
-
     // needed for certain helper functions like ValidateObject.
     // WebGLUniformLocation's can't be 'Deleted' in the WebGL sense.
     bool IsDeleted() const { return false; }
@@ -33,12 +30,15 @@ public:
     uint32_t ProgramGeneration() const { return mProgramGeneration; }
     int ElementSize() const { return mElementSize; }
 
-    JSObject* WrapObject(JSContext *cx, JS::Handle<JSObject*> scope);
+    JSObject* WrapObject(JSContext *cx);
 
     NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(WebGLUniformLocation)
     NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(WebGLUniformLocation)
 
 protected:
+    ~WebGLUniformLocation() {
+    }
+
     // nsRefPtr, not WebGLRefPtr, so that we don't prevent the program from being explicitly deleted.
     // we just want to avoid having a dangling pointer.
     nsRefPtr<WebGLProgram> mProgram;

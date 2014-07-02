@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -804,6 +804,7 @@ this.PlacesUIUtils = {
       let items = as.getItemsWithAnnotation(this.ORGANIZER_QUERY_ANNO);
       // While looping through queries we will also check for their validity.
       let queriesCount = 0;
+      let corrupt = false;
       for (let i = 0; i < items.length; i++) {
         let queryName = as.getItemAnnotation(items[i], this.ORGANIZER_QUERY_ANNO);
 
@@ -817,6 +818,7 @@ this.PlacesUIUtils = {
 
         if (!itemExists(query.itemId)) {
           // Orphan annotation, bail out and create a new left pane root.
+          corrupt = true;
           break;
         }
 
@@ -825,6 +827,7 @@ this.PlacesUIUtils = {
         if (items.indexOf(parentId) == -1 && parentId != leftPaneRoot) {
           // The parent is not part of the left pane, bail out and create a new
           // left pane root.
+          corrupt = true;
           break;
         }
 
@@ -842,7 +845,11 @@ this.PlacesUIUtils = {
         queriesCount++;
       }
 
-      if (queriesCount != EXPECTED_QUERY_COUNT) {
+      // Note: it's not enough to just check for queriesCount, since we may
+      // find an invalid query just after accounting for a sufficient number of
+      // valid ones.  As well as we can't just rely on corrupt since we may find
+      // less valid queries than expected.
+      if (corrupt || queriesCount != EXPECTED_QUERY_COUNT) {
         // Queries number is wrong, so the left pane must be corrupt.
         // Note: we can't just remove the leftPaneRoot, because some query could
         // have a bad parent, so we have to remove all items one by one.
@@ -1041,10 +1048,6 @@ XPCOMUtils.defineLazyGetter(this, "bundle", function() {
          getService(Ci.nsIStringBundleService).
          createBundle(PLACES_STRING_BUNDLE_URI);
 });
-
-XPCOMUtils.defineLazyServiceGetter(this, "focusManager",
-                                   "@mozilla.org/focus-manager;1",
-                                   "nsIFocusManager");
 
 /**
  * This is a compatibility shim for old PUIU.ptm users.

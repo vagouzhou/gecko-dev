@@ -6,9 +6,9 @@
 
 #include "Link.h"
 
+#include "mozilla/EventStates.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/Element.h"
-#include "nsEventStates.h"
 #include "nsIURL.h"
 #include "nsISizeOf.h"
 
@@ -66,7 +66,7 @@ Link::SetLinkState(nsLinkState aState)
   mElement->UpdateState(true);
 }
 
-nsEventStates
+EventStates
 Link::LinkState() const
 {
   // We are a constant method, but we are just lazily doing things and have to
@@ -108,7 +108,7 @@ Link::LinkState() const
     return NS_EVENT_STATE_UNVISITED;
   }
 
-  return nsEventStates();
+  return EventStates();
 }
 
 nsIURI*
@@ -183,7 +183,6 @@ Link::SetHost(const nsAString &aHost)
 
   (void)uri->SetHostPort(NS_ConvertUTF16toUTF8(aHost));
   SetHrefAttribute(uri);
-  return;
 }
 
 void
@@ -504,7 +503,7 @@ Link::ResetLinkState(bool aNotify, bool aHasHref)
     if (mLinkState == eLinkState_Unvisited) {
       mElement->UpdateLinkState(NS_EVENT_STATE_UNVISITED);
     } else {
-      mElement->UpdateLinkState(nsEventStates());
+      mElement->UpdateLinkState(EventStates());
     }
   }
 }
@@ -546,6 +545,9 @@ Link::SetHrefAttribute(nsIURI *aURI)
 {
   NS_ASSERTION(aURI, "Null URI is illegal!");
 
+  // if we change this code to not reserialize we need to do something smarter
+  // in SetProtocol because changing the protocol of an URI can change the
+  // "nature" of the nsIURL/nsIURI implementation.
   nsAutoCString href;
   (void)aURI->GetSpec(href);
   (void)mElement->SetAttr(kNameSpaceID_None, nsGkAtoms::href,

@@ -24,14 +24,13 @@
 #include "nsIDocument.h"
 #include "nsVariant.h"
 #include "nsIDOMCustomEvent.h"
-#include "GeneratedEvents.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
 
-NS_IMPL_ISUPPORTS2(nsXMLPrettyPrinter,
-                   nsIDocumentObserver,
-                   nsIMutationObserver)
+NS_IMPL_ISUPPORTS(nsXMLPrettyPrinter,
+                  nsIDocumentObserver,
+                  nsIMutationObserver)
 
 nsXMLPrettyPrinter::nsXMLPrettyPrinter() : mDocument(nullptr),
                                            mUnhookPending(false)

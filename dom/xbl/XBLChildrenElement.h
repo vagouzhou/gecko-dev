@@ -22,13 +22,11 @@ class ExplicitChildIterator;
 class XBLChildrenElement : public nsXMLElement
 {
 public:
-  friend class mozilla::dom::ExplicitChildIterator;
-  friend class nsAnonymousContentList;
-  XBLChildrenElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+  XBLChildrenElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
     : nsXMLElement(aNodeInfo)
   {
   }
-  XBLChildrenElement(already_AddRefed<nsINodeInfo>&& aNodeInfo)
+  XBLChildrenElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)
     : nsXMLElement(aNodeInfo)
   {
   }
@@ -38,7 +36,7 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
 
   // nsINode interface methods
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const;
 
   virtual nsXPCClassInfo* GetClassInfo() { return nullptr; }
 
@@ -115,10 +113,7 @@ public:
     return !mInsertedChildren.IsEmpty();
   }
 
-  enum {
-    NoIndex = uint32_t(-1)
-  };
-  uint32_t IndexOfInsertedChild(nsIContent* aChild)
+  int32_t IndexOfInsertedChild(nsIContent* aChild)
   {
     return mInsertedChildren.IndexOf(aChild);
   }
@@ -135,9 +130,13 @@ public:
     return mIncludes.IsEmpty();
   }
 
-  nsTArray<nsIContent*> mInsertedChildren;
+  nsIContent* InsertedChild(uint32_t aIndex)
+  {
+    return mInsertedChildren[aIndex];
+  }
 
 private:
+  nsTArray<nsIContent*> mInsertedChildren; // WEAK
   nsTArray<nsCOMPtr<nsIAtom> > mIncludes;
 };
 
@@ -154,11 +153,6 @@ public:
     SetIsDOMBinding();
   }
 
-  virtual ~nsAnonymousContentList()
-  {
-    MOZ_COUNT_DTOR(nsAnonymousContentList);
-  }
-
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsAnonymousContentList)
   // nsIDOMNodeList interface
@@ -169,13 +163,18 @@ public:
   virtual nsINode* GetParentObject() { return mParent; }
   virtual nsIContent* Item(uint32_t aIndex);
 
-  virtual JSObject* WrapObject(JSContext *cx, JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE;
 
   bool IsListFor(nsIContent* aContent) {
     return mParent == aContent;
   }
 
 private:
+  virtual ~nsAnonymousContentList()
+  {
+    MOZ_COUNT_DTOR(nsAnonymousContentList);
+  }
+
   nsCOMPtr<nsIContent> mParent;
 };
 

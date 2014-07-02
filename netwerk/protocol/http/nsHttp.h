@@ -9,6 +9,7 @@
 
 #include <stdint.h>
 #include "prtime.h"
+#include "nsAutoPtr.h"
 #include "nsString.h"
 #include "nsError.h"
 
@@ -33,13 +34,15 @@ namespace net {
         // 24 was a internal spdy/3.1
         // 25 was spdy/4a2
         // 26 was http/2-draft08 and http/2-draft07 (they were the same)
-        HTTP2_VERSION_DRAFT09 = 27
+        // 27 was http/2-draft09, h2-10, and h2-11
+        // 28 was http/2-draft12
+        HTTP2_VERSION_DRAFT13 = 29
     };
 
 typedef uint8_t nsHttpVersion;
 
-#define NS_HTTP2_DRAFT_VERSION HTTP2_VERSION_DRAFT09
-#define NS_HTTP2_DRAFT_TOKEN "HTTP-draft-09/2.0"
+#define NS_HTTP2_DRAFT_VERSION HTTP2_VERSION_DRAFT13
+#define NS_HTTP2_DRAFT_TOKEN "h2-13"
 
 //-----------------------------------------------------------------------------
 // http connection capabilities
@@ -188,6 +191,11 @@ PRTimeToSeconds(PRTime t_usec)
 
 #define HTTP_LWS " \t"
 #define HTTP_HEADER_VALUE_SEPS HTTP_LWS ","
+
+void EnsureBuffer(nsAutoArrayPtr<char> &buf, uint32_t newSize,
+                  uint32_t preserve, uint32_t &objSize);
+void EnsureBuffer(nsAutoArrayPtr<uint8_t> &buf, uint32_t newSize,
+                  uint32_t preserve, uint32_t &objSize);
 
 } // namespace mozilla::net
 } // namespace mozilla

@@ -48,7 +48,7 @@ static PRLogModuleInfo* gTrackElementLog;
 // Replace the usual NS_IMPL_NS_NEW_HTML_ELEMENT(Track) so
 // we can return an UnknownElement instead when pref'd off.
 nsGenericHTMLElement*
-NS_NewHTMLTrackElement(already_AddRefed<nsINodeInfo>&& aNodeInfo,
+NS_NewHTMLTrackElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
                        mozilla::dom::FromParser aFromParser)
 {
   if (!mozilla::dom::HTMLTrackElement::IsWebVTTEnabled()) {
@@ -75,7 +75,7 @@ static MOZ_CONSTEXPR nsAttrValue::EnumTable kKindTable[] = {
 static MOZ_CONSTEXPR const char* kKindTableDefaultString = kKindTable->tag;
 
 /** HTMLTrackElement */
-HTMLTrackElement::HTMLTrackElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLTrackElement::HTMLTrackElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
 {
 #ifdef PR_LOGGING
@@ -94,9 +94,8 @@ NS_IMPL_ELEMENT_CLONE(HTMLTrackElement)
 NS_IMPL_ADDREF_INHERITED(HTMLTrackElement, Element)
 NS_IMPL_RELEASE_INHERITED(HTMLTrackElement, Element)
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_4(HTMLTrackElement, nsGenericHTMLElement,
-                                     mTrack, mChannel, mMediaParent,
-                                     mListener)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLTrackElement, nsGenericHTMLElement,
+                                   mTrack, mMediaParent, mListener)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(HTMLTrackElement)
 NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLElement)
@@ -117,9 +116,9 @@ HTMLTrackElement::OnChannelRedirect(nsIChannel* aChannel,
 }
 
 JSObject*
-HTMLTrackElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLTrackElement::WrapNode(JSContext* aCx)
 {
-  return HTMLTrackElementBinding::Wrap(aCx, aScope, this);
+  return HTMLTrackElementBinding::Wrap(aCx, this);
 }
 
 bool
@@ -130,7 +129,7 @@ HTMLTrackElement::IsWebVTTEnabled()
 }
 
 TextTrack*
-HTMLTrackElement::Track()
+HTMLTrackElement::GetTrack()
 {
   if (!mTrack) {
     CreateTextTrack();
@@ -153,7 +152,14 @@ HTMLTrackElement::CreateTextTrack()
     kind = TextTrackKind::Subtitles;
   }
 
-  mTrack = new TextTrack(OwnerDoc()->GetParentObject(), kind, label, srcLang,
+  bool hasHadScriptObject = true;
+  nsIScriptGlobalObject* scriptObject =
+    OwnerDoc()->GetScriptHandlingObject(hasHadScriptObject);
+
+  NS_ENSURE_TRUE_VOID(scriptObject || !hasHadScriptObject);
+
+  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(scriptObject);
+  mTrack = new TextTrack(window, kind, label, srcLang,
                          TextTrackMode::Disabled,
                          TextTrackReadyState::NotLoaded,
                          TextTrackSource::Track);
@@ -323,6 +329,50 @@ HTMLTrackElement::ReadyState() const
   }
 
   return mTrack->ReadyState();
+}
+
+void
+HTMLTrackElement::SetReadyState(uint16_t aReadyState)
+{
+  if (mTrack) {
+    switch (aReadyState) {
+      case TextTrackReadyState::Loaded:
+        DispatchTrackRunnable(NS_LITERAL_STRING("loaded"));
+        break;
+      case TextTrackReadyState::FailedToLoad:
+        DispatchTrackRunnable(NS_LITERAL_STRING("error"));
+        break;
+    }
+    mTrack->SetReadyState(aReadyState);
+  }
+}
+
+void
+HTMLTrackElement::DispatchTrackRunnable(const nsString& aEventName)
+{
+  nsCOMPtr<nsIRunnable> runnable =
+    NS_NewRunnableMethodWithArg
+      <const nsString>(this,
+                       &HTMLTrackElement::DispatchTrustedEvent,
+                       aEventName);
+  NS_DispatchToMainThread(runnable);
+}
+
+void
+HTMLTrackElement::DispatchTrustedEvent(const nsAString& aName)
+{
+  nsIDocument* doc = OwnerDoc();
+  if (!doc) {
+    return;
+  }
+  nsContentUtils::DispatchTrustedEvent(doc, static_cast<nsIContent*>(this),
+                                       aName, false, false);
+}
+
+void
+HTMLTrackElement::DropChannel()
+{
+  mChannel = nullptr;
 }
 
 } // namespace dom

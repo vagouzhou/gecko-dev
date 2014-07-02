@@ -37,7 +37,7 @@ class SearchProvider(object):
     def dxr(self, term):
         import webbrowser
         term = ' '.join(term)
-        uri = 'http://dxr.mozilla.org/search?tree=mozilla-central&q=%s' % term
+        uri = 'http://dxr.mozilla.org/mozilla-central/search?q=%s&redirect=true' % term
         webbrowser.open_new_tab(uri)
 
     @Command('mdn', category='misc',
@@ -302,13 +302,7 @@ class ReviewboardToolsProvider(MachCommandBase):
             args = ['help']
 
         self._activate_virtualenv()
-        # We install RBTools from source control because the currently released
-        # version doesn't have patches that make Mercurial usable in many
-        # scenarios.
-        commit = '416a728292dff3f279e5d695f48a29749b51b77a'
-        self.virtualenv_manager.install_pip_package(
-            'git+https://github.com/reviewboard/rbtools.git@%s#egg=RBTools' %
-            commit)
+        self.virtualenv_manager.install_pip_package('RBTools==0.6')
 
         from rbtools.commands.main import main
 

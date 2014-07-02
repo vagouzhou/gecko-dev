@@ -9,6 +9,8 @@
 
 #ifdef JS_ION
 
+#include "mozilla/Assertions.h"
+
 #include "jscntxt.h"
 #include "jscompartment.h"
 #include "jsgc.h"
@@ -206,15 +208,49 @@ class ICEntry
     uint32_t returnOffset_;
 
     // The PC of this IC's bytecode op within the JSScript.
-    uint32_t pcOffset_ : 31;
-
-    // Whether this IC is for a bytecode op.
-    uint32_t isForOp_ : 1;
+    uint32_t pcOffset_ : 29;
 
   public:
-    ICEntry(uint32_t pcOffset, bool isForOp)
-      : firstStub_(nullptr), returnOffset_(), pcOffset_(pcOffset), isForOp_(isForOp)
-    {}
+    enum Kind {
+        // A for-op IC entry.
+        Kind_Op = 0,
+
+        // A non-op IC entry.
+        Kind_NonOp,
+
+        // A fake IC entry for returning from a callVM.
+        Kind_CallVM,
+
+        // A fake IC entry for returning from DebugTrapHandler.
+        Kind_DebugTrap,
+
+        // A fake IC entry for returning from a callVM to
+        // Debug{Prologue,Epilogue}.
+        Kind_DebugPrologue,
+        Kind_DebugEpilogue
+    };
+
+  private:
+    // What this IC is for.
+    Kind kind_ : 3;
+
+    // Set the kind and asserts that it's sane.
+    void setKind(Kind kind) {
+        kind_ = kind;
+        MOZ_ASSERT(this->kind() == kind);
+    }
+
+  public:
+    ICEntry(uint32_t pcOffset, Kind kind)
+      : firstStub_(nullptr), returnOffset_(), pcOffset_(pcOffset)
+    {
+        // The offset must fit in at least 29 bits, since we shave off 3 for
+        // the Kind enum.
+        MOZ_ASSERT(pcOffset_ == pcOffset);
+        JS_STATIC_ASSERT(BaselineScript::MAX_JSSCRIPT_LENGTH < 0x1fffffffu);
+        MOZ_ASSERT(pcOffset <= BaselineScript::MAX_JSSCRIPT_LENGTH);
+        setKind(kind);
+    }
 
     CodeOffsetLabel returnOffset() const {
         return CodeOffsetLabel(returnOffset_);
@@ -240,8 +276,21 @@ class ICEntry
         return script->offsetToPC(pcOffset_);
     }
 
+    Kind kind() const {
+        // MSVC compiles enums as signed.
+        return (Kind)(kind_ & 0x7);
+    }
     bool isForOp() const {
-        return isForOp_;
+        return kind() == Kind_Op;
+    }
+
+    void setForDebugPrologue() {
+        MOZ_ASSERT(kind() == Kind_CallVM);
+        setKind(Kind_DebugPrologue);
+    }
+    void setForDebugEpilogue() {
+        MOZ_ASSERT(kind() == Kind_CallVM);
+        setKind(Kind_DebugEpilogue);
     }
 
     bool hasStub() const {
@@ -362,10 +411,10 @@ class ICEntry
                                 \
     _(GetProp_Fallback)         \
     _(GetProp_ArrayLength)      \
-    _(GetProp_TypedArrayLength) \
     _(GetProp_Primitive)        \
     _(GetProp_StringLength)     \
     _(GetProp_Native)           \
+    _(GetProp_NativeDoesNotExist) \
     _(GetProp_NativePrototype)  \
     _(GetProp_CallScripted)     \
     _(GetProp_CallNative)       \
@@ -424,7 +473,7 @@ class ICStubConstIterator
     ICStub *currentStub_;
 
   public:
-    ICStubConstIterator(ICStub *currentStub) : currentStub_(currentStub) {}
+    explicit ICStubConstIterator(ICStub *currentStub) : currentStub_(currentStub) {}
 
     static ICStubConstIterator StartingAt(ICStub *stub) {
         return ICStubConstIterator(stub);
@@ -485,7 +534,7 @@ class ICStubIterator
     ICStub *currentStub_;
     bool unlinked_;
 
-    ICStubIterator(ICFallbackStub *fallbackStub, bool end=false);
+    explicit ICStubIterator(ICFallbackStub *fallbackStub, bool end=false);
   public:
 
     bool operator ==(const ICStubIterator &other) const {
@@ -1049,12 +1098,20 @@ class ICStubCompiler
     // given label.
     void guardProfilingEnabled(MacroAssembler &masm, Register scratch, Label *skip);
 
+    // Higher-level helper to emit an update to the profiler pseudo-stack.
+    void emitProfilingUpdate(MacroAssembler &masm, Register pcIdx, Register scratch,
+                             uint32_t stubPcOffset);
+    void emitProfilingUpdate(MacroAssembler &masm, GeneralRegisterSet regs, uint32_t stubPcOffset);
+
     inline GeneralRegisterSet availableGeneralRegs(size_t numInputs) const {
         GeneralRegisterSet regs(GeneralRegisterSet::All());
         JS_ASSERT(!regs.has(BaselineStackReg));
-#ifdef JS_CODEGEN_ARM
+#if defined(JS_CODEGEN_ARM)
         JS_ASSERT(!regs.has(BaselineTailCallReg));
         regs.take(BaselineSecondScratchReg);
+#elif defined(JS_CODEGEN_MIPS)
+        JS_ASSERT(!regs.has(BaselineTailCallReg));
+        JS_ASSERT(!regs.has(BaselineSecondScratchReg));
 #endif
         regs.take(BaselineFrameReg);
         regs.take(BaselineStubReg);
@@ -1088,10 +1145,14 @@ class ICStubCompiler
   public:
     virtual ICStub *getStub(ICStubSpace *space) = 0;
 
-    ICStubSpace *getStubSpace(JSScript *script) {
+    static ICStubSpace *StubSpaceForKind(ICStub::Kind kind, JSScript *script) {
         if (ICStub::CanMakeCalls(kind))
             return script->baselineScript()->fallbackStubSpace();
         return script->zone()->jitZone()->optimizedStubSpace();
+    }
+
+    ICStubSpace *getStubSpace(JSScript *script) {
+        return StubSpaceForKind(kind, script);
     }
 };
 
@@ -1119,7 +1180,7 @@ class ICUseCount_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICUseCount_Fallback(JitCode *stubCode)
+    explicit ICUseCount_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::UseCount_Fallback, stubCode)
     { }
 
@@ -1136,7 +1197,7 @@ class ICUseCount_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::UseCount_Fallback)
         { }
 
@@ -1152,7 +1213,7 @@ class ICProfiler_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICProfiler_Fallback(JitCode *stubCode)
+    explicit ICProfiler_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::Profiler_Fallback, stubCode)
     { }
 
@@ -1169,7 +1230,7 @@ class ICProfiler_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::Profiler_Fallback)
         { }
 
@@ -1623,7 +1684,7 @@ class ICTypeUpdate_Fallback : public ICStub
 {
     friend class ICStubSpace;
 
-    ICTypeUpdate_Fallback(JitCode *stubCode)
+    explicit ICTypeUpdate_Fallback(JitCode *stubCode)
       : ICStub(ICStub::TypeUpdate_Fallback, stubCode)
     {}
 
@@ -1640,7 +1701,7 @@ class ICTypeUpdate_Fallback : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::TypeUpdate_Fallback)
         { }
 
@@ -1784,7 +1845,7 @@ class ICThis_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICThis_Fallback(JitCode *stubCode)
+    explicit ICThis_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::This_Fallback, stubCode) {}
 
   public:
@@ -1800,7 +1861,7 @@ class ICThis_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::This_Fallback) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -1893,7 +1954,7 @@ class ICCompare_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICCompare_Fallback(JitCode *stubCode)
+    explicit ICCompare_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::Compare_Fallback, stubCode) {}
 
   public:
@@ -1911,7 +1972,7 @@ class ICCompare_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::Compare_Fallback) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -1924,7 +1985,7 @@ class ICCompare_Int32 : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_Int32(JitCode *stubCode)
+    explicit ICCompare_Int32(JitCode *stubCode)
       : ICStub(ICStub::Compare_Int32, stubCode) {}
 
   public:
@@ -1953,7 +2014,7 @@ class ICCompare_Double : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_Double(JitCode *stubCode)
+    explicit ICCompare_Double(JitCode *stubCode)
       : ICStub(ICStub::Compare_Double, stubCode)
     {}
 
@@ -2028,7 +2089,7 @@ class ICCompare_String : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_String(JitCode *stubCode)
+    explicit ICCompare_String(JitCode *stubCode)
       : ICStub(ICStub::Compare_String, stubCode)
     {}
 
@@ -2058,7 +2119,7 @@ class ICCompare_Boolean : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_Boolean(JitCode *stubCode)
+    explicit ICCompare_Boolean(JitCode *stubCode)
       : ICStub(ICStub::Compare_Boolean, stubCode)
     {}
 
@@ -2088,7 +2149,7 @@ class ICCompare_Object : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_Object(JitCode *stubCode)
+    explicit ICCompare_Object(JitCode *stubCode)
       : ICStub(ICStub::Compare_Object, stubCode)
     {}
 
@@ -2118,7 +2179,7 @@ class ICCompare_ObjectWithUndefined : public ICStub
 {
     friend class ICStubSpace;
 
-    ICCompare_ObjectWithUndefined(JitCode *stubCode)
+    explicit ICCompare_ObjectWithUndefined(JitCode *stubCode)
       : ICStub(ICStub::Compare_ObjectWithUndefined, stubCode)
     {}
 
@@ -2211,7 +2272,7 @@ class ICToBool_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICToBool_Fallback(JitCode *stubCode)
+    explicit ICToBool_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::ToBool_Fallback, stubCode) {}
 
   public:
@@ -2229,7 +2290,7 @@ class ICToBool_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_Fallback) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2242,7 +2303,7 @@ class ICToBool_Int32 : public ICStub
 {
     friend class ICStubSpace;
 
-    ICToBool_Int32(JitCode *stubCode)
+    explicit ICToBool_Int32(JitCode *stubCode)
       : ICStub(ICStub::ToBool_Int32, stubCode) {}
 
   public:
@@ -2258,7 +2319,7 @@ class ICToBool_Int32 : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_Int32) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2271,7 +2332,7 @@ class ICToBool_String : public ICStub
 {
     friend class ICStubSpace;
 
-    ICToBool_String(JitCode *stubCode)
+    explicit ICToBool_String(JitCode *stubCode)
       : ICStub(ICStub::ToBool_String, stubCode) {}
 
   public:
@@ -2287,7 +2348,7 @@ class ICToBool_String : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_String) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2300,7 +2361,7 @@ class ICToBool_NullUndefined : public ICStub
 {
     friend class ICStubSpace;
 
-    ICToBool_NullUndefined(JitCode *stubCode)
+    explicit ICToBool_NullUndefined(JitCode *stubCode)
       : ICStub(ICStub::ToBool_NullUndefined, stubCode) {}
 
   public:
@@ -2316,7 +2377,7 @@ class ICToBool_NullUndefined : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_NullUndefined) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2329,7 +2390,7 @@ class ICToBool_Double : public ICStub
 {
     friend class ICStubSpace;
 
-    ICToBool_Double(JitCode *stubCode)
+    explicit ICToBool_Double(JitCode *stubCode)
       : ICStub(ICStub::ToBool_Double, stubCode) {}
 
   public:
@@ -2345,7 +2406,7 @@ class ICToBool_Double : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_Double) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2358,7 +2419,7 @@ class ICToBool_Object : public ICStub
 {
     friend class ICStubSpace;
 
-    ICToBool_Object(JitCode *stubCode)
+    explicit ICToBool_Object(JitCode *stubCode)
       : ICStub(ICStub::ToBool_Object, stubCode) {}
 
   public:
@@ -2374,7 +2435,7 @@ class ICToBool_Object : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToBool_Object) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2390,7 +2451,7 @@ class ICToNumber_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICToNumber_Fallback(JitCode *stubCode)
+    explicit ICToNumber_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::ToNumber_Fallback, stubCode) {}
 
   public:
@@ -2406,7 +2467,7 @@ class ICToNumber_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::ToNumber_Fallback) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2424,7 +2485,7 @@ class ICBinaryArith_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICBinaryArith_Fallback(JitCode *stubCode)
+    explicit ICBinaryArith_Fallback(JitCode *stubCode)
       : ICFallbackStub(BinaryArith_Fallback, stubCode)
     {
         extra_ = 0;
@@ -2461,7 +2522,7 @@ class ICBinaryArith_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::BinaryArith_Fallback) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -2519,7 +2580,7 @@ class ICBinaryArith_StringConcat : public ICStub
 {
     friend class ICStubSpace;
 
-    ICBinaryArith_StringConcat(JitCode *stubCode)
+    explicit ICBinaryArith_StringConcat(JitCode *stubCode)
       : ICStub(BinaryArith_StringConcat, stubCode)
     {}
 
@@ -2535,7 +2596,7 @@ class ICBinaryArith_StringConcat : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::BinaryArith_StringConcat)
         {}
 
@@ -2592,7 +2653,7 @@ class ICBinaryArith_Double : public ICStub
 {
     friend class ICStubSpace;
 
-    ICBinaryArith_Double(JitCode *stubCode)
+    explicit ICBinaryArith_Double(JitCode *stubCode)
       : ICStub(BinaryArith_Double, stubCode)
     {}
 
@@ -2731,7 +2792,7 @@ class ICUnaryArith_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICUnaryArith_Fallback(JitCode *stubCode)
+    explicit ICUnaryArith_Fallback(JitCode *stubCode)
       : ICFallbackStub(UnaryArith_Fallback, stubCode)
     {
         extra_ = 0;
@@ -2759,7 +2820,7 @@ class ICUnaryArith_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::UnaryArith_Fallback)
         {}
 
@@ -2773,7 +2834,7 @@ class ICUnaryArith_Int32 : public ICStub
 {
     friend class ICStubSpace;
 
-    ICUnaryArith_Int32(JitCode *stubCode)
+    explicit ICUnaryArith_Int32(JitCode *stubCode)
       : ICStub(UnaryArith_Int32, stubCode)
     {}
 
@@ -2803,7 +2864,7 @@ class ICUnaryArith_Double : public ICStub
 {
     friend class ICStubSpace;
 
-    ICUnaryArith_Double(JitCode *stubCode)
+    explicit ICUnaryArith_Double(JitCode *stubCode)
       : ICStub(UnaryArith_Double, stubCode)
     {}
 
@@ -2836,7 +2897,7 @@ class ICGetElem_Fallback : public ICMonitoredFallbackStub
 {
     friend class ICStubSpace;
 
-    ICGetElem_Fallback(JitCode *stubCode)
+    explicit ICGetElem_Fallback(JitCode *stubCode)
       : ICMonitoredFallbackStub(ICStub::GetElem_Fallback, stubCode)
     { }
 
@@ -2872,7 +2933,7 @@ class ICGetElem_Fallback : public ICMonitoredFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetElem_Fallback)
         { }
 
@@ -3101,6 +3162,10 @@ class ICGetElem_NativePrototypeCallNative : public ICGetElemNativePrototypeCallS
                         code, firstMonitorStub, shape, name, acctype, needsAtomize, getter,
                         pcOffset, holder, holderShape);
     }
+
+    static ICGetElem_NativePrototypeCallNative *Clone(JSContext *cx, ICStubSpace *space,
+                                                      ICStub *firstMonitorStub,
+                                                      ICGetElem_NativePrototypeCallNative &other);
 };
 
 class ICGetElem_NativePrototypeCallScripted : public ICGetElemNativePrototypeCallStub
@@ -3108,10 +3173,10 @@ class ICGetElem_NativePrototypeCallScripted : public ICGetElemNativePrototypeCal
     friend class ICStubSpace;
 
     ICGetElem_NativePrototypeCallScripted(JitCode *stubCode, ICStub *firstMonitorStub,
-                                        HandleShape shape, HandlePropertyName name,
-                                        AccessType acctype, bool needsAtomize,
-                                        HandleFunction getter, uint32_t pcOffset,
-                                        HandleObject holder, HandleShape holderShape)
+                                          HandleShape shape, HandlePropertyName name,
+                                          AccessType acctype, bool needsAtomize,
+                                          HandleFunction getter, uint32_t pcOffset,
+                                          HandleObject holder, HandleShape holderShape)
       : ICGetElemNativePrototypeCallStub(GetElem_NativePrototypeCallScripted,
                                          stubCode, firstMonitorStub, shape, name,
                                          acctype, needsAtomize, getter, pcOffset, holder,
@@ -3131,6 +3196,11 @@ class ICGetElem_NativePrototypeCallScripted : public ICGetElemNativePrototypeCal
                         code, firstMonitorStub, shape, name, acctype, needsAtomize, getter,
                         pcOffset, holder, holderShape);
     }
+
+    static ICGetElem_NativePrototypeCallScripted *
+    Clone(JSContext *cx, ICStubSpace *space,
+          ICStub *firstMonitorStub,
+          ICGetElem_NativePrototypeCallScripted &other);
 };
 
 // Compiler for GetElem_NativeSlot and GetElem_NativePrototypeSlot stubs.
@@ -3238,7 +3308,7 @@ class ICGetElem_String : public ICStub
 {
     friend class ICStubSpace;
 
-    ICGetElem_String(JitCode *stubCode)
+    explicit ICGetElem_String(JitCode *stubCode)
       : ICStub(ICStub::GetElem_String, stubCode) {}
 
   public:
@@ -3254,7 +3324,7 @@ class ICGetElem_String : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetElem_String) {}
 
         ICStub *getStub(ICStubSpace *space) {
@@ -3279,6 +3349,9 @@ class ICGetElem_Dense : public ICMonitoredStub
             return nullptr;
         return space->allocate<ICGetElem_Dense>(code, firstMonitorStub, shape);
     }
+
+    static ICGetElem_Dense *Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                  ICGetElem_Dense &other);
 
     static size_t offsetOfShape() {
         return offsetof(ICGetElem_Dense, shape_);
@@ -3390,6 +3463,9 @@ class ICGetElem_Arguments : public ICMonitoredStub
         return space->allocate<ICGetElem_Arguments>(code, firstMonitorStub, which);
     }
 
+    static ICGetElem_Arguments *Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                                      ICGetElem_Arguments &other);
+
     Which which() const {
         return static_cast<Which>(extra_);
     }
@@ -3434,7 +3510,7 @@ class ICSetElem_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICSetElem_Fallback(JitCode *stubCode)
+    explicit ICSetElem_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::SetElem_Fallback, stubCode)
     { }
 
@@ -3460,7 +3536,7 @@ class ICSetElem_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::SetElem_Fallback)
         { }
 
@@ -3550,6 +3626,7 @@ class ICSetElem_DenseAdd : public ICUpdatedStub
         return type_;
     }
     size_t protoChainDepth() const {
+        MOZ_ASSERT(extra_ <= MAX_PROTO_CHAIN_DEPTH);
         return extra_;
     }
 
@@ -3699,7 +3776,7 @@ class ICIn_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICIn_Fallback(JitCode *stubCode)
+    explicit ICIn_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::In_Fallback, stubCode)
     { }
 
@@ -3715,7 +3792,7 @@ class ICIn_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::In_Fallback)
         { }
 
@@ -3727,14 +3804,12 @@ class ICIn_Fallback : public ICFallbackStub
 
 // GetName
 //      JSOP_NAME
-//      JSOP_CALLNAME
 //      JSOP_GETGNAME
-//      JSOP_CALLGNAME
 class ICGetName_Fallback : public ICMonitoredFallbackStub
 {
     friend class ICStubSpace;
 
-    ICGetName_Fallback(JitCode *stubCode)
+    explicit ICGetName_Fallback(JitCode *stubCode)
       : ICMonitoredFallbackStub(ICStub::GetName_Fallback, stubCode)
     { }
 
@@ -3752,7 +3827,7 @@ class ICGetName_Fallback : public ICMonitoredFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetName_Fallback)
         { }
 
@@ -3897,7 +3972,7 @@ class ICBindName_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICBindName_Fallback(JitCode *stubCode)
+    explicit ICBindName_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::BindName_Fallback, stubCode)
     { }
 
@@ -3913,7 +3988,7 @@ class ICBindName_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::BindName_Fallback)
         { }
 
@@ -3925,12 +4000,11 @@ class ICBindName_Fallback : public ICFallbackStub
 
 // GetIntrinsic
 //      JSOP_GETINTRINSIC
-//      JSOP_CALLINTRINSIC
 class ICGetIntrinsic_Fallback : public ICMonitoredFallbackStub
 {
     friend class ICStubSpace;
 
-    ICGetIntrinsic_Fallback(JitCode *stubCode)
+    explicit ICGetIntrinsic_Fallback(JitCode *stubCode)
       : ICMonitoredFallbackStub(ICStub::GetIntrinsic_Fallback, stubCode)
     { }
 
@@ -3946,7 +4020,7 @@ class ICGetIntrinsic_Fallback : public ICMonitoredFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetIntrinsic_Fallback)
         { }
 
@@ -4006,7 +4080,7 @@ class ICGetProp_Fallback : public ICMonitoredFallbackStub
 {
     friend class ICStubSpace;
 
-    ICGetProp_Fallback(JitCode *stubCode)
+    explicit ICGetProp_Fallback(JitCode *stubCode)
       : ICMonitoredFallbackStub(ICStub::GetProp_Fallback, stubCode)
     { }
 
@@ -4043,7 +4117,7 @@ class ICGetProp_Fallback : public ICMonitoredFallbackStub
         bool postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetProp_Fallback)
         { }
 
@@ -4061,7 +4135,7 @@ class ICGetProp_ArrayLength : public ICStub
 {
     friend class ICStubSpace;
 
-    ICGetProp_ArrayLength(JitCode *stubCode)
+    explicit ICGetProp_ArrayLength(JitCode *stubCode)
       : ICStub(GetProp_ArrayLength, stubCode)
     {}
 
@@ -4076,42 +4150,12 @@ class ICGetProp_ArrayLength : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetProp_ArrayLength)
         {}
 
         ICStub *getStub(ICStubSpace *space) {
             return ICGetProp_ArrayLength::New(space, getStubCode());
-        }
-    };
-};
-
-// Stub for accessing a typed array's length.
-class ICGetProp_TypedArrayLength : public ICStub
-{
-    friend class ICStubSpace;
-
-    ICGetProp_TypedArrayLength(JitCode *stubCode)
-      : ICStub(GetProp_TypedArrayLength, stubCode)
-    {}
-
-  public:
-    static inline ICGetProp_TypedArrayLength *New(ICStubSpace *space, JitCode *code) {
-        if (!code)
-            return nullptr;
-        return space->allocate<ICGetProp_TypedArrayLength>(code);
-    }
-
-    class Compiler : public ICStubCompiler {
-        bool generateStubCode(MacroAssembler &masm);
-
-      public:
-        Compiler(JSContext *cx)
-          : ICStubCompiler(cx, ICStub::GetProp_TypedArrayLength)
-        {}
-
-        ICStub *getStub(ICStubSpace *space) {
-            return ICGetProp_TypedArrayLength::New(space, getStubCode());
         }
     };
 };
@@ -4192,7 +4236,7 @@ class ICGetProp_StringLength : public ICStub
 {
     friend class ICStubSpace;
 
-    ICGetProp_StringLength(JitCode *stubCode)
+    explicit ICGetProp_StringLength(JitCode *stubCode)
       : ICStub(GetProp_StringLength, stubCode)
     {}
 
@@ -4207,7 +4251,7 @@ class ICGetProp_StringLength : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::GetProp_StringLength)
         {}
 
@@ -4264,6 +4308,9 @@ class ICGetProp_Native : public ICGetPropNativeStub
             return nullptr;
         return space->allocate<ICGetProp_Native>(code, firstMonitorStub, shape, offset);
     }
+
+    static ICGetProp_Native *Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                   ICGetProp_Native &other);
 };
 
 // Stub for accessing a property on a native object's prototype. Note that due to
@@ -4292,6 +4339,10 @@ class ICGetProp_NativePrototype : public ICGetPropNativeStub
         return space->allocate<ICGetProp_NativePrototype>(code, firstMonitorStub, shape, offset,
                                                           holder, holderShape);
     }
+
+    static ICGetProp_NativePrototype *Clone(JSContext *cx, ICStubSpace *space,
+                                            ICStub *firstMonitorStub,
+                                            ICGetProp_NativePrototype &other);
 
   public:
     HeapPtrObject &holder() {
@@ -4360,6 +4411,104 @@ class ICGetPropNativeCompiler : public ICStubCompiler
         return ICGetProp_NativePrototype::New(space, getStubCode(), firstMonitorStub_, shape,
                                               offset_, holder_, holderShape);
     }
+};
+
+template <size_t ProtoChainDepth> class ICGetProp_NativeDoesNotExistImpl;
+
+class ICGetProp_NativeDoesNotExist : public ICMonitoredStub
+{
+    friend class ICStubSpace;
+  public:
+    static const size_t MAX_PROTO_CHAIN_DEPTH = 8;
+
+  protected:
+    ICGetProp_NativeDoesNotExist(JitCode *stubCode, ICStub *firstMonitorStub,
+                                 size_t protoChainDepth);
+
+  public:
+    static inline ICGetProp_NativeDoesNotExist *New(ICStubSpace *space, JitCode *code,
+                                                    ICStub *firstMonitorStub,
+                                                    size_t protoChainDepth)
+    {
+        if (!code)
+            return nullptr;
+        return space->allocate<ICGetProp_NativeDoesNotExist>(code, firstMonitorStub,
+                                                             protoChainDepth);
+    }
+
+    size_t protoChainDepth() const {
+        MOZ_ASSERT(extra_ <= MAX_PROTO_CHAIN_DEPTH);
+        return extra_;
+    }
+
+    template <size_t ProtoChainDepth>
+    ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth> *toImpl() {
+        MOZ_ASSERT(ProtoChainDepth == protoChainDepth());
+        return static_cast<ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth> *>(this);
+    }
+
+    static size_t offsetOfShape(size_t idx);
+};
+
+template <size_t ProtoChainDepth>
+class ICGetProp_NativeDoesNotExistImpl : public ICGetProp_NativeDoesNotExist
+{
+    friend class ICStubSpace;
+  public:
+    static const size_t MAX_PROTO_CHAIN_DEPTH = 8;
+    static const size_t NumShapes = ProtoChainDepth + 1;
+
+  private:
+    mozilla::Array<HeapPtrShape, NumShapes> shapes_;
+
+    ICGetProp_NativeDoesNotExistImpl(JitCode *stubCode, ICStub *firstMonitorStub,
+                                     const AutoShapeVector *shapes);
+
+  public:
+    static inline ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth> *New(
+        ICStubSpace *space, JitCode *code, ICStub *firstMonitorStub,
+        const AutoShapeVector *shapes)
+    {
+        if (!code)
+            return nullptr;
+        return space->allocate<ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth>>(
+                    code, firstMonitorStub, shapes);
+    }
+
+    void traceShapes(JSTracer *trc) {
+        for (size_t i = 0; i < NumShapes; i++)
+            MarkShape(trc, &shapes_[i], "baseline-getpropnativedoesnotexist-stub-shape");
+    }
+
+    static size_t offsetOfShape(size_t idx) {
+        return offsetof(ICGetProp_NativeDoesNotExistImpl, shapes_) + (idx * sizeof(HeapPtrShape));
+    }
+};
+
+class ICGetPropNativeDoesNotExistCompiler : public ICStubCompiler
+{
+    ICStub *firstMonitorStub_;
+    RootedObject obj_;
+    size_t protoChainDepth_;
+
+  protected:
+    virtual int32_t getKey() const {
+        return static_cast<int32_t>(kind) | (static_cast<int32_t>(protoChainDepth_) << 16);
+    }
+
+    bool generateStubCode(MacroAssembler &masm);
+
+  public:
+    ICGetPropNativeDoesNotExistCompiler(JSContext *cx, ICStub *firstMonitorStub,
+                                        HandleObject obj, size_t protoChainDepth);
+
+    template <size_t ProtoChainDepth>
+    ICStub *getStubSpecific(ICStubSpace *space, const AutoShapeVector *shapes) {
+        return ICGetProp_NativeDoesNotExistImpl<ProtoChainDepth>::New(space, getStubCode(),
+                                                                      firstMonitorStub_, shapes);
+    }
+
+    ICStub *getStub(ICStubSpace *space);
 };
 
 class ICGetPropCallGetter : public ICMonitoredStub
@@ -4496,6 +4645,9 @@ class ICGetProp_CallScripted : public ICGetPropCallPrototypeGetter
                                                        pcOffset);
     }
 
+    static ICGetProp_CallScripted *Clone(JSContext *cx, ICStubSpace *space,
+                                         ICStub *firstMonitorStub, ICGetProp_CallScripted &other);
+
     class Compiler : public ICGetPropCallPrototypeGetter::Compiler {
       protected:
         bool generateStubCode(MacroAssembler &masm);
@@ -4541,6 +4693,9 @@ class ICGetProp_CallNative : public ICGetPropCallGetter
         return space->allocate<ICGetProp_CallNative>(code, firstMonitorStub, obj, shape,
                                                      getter, pcOffset);
     }
+
+    static ICGetProp_CallNative *Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                       ICGetProp_CallNative &other);
 
     class Compiler : public ICGetPropCallGetter::Compiler
     {
@@ -4595,6 +4750,10 @@ class ICGetProp_CallNativePrototype : public ICGetPropCallPrototypeGetter
                                                               getter, pcOffset);
     }
 
+    static ICGetProp_CallNativePrototype *Clone(JSContext *cx, ICStubSpace *space,
+                                                ICStub *firstMonitorStub,
+                                                ICGetProp_CallNativePrototype &other);
+
     class Compiler : public ICGetPropCallPrototypeGetter::Compiler {
       protected:
         bool generateStubCode(MacroAssembler &masm);
@@ -4624,7 +4783,7 @@ class ICGetPropCallDOMProxyNativeStub : public ICMonitoredStub
     HeapPtrShape shape_;
 
     // Proxy handler to check against.
-    BaseProxyHandler *proxyHandler_;
+    const BaseProxyHandler *proxyHandler_;
 
     // Object shape of expected expando object. (nullptr if no expando object should be there)
     HeapPtrShape expandoShape_;
@@ -4641,7 +4800,7 @@ class ICGetPropCallDOMProxyNativeStub : public ICMonitoredStub
 
     ICGetPropCallDOMProxyNativeStub(ICStub::Kind kind, JitCode *stubCode,
                                     ICStub *firstMonitorStub, HandleShape shape,
-                                    BaseProxyHandler *proxyHandler, HandleShape expandoShape,
+                                    const BaseProxyHandler *proxyHandler, HandleShape expandoShape,
                                     HandleObject holder, HandleShape holderShape,
                                     HandleFunction getter, uint32_t pcOffset);
 
@@ -4692,7 +4851,7 @@ class ICGetProp_CallDOMProxyNative : public ICGetPropCallDOMProxyNativeStub
 {
     friend class ICStubSpace;
     ICGetProp_CallDOMProxyNative(JitCode *stubCode, ICStub *firstMonitorStub, HandleShape shape,
-                                 BaseProxyHandler *proxyHandler, HandleShape expandoShape,
+                                 const BaseProxyHandler *proxyHandler, HandleShape expandoShape,
                                  HandleObject holder, HandleShape holderShape,
                                  HandleFunction getter, uint32_t pcOffset)
       : ICGetPropCallDOMProxyNativeStub(ICStub::GetProp_CallDOMProxyNative, stubCode,
@@ -4703,7 +4862,7 @@ class ICGetProp_CallDOMProxyNative : public ICGetPropCallDOMProxyNativeStub
   public:
     static inline ICGetProp_CallDOMProxyNative *New(
             ICStubSpace *space, JitCode *code, ICStub *firstMonitorStub,
-            HandleShape shape, BaseProxyHandler *proxyHandler,
+            HandleShape shape, const BaseProxyHandler *proxyHandler,
             HandleShape expandoShape, HandleObject holder, HandleShape holderShape,
             HandleFunction getter, uint32_t pcOffset)
     {
@@ -4713,6 +4872,10 @@ class ICGetProp_CallDOMProxyNative : public ICGetPropCallDOMProxyNativeStub
                                                    proxyHandler, expandoShape, holder,
                                                    holderShape, getter, pcOffset);
     }
+
+    static ICGetProp_CallDOMProxyNative *Clone(JSContext *cx, ICStubSpace *space,
+                                               ICStub *firstMonitorStub,
+                                               ICGetProp_CallDOMProxyNative &other);
 };
 
 class ICGetProp_CallDOMProxyWithGenerationNative : public ICGetPropCallDOMProxyNativeStub
@@ -4723,7 +4886,7 @@ class ICGetProp_CallDOMProxyWithGenerationNative : public ICGetPropCallDOMProxyN
 
   public:
     ICGetProp_CallDOMProxyWithGenerationNative(JitCode *stubCode, ICStub *firstMonitorStub,
-                                               HandleShape shape, BaseProxyHandler *proxyHandler,
+                                               HandleShape shape, const BaseProxyHandler *proxyHandler,
                                                ExpandoAndGeneration *expandoAndGeneration,
                                                uint32_t generation, HandleShape expandoShape,
                                                HandleObject holder, HandleShape holderShape,
@@ -4738,7 +4901,7 @@ class ICGetProp_CallDOMProxyWithGenerationNative : public ICGetPropCallDOMProxyN
 
     static inline ICGetProp_CallDOMProxyWithGenerationNative *New(
             ICStubSpace *space, JitCode *code, ICStub *firstMonitorStub,
-            HandleShape shape, BaseProxyHandler *proxyHandler,
+            HandleShape shape, const BaseProxyHandler *proxyHandler,
             ExpandoAndGeneration *expandoAndGeneration, uint32_t generation,
             HandleShape expandoShape, HandleObject holder, HandleShape holderShape,
             HandleFunction getter, uint32_t pcOffset)
@@ -4750,6 +4913,10 @@ class ICGetProp_CallDOMProxyWithGenerationNative : public ICGetPropCallDOMProxyN
                                                    generation, expandoShape, holder, holderShape,
                                                    getter, pcOffset);
     }
+
+    static ICGetProp_CallDOMProxyWithGenerationNative *
+    Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+          ICGetProp_CallDOMProxyWithGenerationNative &other);
 
     void *expandoAndGeneration() const {
         return expandoAndGeneration_;
@@ -4795,18 +4962,18 @@ class ICGetProp_DOMProxyShadowed : public ICMonitoredStub
   friend class ICStubSpace;
   protected:
     HeapPtrShape shape_;
-    BaseProxyHandler *proxyHandler_;
+    const BaseProxyHandler *proxyHandler_;
     HeapPtrPropertyName name_;
     uint32_t pcOffset_;
 
     ICGetProp_DOMProxyShadowed(JitCode *stubCode, ICStub *firstMonitorStub, HandleShape shape,
-                               BaseProxyHandler *proxyHandler, HandlePropertyName name,
+                               const BaseProxyHandler *proxyHandler, HandlePropertyName name,
                                uint32_t pcOffset);
 
   public:
     static inline ICGetProp_DOMProxyShadowed *New(ICStubSpace *space, JitCode *code,
                                                   ICStub *firstMonitorStub, HandleShape shape,
-                                                  BaseProxyHandler *proxyHandler,
+                                                  const BaseProxyHandler *proxyHandler,
                                                   HandlePropertyName name, uint32_t pcOffset)
     {
         if (!code)
@@ -4814,6 +4981,10 @@ class ICGetProp_DOMProxyShadowed : public ICMonitoredStub
         return space->allocate<ICGetProp_DOMProxyShadowed>(code, firstMonitorStub, shape,
                                                            proxyHandler, name, pcOffset);
     }
+
+    static ICGetProp_DOMProxyShadowed *Clone(JSContext *cx, ICStubSpace *space,
+                                             ICStub *firstMonitorStub,
+                                             ICGetProp_DOMProxyShadowed &other);
 
     HeapPtrShape &shape() {
         return shape_;
@@ -4864,7 +5035,7 @@ class ICGetProp_ArgumentsLength : public ICStub
     enum Which { Normal, Strict, Magic };
 
   protected:
-    ICGetProp_ArgumentsLength(JitCode *stubCode)
+    explicit ICGetProp_ArgumentsLength(JitCode *stubCode)
       : ICStub(ICStub::GetProp_ArgumentsLength, stubCode)
     { }
 
@@ -4908,7 +5079,7 @@ class ICSetProp_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICSetProp_Fallback(JitCode *stubCode)
+    explicit ICSetProp_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::SetProp_Fallback, stubCode)
     { }
 
@@ -4936,7 +5107,7 @@ class ICSetProp_Fallback : public ICFallbackStub
         bool postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::SetProp_Fallback)
         { }
 
@@ -5083,7 +5254,8 @@ class ICSetProp_NativeAddImpl : public ICSetProp_NativeAdd
     }
 };
 
-class ICSetPropNativeAddCompiler : public ICStubCompiler {
+class ICSetPropNativeAddCompiler : public ICStubCompiler
+{
     RootedObject obj_;
     RootedShape oldShape_;
     size_t protoChainDepth_;
@@ -5215,6 +5387,9 @@ class ICSetProp_CallScripted : public ICSetPropCallSetter
                                                        pcOffset);
     }
 
+    static ICSetProp_CallScripted *Clone(JSContext *cx, ICStubSpace *space, ICStub *,
+                                         ICSetProp_CallScripted &other);
+
     class Compiler : public ICSetPropCallSetter::Compiler {
       protected:
         bool generateStubCode(MacroAssembler &masm);
@@ -5259,6 +5434,9 @@ class ICSetProp_CallNative : public ICSetPropCallSetter
                                                      pcOffset);
     }
 
+    static ICSetProp_CallNative *Clone(JSContext *cx, ICStubSpace *space, ICStub *,
+                                       ICSetProp_CallNative &other);
+
     class Compiler : public ICSetPropCallSetter::Compiler {
       protected:
         bool generateStubCode(MacroAssembler &masm);
@@ -5284,6 +5462,9 @@ class ICSetProp_CallNative : public ICSetPropCallSetter
 //      JSOP_FUNAPPLY
 //      JSOP_FUNCALL
 //      JSOP_NEW
+//      JSOP_SPREADCALL
+//      JSOP_SPREADNEW
+//      JSOP_SPREADEVAL
 
 class ICCallStubCompiler : public ICStubCompiler
 {
@@ -5298,6 +5479,8 @@ class ICCallStubCompiler : public ICStubCompiler
     };
 
     void pushCallArguments(MacroAssembler &masm, GeneralRegisterSet regs, Register argcReg);
+    void pushSpreadCallArguments(MacroAssembler &masm, GeneralRegisterSet regs, Register argcReg);
+    void guardSpreadCall(MacroAssembler &masm, Register argcReg, Label *failure);
     Register guardFunApply(MacroAssembler &masm, GeneralRegisterSet regs, Register argcReg,
                            bool checkNative, FunApplyThing applyThing, Label *failure);
     void pushCallerArguments(MacroAssembler &masm, GeneralRegisterSet regs);
@@ -5355,14 +5538,20 @@ class ICCall_Fallback : public ICMonitoredFallbackStub
     class Compiler : public ICCallStubCompiler {
       protected:
         bool isConstructing_;
+        bool isSpread_;
         uint32_t returnOffset_;
         bool generateStubCode(MacroAssembler &masm);
         bool postGenerateStubCode(MacroAssembler &masm, Handle<JitCode *> code);
 
+        virtual int32_t getKey() const {
+            return static_cast<int32_t>(kind) | (static_cast<int32_t>(isSpread_) << 16);
+        }
+
       public:
-        Compiler(JSContext *cx, bool isConstructing)
+        Compiler(JSContext *cx, bool isConstructing, bool isSpread)
           : ICCallStubCompiler(cx, ICStub::Call_Fallback),
-            isConstructing_(isConstructing)
+            isConstructing_(isConstructing),
+            isSpread_(isSpread)
         { }
 
         ICStub *getStub(ICStubSpace *space) {
@@ -5398,6 +5587,9 @@ class ICCall_Scripted : public ICMonitoredStub
         return space->allocate<ICCall_Scripted>(code, firstMonitorStub,
                                                 calleeScript, templateObject, pcOffset);
     }
+
+    static ICCall_Scripted *Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                  ICCall_Scripted &other);
 
     HeapPtrScript &calleeScript() {
         return calleeScript_;
@@ -5435,6 +5627,9 @@ class ICCall_AnyScripted : public ICMonitoredStub
         return space->allocate<ICCall_AnyScripted>(code, firstMonitorStub, pcOffset);
     }
 
+    static ICCall_AnyScripted *Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                                     ICCall_AnyScripted &other);
+
     static size_t offsetOfPCOffset() {
         return offsetof(ICCall_AnyScripted, pcOffset_);
     }
@@ -5445,32 +5640,36 @@ class ICCallScriptedCompiler : public ICCallStubCompiler {
   protected:
     ICStub *firstMonitorStub_;
     bool isConstructing_;
+    bool isSpread_;
     RootedScript calleeScript_;
     RootedObject templateObject_;
     uint32_t pcOffset_;
     bool generateStubCode(MacroAssembler &masm);
 
     virtual int32_t getKey() const {
-        return static_cast<int32_t>(kind) | (static_cast<int32_t>(isConstructing_) << 16);
+        return static_cast<int32_t>(kind) | (static_cast<int32_t>(isConstructing_) << 16) |
+               (static_cast<int32_t>(isSpread_) << 17);
     }
 
   public:
     ICCallScriptedCompiler(JSContext *cx, ICStub *firstMonitorStub,
                            HandleScript calleeScript, HandleObject templateObject,
-                           bool isConstructing, uint32_t pcOffset)
+                           bool isConstructing, bool isSpread, uint32_t pcOffset)
       : ICCallStubCompiler(cx, ICStub::Call_Scripted),
         firstMonitorStub_(firstMonitorStub),
         isConstructing_(isConstructing),
+        isSpread_(isSpread),
         calleeScript_(cx, calleeScript),
         templateObject_(cx, templateObject),
         pcOffset_(pcOffset)
     { }
 
     ICCallScriptedCompiler(JSContext *cx, ICStub *firstMonitorStub, bool isConstructing,
-                           uint32_t pcOffset)
+                           bool isSpread, uint32_t pcOffset)
       : ICCallStubCompiler(cx, ICStub::Call_AnyScripted),
         firstMonitorStub_(firstMonitorStub),
         isConstructing_(isConstructing),
+        isSpread_(isSpread),
         calleeScript_(cx, nullptr),
         templateObject_(cx, nullptr),
         pcOffset_(pcOffset)
@@ -5495,7 +5694,7 @@ class ICCall_Native : public ICMonitoredStub
     HeapPtrObject templateObject_;
     uint32_t pcOffset_;
 
-#ifdef JS_ARM_SIMULATOR
+#if defined(JS_ARM_SIMULATOR) || defined(JS_MIPS_SIMULATOR)
     void *native_;
 #endif
 
@@ -5514,6 +5713,9 @@ class ICCall_Native : public ICMonitoredStub
                                               callee, templateObject, pcOffset);
     }
 
+    static ICCall_Native *Clone(JSContext *cx, ICStubSpace *space, ICStub *firstMonitorStub,
+                                ICCall_Native &other);
+
     HeapPtrFunction &callee() {
         return callee_;
     }
@@ -5528,7 +5730,7 @@ class ICCall_Native : public ICMonitoredStub
         return offsetof(ICCall_Native, pcOffset_);
     }
 
-#ifdef JS_ARM_SIMULATOR
+#if defined(JS_ARM_SIMULATOR) || defined(JS_MIPS_SIMULATOR)
     static size_t offsetOfNative() {
         return offsetof(ICCall_Native, native_);
     }
@@ -5539,22 +5741,25 @@ class ICCall_Native : public ICMonitoredStub
       protected:
         ICStub *firstMonitorStub_;
         bool isConstructing_;
+        bool isSpread_;
         RootedFunction callee_;
         RootedObject templateObject_;
         uint32_t pcOffset_;
         bool generateStubCode(MacroAssembler &masm);
 
         virtual int32_t getKey() const {
-            return static_cast<int32_t>(kind) | (static_cast<int32_t>(isConstructing_) << 16);
+            return static_cast<int32_t>(kind) | (static_cast<int32_t>(isConstructing_) << 16) |
+                   (static_cast<int32_t>(isSpread_) << 17);
         }
 
       public:
         Compiler(JSContext *cx, ICStub *firstMonitorStub,
                  HandleFunction callee, HandleObject templateObject,
-                 bool isConstructing, uint32_t pcOffset)
+                 bool isConstructing, bool isSpread, uint32_t pcOffset)
           : ICCallStubCompiler(cx, ICStub::Call_Native),
             firstMonitorStub_(firstMonitorStub),
             isConstructing_(isConstructing),
+            isSpread_(isSpread),
             callee_(cx, callee),
             templateObject_(cx, templateObject),
             pcOffset_(pcOffset)
@@ -5592,6 +5797,10 @@ class ICCall_ScriptedApplyArray : public ICMonitoredStub
             return nullptr;
         return space->allocate<ICCall_ScriptedApplyArray>(code, firstMonitorStub, pcOffset);
     }
+
+    static ICCall_ScriptedApplyArray *Clone(JSContext *, ICStubSpace *space,
+                                            ICStub *firstMonitorStub,
+                                            ICCall_ScriptedApplyArray &other);
 
     static size_t offsetOfPCOffset() {
         return offsetof(ICCall_ScriptedApplyArray, pcOffset_);
@@ -5643,6 +5852,10 @@ class ICCall_ScriptedApplyArguments : public ICMonitoredStub
         return space->allocate<ICCall_ScriptedApplyArguments>(code, firstMonitorStub, pcOffset);
     }
 
+    static ICCall_ScriptedApplyArguments *Clone(JSContext *, ICStubSpace *space,
+                                                ICStub *firstMonitorStub,
+                                                ICCall_ScriptedApplyArguments &other);
+
     static size_t offsetOfPCOffset() {
         return offsetof(ICCall_ScriptedApplyArguments, pcOffset_);
     }
@@ -5693,6 +5906,9 @@ class ICCall_ScriptedFunCall : public ICMonitoredStub
             return nullptr;
         return space->allocate<ICCall_ScriptedFunCall>(code, firstMonitorStub, pcOffset);
     }
+
+    static ICCall_ScriptedFunCall *Clone(JSContext *, ICStubSpace *space, ICStub *firstMonitorStub,
+                                         ICCall_ScriptedFunCall &other);
 
     static size_t offsetOfPCOffset() {
         return offsetof(ICCall_ScriptedFunCall, pcOffset_);
@@ -5749,7 +5965,7 @@ class ICTableSwitch : public ICStub
         return space->allocate<ICTableSwitch>(code, table, min, length, defaultTarget);
     }
 
-    void fixupJumpTable(HandleScript script, BaselineScript *baseline);
+    void fixupJumpTable(JSScript *script, BaselineScript *baseline);
 
     class Compiler : public ICStubCompiler {
         bool generateStubCode(MacroAssembler &masm);
@@ -5770,7 +5986,7 @@ class ICIteratorNew_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICIteratorNew_Fallback(JitCode *stubCode)
+    explicit ICIteratorNew_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::IteratorNew_Fallback, stubCode)
     { }
 
@@ -5786,7 +6002,7 @@ class ICIteratorNew_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorNew_Fallback)
         { }
 
@@ -5801,7 +6017,7 @@ class ICIteratorMore_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICIteratorMore_Fallback(JitCode *stubCode)
+    explicit ICIteratorMore_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::IteratorMore_Fallback, stubCode)
     { }
 
@@ -5817,7 +6033,7 @@ class ICIteratorMore_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorMore_Fallback)
         { }
 
@@ -5832,7 +6048,7 @@ class ICIteratorMore_Native : public ICStub
 {
     friend class ICStubSpace;
 
-    ICIteratorMore_Native(JitCode *stubCode)
+    explicit ICIteratorMore_Native(JitCode *stubCode)
       : ICStub(ICStub::IteratorMore_Native, stubCode)
     { }
 
@@ -5848,7 +6064,7 @@ class ICIteratorMore_Native : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorMore_Native)
         { }
 
@@ -5863,7 +6079,7 @@ class ICIteratorNext_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICIteratorNext_Fallback(JitCode *stubCode)
+    explicit ICIteratorNext_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::IteratorNext_Fallback, stubCode)
     { }
 
@@ -5887,7 +6103,7 @@ class ICIteratorNext_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorNext_Fallback)
         { }
 
@@ -5902,7 +6118,7 @@ class ICIteratorNext_Native : public ICStub
 {
     friend class ICStubSpace;
 
-    ICIteratorNext_Native(JitCode *stubCode)
+    explicit ICIteratorNext_Native(JitCode *stubCode)
       : ICStub(ICStub::IteratorNext_Native, stubCode)
     { }
 
@@ -5918,7 +6134,7 @@ class ICIteratorNext_Native : public ICStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorNext_Native)
         { }
 
@@ -5933,7 +6149,7 @@ class ICIteratorClose_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICIteratorClose_Fallback(JitCode *stubCode)
+    explicit ICIteratorClose_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::IteratorClose_Fallback, stubCode)
     { }
 
@@ -5949,7 +6165,7 @@ class ICIteratorClose_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::IteratorClose_Fallback)
         { }
 
@@ -5965,7 +6181,7 @@ class ICInstanceOf_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICInstanceOf_Fallback(JitCode *stubCode)
+    explicit ICInstanceOf_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::InstanceOf_Fallback, stubCode)
     { }
 
@@ -5981,7 +6197,7 @@ class ICInstanceOf_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::InstanceOf_Fallback)
         { }
 
@@ -5998,7 +6214,7 @@ class ICTypeOf_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICTypeOf_Fallback(JitCode *stubCode)
+    explicit ICTypeOf_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::TypeOf_Fallback, stubCode)
     { }
 
@@ -6014,7 +6230,7 @@ class ICTypeOf_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::TypeOf_Fallback)
         { }
 
@@ -6115,7 +6331,7 @@ class ICRetSub_Fallback : public ICFallbackStub
 {
     friend class ICStubSpace;
 
-    ICRetSub_Fallback(JitCode *stubCode)
+    explicit ICRetSub_Fallback(JitCode *stubCode)
       : ICFallbackStub(ICStub::RetSub_Fallback, stubCode)
     { }
 
@@ -6133,7 +6349,7 @@ class ICRetSub_Fallback : public ICFallbackStub
         bool generateStubCode(MacroAssembler &masm);
 
       public:
-        Compiler(JSContext *cx)
+        explicit Compiler(JSContext *cx)
           : ICStubCompiler(cx, ICStub::RetSub_Fallback)
         { }
 
@@ -6192,6 +6408,23 @@ class ICRetSub_Resume : public ICStub
         }
     };
 };
+
+inline bool
+IsCacheableDOMProxy(JSObject *obj)
+{
+    if (!obj->is<ProxyObject>())
+        return false;
+
+    const BaseProxyHandler *handler = obj->as<ProxyObject>().handler();
+
+    if (handler->family() != GetDOMProxyHandlerFamily())
+        return false;
+
+    if (obj->numFixedSlots() <= GetDOMProxyExpandoSlot())
+        return false;
+
+    return true;
+}
 
 } // namespace jit
 } // namespace js

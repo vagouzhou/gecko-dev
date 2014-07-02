@@ -7,6 +7,7 @@
 #define OMXCodecWrapper_h_
 
 #include <gui/Surface.h>
+#include <utils/RefBase.h>
 #include <stagefright/foundation/ABuffer.h>
 #include <stagefright/foundation/AMessage.h>
 #include <stagefright/MediaCodec.h>
@@ -15,9 +16,44 @@
 #include "GonkNativeWindow.h"
 #include "GonkNativeWindowClient.h"
 
+#include "IMediaResourceManagerService.h"
+#include "MediaResourceManagerClient.h"
+
 #include <speex/speex_resampler.h>
 
 namespace android {
+
+// Wrapper class for managing HW codec reservations
+class OMXCodecReservation : public MediaResourceManagerClient::EventListener
+{
+public:
+  OMXCodecReservation(bool aEncoder)
+  {
+    mType = aEncoder ? IMediaResourceManagerService::HW_VIDEO_ENCODER :
+            IMediaResourceManagerService::HW_VIDEO_DECODER;
+  }
+
+  virtual ~OMXCodecReservation()
+  {
+    ReleaseOMXCodec();
+  }
+
+  /** Reserve the Encode or Decode resource for this instance */
+  virtual bool ReserveOMXCodec();
+
+  /** Release the Encode or Decode resource for this instance */
+  virtual void ReleaseOMXCodec();
+
+  // MediaResourceManagerClient::EventListener
+  virtual void statusChanged(int event) {}
+
+private:
+  IMediaResourceManagerService::ResourceType mType;
+
+  sp<MediaResourceManagerClient> mClient;
+  sp<IMediaResourceManagerService> mManagerService;
+};
+
 
 class OMXAudioEncoder;
 class OMXVideoEncoder;
@@ -117,7 +153,8 @@ protected:
   /**
    * Construct codec specific configuration blob with given data aData generated
    * by media codec and append it into aOutputBuf. Needed by MP4 container
-   * writer for generating decoder config box. Returns OK if succeed.
+   * writer for generating decoder config box, or WebRTC for generating RTP
+   * packets. Returns OK if succeed.
    */
   virtual status_t AppendDecoderConfig(nsTArray<uint8_t>* aOutputBuf,
                                        ABuffer* aData) = 0;
@@ -240,12 +277,26 @@ private:
  */
 class OMXVideoEncoder MOZ_FINAL : public OMXCodecWrapper
 {
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(OMXVideoEncoder)
 public:
+  // Types of output blob format.
+  enum BlobFormat {
+    AVC_MP4, // MP4 file config descripter (defined in ISO/IEC 14496-15 5.2.4.1.1)
+    AVC_NAL  // NAL (Network Abstract Layer) (defined in ITU-T H.264 7.4.1)
+  };
+
   /**
    * Configure video codec parameters and start media codec. It must be called
    * before calling Encode() and GetNextEncodedFrame().
+   * aBlobFormat specifies output blob format provided by encoder. It can be
+   * AVC_MP4 or AVC_NAL.
+   * Configure sets up most format value to values appropriate for camera use.
+   * ConfigureDirect lets the caller determine all the defaults.
    */
-  nsresult Configure(int aWidth, int aHeight, int aFrameRate);
+  nsresult Configure(int aWidth, int aHeight, int aFrameRate,
+                     BlobFormat aBlobFormat = BlobFormat::AVC_MP4);
+  nsresult ConfigureDirect(sp<AMessage>& aFormat,
+                           BlobFormat aBlobFormat = BlobFormat::AVC_MP4);
 
   /**
    * Encode a aWidth pixels wide and aHeight pixels tall video frame of
@@ -256,12 +307,24 @@ public:
   nsresult Encode(const mozilla::layers::Image* aImage, int aWidth, int aHeight,
                   int64_t aTimestamp, int aInputFlags = 0);
 
+#if ANDROID_VERSION >= 18
+  /** Set encoding bitrate (in kbps). */
+  nsresult SetBitrate(int32_t aKbps);
+#endif
+
+  /**
+   * Ask codec to generate an instantaneous decoding refresh (IDR) frame
+   * (defined in ISO/IEC 14496-10).
+   */
+  nsresult RequestIDRFrame();
+
 protected:
   virtual status_t AppendDecoderConfig(nsTArray<uint8_t>* aOutputBuf,
                                        ABuffer* aData) MOZ_OVERRIDE;
 
-  // AVC/H.264 encoder replaces NAL unit start code with the unit length as
-  // specified in ISO/IEC 14496-15 5.2.3.
+  // If configured to output MP4 format blob, AVC/H.264 encoder has to replace
+  // NAL unit start code with the unit length as specified in
+  // ISO/IEC 14496-15 5.2.3.
   virtual void AppendFrame(nsTArray<uint8_t>* aOutputBuf,
                            const uint8_t* aData, size_t aSize) MOZ_OVERRIDE;
 
@@ -276,13 +339,18 @@ private:
    * CODEC_AVC_ENC.
    */
   OMXVideoEncoder(CodecType aCodecType)
-    : OMXCodecWrapper(aCodecType), mWidth(0), mHeight(0) {}
+    : OMXCodecWrapper(aCodecType)
+    , mWidth(0)
+    , mHeight(0)
+    , mBlobFormat(BlobFormat::AVC_MP4)
+  {}
 
   // For creator function to access hidden constructor.
   friend class OMXCodecWrapper;
 
   int mWidth;
   int mHeight;
+  BlobFormat mBlobFormat;
 };
 
 } // namespace android

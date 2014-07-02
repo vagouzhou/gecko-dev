@@ -30,8 +30,8 @@ class nsMathMLElement MOZ_FINAL : public nsMathMLElementBase,
                                   public mozilla::dom::Link
 {
 public:
-  nsMathMLElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
-  nsMathMLElement(already_AddRefed<nsINodeInfo>&& aNodeInfo);
+  nsMathMLElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
+  nsMathMLElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
 
   // Implementation of nsISupports is inherited from nsMathMLElementBase
   NS_DECL_ISUPPORTS_INHERITED
@@ -77,8 +77,8 @@ public:
                      mozilla::EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
   virtual nsresult PostHandleEvent(
                      mozilla::EventChainPostVisitor& aVisitor) MOZ_OVERRIDE;
-  nsresult Clone(nsINodeInfo*, nsINode**) const MOZ_OVERRIDE;
-  virtual nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  nsresult Clone(mozilla::dom::NodeInfo*, nsINode**) const MOZ_OVERRIDE;
+  virtual mozilla::EventStates IntrinsicState() const MOZ_OVERRIDE;
   virtual bool IsNodeOfType(uint32_t aFlags) const MOZ_OVERRIDE;
 
   // Set during reflow as necessary. Does a style change notification,
@@ -106,8 +106,7 @@ public:
   virtual nsIDOMNode* AsDOMNode() MOZ_OVERRIDE { return this; }
 
 protected:
-  virtual JSObject* WrapNode(JSContext *aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
 private:
   bool mIncrementScriptLevel;

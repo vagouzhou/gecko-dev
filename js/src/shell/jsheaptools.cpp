@@ -66,7 +66,7 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
     class Node {
       public:
         Node() { }
-        Node(JSGCTraceKind kind)
+        explicit Node(JSGCTraceKind kind)
           : kind(kind), incoming(), marked(false) { }
 
         /*
@@ -153,13 +153,13 @@ class HeapReverser : public JSTracer, public JS::CustomAutoRooter
     Map map;
 
     /* Construct a HeapReverser for |context|'s heap. */
-    HeapReverser(JSContext *cx)
-      : JS::CustomAutoRooter(cx),
+    explicit HeapReverser(JSContext *cx)
+      : JSTracer(cx->runtime(), traverseEdgeWithThis),
+        JS::CustomAutoRooter(cx),
         noggc(JS_GetRuntime(cx)),
         runtime(JS_GetRuntime(cx)),
         parent(nullptr)
     {
-        JS_TracerInit(this, runtime, traverseEdgeWithThis);
     }
 
     bool init() { return map.init(); }
@@ -308,8 +308,8 @@ HeapReverser::reverseHeap()
 char *
 HeapReverser::getEdgeDescription()
 {
-    if (!debugPrinter && debugPrintIndex == (size_t) -1) {
-        const char *arg = static_cast<const char *>(debugPrintArg);
+    if (!debugPrinter() && debugPrintIndex() == (size_t) -1) {
+        const char *arg = static_cast<const char *>(debugPrintArg());
         char *name = js_pod_malloc<char>(strlen(arg) + 1);
         if (!name)
             return nullptr;
@@ -322,11 +322,11 @@ HeapReverser::getEdgeDescription()
     char *name = js_pod_malloc<char>(nameSize);
     if (!name)
         return nullptr;
-    if (debugPrinter)
-        debugPrinter(this, name, nameSize);
+    if (debugPrinter())
+        debugPrinter()(this, name, nameSize);
     else
         JS_snprintf(name, nameSize, "%s[%lu]",
-                    static_cast<const char *>(debugPrintArg), debugPrintIndex);
+                    static_cast<const char *>(debugPrintArg()), debugPrintIndex());
 
     /* Shrink storage to fit. */
     return static_cast<char *>(js_realloc(name, strlen(name) + 1));
@@ -371,7 +371,7 @@ class ReferenceFinder {
     };
 
     struct AutoNodeMarker {
-        AutoNodeMarker(HeapReverser::Node *node) : node(node) { node->marked = true; }
+        explicit AutoNodeMarker(HeapReverser::Node *node) : node(node) { node->marked = true; }
         ~AutoNodeMarker() { node->marked = false; }
       private:
         HeapReverser::Node *node;
@@ -432,7 +432,7 @@ ReferenceFinder::visit(void *cell, Path *path)
     /* Is |cell| a representable cell, reached via a non-empty path? */
     if (path != nullptr) {
         jsval representation = representable(cell, node->kind);
-        if (!JSVAL_IS_VOID(representation))
+        if (!representation.isUndefined())
             return addReferrer(representation, path);
     }
 
@@ -509,7 +509,7 @@ ReferenceFinder::addReferrer(jsval referrerArg, Path *path)
         return false;
     if (v.isUndefined()) {
         /* Create an array to accumulate referents under this path. */
-        JSObject *array = JS_NewArrayObject(context, referrer);
+        JSObject *array = JS_NewArrayObject(context, HandleValueArray(referrer));
         if (!array)
             return false;
         v.setObject(*array);

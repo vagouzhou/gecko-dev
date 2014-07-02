@@ -8,7 +8,7 @@
 
 namespace mozilla {
 
-NS_IMPL_ISUPPORTS2(LoadContext, nsILoadContext, nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(LoadContext, nsILoadContext, nsIInterfaceRequestor)
 
 //-----------------------------------------------------------------------------
 // LoadContext::nsILoadContext
@@ -37,6 +37,14 @@ LoadContext::GetTopFrameElement(nsIDOMElement** aElement)
 {
   nsCOMPtr<nsIDOMElement> element = do_QueryReferent(mTopFrameElement);
   element.forget(aElement);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+LoadContext::GetNestedFrameId(uint64_t* aId)
+{
+  NS_ENSURE_ARG(aId);
+  *aId = mNestedFrameId;
   return NS_OK;
 }
 

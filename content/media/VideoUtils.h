@@ -10,6 +10,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/ReentrantMonitor.h"
 #include "mozilla/CheckedInt.h"
+#include "nsIThread.h"
 
 #if !(defined(XP_WIN) || defined(XP_MACOSX) || defined(LINUX)) || \
     defined(MOZ_ASAN)
@@ -19,6 +20,7 @@
 #include "nsThreadUtils.h"
 #include "prtime.h"
 #include "AudioSampleFormat.h"
+#include "mozilla/RefPtr.h"
 
 using mozilla::CheckedInt64;
 using mozilla::CheckedUint64;
@@ -91,6 +93,27 @@ private:
   nsCOMPtr<nsIThread> mThread;
 };
 
+template<class T>
+class DeleteObjectTask: public nsRunnable {
+public:
+  DeleteObjectTask(nsAutoPtr<T>& aObject)
+    : mObject(aObject)
+  {
+  }
+  NS_IMETHOD Run() {
+    NS_ASSERTION(NS_IsMainThread(), "Must be on main thread.");
+    mObject = nullptr;
+    return NS_OK;
+  }
+private:
+  nsAutoPtr<T> mObject;
+};
+
+template<class T>
+void DeleteOnMainThread(nsAutoPtr<T>& aObject) {
+  NS_DispatchToMainThread(new DeleteObjectTask<T>(aObject));
+}
+
 class MediaResource;
 
 namespace dom {
@@ -128,6 +151,10 @@ static const int64_t USECS_PER_MS = 1000;
 // Converts seconds to milliseconds.
 #define MS_TO_SECONDS(s) ((double)(s) / (PR_MSEC_PER_SEC))
 
+// Converts from seconds to microseconds. Returns failure if the resulting
+// integer is too big to fit in an int64_t.
+nsresult SecondsToUsecs(double aSeconds, int64_t& aOutUsecs);
+
 // The maximum height and width of the video. Used for
 // sanitizing the memory allocation of the RGB buffer.
 // The maximum resolution we anticipate encountering in the
@@ -164,6 +191,29 @@ bool IsVideoContentType(const nsCString& aContentType);
 // display regions before using them to display video frames.
 bool IsValidVideoRegion(const nsIntSize& aFrame, const nsIntRect& aPicture,
                         const nsIntSize& aDisplay);
+
+// Template to automatically set a variable to a value on scope exit.
+// Useful for unsetting flags, etc.
+template<typename T>
+class AutoSetOnScopeExit {
+public:
+  AutoSetOnScopeExit(T& aVar, T aValue)
+    : mVar(aVar)
+    , mValue(aValue)
+  {}
+  ~AutoSetOnScopeExit() {
+    mVar = mValue;
+  }
+private:
+  T& mVar;
+  const T mValue;
+};
+
+class SharedThreadPool;
+
+// Returns the thread pool that is shared amongst all decoder state machines
+// for decoding streams.
+TemporaryRef<SharedThreadPool> GetMediaDecodeThreadPool();
 
 } // end namespace mozilla
 

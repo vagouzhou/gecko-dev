@@ -263,18 +263,20 @@ class LModPowTwoI : public LInstructionHelper<1, 1, 0>
     }
 };
 
-class LModMaskI : public LInstructionHelper<1, 1, 1>
+class LModMaskI : public LInstructionHelper<1, 1, 2>
 {
     const int32_t shift_;
 
   public:
     LIR_HEADER(ModMaskI);
 
-    LModMaskI(const LAllocation &lhs, const LDefinition &temp1, int32_t shift)
+    LModMaskI(const LAllocation &lhs, const LDefinition &temp1, const LDefinition &temp2,
+              int32_t shift)
       : shift_(shift)
     {
         setOperand(0, lhs);
         setTemp(0, temp1);
+        setTemp(1, temp2);
     }
 
     int32_t shift() const {
@@ -431,8 +433,6 @@ class LUMod : public LBinaryMath<0>
     }
 };
 
-// This class performs a simple x86 'div', yielding either a quotient or remainder depending on
-// whether this instruction is defined to output eax (quotient) or edx (remainder).
 class LSoftUDivOrMod : public LBinaryMath<3>
 {
   public:

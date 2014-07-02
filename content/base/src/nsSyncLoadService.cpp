@@ -37,7 +37,6 @@ class nsSyncLoader : public nsIStreamListener,
 {
 public:
     nsSyncLoader() : mLoading(false) {}
-    virtual ~nsSyncLoader();
 
     NS_DECL_ISUPPORTS
 
@@ -53,6 +52,8 @@ public:
     NS_DECL_NSIINTERFACEREQUESTOR
 
 private:
+    virtual ~nsSyncLoader();
+
     nsresult PushAsyncStream(nsIStreamListener* aListener);
     nsresult PushSyncStream(nsIStreamListener* aListener);
 
@@ -64,9 +65,10 @@ private:
 
 class nsForceXMLListener : public nsIStreamListener
 {
+    virtual ~nsForceXMLListener();
+
 public:
     nsForceXMLListener(nsIStreamListener* aListener);
-    virtual ~nsForceXMLListener();
 
     NS_DECL_ISUPPORTS
     NS_FORWARD_NSISTREAMLISTENER(mListener->)
@@ -85,9 +87,9 @@ nsForceXMLListener::~nsForceXMLListener()
 {
 }
 
-NS_IMPL_ISUPPORTS2(nsForceXMLListener,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(nsForceXMLListener,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 NS_IMETHODIMP
 nsForceXMLListener::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
@@ -116,12 +118,12 @@ nsSyncLoader::~nsSyncLoader()
     }
 }
 
-NS_IMPL_ISUPPORTS5(nsSyncLoader,
-                   nsIStreamListener,
-                   nsIRequestObserver,
-                   nsIChannelEventSink,
-                   nsIInterfaceRequestor,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsSyncLoader,
+                  nsIStreamListener,
+                  nsIRequestObserver,
+                  nsIChannelEventSink,
+                  nsIInterfaceRequestor,
+                  nsISupportsWeakReference)
 
 nsresult
 nsSyncLoader::LoadDocument(nsIChannel* aChannel,

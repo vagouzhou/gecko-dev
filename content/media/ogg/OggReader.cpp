@@ -378,12 +378,6 @@ nsresult OggReader::ReadMetadata(MediaInfo* aInfo,
         LOG(PR_LOG_DEBUG, ("Got Ogg duration from seeking to end %lld", endTime));
       }
       mDecoder->GetResource()->EndSeekingForMetadata();
-    } else if (mDecoder->GetMediaDuration() == -1) {
-      // We don't have a duration, and we don't know enough about the resource
-      // to try a seek. Abort trying to get a duration. This happens for example
-      // when the server says it accepts range requests, but does not give us a
-      // Content-Length.
-      mDecoder->SetTransportSeekable(false);
     }
   } else {
     return NS_ERROR_FAILURE;
@@ -391,6 +385,15 @@ nsresult OggReader::ReadMetadata(MediaInfo* aInfo,
   *aInfo = mInfo;
 
   return NS_OK;
+}
+
+bool
+OggReader::IsMediaSeekable()
+{
+  if (mIsChained) {
+    return false;
+  }
+  return true;
 }
 
 nsresult OggReader::DecodeVorbis(ogg_packet* aPacket) {
@@ -1315,9 +1318,9 @@ nsresult OggReader::SeekInUnbuffered(int64_t aTarget,
 }
 
 nsresult OggReader::Seek(int64_t aTarget,
-                           int64_t aStartTime,
-                           int64_t aEndTime,
-                           int64_t aCurrentTime)
+                         int64_t aStartTime,
+                         int64_t aEndTime,
+                         int64_t aCurrentTime)
 {
   NS_ASSERTION(mDecoder->OnDecodeThread(), "Should be on decode thread.");
   if (mIsChained)
@@ -1379,10 +1382,39 @@ nsresult OggReader::Seek(int64_t aTarget,
     }
   }
 
-  // The decode position must now be either close to the seek target, or
-  // we've seeked to before the keyframe before the seek target. Decode
-  // forward to the seek target frame.
-  return DecodeToTarget(aTarget);
+  if (HasVideo()) {
+    // Decode forwards until we find the next keyframe. This is required,
+    // as although the seek should finish on a page containing a keyframe,
+    // there may be non-keyframes in the page before the keyframe.
+    // When doing fastSeek we display the first frame after the seek, so
+    // we need to advance the decode to the keyframe otherwise we'll get
+    // visual artifacts in the first frame output after the seek.
+    // First, we must check to see if there's already a keyframe in the frames
+    // that we may have already decoded, and discard frames up to the
+    // keyframe.
+    VideoData* v;
+    while ((v = mVideoQueue.PeekFront()) && !v->mKeyframe) {
+      delete mVideoQueue.PopFront();
+    }
+    if (mVideoQueue.GetSize() == 0) {
+      // We didn't find a keyframe in the frames already here, so decode
+      // forwards until we find a keyframe.
+      bool skip = true;
+      while (DecodeVideoFrame(skip, 0) && skip) {
+        ReentrantMonitorAutoEnter mon(mDecoder->GetReentrantMonitor());
+        if (mDecoder->IsShutdown()) {
+          return NS_ERROR_FAILURE;
+        }
+      }
+    }
+#ifdef DEBUG
+    v = mVideoQueue.PeekFront();
+    if (!v || !v->mKeyframe) {
+      NS_WARNING("Ogg seek didn't end up before a key frame!");
+    }
+#endif
+  }
+  return NS_OK;
 }
 
 // Reads a page from the media resource.

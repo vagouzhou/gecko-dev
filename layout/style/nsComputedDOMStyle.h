@@ -12,7 +12,6 @@
 #include "mozilla/Attributes.h"
 #include "nsCOMPtr.h"
 #include "nscore.h"
-#include "nsCSSProperty.h"
 #include "nsCSSProps.h"
 #include "nsDOMCSSDeclaration.h"
 #include "nsStyleContext.h"
@@ -32,37 +31,37 @@ struct nsComputedStyleMap;
 class nsIFrame;
 class nsIPresShell;
 class nsDOMCSSValueList;
-class nsMargin;
+struct nsMargin;
 class nsROCSSPrimitiveValue;
-class nsStyleBackground;
-class nsStyleBorder;
-class nsStyleContent;
-class nsStyleColumn;
-class nsStyleColor;
+struct nsStyleBackground;
+struct nsStyleBorder;
+struct nsStyleContent;
+struct nsStyleColumn;
+struct nsStyleColor;
 class nsStyleCoord;
 class nsStyleCorners;
-class nsStyleDisplay;
-class nsStyleFilter;
-class nsStyleFont;
+struct nsStyleDisplay;
+struct nsStyleFilter;
+struct nsStyleFont;
 class nsStyleGradient;
-class nsStyleImage;
-class nsStyleList;
-class nsStyleMargin;
-class nsStyleOutline;
-class nsStylePadding;
-class nsStylePosition;
-class nsStyleQuotes;
+struct nsStyleImage;
+struct nsStyleList;
+struct nsStyleMargin;
+struct nsStyleOutline;
+struct nsStylePadding;
+struct nsStylePosition;
+struct nsStyleQuotes;
 class nsStyleSides;
-class nsStyleSVG;
-class nsStyleSVGReset;
-class nsStyleTable;
-class nsStyleText;
-class nsStyleTextReset;
+struct nsStyleSVG;
+struct nsStyleSVGReset;
+struct nsStyleTable;
+struct nsStyleText;
+struct nsStyleTextReset;
 class nsStyleTimingFunction;
-class nsStyleUIReset;
-class nsStyleVisibility;
-class nsStyleXUL;
-class nsTimingFunction;
+struct nsStyleUIReset;
+struct nsStyleVisibility;
+struct nsStyleXUL;
+struct nsTimingFunction;
 class gfx3DMatrix;
 
 class nsComputedDOMStyle MOZ_FINAL : public nsDOMCSSDeclaration
@@ -92,9 +91,6 @@ public:
                      const nsAString& aPseudoElt,
                      nsIPresShell* aPresShell,
                      StyleType aStyleType);
-  virtual ~nsComputedDOMStyle();
-
-  static void Shutdown();
 
   virtual nsINode *GetParentObject() MOZ_OVERRIDE
   {
@@ -135,6 +131,8 @@ public:
   static void UnregisterPrefChangeCallbacks();
 
 private:
+  virtual ~nsComputedDOMStyle();
+
   void AssertFlushedPendingReflows() {
     NS_ASSERTION(mFlushedPendingReflows,
                  "property getter should have been marked layout-dependent");
@@ -192,7 +190,7 @@ private:
   mozilla::dom::CSSValue* GetGridLineNames(const nsTArray<nsString>& aLineNames);
   mozilla::dom::CSSValue* GetGridTrackSize(const nsStyleCoord& aMinSize,
                                            const nsStyleCoord& aMaxSize);
-  mozilla::dom::CSSValue* GetGridTrackList(const nsStyleGridTrackList& aTrackList);
+  mozilla::dom::CSSValue* GetGridTemplateColumnsRows(const nsStyleGridTemplate& aTrackList);
   mozilla::dom::CSSValue* GetGridLine(const nsStyleGridLine& aGridLine);
 
   bool GetLineHeightCoord(nscoord& aCoord);
@@ -222,6 +220,7 @@ private:
 
   /* Box properties */
   mozilla::dom::CSSValue* DoGetBoxAlign();
+  mozilla::dom::CSSValue* DoGetBoxDecorationBreak();
   mozilla::dom::CSSValue* DoGetBoxDirection();
   mozilla::dom::CSSValue* DoGetBoxFlex();
   mozilla::dom::CSSValue* DoGetBoxOrdinalGroup();
@@ -267,7 +266,6 @@ private:
   mozilla::dom::CSSValue* DoGetGridAutoFlow();
   mozilla::dom::CSSValue* DoGetGridAutoColumns();
   mozilla::dom::CSSValue* DoGetGridAutoRows();
-  mozilla::dom::CSSValue* DoGetGridAutoPosition();
   mozilla::dom::CSSValue* DoGetGridTemplateAreas();
   mozilla::dom::CSSValue* DoGetGridTemplateColumns();
   mozilla::dom::CSSValue* DoGetGridTemplateRows();
@@ -283,7 +281,6 @@ private:
   mozilla::dom::CSSValue* DoGetBackgroundPosition();
   mozilla::dom::CSSValue* DoGetBackgroundRepeat();
   mozilla::dom::CSSValue* DoGetBackgroundClip();
-  mozilla::dom::CSSValue* DoGetBackgroundInlinePolicy();
   mozilla::dom::CSSValue* DoGetBackgroundBlendMode();
   mozilla::dom::CSSValue* DoGetBackgroundOrigin();
   mozilla::dom::CSSValue* DoGetBackgroundSize();
@@ -376,7 +373,7 @@ private:
   mozilla::dom::CSSValue* DoGetLineHeight();
   mozilla::dom::CSSValue* DoGetTextAlign();
   mozilla::dom::CSSValue* DoGetTextAlignLast();
-  mozilla::dom::CSSValue* DoGetTextCombineHorizontal();
+  mozilla::dom::CSSValue* DoGetTextCombineUpright();
   mozilla::dom::CSSValue* DoGetTextDecoration();
   mozilla::dom::CSSValue* DoGetTextDecorationColor();
   mozilla::dom::CSSValue* DoGetTextDecorationLine();

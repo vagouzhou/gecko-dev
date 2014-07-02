@@ -48,6 +48,7 @@ static NS_DEFINE_CID(kStreamConverterServiceCID, NS_STREAMCONVERTERSERVICE_CID);
 //   the data.
 ////////////////////////////////////////////////////////////////////////
 class EndListener MOZ_FINAL : public nsIStreamListener {
+    ~EndListener() {}
 public:
     // nsISupports declaration
     NS_DECL_ISUPPORTS
@@ -86,9 +87,9 @@ public:
                              nsresult aStatus) { return NS_OK; }
 };
 
-NS_IMPL_ISUPPORTS2(EndListener,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(EndListener,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 ////////////////////////////////////////////////////////////////////////
 // EndListener END

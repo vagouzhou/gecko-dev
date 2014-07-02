@@ -30,6 +30,44 @@ AudioNodeStream::~AudioNodeStream()
   MOZ_COUNT_DTOR(AudioNodeStream);
 }
 
+size_t
+AudioNodeStream::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  size_t amount = 0;
+
+  // Not reported:
+  // - mEngine
+
+  amount += ProcessedMediaStream::SizeOfExcludingThis(aMallocSizeOf);
+  amount += mLastChunks.SizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mLastChunks.Length(); i++) {
+    // NB: This is currently unshared only as there are instances of
+    //     double reporting in DMD otherwise.
+    amount += mLastChunks[i].SizeOfExcludingThisIfUnshared(aMallocSizeOf);
+  }
+
+  return amount;
+}
+
+size_t
+AudioNodeStream::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+}
+
+void
+AudioNodeStream::SizeOfAudioNodesIncludingThis(MallocSizeOf aMallocSizeOf,
+                                               AudioNodeSizes& aUsage) const
+{
+  // Explicitly separate out the stream memory.
+  aUsage.mStream = SizeOfIncludingThis(aMallocSizeOf);
+
+  if (mEngine) {
+    // This will fill out the rest of |aUsage|.
+    mEngine->SizeOfIncludingThis(aMallocSizeOf, aUsage);
+  }
+}
+
 void
 AudioNodeStream::SetStreamTimeParameter(uint32_t aIndex, AudioContext* aContext,
                                         double aStreamTime)
@@ -239,7 +277,7 @@ AudioNodeStream::SetChannelMixingParametersImpl(uint32_t aNumberOfChannels,
 }
 
 uint32_t
-AudioNodeStream::ComputeFinalOuputChannelCount(uint32_t aInputChannelCount)
+AudioNodeStream::ComputedNumberOfChannels(uint32_t aInputChannelCount)
 {
   switch (mChannelCountMode) {
   case ChannelCountMode::Explicit:
@@ -298,7 +336,7 @@ AudioNodeStream::ObtainInputBlock(AudioChunk& aTmpChunk, uint32_t aPortIndex)
       GetAudioChannelsSuperset(outputChannelCount, chunk->mChannelData.Length());
   }
 
-  outputChannelCount = ComputeFinalOuputChannelCount(outputChannelCount);
+  outputChannelCount = ComputedNumberOfChannels(outputChannelCount);
 
   uint32_t inputChunkCount = inputChunks.Length();
   if (inputChunkCount == 0 ||
@@ -401,7 +439,9 @@ AudioNodeStream::UpMixDownMixChunk(const AudioChunk* aChunk,
 void
 AudioNodeStream::ProcessInput(GraphTime aFrom, GraphTime aTo, uint32_t aFlags)
 {
-  EnsureTrack(AUDIO_TRACK, mSampleRate);
+  if (!mFinished) {
+    EnsureTrack(AUDIO_TRACK, mSampleRate);
+  }
   // No more tracks will be coming
   mBuffer.AdvanceKnownTracksTime(STREAM_TIME_MAX);
 
@@ -484,6 +524,7 @@ AudioNodeStream::AdvanceOutputSegment()
 TrackTicks
 AudioNodeStream::GetCurrentPosition()
 {
+  NS_ASSERTION(!mFinished, "Don't create another track after finishing");
   return EnsureTrack(AUDIO_TRACK, mSampleRate)->Get<AudioSegment>()->GetDuration();
 }
 
@@ -515,13 +556,15 @@ AudioNodeStream::TimeFromDestinationTime(AudioNodeStream* aDestination,
   MOZ_ASSERT(aDestination->SampleRate() == SampleRate());
 
   double destinationSeconds = std::max(0.0, aSeconds);
-  StreamTime streamTime = SecondsToMediaTime(destinationSeconds);
+  StreamTime streamTime =
+    aDestination->SecondsToStreamTimeRoundDown(destinationSeconds);
   // MediaTime does not have the resolution of double
-  double offset = destinationSeconds - MediaTimeToSeconds(streamTime);
+  double offset =
+    destinationSeconds - aDestination->StreamTimeToSeconds(streamTime);
 
   GraphTime graphTime = aDestination->StreamTimeToGraphTime(streamTime);
   StreamTime thisStreamTime = GraphTimeToStreamTimeOptimistic(graphTime);
-  double thisSeconds = MediaTimeToSeconds(thisStreamTime) + offset;
+  double thisSeconds = StreamTimeToSeconds(thisStreamTime) + offset;
   MOZ_ASSERT(thisSeconds >= 0.0);
   return thisSeconds;
 }
@@ -547,7 +590,7 @@ AudioNodeStream::DestinationTimeFromTicks(AudioNodeStream* aDestination,
   StreamTime sourceTime = TicksToTimeRoundDown(SampleRate(), aPosition);
   GraphTime graphTime = StreamTimeToGraphTime(sourceTime);
   StreamTime destinationTime = aDestination->GraphTimeToStreamTimeOptimistic(graphTime);
-  return MediaTimeToSeconds(destinationTime);
+  return StreamTimeToSeconds(destinationTime);
 }
 
 }

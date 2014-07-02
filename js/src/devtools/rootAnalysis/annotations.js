@@ -1,4 +1,4 @@
-/* -*- Mode: Javascript; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 4 -*- */
 
 "use strict";
 
@@ -7,16 +7,11 @@ var ignoreIndirectCalls = {
     "mallocSizeOf" : true,
     "aMallocSizeOf" : true,
     "_malloc_message" : true,
+    "je_malloc_message" : true,
     "__conv" : true,
     "__convf" : true,
     "prerrortable.c:callback_newtable" : true,
-    "mozalloc_oom.cpp:void (* gAbortHandler)(size_t)" : true,
-
-    // I don't know why these are getting truncated
-    "nsTraceRefcnt.cpp:void (* leakyLogAddRef)(void*": true,
-    "nsTraceRefcnt.cpp:void (* leakyLogAddRef)(void*, int, int)": true,
-    "nsTraceRefcnt.cpp:void (* leakyLogRelease)(void*": true,
-    "nsTraceRefcnt.cpp:void (* leakyLogRelease)(void*, int, int)": true,
+    "mozalloc_oom.cpp:void (* gAbortHandler)(size_t)" : true
 };
 
 function indirectCallCannotGC(fullCaller, fullVariable)
@@ -62,6 +57,7 @@ function indirectCallCannotGC(fullCaller, fullVariable)
 var ignoreClasses = {
     "JSTracer" : true,
     "JSStringFinalizer" : true,
+    "SprintfState" : true,
     "SprintfStateStr" : true,
     "JSLocaleCallbacks" : true,
     "JSC::ExecutableAllocator" : true,
@@ -132,10 +128,11 @@ function ignoreEdgeAddressTaken(edge)
 // Ignore calls of these functions (so ignore any stack containing these)
 var ignoreFunctions = {
     "ptio.c:pt_MapError" : true,
+    "je_malloc_printf" : true,
     "PR_ExplodeTime" : true,
     "PR_ErrorInstallTable" : true,
     "PR_SetThreadPrivate" : true,
-    "JSObject* js::GetWeakmapKeyDelegate(JSObject*)" : true, // FIXME: mark with AutoAssertNoGC instead
+    "JSObject* js::GetWeakmapKeyDelegate(JSObject*)" : true, // FIXME: mark with AutoSuppressGCAnalysis instead
     "uint8 NS_IsMainThread()" : true,
 
     // FIXME!
@@ -158,7 +155,7 @@ var ignoreFunctions = {
 
     // Bug 948646 - the only thing AutoJSContext's constructor calls
     // is an Init() routine whose entire body is covered with an
-    // AutoAssertNoGC. AutoSafeJSContext is the same thing, just with
+    // AutoSuppressGCAnalysis. AutoSafeJSContext is the same thing, just with
     // a different value for the 'aSafe' parameter.
     "void mozilla::AutoJSContext::AutoJSContext(mozilla::detail::GuardObjectNotifier*)" : true,
     "void mozilla::AutoSafeJSContext::~AutoSafeJSContext(int32)" : true,
@@ -193,7 +190,8 @@ function isRootedTypeName(name)
         name == "WrappableJSErrorResult" ||
         name == "js::frontend::TokenStream" ||
         name == "js::frontend::TokenStream::Position" ||
-        name == "ModuleCompiler")
+        name == "ModuleCompiler" ||
+        name == "JSAddonId")
     {
         return true;
     }
@@ -227,7 +225,7 @@ function isSuppressConstructor(name)
 {
     return name.indexOf("::AutoSuppressGC") != -1
         || name.indexOf("::AutoEnterAnalysis") != -1
-        || name.indexOf("::AutoAssertNoGC") != -1
+        || name.indexOf("::AutoSuppressGCAnalysis") != -1
         || name.indexOf("::AutoIgnoreRootingHazards") != -1;
 }
 
@@ -250,6 +248,12 @@ function isOverridableField(initialCSU, csu, field)
         return false;
     if (initialCSU == 'nsIXPConnectJSObjectHolder' && field == 'GetJSObject')
         return false;
+    if (initialCSU == 'nsIXPConnect' && field == 'GetSafeJSContext')
+        return false;
+    if (initialCSU == 'nsIScriptContext') {
+        if (field == 'GetWindowProxy' || field == 'GetWindowProxyPreserveColor')
+            return false;
+    }
 
     return true;
 }

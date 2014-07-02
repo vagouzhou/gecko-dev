@@ -38,8 +38,8 @@ mozilla::ThreadLocal<void *> tlsStackTop;
 // it as the flag itself.
 bool stack_key_initialized;
 
-TimeStamp   sLastTracerEvent; // is raced on
-TimeStamp   sStartTime;
+mozilla::TimeStamp   sLastTracerEvent; // is raced on
+mozilla::TimeStamp   sStartTime;
 int         sFrameNumber = 0;
 int         sLastFrameNumber = 0;
 int         sInitCount = 0; // Each init must have a matched shutdown.
@@ -99,6 +99,20 @@ void Sampler::Shutdown() {
   sRegisteredThreads = nullptr;
 }
 
+ThreadInfo::ThreadInfo(const char* aName, int aThreadId,
+                       bool aIsMainThread, PseudoStack* aPseudoStack,
+                       void* aStackTop)
+  : mName(strdup(aName))
+  , mThreadId(aThreadId)
+  , mIsMainThread(aIsMainThread)
+  , mPseudoStack(aPseudoStack)
+  , mPlatformData(Sampler::AllocPlatformData(aThreadId))
+  , mProfile(nullptr)
+  , mStackTop(aStackTop)
+{
+  mThread = NS_GetCurrentThread();
+}
+
 ThreadInfo::~ThreadInfo() {
   free(mName);
 
@@ -132,28 +146,19 @@ ProfilerMarker::GetTime() {
   return mTime;
 }
 
-template<typename Builder> void
-ProfilerMarker::BuildJSObject(Builder& b, typename Builder::ArrayHandle markers) const {
-  typename Builder::RootedObject marker(b.context(), b.CreateObject());
-  b.DefineProperty(marker, "name", GetMarkerName());
-  // TODO: Store the callsite for this marker if available:
-  // if have location data
-  //   b.DefineProperty(marker, "location", ...);
-  if (mPayload) {
-    typename Builder::RootedObject markerData(b.context(),
-                                              mPayload->PreparePayload(b));
-    b.DefineProperty(marker, "data", markerData);
-  }
-  b.DefineProperty(marker, "time", mTime);
-  b.ArrayPush(markers, marker);
+void ProfilerMarker::StreamJSObject(JSStreamWriter& b) const {
+  b.BeginObject();
+    b.NameValue("name", GetMarkerName());
+    // TODO: Store the callsite for this marker if available:
+    // if have location data
+    //   b.NameValue(marker, "location", ...);
+    if (mPayload) {
+      b.Name("data");
+      mPayload->StreamPayload(b);
+    }
+    b.NameValue("time", mTime);
+  b.EndObject();
 }
-
-template void
-ProfilerMarker::BuildJSObject<JSCustomObjectBuilder>(JSCustomObjectBuilder& b,
-                              JSCustomObjectBuilder::ArrayHandle markers) const;
-template void
-ProfilerMarker::BuildJSObject<JSObjectBuilder>(JSObjectBuilder& b,
-                                    JSObjectBuilder::ArrayHandle markers) const;
 
 PendingMarkers::~PendingMarkers() {
   clearMarkers();
@@ -237,7 +242,6 @@ bool sps_version2()
   return version == 2;
 }
 
-#if !defined(ANDROID)
 /* Has MOZ_PROFILER_VERBOSE been set? */
 bool moz_profiler_verbose()
 {
@@ -253,7 +257,6 @@ bool moz_profiler_verbose()
 
   return status == 2;
 }
-#endif
 
 static inline const char* name_UnwMode(UnwMode m)
 {
@@ -367,6 +370,7 @@ void read_profiler_env_vars()
     LOGF("SPS: UnwindStackScan   = %d (max dubious frames per unwind).",
         (int)sUnwindStackScan);
     LOG( "SPS: Use env var MOZ_PROFILER_MODE=help for further information.");
+    LOG( "SPS: Note that MOZ_PROFILER_MODE=help sets all values to defaults.");
     LOG( "SPS:");
   }
 }
@@ -394,7 +398,11 @@ void profiler_usage() {
   LOG( "SPS:   The number of dubious (stack-scanned) frames allowed");
   LOG( "SPS: ");
   LOG( "SPS:   MOZ_PROFILER_NEW");
-  LOG( "SPS:   Needs to be set to use Breakpad-based unwinding.");
+  LOG( "SPS:   Needs to be set to use LUL-based unwinding.");
+  LOG( "SPS: ");
+  LOG( "SPS:   MOZ_PROFILER_LUL_TEST");
+  LOG( "SPS:   If set to any value, runs LUL unit tests at startup of");
+  LOG( "SPS:   the unwinder thread, and prints a short summary of results.");
   LOG( "SPS: ");
   LOGF("SPS:   This platform %s native unwinding.",
        is_native_unwinding_avail() ? "supports" : "does not support");
@@ -415,6 +423,7 @@ void profiler_usage() {
   LOGF("SPS: UnwindStackScan   = %d (max dubious frames per unwind).",
        (int)sUnwindStackScan);
   LOG( "SPS: Use env var MOZ_PROFILER_MODE=help for further information.");
+  LOG( "SPS: Note that MOZ_PROFILER_MODE=help sets all values to defaults.");
   LOG( "SPS:");
 
   return;
@@ -438,6 +447,45 @@ bool is_main_thread_name(const char* aName) {
     return false;
   }
   return strcmp(aName, gGeckoThreadName) == 0;
+}
+
+#ifdef HAVE_VA_COPY
+#define VARARGS_ASSIGN(foo, bar)        VA_COPY(foo,bar)
+#elif defined(HAVE_VA_LIST_AS_ARRAY)
+#define VARARGS_ASSIGN(foo, bar)     foo[0] = bar[0]
+#else
+#define VARARGS_ASSIGN(foo, bar)     (foo) = (bar)
+#endif
+
+static void
+profiler_log(const char *fmt, va_list args)
+{
+  if (profiler_is_active()) {
+    // nsAutoCString AppendPrintf would be nicer but
+    // this is mozilla external code
+    char buf[2048];
+    va_list argsCpy;
+    VARARGS_ASSIGN(argsCpy, args);
+    int required = vsnprintf(buf, sizeof(buf), fmt, argsCpy);
+    va_end(argsCpy);
+
+    if (required < 0) {
+      return; // silently drop for now
+    } else if (required < 2048) {
+      profiler_tracing("log", buf, TRACING_EVENT);
+    } else {
+      char* heapBuf = new char[required+1];
+      va_list argsCpy;
+      VARARGS_ASSIGN(argsCpy, args);
+      vsnprintf(heapBuf, required+1, fmt, argsCpy);
+      va_end(argsCpy);
+      // EVENT_BACKTRACE could be used to get a source
+      // for all log events. This could be a runtime
+      // flag later.
+      profiler_tracing("log", heapBuf, TRACING_EVENT);
+      delete[] heapBuf;
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -478,6 +526,8 @@ void mozilla_sampler_init(void* stackTop)
 
   // platform specific initialization
   OS::Startup();
+
+  set_stderr_callback(profiler_log);
 
   // We can't open pref so we use an environment variable
   // to know if we should trigger the profiler on startup
@@ -526,6 +576,8 @@ void mozilla_sampler_shutdown()
 
   profiler_stop();
 
+  set_stderr_callback(nullptr);
+
   Sampler::Shutdown();
 
   // We can't delete the Stack because we can be between a
@@ -569,6 +621,24 @@ JSObject *mozilla_sampler_get_profile_data(JSContext *aCx)
   return t->ToJSObject(aCx);
 }
 
+void mozilla_sampler_save_profile_to_file(const char* aFilename)
+{
+  TableTicker *t = tlsTicker.get();
+  if (!t) {
+    return;
+  }
+
+  std::ofstream stream;
+  stream.open(aFilename);
+  if (stream.is_open()) {
+    t->ToStreamAsJSON(stream);
+    stream.close();
+    LOGF("Saved to %s", aFilename);
+  } else {
+    LOG("Fail to open profile log file.");
+  }
+}
+
 
 const char** mozilla_sampler_get_features()
 {
@@ -598,6 +668,8 @@ const char** mozilla_sampler_get_features()
     "privacy",
     // Add main thread I/O to the profile
     "mainthreadio",
+    // Add RSS collection
+    "memory",
 #if defined(XP_WIN)
     // Add power collection
     "power",
@@ -614,6 +686,8 @@ void mozilla_sampler_start(int aProfileEntries, double aInterval,
                            const char** aThreadNameFilters, uint32_t aFilterCount)
 
 {
+  LOG("BEGIN mozilla_sampler_start");
+
   if (!stack_key_initialized)
     profiler_init(nullptr);
 
@@ -651,6 +725,7 @@ void mozilla_sampler_start(int aProfileEntries, double aInterval,
         if (!thread_profile) {
           continue;
         }
+        thread_profile->GetPseudoStack()->reinitializeOnResume();
         if (t->ProfileJS()) {
           thread_profile->GetPseudoStack()->enableJSSampling();
         }
@@ -667,7 +742,7 @@ void mozilla_sampler_start(int aProfileEntries, double aInterval,
     if (javaInterval < 10) {
       aInterval = 10;
     }
-    GeckoJavaSampler::StartJavaProfiling(javaInterval, 1000);
+    mozilla::widget::android::GeckoJavaSampler::StartJavaProfiling(javaInterval, 1000);
   }
 #endif
 
@@ -682,18 +757,25 @@ void mozilla_sampler_start(int aProfileEntries, double aInterval,
 
   sIsProfiling = true;
 
-  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  if (os)
-    os->NotifyObservers(nullptr, "profiler-started", nullptr);
+  if (Sampler::CanNotifyObservers()) {
+    nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
+    if (os)
+      os->NotifyObservers(nullptr, "profiler-started", nullptr);
+  }
+
+  LOG("END   mozilla_sampler_start");
 }
 
 void mozilla_sampler_stop()
 {
+  LOG("BEGIN mozilla_sampler_stop");
+
   if (!stack_key_initialized)
     profiler_init(nullptr);
 
   TableTicker *t = tlsTicker.get();
   if (!t) {
+    LOG("END   mozilla_sampler_stop-early");
     return;
   }
 
@@ -728,9 +810,13 @@ void mozilla_sampler_stop()
 
   sIsProfiling = false;
 
-  nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
-  if (os)
-    os->NotifyObservers(nullptr, "profiler-stopped", nullptr);
+  if (Sampler::CanNotifyObservers()) {
+    nsCOMPtr<nsIObserverService> os = mozilla::services::GetObserverService();
+    if (os)
+      os->NotifyObservers(nullptr, "profiler-stopped", nullptr);
+  }
+
+  LOG("END   mozilla_sampler_stop");
 }
 
 bool mozilla_sampler_is_paused() {
@@ -758,28 +844,11 @@ bool mozilla_sampler_is_active()
   return sIsProfiling;
 }
 
-static double sResponsivenessTimes[100];
-static unsigned int sResponsivenessLoc = 0;
-void mozilla_sampler_responsiveness(const TimeStamp& aTime)
+void mozilla_sampler_responsiveness(const mozilla::TimeStamp& aTime)
 {
-  if (!sLastTracerEvent.IsNull()) {
-    if (sResponsivenessLoc == 100) {
-      for(size_t i = 0; i < 100-1; i++) {
-        sResponsivenessTimes[i] = sResponsivenessTimes[i+1];
-      }
-      sResponsivenessLoc--;
-    }
-    TimeDuration delta = aTime - sLastTracerEvent;
-    sResponsivenessTimes[sResponsivenessLoc++] = delta.ToMilliseconds();
-  }
   sCurrentEventGeneration++;
 
   sLastTracerEvent = aTime;
-}
-
-const double* mozilla_sampler_get_responsiveness()
-{
-  return sResponsivenessTimes;
 }
 
 void mozilla_sampler_frame_number(int frameNumber)
@@ -836,18 +905,34 @@ void mozilla_sampler_unregister_thread()
   tlsPseudoStack.set(nullptr);
 }
 
-double mozilla_sampler_time(const TimeStamp& aTime)
+void mozilla_sampler_sleep_start() {
+    PseudoStack *stack = tlsPseudoStack.get();
+    if (stack == nullptr) {
+      return;
+    }
+    stack->setSleeping(1);
+}
+
+void mozilla_sampler_sleep_end() {
+    PseudoStack *stack = tlsPseudoStack.get();
+    if (stack == nullptr) {
+      return;
+    }
+    stack->setSleeping(0);
+}
+
+double mozilla_sampler_time(const mozilla::TimeStamp& aTime)
 {
   if (!mozilla_sampler_is_active()) {
     return 0.0;
   }
-  TimeDuration delta = aTime - sStartTime;
+  mozilla::TimeDuration delta = aTime - sStartTime;
   return delta.ToMilliseconds();
 }
 
 double mozilla_sampler_time()
 {
-  return mozilla_sampler_time(TimeStamp::Now());
+  return mozilla_sampler_time(mozilla::TimeStamp::Now());
 }
 
 ProfilerBacktrace* mozilla_sampler_get_backtrace()
@@ -884,6 +969,13 @@ void mozilla_sampler_tracing(const char* aCategory, const char* aInfo,
   mozilla_sampler_add_marker(aInfo, new ProfilerMarkerTracing(aCategory, aMetaData));
 }
 
+void mozilla_sampler_tracing(const char* aCategory, const char* aInfo,
+                             ProfilerBacktrace* aCause,
+                             TracingMetadata aMetaData)
+{
+  mozilla_sampler_add_marker(aInfo, new ProfilerMarkerTracing(aCategory, aMetaData, aCause));
+}
+
 void mozilla_sampler_add_marker(const char *aMarker, ProfilerMarkerPayload *aPayload)
 {
   // Note that aPayload may be allocated by the caller, so we need to make sure
@@ -908,7 +1000,7 @@ void mozilla_sampler_add_marker(const char *aMarker, ProfilerMarkerPayload *aPay
   if (!stack) {
     return;
   }
-  TimeDuration delta = TimeStamp::Now() - sStartTime;
+  mozilla::TimeDuration delta = mozilla::TimeStamp::Now() - sStartTime;
   stack->addMarker(aMarker, payload.forget(), static_cast<float>(delta.ToMilliseconds()));
 }
 

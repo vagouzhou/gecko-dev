@@ -25,6 +25,7 @@
 
 #include "imgIRequest.h"
 #include "imgIContainer.h"
+#include "CounterStyleManager.h"
 
 #include "mozilla/Likely.h"
 #include "nsIURI.h"
@@ -224,7 +225,7 @@ nsChangeHint nsStyleFont::CalcFontDifference(const nsFont& aFont1, const nsFont&
       (aFont1.weight == aFont2.weight) &&
       (aFont1.stretch == aFont2.stretch) &&
       (aFont1.smoothing == aFont2.smoothing) &&
-      (aFont1.name == aFont2.name) &&
+      (aFont1.fontlist == aFont2.fontlist) &&
       (aFont1.kerning == aFont2.kerning) &&
       (aFont1.synthesis == aFont2.synthesis) &&
       (aFont1.variantAlternates == aFont2.variantAlternates) &&
@@ -388,6 +389,7 @@ nsStyleBorder::nsStyleBorder(nsPresContext* aPresContext)
     mBorderImageRepeatH(NS_STYLE_BORDER_IMAGE_REPEAT_STRETCH),
     mBorderImageRepeatV(NS_STYLE_BORDER_IMAGE_REPEAT_STRETCH),
     mFloatEdge(NS_STYLE_FLOAT_EDGE_CONTENT),
+    mBoxDecorationBreak(NS_STYLE_BOX_DECORATION_BREAK_SLICE),
     mComputedBorder(0, 0, 0, 0)
 {
   MOZ_COUNT_CTOR(nsStyleBorder);
@@ -439,6 +441,7 @@ nsStyleBorder::nsStyleBorder(const nsStyleBorder& aSrc)
     mBorderImageRepeatH(aSrc.mBorderImageRepeatH),
     mBorderImageRepeatV(aSrc.mBorderImageRepeatV),
     mFloatEdge(aSrc.mFloatEdge),
+    mBoxDecorationBreak(aSrc.mBoxDecorationBreak),
     mComputedBorder(aSrc.mComputedBorder),
     mBorder(aSrc.mBorder),
     mTwipsPerPixel(aSrc.mTwipsPerPixel)
@@ -528,7 +531,8 @@ nsChangeHint nsStyleBorder::CalcDifference(const nsStyleBorder& aOther) const
       GetComputedBorder() != aOther.GetComputedBorder() ||
       mFloatEdge != aOther.mFloatEdge ||
       mBorderImageOutset != aOther.mBorderImageOutset ||
-      (shadowDifference & nsChangeHint_NeedReflow))
+      (shadowDifference & nsChangeHint_NeedReflow) ||
+      mBoxDecorationBreak != aOther.mBoxDecorationBreak)
     return NS_STYLE_HINT_REFLOW;
 
   NS_FOR_CSS_SIDES(ix) {
@@ -601,9 +605,17 @@ nsStyleOutline::nsStyleOutline(nsPresContext* aPresContext)
   mTwipsPerPixel = aPresContext->DevPixelsToAppUnits(1);
 }
 
-nsStyleOutline::nsStyleOutline(const nsStyleOutline& aSrc) {
+nsStyleOutline::nsStyleOutline(const nsStyleOutline& aSrc)
+  : mOutlineRadius(aSrc.mOutlineRadius)
+  , mOutlineWidth(aSrc.mOutlineWidth)
+  , mOutlineOffset(aSrc.mOutlineOffset)
+  , mCachedOutlineWidth(aSrc.mCachedOutlineWidth)
+  , mOutlineColor(aSrc.mOutlineColor)
+  , mHasCachedOutline(aSrc.mHasCachedOutline)
+  , mOutlineStyle(aSrc.mOutlineStyle)
+  , mTwipsPerPixel(aSrc.mTwipsPerPixel)
+{
   MOZ_COUNT_CTOR(nsStyleOutline);
-  memcpy((nsStyleOutline*)this, &aSrc, sizeof(nsStyleOutline));
 }
 
 void 
@@ -648,9 +660,11 @@ nsChangeHint nsStyleOutline::CalcDifference(const nsStyleOutline& aOther) const
 // --------------------
 // nsStyleList
 //
-nsStyleList::nsStyleList() 
-  : mListStyleType(NS_STYLE_LIST_STYLE_DISC),
-    mListStylePosition(NS_STYLE_LIST_STYLE_POSITION_OUTSIDE)
+nsStyleList::nsStyleList(nsPresContext* aPresContext) 
+  : mListStylePosition(NS_STYLE_LIST_STYLE_POSITION_OUTSIDE),
+    mListStyleType(NS_LITERAL_STRING("disc")),
+    mCounterStyle(aPresContext->CounterStyleManager()->
+                  BuildCounterStyle(mListStyleType))
 {
   MOZ_COUNT_CTOR(nsStyleList);
 }
@@ -661,8 +675,9 @@ nsStyleList::~nsStyleList()
 }
 
 nsStyleList::nsStyleList(const nsStyleList& aSource)
-  : mListStyleType(aSource.mListStyleType),
-    mListStylePosition(aSource.mListStylePosition),
+  : mListStylePosition(aSource.mListStylePosition),
+    mListStyleType(aSource.mListStyleType),
+    mCounterStyle(aSource.mCounterStyle),
     mImageRegion(aSource.mImageRegion)
 {
   SetListStyleImage(aSource.GetListStyleImage());
@@ -705,9 +720,15 @@ nsStyleXUL::~nsStyleXUL()
 }
 
 nsStyleXUL::nsStyleXUL(const nsStyleXUL& aSource)
+  : mBoxFlex(aSource.mBoxFlex)
+  , mBoxOrdinal(aSource.mBoxOrdinal)
+  , mBoxAlign(aSource.mBoxAlign)
+  , mBoxDirection(aSource.mBoxDirection)
+  , mBoxOrient(aSource.mBoxOrient)
+  , mBoxPack(aSource.mBoxPack)
+  , mStretchStack(aSource.mStretchStack)
 {
   MOZ_COUNT_CTOR(nsStyleXUL);
-  memcpy((nsStyleXUL*)this, &aSource, sizeof(nsStyleXUL));
 }
 
 nsChangeHint nsStyleXUL::CalcDifference(const nsStyleXUL& aOther) const
@@ -752,9 +773,17 @@ nsStyleColumn::~nsStyleColumn()
 }
 
 nsStyleColumn::nsStyleColumn(const nsStyleColumn& aSource)
+  : mColumnCount(aSource.mColumnCount)
+  , mColumnWidth(aSource.mColumnWidth)
+  , mColumnGap(aSource.mColumnGap)
+  , mColumnRuleColor(aSource.mColumnRuleColor)
+  , mColumnRuleStyle(aSource.mColumnRuleStyle)
+  , mColumnFill(aSource.mColumnFill)
+  , mColumnRuleColorIsForeground(aSource.mColumnRuleColorIsForeground)
+  , mColumnRuleWidth(aSource.mColumnRuleWidth)
+  , mTwipsPerPixel(aSource.mTwipsPerPixel)
 {
   MOZ_COUNT_CTOR(nsStyleColumn);
-  memcpy((nsStyleColumn*)this, &aSource, sizeof(nsStyleColumn));
 }
 
 nsChangeHint nsStyleColumn::CalcDifference(const nsStyleColumn& aOther) const
@@ -840,12 +869,13 @@ nsStyleSVG::nsStyleSVG(const nsStyleSVG& aSource)
   mStrokeDasharrayLength = aSource.mStrokeDasharrayLength;
   if (aSource.mStrokeDasharray) {
     mStrokeDasharray = new nsStyleCoord[mStrokeDasharrayLength];
-    if (mStrokeDasharray)
-      memcpy(mStrokeDasharray,
-             aSource.mStrokeDasharray,
-             mStrokeDasharrayLength * sizeof(nsStyleCoord));
-    else
+    if (mStrokeDasharray) {
+      for (size_t i = 0; i < mStrokeDasharrayLength; i++) {
+        mStrokeDasharray[i] = aSource.mStrokeDasharray[i];
+      }
+    } else {
       mStrokeDasharrayLength = 0;
+    }
   } else {
     mStrokeDasharray = nullptr;
   }
@@ -1240,7 +1270,7 @@ nsStylePosition::nsStylePosition(void)
   mGridAutoRowsMax.SetIntValue(NS_STYLE_GRID_TRACK_BREADTH_MAX_CONTENT,
                                eStyleUnit_Enumerated);
 
-  mGridAutoFlow = NS_STYLE_GRID_AUTO_FLOW_NONE;
+  mGridAutoFlow = NS_STYLE_GRID_AUTO_FLOW_ROW;
   mBoxSizing = NS_STYLE_BOX_SIZING_CONTENT;
   mAlignContent = NS_STYLE_ALIGN_CONTENT_STRETCH;
   mAlignItems = NS_STYLE_ALIGN_ITEMS_INITIAL_VALUE;
@@ -1252,12 +1282,10 @@ nsStylePosition::nsStylePosition(void)
   mFlexGrow = 0.0f;
   mFlexShrink = 1.0f;
   mZIndex.SetAutoValue();
-  mGridAutoPositionColumn.SetToInteger(1);
-  mGridAutoPositionRow.SetToInteger(1);
   // Other members get their default constructors
   // which initialize them to representations of their respective initial value.
   // mGridTemplateAreas: nullptr for 'none'
-  // mGridTemplate{Rows,Columns}: empty arrays for 'none'
+  // mGridTemplate{Rows,Columns}: false and empty arrays for 'none'
   // mGrid{Column,Row}{Start,End}: false/0/empty values for 'auto'
 }
 
@@ -1267,38 +1295,39 @@ nsStylePosition::~nsStylePosition(void)
 }
 
 nsStylePosition::nsStylePosition(const nsStylePosition& aSource)
-  : mGridTemplateColumns(aSource.mGridTemplateColumns)
+  : mOffset(aSource.mOffset)
+  , mWidth(aSource.mWidth)
+  , mMinWidth(aSource.mMinWidth)
+  , mMaxWidth(aSource.mMaxWidth)
+  , mHeight(aSource.mHeight)
+  , mMinHeight(aSource.mMinHeight)
+  , mMaxHeight(aSource.mMaxHeight)
+  , mFlexBasis(aSource.mFlexBasis)
+  , mGridAutoColumnsMin(aSource.mGridAutoColumnsMin)
+  , mGridAutoColumnsMax(aSource.mGridAutoColumnsMax)
+  , mGridAutoRowsMin(aSource.mGridAutoRowsMin)
+  , mGridAutoRowsMax(aSource.mGridAutoRowsMax)
+  , mGridAutoFlow(aSource.mGridAutoFlow)
+  , mBoxSizing(aSource.mBoxSizing)
+  , mAlignContent(aSource.mAlignContent)
+  , mAlignItems(aSource.mAlignItems)
+  , mAlignSelf(aSource.mAlignSelf)
+  , mFlexDirection(aSource.mFlexDirection)
+  , mFlexWrap(aSource.mFlexWrap)
+  , mJustifyContent(aSource.mJustifyContent)
+  , mOrder(aSource.mOrder)
+  , mFlexGrow(aSource.mFlexGrow)
+  , mFlexShrink(aSource.mFlexShrink)
+  , mZIndex(aSource.mZIndex)
+  , mGridTemplateColumns(aSource.mGridTemplateColumns)
   , mGridTemplateRows(aSource.mGridTemplateRows)
   , mGridTemplateAreas(aSource.mGridTemplateAreas)
-  , mGridAutoPositionColumn(aSource.mGridAutoPositionColumn)
-  , mGridAutoPositionRow(aSource.mGridAutoPositionRow)
   , mGridColumnStart(aSource.mGridColumnStart)
   , mGridColumnEnd(aSource.mGridColumnEnd)
   , mGridRowStart(aSource.mGridRowStart)
   , mGridRowEnd(aSource.mGridRowEnd)
 {
   MOZ_COUNT_CTOR(nsStylePosition);
-  // If you add any memcpy'able member vars,
-  // they should be declared before mGridTemplateColumns.
-  // If you add any non-memcpy'able member vars,
-  // they should be declared after mGridTemplateColumns,
-  // and you should invoke their copy constructor in the init list above
-  // and update this static-assert to include their "sizeof()"
-  static_assert(sizeof(nsStylePosition) ==
-                offsetof(nsStylePosition, mGridTemplateColumns) +
-                sizeof(mGridTemplateColumns) +
-                sizeof(mGridTemplateRows) +
-                sizeof(mGridTemplateAreas) +
-                sizeof(mGridAutoPositionColumn) +
-                sizeof(mGridAutoPositionRow) +
-                sizeof(mGridColumnStart) +
-                sizeof(mGridColumnEnd) +
-                sizeof(mGridRowStart) +
-                sizeof(mGridRowEnd),
-                "Unexpected size or offset in nsStylePosition");
-  memcpy((nsStylePosition*) this,
-         &aSource,
-         offsetof(nsStylePosition, mGridTemplateColumns));
 }
 
 static bool
@@ -1463,9 +1492,12 @@ nsStyleTable::~nsStyleTable(void)
 }
 
 nsStyleTable::nsStyleTable(const nsStyleTable& aSource)
+  : mLayoutStrategy(aSource.mLayoutStrategy)
+  , mFrame(aSource.mFrame)
+  , mRules(aSource.mRules)
+  , mSpan(aSource.mSpan)
 {
   MOZ_COUNT_CTOR(nsStyleTable);
-  memcpy((nsStyleTable*)this, &aSource, sizeof(nsStyleTable));
 }
 
 nsChangeHint nsStyleTable::CalcDifference(const nsStyleTable& aOther) const
@@ -1504,9 +1536,13 @@ nsStyleTableBorder::~nsStyleTableBorder(void)
 }
 
 nsStyleTableBorder::nsStyleTableBorder(const nsStyleTableBorder& aSource)
+  : mBorderSpacingX(aSource.mBorderSpacingX)
+  , mBorderSpacingY(aSource.mBorderSpacingY)
+  , mBorderCollapse(aSource.mBorderCollapse)
+  , mCaptionSide(aSource.mCaptionSide)
+  , mEmptyCells(aSource.mEmptyCells)
 {
   MOZ_COUNT_CTOR(nsStyleTableBorder);
-  memcpy((nsStyleTableBorder*)this, &aSource, sizeof(nsStyleTableBorder));
 }
 
 nsChangeHint nsStyleTableBorder::CalcDifference(const nsStyleTableBorder& aOther) const
@@ -1968,7 +2004,6 @@ nsStyleBackground::nsStyleBackground()
   , mSizeCount(1)
   , mBlendModeCount(1)
   , mBackgroundColor(NS_RGBA(0, 0, 0, 0))
-  , mBackgroundInlinePolicy(NS_STYLE_BG_INLINE_POLICY_CONTINUOUS)
 {
   MOZ_COUNT_CTOR(nsStyleBackground);
   Layer *onlyLayer = mLayers.AppendElement();
@@ -1987,7 +2022,6 @@ nsStyleBackground::nsStyleBackground(const nsStyleBackground& aSource)
   , mBlendModeCount(aSource.mBlendModeCount)
   , mLayers(aSource.mLayers) // deep copy
   , mBackgroundColor(aSource.mBackgroundColor)
-  , mBackgroundInlinePolicy(aSource.mBackgroundInlinePolicy)
 {
   MOZ_COUNT_CTOR(nsStyleBackground);
   // If the deep copy of mLayers failed, truncate the counts.
@@ -2045,9 +2079,7 @@ nsChangeHint nsStyleBackground::CalcDifference(const nsStyleBackground& aOther) 
     }
   }
 
-  if (hasVisualDifference ||
-      mBackgroundColor != aOther.mBackgroundColor ||
-      mBackgroundInlinePolicy != aOther.mBackgroundInlinePolicy)
+  if (hasVisualDifference || mBackgroundColor != aOther.mBackgroundColor)
     return NS_STYLE_HINT_VISUAL;
 
   return NS_STYLE_HINT_NONE;
@@ -2282,7 +2314,7 @@ void nsTimingFunction::AssignFromKeyword(int32_t aTimingFunctionType)
   mFunc.mY2 = timingFunctionValues[aTimingFunctionType][3];
 }
 
-nsTransition::nsTransition(const nsTransition& aCopy)
+mozilla::StyleTransition::StyleTransition(const StyleTransition& aCopy)
   : mTimingFunction(aCopy.mTimingFunction)
   , mDuration(aCopy.mDuration)
   , mDelay(aCopy.mDelay)
@@ -2291,7 +2323,8 @@ nsTransition::nsTransition(const nsTransition& aCopy)
 {
 }
 
-void nsTransition::SetInitialValues()
+void
+mozilla::StyleTransition::SetInitialValues()
 {
   mTimingFunction = nsTimingFunction(NS_STYLE_TRANSITION_TIMING_FUNCTION_EASE);
   mDuration = 0.0;
@@ -2299,7 +2332,8 @@ void nsTransition::SetInitialValues()
   mProperty = eCSSPropertyExtra_all_properties;
 }
 
-void nsTransition::SetUnknownProperty(const nsAString& aUnknownProperty)
+void
+mozilla::StyleTransition::SetUnknownProperty(const nsAString& aUnknownProperty)
 {
   NS_ASSERTION(nsCSSProps::LookupProperty(aUnknownProperty,
                                           nsCSSProps::eEnabledForAllContent) ==
@@ -2309,7 +2343,7 @@ void nsTransition::SetUnknownProperty(const nsAString& aUnknownProperty)
   mUnknownProperty = do_GetAtom(aUnknownProperty);
 }
 
-nsAnimation::nsAnimation(const nsAnimation& aCopy)
+mozilla::StyleAnimation::StyleAnimation(const mozilla::StyleAnimation& aCopy)
   : mTimingFunction(aCopy.mTimingFunction)
   , mDuration(aCopy.mDuration)
   , mDelay(aCopy.mDelay)
@@ -2322,7 +2356,7 @@ nsAnimation::nsAnimation(const nsAnimation& aCopy)
 }
 
 void
-nsAnimation::SetInitialValues()
+mozilla::StyleAnimation::SetInitialValues()
 {
   mTimingFunction = nsTimingFunction(NS_STYLE_TRANSITION_TIMING_FUNCTION_EASE);
   mDuration = 0.0;
@@ -2524,8 +2558,14 @@ nsChangeHint nsStyleDisplay::CalcDifference(const nsStyleDisplay& aOther) const
     if (!mSpecifiedTransform != !aOther.mSpecifiedTransform ||
         (mSpecifiedTransform &&
          *mSpecifiedTransform != *aOther.mSpecifiedTransform)) {
-      NS_UpdateHint(hint, NS_CombineHint(nsChangeHint_UpdateOverflow,
-                                         nsChangeHint_UpdateTransformLayer));
+      NS_UpdateHint(hint, nsChangeHint_UpdateTransformLayer);
+
+      if (mSpecifiedTransform &&
+          aOther.mSpecifiedTransform) {
+        NS_UpdateHint(hint, nsChangeHint_UpdatePostTransformOverflow);
+      } else {
+        NS_UpdateHint(hint, nsChangeHint_UpdateOverflow);
+      }
     }
 
     const nsChangeHint kUpdateOverflowAndRepaintHint =
@@ -2614,6 +2654,7 @@ nsChangeHint nsStyleVisibility::CalcDifference(const nsStyleVisibility& aOther) 
   } else {
     if ((mImageOrientation != aOther.mImageOrientation)) {
       NS_UpdateHint(hint, nsChangeHint_AllReflowHints);
+      NS_UpdateHint(hint, nsChangeHint_RepaintFrame);
     }
     if (mVisible != aOther.mVisible) {
       if ((NS_STYLE_VISIBILITY_COLLAPSE == mVisible) ||
@@ -2989,17 +3030,11 @@ nsChangeHint nsStyleTextReset::CalcDifference(const nsStyleTextReset& aOther) co
     uint8_t otherLineStyle = aOther.GetDecorationStyle();
     if (mTextDecorationLine != aOther.mTextDecorationLine ||
         lineStyle != otherLineStyle) {
-      // Reflow for decoration line style changes only to or from double or
-      // wave because that may cause overflow area changes
-      if (lineStyle == NS_STYLE_TEXT_DECORATION_STYLE_DOUBLE ||
-          lineStyle == NS_STYLE_TEXT_DECORATION_STYLE_WAVY ||
-          otherLineStyle == NS_STYLE_TEXT_DECORATION_STYLE_DOUBLE ||
-          otherLineStyle == NS_STYLE_TEXT_DECORATION_STYLE_WAVY) {
-        return NS_STYLE_HINT_REFLOW;
-      }
       // Repaint for other style decoration lines because they must be in
       // default overflow rect
-      return NS_STYLE_HINT_VISUAL;
+      nsChangeHint hint = NS_STYLE_HINT_VISUAL;
+      NS_UpdateHint(hint, nsChangeHint_UpdateSubtreeOverflow);
+      return hint;
     }
 
     // Repaint for decoration color changes
@@ -3058,7 +3093,7 @@ nsStyleText::nsStyleText(void)
   mHyphens = NS_STYLE_HYPHENS_MANUAL;
   mTextSizeAdjust = NS_STYLE_TEXT_SIZE_ADJUST_AUTO;
   mTextOrientation = NS_STYLE_TEXT_ORIENTATION_AUTO;
-  mTextCombineHorizontal = NS_STYLE_TEXT_COMBINE_HORIZ_NONE;
+  mTextCombineUpright = NS_STYLE_TEXT_COMBINE_UPRIGHT_NONE;
   mControlCharacterVisibility = NS_STYLE_CONTROL_CHARACTER_VISIBILITY_HIDDEN;
 
   mLetterSpacing.SetNormalValue();
@@ -3082,7 +3117,7 @@ nsStyleText::nsStyleText(const nsStyleText& aSource)
     mHyphens(aSource.mHyphens),
     mTextSizeAdjust(aSource.mTextSizeAdjust),
     mTextOrientation(aSource.mTextOrientation),
-    mTextCombineHorizontal(aSource.mTextCombineHorizontal),
+    mTextCombineUpright(aSource.mTextCombineUpright),
     mControlCharacterVisibility(aSource.mControlCharacterVisibility),
     mTabSize(aSource.mTabSize),
     mWordSpacing(aSource.mWordSpacing),
@@ -3107,7 +3142,7 @@ nsChangeHint nsStyleText::CalcDifference(const nsStyleText& aOther) const
     return NS_STYLE_HINT_FRAMECHANGE;
   }
 
-  if (mTextCombineHorizontal != aOther.mTextCombineHorizontal ||
+  if (mTextCombineUpright != aOther.mTextCombineUpright ||
       mControlCharacterVisibility != aOther.mControlCharacterVisibility) {
     return nsChangeHint_ReconstructFrame;
   }

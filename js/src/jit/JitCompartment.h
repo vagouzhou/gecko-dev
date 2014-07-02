@@ -171,6 +171,9 @@ class JitRuntime
     // Generic bailout table; used if the bailout table overflows.
     JitCode *bailoutHandler_;
 
+    // Bailout handler for parallel execution.
+    JitCode *parallelBailoutHandler_;
+
     // Argument-rectifying thunk, in the case of insufficient arguments passed
     // to a function call site.
     JitCode *argumentsRectifier_;
@@ -186,11 +189,19 @@ class JitRuntime
     JitCode *valuePreBarrier_;
     JitCode *shapePreBarrier_;
 
+    // Thunk to call malloc/free.
+    JitCode *mallocStub_;
+    JitCode *freeStub_;
+
     // Thunk used by the debugger for breakpoint and step mode.
     JitCode *debugTrapHandler_;
 
     // Stub used to inline the ForkJoinGetSlice intrinsic.
     JitCode *forkJoinGetSliceStub_;
+
+    // Thunk used to fix up on-stack recompile of baseline scripts.
+    JitCode *baselineDebugModeOSRHandler_;
+    void *baselineDebugModeOSRHandlerNoFrameRegPopAddr_;
 
     // Map VMFunction addresses to the JitCode of the wrapper.
     typedef WeakCache<const VMFunction *, JitCode *> VMWrapperMap;
@@ -201,9 +212,6 @@ class JitRuntime
     // (after returning from JIT code).
     uint8_t *osrTempData_;
 
-    // Keep track of memoryregions that are going to be flushed.
-    AutoFlushCache *flusher_;
-
     // Whether all Ion code in the runtime is protected, and will fault if it
     // is accessed.
     bool ionCodeProtected_;
@@ -212,17 +220,34 @@ class JitRuntime
     // IonScripts in the runtime.
     InlineList<PatchableBackedge> backedgeList_;
 
+    // In certain cases, we want to optimize certain opcodes to typed instructions,
+    // to avoid carrying an extra register to feed into an unbox. Unfortunately,
+    // that's not always possible. For example, a GetPropertyCacheT could return a
+    // typed double, but if it takes its out-of-line path, it could return an
+    // object, and trigger invalidation. The invalidation bailout will consider the
+    // return value to be a double, and create a garbage Value.
+    //
+    // To allow the GetPropertyCacheT optimization, we allow the ability for
+    // GetPropertyCache to override the return value at the top of the stack - the
+    // value that will be temporarily corrupt. This special override value is set
+    // only in callVM() targets that are about to return *and* have invalidated
+    // their callee.
+    js::Value ionReturnOverride_;
+
   private:
     JitCode *generateExceptionTailStub(JSContext *cx);
     JitCode *generateBailoutTailStub(JSContext *cx);
     JitCode *generateEnterJIT(JSContext *cx, EnterJitType type);
     JitCode *generateArgumentsRectifier(JSContext *cx, ExecutionMode mode, void **returnAddrOut);
     JitCode *generateBailoutTable(JSContext *cx, uint32_t frameClass);
-    JitCode *generateBailoutHandler(JSContext *cx);
+    JitCode *generateBailoutHandler(JSContext *cx, ExecutionMode mode);
     JitCode *generateInvalidator(JSContext *cx);
     JitCode *generatePreBarrier(JSContext *cx, MIRType type);
+    JitCode *generateMallocStub(JSContext *cx);
+    JitCode *generateFreeStub(JSContext *cx);
     JitCode *generateDebugTrapHandler(JSContext *cx);
     JitCode *generateForkJoinGetSliceStub(JSContext *cx);
+    JitCode *generateBaselineDebugModeOSRHandler(JSContext *cx, uint32_t *noFrameRegPopOffsetOut);
     JitCode *generateVMWrapper(JSContext *cx, const VMFunction &f);
 
     JSC::ExecutableAllocator *createIonAlloc(JSContext *cx);
@@ -237,14 +262,6 @@ class JitRuntime
 
     static void Mark(JSTracer *trc);
 
-    AutoFlushCache *flusher() {
-        return flusher_;
-    }
-    void setFlusher(AutoFlushCache *fl) {
-        if (!flusher_ || !fl)
-            flusher_ = fl;
-    }
-
     JSC::ExecutableAllocator *execAlloc() const {
         return execAlloc_;
     }
@@ -257,6 +274,10 @@ class JitRuntime
     JSC::ExecutableAllocator *ionAlloc(JSRuntime *rt) {
         JS_ASSERT(rt->currentThreadOwnsInterruptLock());
         return ionAlloc_;
+    }
+
+    bool hasIonAlloc() const {
+        return !!ionAlloc_;
     }
 
     bool ionCodeProtected() {
@@ -283,9 +304,15 @@ class JitRuntime
 
     JitCode *getVMWrapper(const VMFunction &f) const;
     JitCode *debugTrapHandler(JSContext *cx);
+    JitCode *getBaselineDebugModeOSRHandler(JSContext *cx);
+    void *getBaselineDebugModeOSRHandlerAddress(JSContext *cx, bool popFrameReg);
 
-    JitCode *getGenericBailoutHandler() const {
-        return bailoutHandler_;
+    JitCode *getGenericBailoutHandler(ExecutionMode mode) const {
+        switch (mode) {
+          case SequentialExecution: return bailoutHandler_;
+          case ParallelExecution:   return parallelBailoutHandler_;
+          default:                  MOZ_ASSUME_UNREACHABLE("No such execution mode");
+        }
     }
 
     JitCode *getExceptionTail() const {
@@ -330,9 +357,31 @@ class JitRuntime
         return shapePreBarrier_;
     }
 
+    JitCode *mallocStub() const {
+        return mallocStub_;
+    }
+
+    JitCode *freeStub() const {
+        return freeStub_;
+    }
+
     bool ensureForkJoinGetSliceStubExists(JSContext *cx);
     JitCode *forkJoinGetSliceStub() const {
         return forkJoinGetSliceStub_;
+    }
+
+    bool hasIonReturnOverride() const {
+        return !ionReturnOverride_.isMagic(JS_ARG_POISON);
+    }
+    js::Value takeIonReturnOverride() {
+        js::Value v = ionReturnOverride_;
+        ionReturnOverride_ = js::MagicValue(JS_ARG_POISON);
+        return v;
+    }
+    void setIonReturnOverride(const js::Value &v) {
+        JS_ASSERT(!hasIonReturnOverride());
+        JS_ASSERT(!v.isMagic());
+        ionReturnOverride_ = v;
     }
 };
 
@@ -352,7 +401,7 @@ class JitCompartment
     friend class JitActivation;
 
     // Map ICStub keys to ICStub shared code objects.
-    typedef WeakValueCache<uint32_t, ReadBarriered<JitCode> > ICStubCodeMap;
+    typedef WeakValueCache<uint32_t, ReadBarrieredJitCode> ICStubCodeMap;
     ICStubCodeMap *stubCodes_;
 
     // Keep track of offset into various baseline stubs' code at return
@@ -363,15 +412,16 @@ class JitCompartment
 
     // Stub to concatenate two strings inline. Note that it can't be
     // stored in JitRuntime because masm.newGCString bakes in zone-specific
-    // pointers. This has to be a weak pointer to avoid keeping the whole
-    // compartment alive.
-    ReadBarriered<JitCode> stringConcatStub_;
-    ReadBarriered<JitCode> parallelStringConcatStub_;
+    // pointers. These are weak pointers, but are not declared as ReadBarriered
+    // since they are only read from during Ion compilation, which may occur
+    // off thread and whose barriers are captured during CodeGenerator::link.
+    JitCode *stringConcatStub_;
+    JitCode *parallelStringConcatStub_;
 
     // Set of JSScripts invoked by ForkJoin (i.e. the entry script). These
     // scripts are marked if their respective parallel IonScripts' age is less
     // than a certain amount. See IonScript::parallelAge_.
-    typedef HashSet<EncapsulatedPtrScript> ScriptSet;
+    typedef HashSet<PreBarrieredScript> ScriptSet;
     ScriptSet *activeParallelEntryScripts_;
 
     JitCode *generateStringConcatStub(JSContext *cx, ExecutionMode mode);
@@ -417,6 +467,7 @@ class JitCompartment
     }
 
     bool notifyOfActiveParallelEntryScript(JSContext *cx, HandleScript script);
+    bool hasRecentParallelActivity() const;
 
     void toggleBaselineStubBarriers(bool enabled);
 
@@ -432,9 +483,9 @@ class JitCompartment
     bool ensureIonStubsExist(JSContext *cx);
 
     void mark(JSTracer *trc, JSCompartment *compartment);
-    void sweep(FreeOp *fop);
+    void sweep(FreeOp *fop, JSCompartment *compartment);
 
-    JitCode *stringConcatStub(ExecutionMode mode) const {
+    JitCode *stringConcatStubNoBarrier(ExecutionMode mode) const {
         switch (mode) {
           case SequentialExecution: return stringConcatStub_;
           case ParallelExecution:   return parallelStringConcatStub_;
@@ -447,14 +498,6 @@ class JitCompartment
 void InvalidateAll(FreeOp *fop, JS::Zone *zone);
 template <ExecutionMode mode>
 void FinishInvalidation(FreeOp *fop, JSScript *script);
-
-inline bool
-ShouldPreserveParallelJITCode(JSRuntime *rt, JSScript *script, bool increase = false)
-{
-    IonScript *parallelIon = script->parallelIonScript();
-    uint32_t age = increase ? parallelIon->increaseParallelAge() : parallelIon->parallelAge();
-    return age < jit::IonScript::MAX_PARALLEL_AGE && !rt->gcShouldCleanUpEverything;
-}
 
 // On windows systems, really large frames need to be incrementally touched.
 // The following constant defines the minimum increment of the touch.

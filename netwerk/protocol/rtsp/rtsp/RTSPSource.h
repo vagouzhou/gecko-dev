@@ -18,6 +18,7 @@
 
 #define RTSP_SOURCE_H_
 
+#include "mozilla/Types.h"
 #include <utils/RefBase.h>
 #include <media/stagefright/foundation/AString.h>
 #include <media/stagefright/foundation/AHandlerReflector.h>
@@ -25,13 +26,14 @@
 #include "nsCOMPtr.h"
 #include "nsString.h"
 #include "nsIStreamingProtocolController.h"
+#include "nsProxyRelease.h"
 
 namespace android {
 
-struct MetaData;
-struct ABuffer;
-struct ALooper;
-struct AnotherPacketSource;
+struct MOZ_EXPORT MetaData;
+struct MOZ_EXPORT ABuffer;
+struct MOZ_EXPORT ALooper;
+struct MOZ_EXPORT AnotherPacketSource;
 struct RtspConnectionHandler;
 
 class RTSPSource : public RefBase
@@ -52,6 +54,7 @@ public:
     void seek(uint64_t timeUs);
     void resume();
     void suspend();
+    void playbackEnded();
 
     status_t feedMoreTSData();
 
@@ -69,13 +72,14 @@ protected:
 
 private:
     enum {
-        kWhatNotify          = 'noti',
-        kWhatDisconnect      = 'disc',
-        kWhatPerformSeek     = 'seek',
-        kWhatPerformPlay     = 'play',
-        kWhatPerformPause    = 'paus',
-        kWhatPerformResume   = 'resu',
-        kWhatPerformSuspend  = 'susp',
+        kWhatNotify               = 'noti',
+        kWhatDisconnect           = 'disc',
+        kWhatPerformSeek          = 'seek',
+        kWhatPerformPlay          = 'play',
+        kWhatPerformPause         = 'paus',
+        kWhatPerformResume        = 'resu',
+        kWhatPerformSuspend       = 'susp',
+        kWhatPerformPlaybackEnded = 'ende',
     };
 
     enum State {
@@ -138,9 +142,13 @@ private:
 
     void performSuspend();
 
+    void performPlaybackEnded();
+
     void onTrackDataAvailable(size_t trackIndex);
 
-    nsCOMPtr <nsIStreamingProtocolListener> mListener;
+    void onTrackEndOfStream(size_t trackIndex);
+
+    nsMainThreadPtrHandle<nsIStreamingProtocolListener> mListener;
     int mPrintCount;
 
     DISALLOW_EVIL_CONSTRUCTORS(RTSPSource);

@@ -13,7 +13,6 @@
 #include "nsSize.h"
 #include "nsError.h"
 
-#include "nsICanvasElementExternal.h"
 #include "mozilla/gfx/Rect.h"
 
 class nsICanvasRenderingContextInternal;
@@ -26,6 +25,9 @@ namespace layers {
 class CanvasLayer;
 class LayerManager;
 }
+namespace gfx {
+class SourceSurface;
+}
 
 namespace dom {
 
@@ -34,7 +36,6 @@ class HTMLCanvasPrintState;
 class PrintCallback;
 
 class HTMLCanvasElement MOZ_FINAL : public nsGenericHTMLElement,
-                                    public nsICanvasElementExternal,
                                     public nsIDOMHTMLCanvasElement
 {
   enum {
@@ -46,7 +47,7 @@ class HTMLCanvasElement MOZ_FINAL : public nsGenericHTMLElement,
   typedef layers::LayerManager LayerManager;
 
 public:
-  HTMLCanvasElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLCanvasElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLCanvasElement();
 
   NS_IMPL_FROMCONTENT_HTML_WITH_TAG(HTMLCanvasElement, canvas)
@@ -159,13 +160,7 @@ public:
    */
   bool GetIsOpaque();
 
-  /*
-   * nsICanvasElementExternal -- for use outside of content/layout
-   */
-  NS_IMETHOD_(nsIntSize) GetSizeExternal() MOZ_OVERRIDE;
-  NS_IMETHOD RenderContextsExternal(gfxContext *aContext,
-                                    GraphicsFilter aFilter,
-                                    uint32_t aFlags = RenderFlagPremultAlpha) MOZ_OVERRIDE;
+  virtual TemporaryRef<gfx::SourceSurface> GetSurfaceSnapshot(bool* aPremultAlpha = nullptr);
 
   virtual bool ParseAttribute(int32_t aNamespaceID,
                                 nsIAtom* aAttribute,
@@ -187,8 +182,10 @@ public:
   virtual nsresult UnsetAttr(int32_t aNameSpaceID, nsIAtom* aName,
                              bool aNotify) MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
   nsresult CopyInnerTo(mozilla::dom::Element* aDest);
+
+  virtual nsresult PreHandleEvent(mozilla::EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
 
   /*
    * Helpers called by various users of Canvas
@@ -211,8 +208,7 @@ public:
   nsresult GetContext(const nsAString& aContextId, nsISupports** aContext);
 
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   nsIntSize GetWidthHeight();
 
@@ -278,7 +274,7 @@ public:
   NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(HTMLCanvasPrintState)
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(HTMLCanvasPrintState)
 
-  virtual JSObject* WrapObject(JSContext *cx, JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE;
 
   HTMLCanvasElement* GetParentObject()
   {

@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -42,7 +43,7 @@ DIR_ATOM(sPictureDocumentsDirectory, NS_OSX_PICTURE_DOCUMENTS_DIR)
 DIR_ATOM(sMovieDocumentsDirectory, NS_OSX_MOVIE_DOCUMENTS_DIR)
 DIR_ATOM(sMusicDocumentsDirectory, NS_OSX_MUSIC_DOCUMENTS_DIR)
 DIR_ATOM(sInternetSitesDirectory, NS_OSX_INTERNET_SITES_DIR)
-#elif defined (XP_WIN) 
+#elif defined (XP_WIN)
 DIR_ATOM(sSystemDirectory, NS_OS_SYSTEM_DIR)
 DIR_ATOM(sWindowsDirectory, NS_WIN_WINDOWS_DIR)
 DIR_ATOM(sWindowsProgramFiles, NS_WIN_PROGRAM_FILES_DIR)

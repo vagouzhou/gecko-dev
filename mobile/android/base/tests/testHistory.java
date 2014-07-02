@@ -1,19 +1,13 @@
 package org.mozilla.gecko.tests;
 
-import org.mozilla.gecko.*;
-import android.widget.ListView;
-import android.app.Activity;
-import java.util.ArrayList;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ListView;
+
+import org.mozilla.gecko.home.HomePager;
 
 public class testHistory extends AboutHomeTest {
     private View mFirstChild;
-
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
 
     public void testHistory() {
         blockForGeckoReady();
@@ -29,9 +23,9 @@ public class testHistory extends AboutHomeTest {
         inputAndLoadUrl(url3);
         verifyPageTitle("Browser Blank Page 03");
 
-        openAboutHomeTab(AboutHomeTabs.MOST_RECENT);
+        openAboutHomeTab(AboutHomeTabs.HISTORY);
 
-        final ListView hList = findListViewWithTag("most_recent");
+        final ListView hList = findListViewWithTag(HomePager.LIST_TAG_HISTORY);
         mAsserter.is(waitForNonEmptyListToLoad(hList), true, "list is properly loaded");
 
         // Click on the history item and wait for the page to load

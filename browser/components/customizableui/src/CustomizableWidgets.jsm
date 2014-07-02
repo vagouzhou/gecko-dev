@@ -20,9 +20,6 @@ XPCOMUtils.defineLazyModuleGetter(this, "ShortcutUtils",
   "resource://gre/modules/ShortcutUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "CharsetMenu",
   "resource://gre/modules/CharsetMenu.jsm");
-XPCOMUtils.defineLazyServiceGetter(this, "CharsetManager",
-                                   "@mozilla.org/charset-converter-manager;1",
-                                   "nsICharsetConverterManager");
 
 XPCOMUtils.defineLazyGetter(this, "CharsetBundle", function() {
   const kCharsetBundle = "chrome://global/locale/charsetMenu.properties";
@@ -81,16 +78,75 @@ function updateCombinedWidgetStyle(aNode, aArea, aModifyCloseMenu) {
   }
 }
 
-function addShortcut(aNode, aDocument, aItem) {
-  let shortcutId = aNode.getAttribute("key");
-  if (!shortcutId) {
-    return;
+function fillSubviewFromMenuItems(aMenuItems, aSubview) {
+  let attrs = ["oncommand", "onclick", "label", "key", "disabled",
+               "command", "observes", "hidden", "class", "origin",
+               "image", "checked"];
+
+  let doc = aSubview.ownerDocument;
+  let fragment = doc.createDocumentFragment();
+  for (let menuChild of aMenuItems) {
+    if (menuChild.hidden)
+      continue;
+
+    let subviewItem;
+    if (menuChild.localName == "menuseparator") {
+      // Don't insert duplicate or leading separators. This can happen if there are
+      // menus (which we don't copy) above the separator.
+      if (!fragment.lastChild || fragment.lastChild.localName == "menuseparator") {
+        continue;
+      }
+      subviewItem = doc.createElementNS(kNSXUL, "menuseparator");
+    } else if (menuChild.localName == "menuitem") {
+      subviewItem = doc.createElementNS(kNSXUL, "toolbarbutton");
+      CustomizableUI.addShortcut(menuChild, subviewItem);
+
+      let item = menuChild;
+      if (!item.hasAttribute("onclick")) {
+        subviewItem.addEventListener("click", event => {
+          let newEvent = new doc.defaultView.MouseEvent(event.type, event);
+          item.dispatchEvent(newEvent);
+        });
+      }
+
+      if (!item.hasAttribute("oncommand")) {
+        subviewItem.addEventListener("command", event => {
+          let newEvent = doc.createEvent("XULCommandEvent");
+          newEvent.initCommandEvent(
+            event.type, event.bubbles, event.cancelable, event.view,
+            event.detail, event.ctrlKey, event.altKey, event.shiftKey,
+            event.metaKey, event.sourceEvent);
+          item.dispatchEvent(newEvent);
+        });
+      }
+    } else {
+      continue;
+    }
+    for (let attr of attrs) {
+      let attrVal = menuChild.getAttribute(attr);
+      if (attrVal)
+        subviewItem.setAttribute(attr, attrVal);
+    }
+    // We do this after so the .subviewbutton class doesn't get overriden.
+    if (menuChild.localName == "menuitem") {
+      subviewItem.classList.add("subviewbutton");
+    }
+    fragment.appendChild(subviewItem);
   }
-  let shortcut = aDocument.getElementById(shortcutId);
-  if (!shortcut) {
-    return;
+  aSubview.appendChild(fragment);
+}
+
+function clearSubview(aSubview) {
+  let parent = aSubview.parentNode;
+  // We'll take the container out of the document before cleaning it out
+  // to avoid reflowing each time we remove something.
+  parent.removeChild(aSubview);
+
+  while (aSubview.firstChild) {
+    aSubview.firstChild.remove();
   }
-  aItem.setAttribute("shortcut", ShortcutUtils.prettifyShortcut(shortcut));
+
+  parent.appendChild(aSubview);
 }
 
 const CustomizableWidgets = [{
@@ -119,6 +175,11 @@ const CustomizableWidgets = [{
       while (items.firstChild) {
         items.removeChild(items.firstChild);
       }
+
+      // Get all statically placed buttons to supply them with keyboard shortcuts.
+      let staticButtons = items.parentNode.getElementsByTagNameNS(kNSXUL, "toolbarbutton");
+      for (let i = 0, l = staticButtons.length; i < l; ++i)
+        CustomizableUI.addShortcut(staticButtons[i]);
 
       PlacesUtils.history.QueryInterface(Ci.nsPIPlacesDatabase)
                          .asyncExecuteLegacyQueries([query], 1, options, {
@@ -235,7 +296,7 @@ const CustomizableWidgets = [{
   }, {
     id: "save-page-button",
     shortcutId: "key_savePage",
-    tooltiptext: "save-page-button.tooltiptext2",
+    tooltiptext: "save-page-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
       let win = aEvent.target &&
@@ -248,7 +309,7 @@ const CustomizableWidgets = [{
   }, {
     id: "find-button",
     shortcutId: "key_find",
-    tooltiptext: "find-button.tooltiptext2",
+    tooltiptext: "find-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
       let win = aEvent.target &&
@@ -261,7 +322,7 @@ const CustomizableWidgets = [{
   }, {
     id: "open-file-button",
     shortcutId: "openFileKb",
-    tooltiptext: "open-file-button.tooltiptext2",
+    tooltiptext: "open-file-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
       let win = aEvent.target
@@ -276,6 +337,7 @@ const CustomizableWidgets = [{
     type: "view",
     viewId: "PanelUI-developer",
     shortcutId: "key_devToolboxMenuItem",
+    tooltiptext: "developer-button.tooltiptext2",
     defaultArea: CustomizableUI.AREA_PANEL,
     onViewShowing: function(aEvent) {
       // Populate the subview with whatever menuitems are in the developer
@@ -284,64 +346,24 @@ const CustomizableWidgets = [{
       let doc = aEvent.target.ownerDocument;
       let win = doc.defaultView;
 
-      let items = doc.getElementById("PanelUI-developerItems");
       let menu = doc.getElementById("menuWebDeveloperPopup");
-      let attrs = ["oncommand", "onclick", "label", "key", "disabled",
-                   "command", "observes"];
 
-      let fragment = doc.createDocumentFragment();
       let itemsToDisplay = [...menu.children];
       // Hardcode the addition of the "work offline" menuitem at the bottom:
       itemsToDisplay.push({localName: "menuseparator", getAttribute: () => {}});
       itemsToDisplay.push(doc.getElementById("goOfflineMenuitem"));
-      for (let node of itemsToDisplay) {
-        if (node.hidden)
-          continue;
-
-        let item;
-        if (node.localName == "menuseparator") {
-          // Don't insert duplicate or leading separators. This can happen if there are
-          // menus (which we don't copy) above the separator.
-          if (!fragment.lastChild || fragment.lastChild.localName == "menuseparator") {
-            continue;
-          }
-          item = doc.createElementNS(kNSXUL, "menuseparator");
-        } else if (node.localName == "menuitem") {
-          item = doc.createElementNS(kNSXUL, "toolbarbutton");
-          item.setAttribute("class", "subviewbutton");
-          addShortcut(node, doc, item);
-        } else {
-          continue;
-        }
-        for (let attr of attrs) {
-          let attrVal = node.getAttribute(attr);
-          if (attrVal)
-            item.setAttribute(attr, attrVal);
-        }
-        fragment.appendChild(item);
-      }
-      items.appendChild(fragment);
+      fillSubviewFromMenuItems(itemsToDisplay, doc.getElementById("PanelUI-developerItems"));
 
     },
     onViewHiding: function(aEvent) {
       let doc = aEvent.target.ownerDocument;
-      let win = doc.defaultView;
-      let items = doc.getElementById("PanelUI-developerItems");
-      let parent = items.parentNode;
-      // We'll take the container out of the document before cleaning it out
-      // to avoid reflowing each time we remove something.
-      parent.removeChild(items);
-
-      while (items.firstChild) {
-        items.firstChild.remove();
-      }
-
-      parent.appendChild(items);
+      clearSubview(doc.getElementById("PanelUI-developerItems"));
     }
   }, {
     id: "sidebar-button",
     type: "view",
     viewId: "PanelUI-sidebar",
+    tooltiptext: "sidebar-button.tooltiptext2",
     onViewShowing: function(aEvent) {
       // Largely duplicated from the developer-button above with a couple minor
       // alterations.
@@ -350,8 +372,6 @@ const CustomizableWidgets = [{
       // of dealing with those right now.
       let doc = aEvent.target.ownerDocument;
       let win = doc.defaultView;
-
-      let items = doc.getElementById("PanelUI-sidebarItems");
       let menu = doc.getElementById("viewSidebarMenu");
 
       // First clear any existing menuitems then populate. Social sidebar
@@ -362,56 +382,16 @@ const CustomizableWidgets = [{
       if (providerMenuSeps.length > 0)
         win.SocialSidebar.populateProviderMenu(providerMenuSeps[0]);
 
-      let attrs = ["oncommand", "onclick", "label", "key", "disabled",
-                   "command", "observes", "hidden", "class", "origin",
-                   "image", "checked"];
-
-      let fragment = doc.createDocumentFragment();
-      let itemsToDisplay = [...menu.children];
-      for (let node of itemsToDisplay) {
-        if (node.hidden)
-          continue;
-
-        let item;
-        if (node.localName == "menuseparator") {
-          item = doc.createElementNS(kNSXUL, "menuseparator");
-        } else if (node.localName == "menuitem") {
-          item = doc.createElementNS(kNSXUL, "toolbarbutton");
-        } else {
-          continue;
-        }
-        for (let attr of attrs) {
-          let attrVal = node.getAttribute(attr);
-          if (attrVal)
-            item.setAttribute(attr, attrVal);
-        }
-        if (node.localName == "menuitem") {
-          item.classList.add("subviewbutton");
-          addShortcut(node, doc, item);
-        }
-        fragment.appendChild(item);
-      }
-
-      items.appendChild(fragment);
+      fillSubviewFromMenuItems([...menu.children], doc.getElementById("PanelUI-sidebarItems"));
     },
     onViewHiding: function(aEvent) {
       let doc = aEvent.target.ownerDocument;
-      let items = doc.getElementById("PanelUI-sidebarItems");
-      let parent = items.parentNode;
-      // We'll take the container out of the document before cleaning it out
-      // to avoid reflowing each time we remove something.
-      parent.removeChild(items);
-
-      while (items.firstChild) {
-        items.firstChild.remove();
-      }
-
-      parent.appendChild(items);
+      clearSubview(doc.getElementById("PanelUI-sidebarItems"));
     }
   }, {
     id: "add-ons-button",
     shortcutId: "key_openAddons",
-    tooltiptext: "add-ons-button.tooltiptext2",
+    tooltiptext: "add-ons-button.tooltiptext3",
     defaultArea: CustomizableUI.AREA_PANEL,
     onCommand: function(aEvent) {
       let win = aEvent.target &&
@@ -446,6 +426,7 @@ const CustomizableWidgets = [{
   }, {
     id: "zoom-controls",
     type: "custom",
+    tooltiptext: "zoom-controls.tooltiptext2",
     defaultArea: CustomizableUI.AREA_PANEL,
     onBuild: function(aDocument) {
       const kPanelId = "PanelUI-popup";
@@ -503,7 +484,7 @@ const CustomizableWidgets = [{
         // tabbrowser. This breaks the zoom toolkit code (see bug 897410). Don't let that happen:
         let zoomFactor = 100;
         try {
-          zoomFactor = Math.floor(window.ZoomManager.zoom * 100);
+          zoomFactor = Math.round(window.ZoomManager.zoom * 100);
         } catch (e) {}
         zoomResetButton.setAttribute("label", CustomizableUI.getLocalizedProperty(
           buttons[1], "label", [updateDisplay ? zoomFactor : 100]
@@ -618,6 +599,7 @@ const CustomizableWidgets = [{
   }, {
     id: "edit-controls",
     type: "custom",
+    tooltiptext: "edit-controls.tooltiptext2",
     defaultArea: CustomizableUI.AREA_PANEL,
     onBuild: function(aDocument) {
       let buttons = [{
@@ -709,6 +691,7 @@ const CustomizableWidgets = [{
     id: "feed-button",
     type: "view",
     viewId: "PanelUI-feeds",
+    tooltiptext: "feed-button.tooltiptext2",
     defaultArea: CustomizableUI.AREA_PANEL,
     onClick: function(aEvent) {
       let win = aEvent.target.ownerDocument.defaultView;
@@ -911,7 +894,7 @@ const CustomizableWidgets = [{
     }
   }, {
     id: "email-link-button",
-    tooltiptext: "email-link-button.tooltiptext2",
+    tooltiptext: "email-link-button.tooltiptext3",
     onCommand: function(aEvent) {
       let win = aEvent.view;
       win.MailIntegration.sendLinkForWindow(win.content);
@@ -940,4 +923,37 @@ if (Services.metro && Services.metro.supported) {
   });
 }
 #endif
+#endif
+
+#ifdef E10S_TESTING_ONLY
+/**
+ * The e10s button's purpose is to lower the barrier of entry
+ * for our Nightly testers to use e10s windows. We'll be removing it
+ * once remote tabs are enabled. This button should never ever make it
+ * to production. If it does, that'd be bad, and we should all feel bad.
+ */
+if (Services.prefs.getBoolPref("browser.tabs.remote")) {
+  let getCommandFunction = function(aOpenRemote) {
+    return function(aEvent) {
+      let win = aEvent.view;
+      if (win && typeof win.OpenBrowserWindow == "function") {
+        win.OpenBrowserWindow({remote: aOpenRemote});
+      }
+    };
+  }
+
+  let openRemote = !Services.prefs.getBoolPref("browser.tabs.remote.autostart");
+  // Like the XUL menuitem counterparts, we hard-code these strings in because
+  // this button should never roll into production.
+  let buttonLabel = openRemote ? "New e10s Window"
+                               : "New Non-e10s Window";
+
+  CustomizableWidgets.push({
+    id: "e10s-button",
+    label: buttonLabel,
+    tooltiptext: buttonLabel,
+    defaultArea: CustomizableUI.AREA_PANEL,
+    onCommand: getCommandFunction(openRemote),
+  });
+}
 #endif

@@ -605,6 +605,22 @@ struct KernTableSubtableHeaderVersion1 {
     AutoSwap_PRUint16    tupleIndex;
 };
 
+struct COLRHeader {
+    AutoSwap_PRUint16    version;
+    AutoSwap_PRUint16    numBaseGlyphRecord;
+    AutoSwap_PRUint32    offsetBaseGlyphRecord;
+    AutoSwap_PRUint32    offsetLayerRecord;
+    AutoSwap_PRUint16    numLayerRecords;
+};
+
+struct CPALHeaderVersion0 {
+    AutoSwap_PRUint16    version;
+    AutoSwap_PRUint16    numPaletteEntries;
+    AutoSwap_PRUint16    numPalettes;
+    AutoSwap_PRUint16    numColorRecords;
+    AutoSwap_PRUint32    offsetFirstColorRecord;
+};
+
 #pragma pack()
 
 // Return just the highest bit of the given value, i.e., the highest
@@ -638,6 +654,8 @@ enum gfxUserFontType {
     GFX_USERFONT_SVG = 2,
     GFX_USERFONT_WOFF = 3
 };
+
+extern const uint8_t sCJKCompatSVSTable[];
 
 class gfxFontUtils {
 
@@ -784,6 +802,15 @@ public:
     static uint16_t
     MapUVSToGlyphFormat14(const uint8_t *aBuf, uint32_t aCh, uint32_t aVS);
 
+    // sCJKCompatSVSTable is a 'cmap' format 14 subtable that maps
+    // <char + var-selector> pairs to the corresponding Unicode
+    // compatibility ideograph codepoints.
+    static MOZ_ALWAYS_INLINE uint32_t
+    GetUVSFallback(uint32_t aCh, uint32_t aVS) {
+        aCh = MapUVSToGlyphFormat14(sCJKCompatSVSTable, aCh, aVS);
+        return aCh >= 0xFB00 ? aCh + (0x2F800 - 0xFB00) : aCh;
+    }
+
     static uint32_t
     MapCharToGlyph(const uint8_t *aCmapBuf, uint32_t aBufLength,
                    uint32_t aUnicode, uint32_t aVarSelector = 0);
@@ -907,13 +934,30 @@ public:
         // otherwise we know this char cannot trigger bidi reordering
         return false;
     }
-    
-    // for a given font list pref name, set up a list of font names
+
+    // parse a simple list of font family names into
+    // an array of strings
+    static void ParseFontList(const nsAString& aFamilyList,
+                              nsTArray<nsString>& aFontList);
+
+    // for a given font list pref name, append list of font names
+    static void AppendPrefsFontList(const char *aPrefName,
+                                    nsTArray<nsString>& aFontList);
+
+    // for a given font list pref name, initialize a list of font names
     static void GetPrefsFontList(const char *aPrefName, 
                                  nsTArray<nsString>& aFontList);
 
     // generate a unique font name
     static nsresult MakeUniqueUserFontName(nsAString& aName);
+
+    // for color layer from glyph using COLR and CPAL tables
+    static bool ValidateColorGlyphs(hb_blob_t* aCOLR, hb_blob_t* aCPAL);
+    static bool GetColorGlyphLayers(hb_blob_t* aCOLR,
+                                    hb_blob_t* aCPAL,
+                                    uint32_t aGlyphId,
+                                    nsTArray<uint16_t> &aGlyphs,
+                                    nsTArray<mozilla::gfx::Color> &aColors);
 
 protected:
     static nsresult

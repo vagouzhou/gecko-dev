@@ -6,8 +6,10 @@
 #include "nsJARInputStream.h"
 #include "nsJAR.h"
 #include "nsIFile.h"
+#include "nsICertificatePrincipal.h"
 #include "nsIConsoleService.h"
 #include "nsICryptoHash.h"
+#include "nsIDataSignatureVerifier.h"
 #include "prprf.h"
 #include "mozilla/Omnijar.h"
 
@@ -91,11 +93,11 @@ nsJAR::~nsJAR()
   Close();
 }
 
-NS_IMPL_QUERY_INTERFACE1(nsJAR, nsIZipReader)
+NS_IMPL_QUERY_INTERFACE(nsJAR, nsIZipReader)
 NS_IMPL_ADDREF(nsJAR)
 
 // Custom Release method works with nsZipReaderCache...
-nsrefcnt nsJAR::Release(void)
+MozExternalRefCountType nsJAR::Release(void)
 {
   nsrefcnt count;
   NS_PRECONDITION(0 != mRefCnt, "dup release");
@@ -555,8 +557,8 @@ nsJAR::ParseManifest()
   }
 
   //-- Get the signature verifier service
-  nsCOMPtr<nsISignatureVerifier> verifier =
-           do_GetService(SIGNATURE_VERIFIER_CONTRACTID, &rv);
+  nsCOMPtr<nsIDataSignatureVerifier> verifier(
+    do_GetService("@mozilla.org/security/datasignatureverifier;1", &rv));
   if (NS_FAILED(rv)) // No signature verifier available
   {
     mGlobalStatus = JAR_NO_MANIFEST;
@@ -569,9 +571,9 @@ nsJAR::ParseManifest()
   rv = verifier->VerifySignature(sigBuffer, sigLen, manifestBuffer, manifestLen,
                                  &verifyError, getter_AddRefs(mPrincipal));
   if (NS_FAILED(rv)) return rv;
-  if (mPrincipal && verifyError == 0)
+  if (mPrincipal && verifyError == nsIDataSignatureVerifier::VERIFY_OK)
     mGlobalStatus = JAR_VALID_MANIFEST;
-  else if (verifyError == nsISignatureVerifier::VERIFY_ERROR_UNKNOWN_CA)
+  else if (verifyError == nsIDataSignatureVerifier::VERIFY_ERROR_UNKNOWN_ISSUER)
     mGlobalStatus = JAR_INVALID_UNKNOWN_CA;
   else
     mGlobalStatus = JAR_INVALID_SIG;
@@ -847,7 +849,7 @@ nsresult nsJAR::CalculateDigest(const char* aInBuf, uint32_t aLen,
   return hasher->Finish(true, digest);
 }
 
-NS_IMPL_ISUPPORTS1(nsJAREnumerator, nsIUTF8StringEnumerator)
+NS_IMPL_ISUPPORTS(nsJAREnumerator, nsIUTF8StringEnumerator)
 
 //----------------------------------------------
 // nsJAREnumerator::HasMore
@@ -889,7 +891,7 @@ nsJAREnumerator::GetNext(nsACString& aResult)
 }
 
 
-NS_IMPL_ISUPPORTS1(nsJARItem, nsIZipEntry)
+NS_IMPL_ISUPPORTS(nsJARItem, nsIZipEntry)
 
 nsJARItem::nsJARItem(nsZipItem* aZipItem)
     : mSize(aZipItem->Size()),
@@ -1002,7 +1004,7 @@ nsJARItem::GetPermissions(uint32_t* aPermissions)
 ////////////////////////////////////////////////////////////////////////////////
 // nsIZipReaderCache
 
-NS_IMPL_ISUPPORTS3(nsZipReaderCache, nsIZipReaderCache, nsIObserver, nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsZipReaderCache, nsIZipReaderCache, nsIObserver, nsISupportsWeakReference)
 
 nsZipReaderCache::nsZipReaderCache()
   : mLock("nsZipReaderCache.mLock")

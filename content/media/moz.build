@@ -6,11 +6,14 @@
 
 PARALLEL_DIRS += [
   'encoder',
+  'gmp',
   'mediasource',
   'ogg',
   'webaudio',
   'webvtt'
 ]
+
+TEST_TOOL_DIRS += ['compiledtest']
 
 if CONFIG['MOZ_RAW']:
     PARALLEL_DIRS += ['raw']
@@ -47,6 +50,8 @@ if CONFIG['MOZ_OMX_DECODER']:
 
 PARALLEL_DIRS += ['webspeech']
 
+PARALLEL_DIRS += ['eme']
+
 TEST_DIRS += [
     'test',
     'gtest',
@@ -54,10 +59,10 @@ TEST_DIRS += [
 
 EXPORTS += [
     'AbstractMediaDecoder.h',
-    'AudioAvailableEventManager.h',
     'AudioChannelFormat.h',
     'AudioCompactor.h',
     'AudioEventTimeline.h',
+    'AudioMixer.h',
     'AudioNodeEngine.h',
     'AudioNodeExternalInputStream.h',
     'AudioNodeStream.h',
@@ -73,6 +78,7 @@ EXPORTS += [
     'Latency.h',
     'MediaCache.h',
     'MediaData.h',
+    'MediaDataDecodedListener.h',
     'MediaDecoder.h',
     'MediaDecoderOwner.h',
     'MediaDecoderReader.h',
@@ -86,6 +92,7 @@ EXPORTS += [
     'MediaStreamGraph.h',
     'MediaTaskQueue.h',
     'MP3FrameParser.h',
+    'nsIDocumentActivity.h',
     'RtspMediaResource.h',
     'SharedBuffer.h',
     'SharedThreadPool.h',
@@ -111,13 +118,13 @@ EXPORTS.mozilla.dom += [
 ]
 
 UNIFIED_SOURCES += [
-    'AudioAvailableEventManager.cpp',
     'AudioChannelFormat.cpp',
     'AudioCompactor.cpp',
     'AudioNodeEngine.cpp',
     'AudioNodeExternalInputStream.cpp',
     'AudioNodeStream.cpp',
     'AudioSegment.cpp',
+    'AudioSink.cpp',
     'AudioStream.cpp',
     'AudioStreamTrack.cpp',
     'BufferDecoder.cpp',
@@ -174,6 +181,7 @@ LOCAL_INCLUDES += [
     '/content/base/src',
     '/layout/generic',
     '/layout/xul',
+    '/netwerk/base/src',
 ]
 
 if CONFIG['MOZ_DIRECTSHOW']:
@@ -186,3 +194,5 @@ DEFINES['MOZILLA_INTERNAL_API'] = True
 if CONFIG['MOZ_OMX_DECODER']:
     DEFINES['MOZ_OMX_DECODER'] = True
 
+if CONFIG['ANDROID_VERSION'] > '15':
+    DEFINES['MOZ_OMX_WEBM_DECODER'] = True

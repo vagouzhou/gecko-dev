@@ -45,7 +45,7 @@ public:
 
   virtual nsresult Init() MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   virtual void DocAddSizeOfExcludingThis(nsWindowSizes* aWindowSizes) const MOZ_OVERRIDE;
   // DocAddSizeOfIncludingThis is inherited from nsIDocument.
@@ -68,8 +68,10 @@ public:
   using nsDocument::GetLocation;
 
 protected:
-  virtual JSObject* WrapNode(JSContext *aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
+
+  friend nsresult (::NS_NewXMLDocument)(nsIDocument**, bool, bool);
+
 
   // mChannelIsPending indicates whether we're currently asynchronously loading
   // data from mChannel (via document.load() or normal load).  It's set to true
@@ -80,6 +82,9 @@ protected:
   bool mChannelIsPending;
   bool mAsync;
   bool mLoopingForSyncLoad;
+
+  // If true. we're really a Document, not an XMLDocument
+  bool mIsPlainDocument;
 };
 
 } // namespace dom

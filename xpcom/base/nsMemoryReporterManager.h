@@ -8,6 +8,8 @@
 #define nsMemoryReporterManager_h__
 
 #include "nsIMemoryReporter.h"
+#include "nsITimer.h"
+#include "nsServiceManagerUtils.h"
 #include "mozilla/Mutex.h"
 #include "nsTHashtable.h"
 #include "nsHashKeys.h"
@@ -37,8 +39,8 @@ public:
     return static_cast<nsMemoryReporterManager*>(imgr.get());
   }
 
-  typedef nsTHashtable<nsRefPtrHashKey<nsIMemoryReporter> > StrongReportersTable;
-  typedef nsTHashtable<nsPtrHashKey<nsIMemoryReporter> > WeakReportersTable;
+  typedef nsTHashtable<nsRefPtrHashKey<nsIMemoryReporter>> StrongReportersTable;
+  typedef nsTHashtable<nsPtrHashKey<nsIMemoryReporter>> WeakReportersTable;
 
   void IncrementNumChildProcesses();
   void DecrementNumChildProcesses();
@@ -115,7 +117,7 @@ public:
   // more.
   //
   void HandleChildReports(
-    const uint32_t& generation,
+    const uint32_t& aGeneration,
     const InfallibleTArray<mozilla::dom::MemoryReport>& aChildReports);
   nsresult FinishReporting();
 
@@ -137,9 +139,20 @@ public:
 
     mozilla::InfallibleAmountFn mGhostWindows;
 
-    AmountFns() { mozilla::PodZero(this); }
+    AmountFns()
+    {
+      mozilla::PodZero(this);
+    }
   };
   AmountFns mAmountFns;
+
+  // Convenience function to get RSS easily from other code.  This is useful
+  // when debugging transient memory spikes with printf instrumentation.
+  static int64_t ResidentFast();
+
+  // Convenience function to get USS easily from other code.  This is useful
+  // when debugging unshared memory pages for forked processes.
+  static int64_t ResidentUnique();
 
   // Functions that measure per-tab memory consumption.
   struct SizeOfTabFns
@@ -180,26 +193,30 @@ private:
   struct GetReportsState
   {
     uint32_t                             mGeneration;
+    bool                                 mAnonymize;
     nsCOMPtr<nsITimer>                   mTimer;
     uint32_t                             mNumChildProcesses;
     uint32_t                             mNumChildProcessesCompleted;
+    bool                                 mParentDone;
     nsCOMPtr<nsIHandleReportCallback>    mHandleReport;
     nsCOMPtr<nsISupports>                mHandleReportData;
     nsCOMPtr<nsIFinishReportingCallback> mFinishReporting;
     nsCOMPtr<nsISupports>                mFinishReportingData;
     nsString                             mDMDDumpIdent;
 
-    GetReportsState(uint32_t aGeneration, nsITimer* aTimer,
+    GetReportsState(uint32_t aGeneration, bool aAnonymize, nsITimer* aTimer,
                     uint32_t aNumChildProcesses,
                     nsIHandleReportCallback* aHandleReport,
                     nsISupports* aHandleReportData,
                     nsIFinishReportingCallback* aFinishReporting,
                     nsISupports* aFinishReportingData,
-                    const nsAString &aDMDDumpIdent)
+                    const nsAString& aDMDDumpIdent)
       : mGeneration(aGeneration)
+      , mAnonymize(aAnonymize)
       , mTimer(aTimer)
       , mNumChildProcesses(aNumChildProcesses)
       , mNumChildProcessesCompleted(0)
+      , mParentDone(false)
       , mHandleReport(aHandleReport)
       , mHandleReportData(aHandleReportData)
       , mFinishReporting(aFinishReporting)

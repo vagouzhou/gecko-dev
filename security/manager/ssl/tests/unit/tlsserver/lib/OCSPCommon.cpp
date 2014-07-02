@@ -6,15 +6,16 @@
 
 #include <stdio.h>
 
+#include "pkixtestutil.h"
 #include "ScopedNSSTypes.h"
 #include "TLSServer.h"
-#include "pkixtestutil.h"
+#include "secder.h"
 #include "secerr.h"
 
 using namespace mozilla;
-using namespace mozilla::test;
+using namespace mozilla::pkix;
 using namespace mozilla::pkix::test;
-
+using namespace mozilla::test;
 
 SECItemArray *
 GetOCSPResponseForType(OCSPResponseType aORT, CERTCertificate *aCert,
@@ -39,29 +40,52 @@ GetOCSPResponseForType(OCSPResponseType aORT, CERTCertificate *aCert,
   PRTime oneDay = 60*60*24 * (PRTime)PR_USEC_PER_SEC;
   PRTime oldNow = now - (8 * oneDay);
 
-  OCSPResponseContext context(aArena, aCert, now);
+  mozilla::ScopedCERTCertificate cert(CERT_DupCertificate(aCert));
 
   if (aORT == ORTGoodOtherCert) {
-    context.cert = PK11_FindCertFromNickname(aAdditionalCertName, nullptr);
-    if (!context.cert) {
+    cert = PK11_FindCertFromNickname(aAdditionalCertName, nullptr);
+    if (!cert) {
       PrintPRError("PK11_FindCertFromNickname failed");
       return nullptr;
     }
   }
   // XXX CERT_FindCertIssuer uses the old, deprecated path-building logic
-  context.issuerCert = CERT_FindCertIssuer(aCert, now, certUsageSSLCA);
-  if (!context.issuerCert) {
+  mozilla::ScopedCERTCertificate
+    issuerCert(CERT_FindCertIssuer(aCert, now, certUsageSSLCA));
+  if (!issuerCert) {
     PrintPRError("CERT_FindCertIssuer failed");
     return nullptr;
   }
-  if (aORT == ORTGoodOtherCA) {
-    context.signerCert = PK11_FindCertFromNickname(aAdditionalCertName,
-                                                   nullptr);
-    if (!context.signerCert) {
+  CertID certID(cert->derIssuer, issuerCert->derPublicKey, cert->serialNumber);
+  OCSPResponseContext context(aArena, certID, now);
+
+  mozilla::ScopedCERTCertificate signerCert;
+  if (aORT == ORTGoodOtherCA || aORT == ORTDelegatedIncluded ||
+      aORT == ORTDelegatedIncludedLast || aORT == ORTDelegatedMissing ||
+      aORT == ORTDelegatedMissingMultiple) {
+    signerCert = PK11_FindCertFromNickname(aAdditionalCertName, nullptr);
+    if (!signerCert) {
       PrintPRError("PK11_FindCertFromNickname failed");
       return nullptr;
     }
   }
+
+  const SECItem* certs[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+
+  if (aORT == ORTDelegatedIncluded) {
+    certs[0] = &signerCert->derCert;
+    context.certs = certs;
+  }
+  if (aORT == ORTDelegatedIncludedLast || aORT == ORTDelegatedMissingMultiple) {
+    certs[0] = &issuerCert->derCert;
+    certs[1] = &cert->derCert;
+    certs[2] = &issuerCert->derCert;
+    if (aORT != ORTDelegatedMissingMultiple) {
+      certs[3] = &signerCert->derCert;
+    }
+    context.certs = certs;
+  }
+
   switch (aORT) {
     case ORTMalformed:
       context.responseStatus = 1;
@@ -86,22 +110,64 @@ GetOCSPResponseForType(OCSPResponseType aORT, CERTCertificate *aCert,
   if (aORT == ORTSkipResponseBytes) {
     context.skipResponseBytes = true;
   }
-  if (aORT == ORTExpired || aORT == ORTExpiredFreshCA) {
+  if (aORT == ORTExpired || aORT == ORTExpiredFreshCA ||
+      aORT == ORTRevokedOld || aORT == ORTUnknownOld) {
     context.thisUpdate = oldNow;
     context.nextUpdate = oldNow + 10 * PR_USEC_PER_SEC;
   }
-  if (aORT == ORTRevoked) {
+  if (aORT == ORTLongValidityAlmostExpired) {
+    context.thisUpdate = now - (320 * oneDay);
+  }
+  if (aORT == ORTAncientAlmostExpired) {
+    context.thisUpdate = now - (640 * oneDay);
+  }
+  if (aORT == ORTRevoked || aORT == ORTRevokedOld) {
     context.certStatus = 1;
   }
-  if (aORT == ORTUnknown) {
+  if (aORT == ORTUnknown || aORT == ORTUnknownOld) {
     context.certStatus = 2;
   }
   if (aORT == ORTBadSignature) {
     context.badSignature = true;
   }
+  OCSPResponseExtension extension;
+  if (aORT == ORTCriticalExtension || aORT == ORTNoncriticalExtension) {
+    SECItem oidItem = {
+      siBuffer,
+      nullptr,
+      0
+    };
+    // 1.3.6.1.4.1.13769.666.666.666 is the root of Mozilla's testing OID space
+    static const char* testExtensionOID = "1.3.6.1.4.1.13769.666.666.666.1.500.9.2";
+    if (SEC_StringToOID(aArena, &oidItem, testExtensionOID,
+                        PL_strlen(testExtensionOID)) != SECSuccess) {
+      return nullptr;
+    }
+    DERTemplate oidTemplate[2] = { { DER_OBJECT_ID, 0 }, { 0 } };
+    extension.id.data = nullptr;
+    extension.id.len = 0;
+    if (DER_Encode(aArena, &extension.id, oidTemplate, &oidItem)
+          != SECSuccess) {
+      return nullptr;
+    }
+    extension.critical = (aORT == ORTCriticalExtension);
+    static const uint8_t value[2] = { 0x05, 0x00 };
+    extension.value.data = const_cast<uint8_t*>(value);
+    extension.value.len = PR_ARRAY_SIZE(value);
+    extension.next = nullptr;
+    context.extensions = &extension;
+  }
+  if (aORT == ORTEmptyExtensions) {
+    context.includeEmptyExtensions = true;
+  }
 
-  if (!context.signerCert) {
-    context.signerCert = CERT_DupCertificate(context.issuerCert.get());
+  if (!signerCert) {
+    signerCert = CERT_DupCertificate(issuerCert.get());
+  }
+  context.signerPrivateKey = PK11_FindKeyByAnyCert(signerCert.get(), nullptr);
+  if (!context.signerPrivateKey) {
+    PrintPRError("PK11_FindKeyByAnyCert failed");
+    return nullptr;
   }
 
   SECItem* response = CreateEncodedOCSPResponse(context);
@@ -111,8 +177,12 @@ GetOCSPResponseForType(OCSPResponseType aORT, CERTCertificate *aCert,
   }
 
   SECItemArray* arr = SECITEM_AllocArray(aArena, nullptr, 1);
-  arr->items[0].data = response ? response->data : nullptr;
-  arr->items[0].len = response ? response->len : 0;
+  if (!arr) {
+    PrintPRError("SECITEM_AllocArray failed");
+    return nullptr;
+  }
+  arr->items[0].data = response->data;
+  arr->items[0].len = response->len;
 
   return arr;
 }

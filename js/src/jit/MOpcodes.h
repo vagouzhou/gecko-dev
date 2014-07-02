@@ -38,9 +38,12 @@ namespace jit {
     _(GetArgumentsObjectArg)                                                \
     _(SetArgumentsObjectArg)                                                \
     _(ComputeThis)                                                          \
+    _(LoadArrowThis)                                                        \
     _(Call)                                                                 \
     _(ApplyArgs)                                                            \
+    _(ArraySplice)                                                          \
     _(Bail)                                                                 \
+    _(Unreachable)                                                          \
     _(AssertFloat32)                                                        \
     _(GetDynamicName)                                                       \
     _(FilterArgumentsOrEval)                                                \
@@ -85,11 +88,11 @@ namespace jit {
     _(ToInt32)                                                              \
     _(TruncateToInt32)                                                      \
     _(ToString)                                                             \
-    _(NewSlots)                                                             \
     _(NewArray)                                                             \
     _(NewObject)                                                            \
     _(NewDeclEnvObject)                                                     \
     _(NewCallObject)                                                        \
+    _(NewRunOnceCallObject)                                                 \
     _(NewStringObject)                                                      \
     _(InitElem)                                                             \
     _(InitElemGetterSetter)                                                 \
@@ -99,13 +102,14 @@ namespace jit {
     _(Start)                                                                \
     _(OsrEntry)                                                             \
     _(Nop)                                                                  \
+    _(LimitedTruncate)                                                      \
     _(RegExp)                                                               \
     _(RegExpExec)                                                           \
     _(RegExpTest)                                                           \
     _(RegExpReplace)                                                        \
     _(StringReplace)                                                        \
     _(Lambda)                                                               \
-    _(ImplicitThis)                                                         \
+    _(LambdaArrow)                                                          \
     _(Slots)                                                                \
     _(Elements)                                                             \
     _(ConstantElements)                                                     \
@@ -125,6 +129,7 @@ namespace jit {
     _(SetElementCache)                                                      \
     _(BindNameCache)                                                        \
     _(GuardShape)                                                           \
+    _(GuardShapePolymorphic)                                                \
     _(GuardObjectType)                                                      \
     _(GuardObjectIdentity)                                                  \
     _(GuardClass)                                                           \
@@ -132,7 +137,9 @@ namespace jit {
     _(SetArrayLength)                                                       \
     _(TypedArrayLength)                                                     \
     _(TypedArrayElements)                                                   \
+    _(TypedObjectProto)                                                     \
     _(TypedObjectElements)                                                  \
+    _(SetTypedObjectOffset)                                                 \
     _(InitializedLength)                                                    \
     _(SetInitializedLength)                                                 \
     _(Not)                                                                  \
@@ -179,18 +186,20 @@ namespace jit {
     _(RunOncePrologue)                                                      \
     _(Rest)                                                                 \
     _(Floor)                                                                \
+    _(Ceil)                                                                 \
     _(Round)                                                                \
     _(In)                                                                   \
     _(InstanceOf)                                                           \
     _(CallInstanceOf)                                                       \
     _(InterruptCheck)                                                       \
-    _(FunctionBoundary)                                                     \
+    _(ProfilerStackOp)                                                      \
     _(GetDOMProperty)                                                       \
     _(GetDOMMember)                                                         \
     _(SetDOMProperty)                                                       \
     _(IsCallable)                                                           \
+    _(IsObject)                                                             \
     _(HaveSameClass)                                                        \
-    _(HasClass)                                                              \
+    _(HasClass)                                                             \
     _(AsmJSNeg)                                                             \
     _(AsmJSUnsignedToDouble)                                                \
     _(AsmJSUnsignedToFloat32)                                               \
@@ -205,13 +214,11 @@ namespace jit {
     _(AsmJSVoidReturn)                                                      \
     _(AsmJSPassStackArg)                                                    \
     _(AsmJSCall)                                                            \
-    _(AsmJSCheckOverRecursed)                                               \
     _(CheckOverRecursedPar)                                                 \
     _(NewCallObjectPar)                                                     \
     _(NewPar)                                                               \
     _(NewDenseArrayPar)                                                     \
     _(NewDerivedTypedObject)                                                \
-    _(AbortPar)                                                             \
     _(LambdaPar)                                                            \
     _(RestPar)                                                              \
     _(ForkJoinContext)                                                      \

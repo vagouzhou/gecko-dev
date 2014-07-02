@@ -22,8 +22,10 @@
 #include "nsMimeTypes.h"
 #include "nsPresContext.h"
 #include "nsRect.h"
+#include "nsString.h"
 #include "nsStubDocumentObserver.h"
 #include "nsSVGEffects.h" // for nsSVGRenderingObserver
+#include "nsWindowMemoryReporter.h"
 #include "Orientation.h"
 #include "SVGDocumentWrapper.h"
 #include "nsIDOMEventListener.h"
@@ -124,6 +126,7 @@ public:
     mDocument->AddObserver(this);
   }
 
+private:
   ~SVGParseCompleteListener()
   {
     if (mDocument) {
@@ -134,6 +137,7 @@ public:
     }
   }
 
+public:
   void EndLoad(nsIDocument* aDocument) MOZ_OVERRIDE
   {
     MOZ_ASSERT(aDocument == mDocument, "Got EndLoad for wrong document?");
@@ -159,7 +163,7 @@ private:
   VectorImage* const mImage; // Raw pointer to owner.
 };
 
-NS_IMPL_ISUPPORTS1(SVGParseCompleteListener, nsIDocumentObserver)
+NS_IMPL_ISUPPORTS(SVGParseCompleteListener, nsIDocumentObserver)
 
 class SVGLoadEventListener MOZ_FINAL : public nsIDOMEventListener {
 public:
@@ -178,6 +182,7 @@ public:
     mDocument->AddEventListener(NS_LITERAL_STRING("SVGError"), this, true, false);
   }
 
+private:
   ~SVGLoadEventListener()
   {
     if (mDocument) {
@@ -188,6 +193,7 @@ public:
     }
   }
 
+public:
   NS_IMETHOD HandleEvent(nsIDOMEvent* aEvent) MOZ_OVERRIDE
   {
     MOZ_ASSERT(mDocument, "Need an SVG document. Received multiple events?");
@@ -228,7 +234,7 @@ private:
   VectorImage* const mImage; // Raw pointer to owner.
 };
 
-NS_IMPL_ISUPPORTS1(SVGLoadEventListener, nsIDOMEventListener)
+NS_IMPL_ISUPPORTS(SVGLoadEventListener, nsIDOMEventListener)
 
 // Helper-class: SVGDrawingCallback
 class SVGDrawingCallback : public gfxDrawingCallback {
@@ -302,10 +308,10 @@ SVGDrawingCallback::operator()(gfxContext* aContext,
 }
 
 // Implement VectorImage's nsISupports-inherited methods
-NS_IMPL_ISUPPORTS3(VectorImage,
-                   imgIContainer,
-                   nsIStreamListener,
-                   nsIRequestObserver)
+NS_IMPL_ISUPPORTS(VectorImage,
+                  imgIContainer,
+                  nsIStreamListener,
+                  nsIRequestObserver)
 
 //------------------------------------------------------------------------------
 // Constructor / Destructor
@@ -359,26 +365,59 @@ VectorImage::HeapSizeOfSourceWithComputedFallback(mozilla::MallocSizeOf aMallocS
   // We're not storing the source data -- we just feed that directly to
   // our helper SVG document as we receive it, for it to parse.
   // So 0 is an appropriate return value here.
+  // If implementing this, we'll need to restructure our callers to make sure
+  // any amount we return is attributed to the vector images measure (i.e.
+  // "explicit/images/{content,chrome}/vector/{used,unused}/...")
   return 0;
 }
 
 size_t
 VectorImage::HeapSizeOfDecodedWithComputedFallback(mozilla::MallocSizeOf aMallocSizeOf) const
 {
-  // XXXdholbert TODO: return num bytes used by helper SVG doc. (bug 590790)
+  // If implementing this, we'll need to restructure our callers to make sure
+  // any amount we return is attributed to the vector images measure (i.e.
+  // "explicit/images/{content,chrome}/vector/{used,unused}/...")
   return 0;
 }
 
 size_t
 VectorImage::NonHeapSizeOfDecoded() const
 {
+  // If implementing this, we'll need to restructure our callers to make sure
+  // any amount we return is attributed to the vector images measure (i.e.
+  // "explicit/images/{content,chrome}/vector/{used,unused}/...")
   return 0;
 }
 
 size_t
 VectorImage::OutOfProcessSizeOfDecoded() const
 {
+  // If implementing this, we'll need to restructure our callers to make sure
+  // any amount we return is attributed to the vector images measure (i.e.
+  // "explicit/images/{content,chrome}/vector/{used,unused}/...")
   return 0;
+}
+
+MOZ_DEFINE_MALLOC_SIZE_OF(WindowsMallocSizeOf);
+
+size_t
+VectorImage::HeapSizeOfVectorImageDocument(nsACString* aDocURL) const
+{
+  nsIDocument* doc = mSVGDocumentWrapper->GetDocument();
+  if (!doc) {
+    if (aDocURL) {
+      mURI->GetSpec(*aDocURL);
+    }
+    return 0; // No document, so no memory used for the document
+  }
+
+  if (aDocURL) {
+    doc->GetDocumentURI()->GetSpec(*aDocURL);
+  }
+
+  nsWindowSizes windowSizes(WindowsMallocSizeOf);
+  doc->DocAddSizeOfIncludingThis(&windowSizes);
+  return windowSizes.getTotalSize();
 }
 
 nsresult
@@ -492,8 +531,13 @@ VectorImage::GetWidth(int32_t* aWidth)
 NS_IMETHODIMP_(void)
 VectorImage::RequestRefresh(const mozilla::TimeStamp& aTime)
 {
-  // TODO: Implement for b666446.
+  if (HadRecentRefresh(aTime)) {
+    return;
+  }
+
   EvaluateAnimation();
+
+  mSVGDocumentWrapper->TickRefreshDriver();
 
   if (mHasPendingInvalidation) {
     SendInvalidationNotifications();
@@ -524,6 +568,12 @@ VectorImage::SendInvalidationNotifications()
     mStatusTracker->FrameChanged(&nsIntRect::GetMaxSizedIntRect());
     mStatusTracker->OnStopFrame();
   }
+}
+
+NS_IMETHODIMP_(nsIntRect)
+VectorImage::GetImageSpaceInvalidationRect(const nsIntRect& aRect)
+{
+  return aRect;
 }
 
 //******************************************************************************
@@ -649,9 +699,9 @@ VectorImage::FrameIsOpaque(uint32_t aWhichFrame)
 }
 
 //******************************************************************************
-/* [noscript] gfxASurface getFrame(in uint32_t aWhichFrame,
- *                                 in uint32_t aFlags; */
-NS_IMETHODIMP_(already_AddRefed<gfxASurface>)
+/* [noscript] SourceSurface getFrame(in uint32_t aWhichFrame,
+ *                                   in uint32_t aFlags; */
+NS_IMETHODIMP_(TemporaryRef<SourceSurface>)
 VectorImage::GetFrame(uint32_t aWhichFrame,
                       uint32_t aFlags)
 {
@@ -674,27 +724,19 @@ VectorImage::GetFrame(uint32_t aWhichFrame,
     return nullptr;
   }
 
-  // Create a surface that we'll ultimately return
-  // ---------------------------------------------
   // Make our surface the size of what will ultimately be drawn to it.
   // (either the full image size, or the restricted region)
-  gfxIntSize surfaceSize(imageIntSize.width, imageIntSize.height);
-
-  nsRefPtr<gfxImageSurface> surface =
-    new gfxImageSurface(surfaceSize, gfxImageFormat::ARGB32);
-
-  RefPtr<DrawTarget> drawTarget =
-    Factory::CreateDrawTargetForData(BackendType::CAIRO,
-                                     surface->Data(),
-                                     IntSize(imageIntSize.width,
+  RefPtr<DrawTarget> dt = gfxPlatform::GetPlatform()->
+    CreateOffscreenContentDrawTarget(IntSize(imageIntSize.width,
                                              imageIntSize.height),
-                                     surface->Stride(),
                                      SurfaceFormat::B8G8R8A8);
+  if (!dt) {
+    NS_ERROR("Could not create a DrawTarget");
+    return nullptr;
+  }
 
-  nsRefPtr<gfxContext> context = new gfxContext(drawTarget);
+  nsRefPtr<gfxContext> context = new gfxContext(dt);
 
-  // Draw to our surface!
-  // --------------------
   nsresult rv = Draw(context, GraphicsFilter::FILTER_NEAREST, gfxMatrix(),
                      gfxRect(gfxPoint(0,0), gfxIntSize(imageIntSize.width,
                                                        imageIntSize.height)),
@@ -702,7 +744,7 @@ VectorImage::GetFrame(uint32_t aWhichFrame,
                      imageIntSize, nullptr, aWhichFrame, aFlags);
 
   NS_ENSURE_SUCCESS(rv, nullptr);
-  return surface.forget();
+  return dt->Snapshot();
 }
 
 //******************************************************************************
@@ -823,11 +865,16 @@ VectorImage::Draw(gfxContext* aContext,
   SVGDrawingParameters params(aContext, aFilter, aUserSpaceToImageSpace, aFill,
                               aSubimage, aViewportSize, aSVGContext, animTime, aFlags);
 
-  // Check the cache.
-  nsRefPtr<gfxDrawable> drawable =
-    SurfaceCache::Lookup(ImageKey(this),
-                         SurfaceKey(params.imageRect.Size(), params.scale,
-                                    aSVGContext, animTime, aFlags));
+  // Check the cache. (The FLAG_BYPASS_SURFACE_CACHE check here is just an
+  // optimization since the flags are part of the cache key and we never put
+  // surfaces in the cache if the flags contain FLAG_BYPASS_SURFACE_CACHE.)
+  nsRefPtr<gfxDrawable> drawable;
+  if (!(aFlags & FLAG_BYPASS_SURFACE_CACHE)) {
+    drawable =
+      SurfaceCache::Lookup(ImageKey(this),
+                           SurfaceKey(params.imageRect.Size(), params.scale,
+                                      aSVGContext, animTime, aFlags));
+  }
 
   // Draw.
   if (drawable) {
@@ -854,13 +901,13 @@ VectorImage::CreateDrawableAndShow(const SVGDrawingParameters& aParams)
   nsRefPtr<gfxDrawable> svgDrawable =
     new gfxCallbackDrawable(cb, ThebesIntSize(aParams.imageRect.Size()));
 
-  // Refuse to cache animated images.
-  // XXX(seth): We may remove this restriction in bug 922893.
-  if (mHaveAnimations)
-    return Show(svgDrawable, aParams);
-
-  // If the image is too big to fit in the cache, don't go any further.
-  if (!SurfaceCache::CanHold(aParams.imageRect.Size()))
+  bool bypassCache = bool(aParams.flags & FLAG_BYPASS_SURFACE_CACHE) ||
+                     // Refuse to cache animated images:
+                     // XXX(seth): We may remove this restriction in bug 922893.
+                     mHaveAnimations ||
+                     // The image is too big to fit in the cache:
+                     !SurfaceCache::CanHold(aParams.imageRect.Size());
+  if (bypassCache)
     return Show(svgDrawable, aParams);
 
   // Try to create an offscreen surface.
@@ -881,7 +928,7 @@ VectorImage::CreateDrawableAndShow(const SVGDrawingParameters& aParams)
                              ThebesIntRect(aParams.imageRect),
                              ThebesIntRect(aParams.imageRect),
                              ThebesIntRect(aParams.imageRect),
-                             gfxImageFormat::ARGB32,
+                             SurfaceFormat::B8G8R8A8,
                              GraphicsFilter::FILTER_NEAREST, aParams.flags);
 
   // Attempt to cache the resulting surface.
@@ -908,7 +955,7 @@ VectorImage::Show(gfxDrawable* aDrawable, const SVGDrawingParameters& aParams)
                              aParams.userSpaceToImageSpace,
                              aParams.subimage, aParams.sourceRect,
                              ThebesIntRect(aParams.imageRect), aParams.fill,
-                             gfxImageFormat::ARGB32,
+                             SurfaceFormat::B8G8R8A8,
                              aParams.filter, aParams.flags);
 
   MOZ_ASSERT(mRenderingObserver, "Should have a rendering observer by now");
@@ -1165,6 +1212,13 @@ VectorImage::InvalidateObserversOnNextRefreshDriverTick()
   } else {
     SendInvalidationNotifications();
   }
+}
+
+already_AddRefed<imgIContainer>
+VectorImage::Unwrap()
+{
+  nsCOMPtr<imgIContainer> self(this);
+  return self.forget();
 }
 
 } // namespace image

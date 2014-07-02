@@ -9,7 +9,7 @@
 #include "nsStringFwd.h"
 #include "nsTArray.h"
 #include "nsISaveAsCharset.h"
-
+#include "nsCOMPtr.h"
 
 #define MASK_FALLBACK(a) (nsISaveAsCharset::mask_Fallback & (a))
 #define MASK_ENTITY(a) (nsISaveAsCharset::mask_Entity & (a))
@@ -28,7 +28,6 @@ public:
 	// implementation methods
 	//
   nsSaveAsCharset();
-  virtual ~nsSaveAsCharset();
 
 	//
 	// nsISupports
@@ -45,6 +44,8 @@ public:
   NS_IMETHODIMP GetCharset(char * *aCharset);
 
 protected:
+
+  virtual ~nsSaveAsCharset();
 
   NS_IMETHOD DoCharsetConversion(const char16_t *inString, char **outString);
 

@@ -143,6 +143,7 @@ class JitCode : public gc::BarrieredCell<JitCode>
 };
 
 class SnapshotWriter;
+class RecoverWriter;
 class SafepointWriter;
 class SafepointIndex;
 class OsiIndex;
@@ -168,10 +169,10 @@ struct IonScript
 {
   private:
     // Code pointer containing the actual method.
-    EncapsulatedPtr<JitCode> method_;
+    PreBarrieredJitCode method_;
 
     // Deoptimization table used by this method.
-    EncapsulatedPtr<JitCode> deoptTable_;
+    PreBarrieredJitCode deoptTable_;
 
     // Entrypoint for OSR, or nullptr.
     jsbytecode *osrPc_;
@@ -250,6 +251,10 @@ struct IonScript
     uint32_t snapshotsListSize_;
     uint32_t snapshotsRVATableSize_;
 
+    // List of instructions needed to recover stack frames.
+    uint32_t recovers_;
+    uint32_t recoversSize_;
+
     // Constant table for constants stored in snapshots.
     uint32_t constantTable_;
     uint32_t constantEntries_;
@@ -300,8 +305,8 @@ struct IonScript
     SnapshotOffset *bailoutTable() {
         return (SnapshotOffset *) &bottomBuffer()[bailoutTable_];
     }
-    EncapsulatedValue *constants() {
-        return (EncapsulatedValue *) &bottomBuffer()[constantTable_];
+    PreBarrieredValue *constants() {
+        return (PreBarrieredValue *) &bottomBuffer()[constantTable_];
     }
     const SafepointIndex *safepointIndices() const {
         return const_cast<IonScript *>(this)->safepointIndices();
@@ -351,9 +356,10 @@ struct IonScript
     static IonScript *New(JSContext *cx, types::RecompileInfo recompileInfo,
                           uint32_t frameLocals, uint32_t frameSize,
                           size_t snapshotsListSize, size_t snapshotsRVATableSize,
-                          size_t bailoutEntries, size_t constants,
-                          size_t safepointIndexEntries, size_t osiIndexEntries,
-                          size_t cacheEntries, size_t runtimeSize, size_t safepointsSize,
+                          size_t recoversSize, size_t bailoutEntries,
+                          size_t constants, size_t safepointIndexEntries,
+                          size_t osiIndexEntries, size_t cacheEntries,
+                          size_t runtimeSize, size_t safepointsSize,
                           size_t callTargetEntries, size_t backedgeEntries,
                           OptimizationLevel optimizationLevel);
     static void Trace(JSTracer *trc, IonScript *script);
@@ -451,6 +457,9 @@ struct IonScript
     void setIsParallelEntryScript() {
         isParallelEntryScript_ = true;
     }
+    void clearIsParallelEntryScript() {
+        isParallelEntryScript_ = false;
+    }
     bool isParallelEntryScript() const {
         return isParallelEntryScript_;
     }
@@ -472,6 +481,12 @@ struct IonScript
     size_t snapshotsRVATableSize() const {
         return snapshotsRVATableSize_;
     }
+    const uint8_t *recovers() const {
+        return reinterpret_cast<const uint8_t *>(this) + recovers_;
+    }
+    size_t recoversSize() const {
+        return recoversSize_;
+    }
     const uint8_t *safepoints() const {
         return reinterpret_cast<const uint8_t *>(this) + safepointsStart_;
     }
@@ -484,7 +499,7 @@ struct IonScript
     size_t sizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf) const {
         return mallocSizeOf(this);
     }
-    EncapsulatedValue &getConstant(size_t index) {
+    PreBarrieredValue &getConstant(size_t index) {
         JS_ASSERT(index < numConstants());
         return constants()[index];
     }
@@ -528,10 +543,11 @@ struct IonScript
         return (CacheLocation *) &runtimeData()[locIndex];
     }
     void toggleBarriers(bool enabled);
-    void purgeCaches(JS::Zone *zone);
+    void purgeCaches();
     void destroyCaches();
     void unlinkFromRuntime(FreeOp *fop);
     void copySnapshots(const SnapshotWriter *writer);
+    void copyRecovers(const RecoverWriter *writer);
     void copyBailoutTable(const SnapshotOffset *table);
     void copyConstants(const Value *vp);
     void copySafepointIndices(const SafepointIndex *firstSafepointIndex, MacroAssembler &masm);
@@ -588,6 +604,11 @@ struct IonScript
 
     static const uint32_t MAX_PARALLEL_AGE = 5;
 
+    enum ShouldIncreaseAge {
+        IncreaseAge = true,
+        KeepAge = false
+    };
+
     void resetParallelAge() {
         MOZ_ASSERT(isParallelEntryScript());
         parallelAge_ = 0;
@@ -595,9 +616,9 @@ struct IonScript
     uint32_t parallelAge() const {
         return parallelAge_;
     }
-    uint32_t increaseParallelAge() {
+    uint32_t shouldPreserveParallelCode(ShouldIncreaseAge increaseAge = KeepAge) {
         MOZ_ASSERT(isParallelEntryScript());
-        return ++parallelAge_;
+        return (increaseAge ? ++parallelAge_ : parallelAge_) < MAX_PARALLEL_AGE;
     }
 
     static void writeBarrierPre(Zone *zone, IonScript *ionScript);
@@ -623,11 +644,6 @@ struct IonBlockCounts
 
     // Text information about the code generated for this block.
     char *code_;
-
-    // Number of bytes of code generated in this block. Spill code is counted
-    // separately from other, instruction implementing code.
-    uint32_t instructionBytes_;
-    uint32_t spillBytes_;
 
   public:
 
@@ -689,22 +705,6 @@ struct IonBlockCounts
     const char *code() const {
         return code_;
     }
-
-    void setInstructionBytes(uint32_t bytes) {
-        instructionBytes_ = bytes;
-    }
-
-    uint32_t instructionBytes() const {
-        return instructionBytes_;
-    }
-
-    void setSpillBytes(uint32_t bytes) {
-        spillBytes_ = bytes;
-    }
-
-    uint32_t spillBytes() const {
-        return spillBytes_;
-    }
 };
 
 // Execution information for a compiled script which may persist after the
@@ -761,40 +761,25 @@ struct VMFunction;
 class JitCompartment;
 class JitRuntime;
 
-struct AutoFlushCache
+struct AutoFlushICache
 {
   private:
+#if defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS)
     uintptr_t start_;
     uintptr_t stop_;
     const char *name_;
-    JitRuntime *runtime_;
-    bool used_;
+    bool inhibit_;
+    AutoFlushICache *prev_;
+#endif
 
   public:
-    void update(uintptr_t p, size_t len);
-    static void updateTop(uintptr_t p, size_t len);
-    ~AutoFlushCache();
-    AutoFlushCache(const char *nonce, JitRuntime *rt);
-    void flushAnyway();
+    static void setRange(uintptr_t p, size_t len);
+    static void flush(uintptr_t p, size_t len);
+    static void setInhibit();
+    ~AutoFlushICache();
+    explicit AutoFlushICache(const char *nonce, bool inhibit=false);
 };
 
-// If you are currently in the middle of modifing Ion-compiled code, which
-// is going to be flushed at *some* point, but determine that you *must*
-// call a function *right* *now*, two things can go wrong:
-//   1)  The flusher that you were using is still active, but you are about to
-//       enter jitted code, so it needs to be flushed
-//   2) the called function can re-enter a compilation/modification path which
-//       will use your AFC, and thus not flush when his compilation is done
-
-struct AutoFlushInhibitor
-{
-  private:
-    JitRuntime *runtime_;
-    AutoFlushCache *afc;
-  public:
-    AutoFlushInhibitor(JitRuntime *rt);
-    ~AutoFlushInhibitor();
-};
 } // namespace jit
 
 namespace gc {

@@ -25,9 +25,11 @@ class DOMParser MOZ_FINAL : public nsIDOMParser,
                             public nsWrapperCache
 {
   typedef mozilla::dom::GlobalObject GlobalObject;
+
+  virtual ~DOMParser();
+
 public: 
   DOMParser();
-  virtual ~DOMParser();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(DOMParser,
@@ -73,10 +75,9 @@ public:
     return mOwner;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE
   {
-    return mozilla::dom::DOMParserBinding::Wrap(aCx, aScope, this);
+    return mozilla::dom::DOMParserBinding::Wrap(aCx, this);
   }
 
 private:

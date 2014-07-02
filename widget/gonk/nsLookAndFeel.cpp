@@ -325,7 +325,7 @@ nsLookAndFeel::GetIntImpl(IntID aID, int32_t &aResult)
 
         case eIntID_SelectTextfieldsOnKeyFocus:
             // Select textfield content when focused by kbd
-            // used by nsEventStateManager::sTextfieldSelectModel
+            // used by EventStateManager::sTextfieldSelectModel
             aResult = 1;
             break;
 
@@ -422,7 +422,7 @@ nsLookAndFeel::GetFontImpl(FontID aID, nsString& aFontName,
                            gfxFontStyle& aFontStyle,
                            float aDevPixPerCSSPixel)
 {
-    aFontName.AssignLiteral("\"Fira Sans OT\"");
+    aFontName.AssignLiteral("\"Fira Sans\"");
     aFontStyle.style = NS_FONT_STYLE_NORMAL;
     aFontStyle.weight = NS_FONT_WEIGHT_NORMAL;
     aFontStyle.stretch = NS_FONT_STRETCH_NORMAL;

@@ -35,8 +35,7 @@ public:
 
   nsresult SetCRMFRequest(char *inRequest);
 
-  JSObject* WrapObject(JSContext *aCx, JS::Handle<JSObject*> aScope,
-                       bool* aTookOwnership);
+  JSObject* WrapObject(JSContext *aCx, bool* aTookOwnership);
 
   void GetRequest(nsAString& aRequest);
 
@@ -81,14 +80,6 @@ public:
                                       nsAString& aReturn,
                                       mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
 
-  virtual void PopChallengeResponse(const nsAString& aChallenge,
-                                    nsAString& aReturn,
-                                    mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
-
-  virtual void Random(int32_t aNumBytes,
-                      nsAString& aReturn,
-                      mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
-
   virtual void SignText(JSContext* aContext,
                         const nsAString& aStringToSign,
                         const nsAString& aCaOption,
@@ -96,8 +87,6 @@ public:
                         nsAString& aReturn) MOZ_OVERRIDE;
 
   virtual void Logout(mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
-
-  virtual void DisableRightClick(mozilla::ErrorResult& aRv) MOZ_OVERRIDE;
 
 private:
   static already_AddRefed<nsIPrincipal> GetScriptPrincipal(JSContext *cx);
@@ -115,11 +104,12 @@ class nsPkcs11 : public nsIPKCS11
 {
 public:
   nsPkcs11();
-  virtual ~nsPkcs11();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIPKCS11
 
+protected:
+  virtual ~nsPkcs11();
 };
 
 #endif //_nsCrypto_h_

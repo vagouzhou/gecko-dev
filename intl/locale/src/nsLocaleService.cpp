@@ -81,7 +81,6 @@ public:
 
 
 	nsLocaleService(void);
-	virtual ~nsLocaleService(void);
 
 protected:
 
@@ -91,6 +90,7 @@ protected:
 	nsCOMPtr<nsILocale>				mSystemLocale;
 	nsCOMPtr<nsILocale>				mApplicationLocale;
 
+        virtual ~nsLocaleService(void);
 };
 
 //
@@ -196,7 +196,7 @@ nsLocaleService::~nsLocaleService(void)
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsLocaleService, nsILocaleService)
+NS_IMPL_ISUPPORTS(nsLocaleService, nsILocaleService)
 
 NS_IMETHODIMP
 nsLocaleService::NewLocale(const nsAString &aLocale, nsILocale **_retval)

@@ -29,25 +29,15 @@ public:
       CreateOffscreenSurface(const IntSize& size,
                              gfxContentType contentType) MOZ_OVERRIDE;
 
-    virtual already_AddRefed<gfxASurface>
-      CreateOffscreenImageSurface(const gfxIntSize& aSize,
-                                  gfxContentType aContentType);
-
-    already_AddRefed<gfxASurface> OptimizeImage(gfxImageSurface *aSurface,
-                                                gfxImageFormat format);
-
     mozilla::TemporaryRef<mozilla::gfx::ScaledFont>
       GetScaledFontForFont(mozilla::gfx::DrawTarget* aTarget, gfxFont *aFont);
 
-    nsresult ResolveFontName(const nsAString& aFontName,
-                             FontResolverCallback aCallback,
-                             void *aClosure, bool& aAborted);
-
     nsresult GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName);
 
-    gfxFontGroup *CreateFontGroup(const nsAString &aFamilies,
-                                  const gfxFontStyle *aStyle,
-                                  gfxUserFontSet *aUserFontSet);
+    gfxFontGroup*
+    CreateFontGroup(const mozilla::FontFamilyList& aFontFamilyList,
+                    const gfxFontStyle *aStyle,
+                    gfxUserFontSet *aUserFontSet);
 
     virtual gfxFontEntry* LookupLocalFont(const gfxProxyFontEntry *aProxyEntry,
                                           const nsAString& aFontName);
@@ -69,10 +59,6 @@ public:
                                         int32_t aRunScript,
                                         nsTArray<const char*>& aFontList);
 
-    // Returns the OS X version as returned from Gestalt(gestaltSystemVersion, ...)
-    // Ex: Mac OS X 10.4.x ==> 0x104x
-    int32_t OSXVersion();
-
     bool UseAcceleratedCanvas();
 
     // lower threshold on font anti-aliasing
@@ -80,13 +66,8 @@ public:
 
     virtual already_AddRefed<gfxASurface>
     GetThebesSurfaceForDrawTarget(mozilla::gfx::DrawTarget *aTarget);
-
-    virtual already_AddRefed<gfxASurface>
-    CreateThebesSurfaceAliasForDrawTarget_hack(mozilla::gfx::DrawTarget *aTarget);
 private:
     virtual void GetPlatformCMSOutputProfile(void* &mem, size_t &size);
-
-    virtual bool SupportsOffMainThreadCompositing();
 
     // read in the pref value for the lower threshold on font anti-aliasing
     static uint32_t ReadAntiAliasingThreshold();

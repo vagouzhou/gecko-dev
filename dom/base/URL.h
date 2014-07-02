@@ -32,6 +32,8 @@ class URLProxy;
 
 class URL MOZ_FINAL : public URLSearchParamsObserver
 {
+  ~URL() {}
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(URL)
@@ -39,13 +41,8 @@ public:
   URL(nsIURI* aURI);
 
   // WebIDL methods
-  nsISupports* GetParentObject() const
-  {
-    return nullptr;
-  }
-
   JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  WrapObject(JSContext* aCx);
 
   static already_AddRefed<URL>
   Constructor(const GlobalObject& aGlobal, const nsAString& aUrl,

@@ -6,6 +6,7 @@
   <script type="application/javascript" src="head.js"></script>
   <script type="application/javascript" src="pc.js"></script>
   <script type="application/javascript" src="templates.js"></script>
+  <script type="application/javascript" src="turnConfig.js"></script>
 </head>
 <body>
 <pre id="test">
@@ -56,6 +57,11 @@
         var description;
         var exception = null;
 
+        // handle the event which the close() triggers
+        test.pcLocal.onsignalingstatechange = function (state) {
+          is(state, "closed", "Received expected onsignalingstatechange event 'closed'");
+        }
+
         test.pcLocal.close();
 
         try { description = test.pcLocal.localDescription; } catch (e) { exception = e; }
@@ -65,6 +71,11 @@
         try { description = test.pcLocal.remoteDescription; } catch (e) { exception = e; }
         ok(exception, "Attempt to access remoteDescription of pcLocal after close throws exception");
         exception = null;
+
+        // handle the event which the close() triggers
+        test.pcRemote.onsignalingstatechange = function (state) {
+          is(state, "closed", "Received expected onsignalingstatechange event 'closed'");
+        }
 
         test.pcRemote.close();
 
@@ -81,7 +92,7 @@
   ];
 
   var test;
-  runTest(function () {
+  runNetworkTest(function () {
     test = new PeerConnectionTest();
     test.setMediaConstraints([{audio: true}], [{audio: true}]);
     test.chain.append(steps);

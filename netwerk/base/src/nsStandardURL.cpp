@@ -12,7 +12,6 @@
 #include "nsIFile.h"
 #include "nsIObjectInputStream.h"
 #include "nsIObjectOutputStream.h"
-#include "nsICharsetConverterManager.h"
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 #include "nsIIDNService.h"
@@ -24,17 +23,19 @@
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/ipc/URIUtils.h"
 #include <algorithm>
+#include "mozilla/dom/EncodingUtils.h"
 
+using mozilla::dom::EncodingUtils;
 using namespace mozilla::ipc;
 
 static NS_DEFINE_CID(kThisImplCID, NS_THIS_STANDARDURL_IMPL_CID);
 static NS_DEFINE_CID(kStandardURLCID, NS_STANDARDURL_CID);
 
 nsIIDNService *nsStandardURL::gIDN = nullptr;
-nsICharsetConverterManager *nsStandardURL::gCharsetMgr = nullptr;
 bool nsStandardURL::gInitialized = false;
 bool nsStandardURL::gEscapeUTF8 = true;
 bool nsStandardURL::gAlwaysEncodeInUTF8 = true;
+char nsStandardURL::gHostLimitDigits[] = { '/', '\\', '?', '#', 0 };
 
 #if defined(PR_LOGGING)
 //
@@ -112,7 +113,7 @@ end:
 #define NS_NET_PREF_ESCAPEUTF8         "network.standard-url.escape-utf8"
 #define NS_NET_PREF_ALWAYSENCODEINUTF8 "network.standard-url.encode-utf8"
 
-NS_IMPL_ISUPPORTS1(nsStandardURL::nsPrefObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(nsStandardURL::nsPrefObserver, nsIObserver)
 
 NS_IMETHODIMP nsStandardURL::
 nsPrefObserver::Observe(nsISupports *subject,
@@ -212,23 +213,17 @@ bool nsStandardURL::
 nsSegmentEncoder::InitUnicodeEncoder()
 {
     NS_ASSERTION(!mEncoder, "Don't call this if we have an encoder already!");
-    nsresult rv;
-    if (!gCharsetMgr) {
-        rv = CallGetService("@mozilla.org/charset-converter-manager;1",
-                            &gCharsetMgr);
-        if (NS_FAILED(rv)) {
-            NS_ERROR("failed to get charset-converter-manager");
-            return false;
-        }
+    // "replacement" won't survive another label resolution
+    nsDependentCString label(mCharset);
+    if (label.EqualsLiteral("replacement")) {
+      mEncoder = EncodingUtils::EncoderForEncoding(label);
+      return true;
     }
-
-    rv = gCharsetMgr->GetUnicodeEncoder(mCharset, getter_AddRefs(mEncoder));
-    if (NS_FAILED(rv)) {
-        NS_ERROR("failed to get unicode encoder");
-        mEncoder = 0; // just in case
-        return false;
+    nsAutoCString encoding;
+    if (!EncodingUtils::FindEncodingForLabelNoReplacement(label, encoding)) {
+      return false;
     }
-
+    mEncoder = EncodingUtils::EncoderForEncoding(encoding);
     return true;
 }
 
@@ -330,7 +325,6 @@ void
 nsStandardURL::ShutdownGlobalObjects()
 {
     NS_IF_RELEASE(gIDN);
-    NS_IF_RELEASE(gCharsetMgr);
 
 #ifdef DEBUG_DUMP_URLS_AT_SHUTDOWN
     if (gInitialized) {
@@ -385,19 +379,6 @@ nsStandardURL::InvalidateCache(bool invalidateCachedFile)
 }
 
 bool
-nsStandardURL::EscapeIPv6(const char *host, nsCString &result)
-{
-    // Escape IPv6 address literal by surrounding it with []'s
-    if (host && (host[0] != '[') && PL_strchr(host, ':')) {
-        result.Assign('[');
-        result.Append(host);
-        result.Append(']');
-        return true;
-    }
-    return false;
-}
-
-bool
 nsStandardURL::NormalizeIDN(const nsCSubstring &host, nsCString &result)
 {
     // If host is ACE, then convert to UTF-8.  Else, if host is already UTF-8,
@@ -431,6 +412,36 @@ nsStandardURL::NormalizeIDN(const nsCSubstring &host, nsCString &result)
 
     result.Truncate();
     return false;
+}
+
+bool
+nsStandardURL::ValidIPv6orHostname(const char *host)
+{
+    if (!host || !*host) {
+        // Should not be NULL or empty string
+        return false;
+    }
+
+    int32_t length = strlen(host);
+
+    bool openBracket = host[0] == '[';
+    bool closeBracket = host[length - 1] == ']';
+
+    if (openBracket && closeBracket) {
+        return net_IsValidIPv6Addr(host + 1, length - 2);
+    }
+
+    if (openBracket || closeBracket) {
+        // Fail if only one of the brackets is present
+        return false;
+    }
+
+    if (PL_strchr(host, ':')) {
+        // Hostnames should not contain a colon
+        return false;
+    }
+
+    return true;
 }
 
 void
@@ -1413,40 +1424,86 @@ nsStandardURL::SetPassword(const nsACString &input)
     return NS_OK;
 }
 
+void
+nsStandardURL::FindHostLimit(nsACString::const_iterator& aStart,
+                             nsACString::const_iterator& aEnd)
+{
+  for (int32_t i = 0; gHostLimitDigits[i]; ++i) {
+    nsACString::const_iterator c(aStart);
+    if (FindCharInReadable(gHostLimitDigits[i], c, aEnd)) {
+      aEnd = c;
+    }
+  }
+}
+
 NS_IMETHODIMP
 nsStandardURL::SetHostPort(const nsACString &aValue)
 {
     ENSURE_MUTABLE();
 
-  // We cannot simply call nsIURI::SetHost because that would treat the name as
-  // an IPv6 address (like http:://[server:443]/).  We also cannot call
-  // nsIURI::SetHostPort because that isn't implemented.  Sadfaces.
+    // We cannot simply call nsIURI::SetHost because that would treat the name as
+    // an IPv6 address (like http:://[server:443]/).  We also cannot call
+    // nsIURI::SetHostPort because that isn't implemented.  Sadfaces.
 
-  // First set the hostname.
-  nsACString::const_iterator start, end;
-  aValue.BeginReading(start);
-  aValue.EndReading(end);
-  nsACString::const_iterator iter(start);
-  FindCharInReadable(':', iter, end);
+    nsACString::const_iterator start, end;
+    aValue.BeginReading(start);
+    aValue.EndReading(end);
+    nsACString::const_iterator iter(start);
+    bool isIPv6 = false;
 
-  nsresult rv = SetHost(Substring(start, iter));
-  NS_ENSURE_SUCCESS(rv, rv);
+    FindHostLimit(start, end);
 
-  // Also set the port if needed.
-  if (iter != end) {
-    iter++;
-    if (iter != end) {
-      nsCString portStr(Substring(iter, end));
-      nsresult rv;
-      int32_t port = portStr.ToInteger(&rv);
-      if (NS_SUCCEEDED(rv)) {
-        rv = SetPort(port);
-        NS_ENSURE_SUCCESS(rv, rv);
-      }
+    if (*start == '[') { // IPv6 address
+        if (!FindCharInReadable(']', iter, end)) {
+            // the ] character is missing
+            return NS_ERROR_MALFORMED_URI;
+        }
+        // iter now at the ']' character
+        isIPv6 = true;
+    } else {
+        nsACString::const_iterator iter2(start);
+        if (FindCharInReadable(']', iter2, end)) {
+            // if the first char isn't [ then there should be no ] character
+            return NS_ERROR_MALFORMED_URI;
+        }
     }
-  }
 
-  return NS_OK;
+    FindCharInReadable(':', iter, end);
+
+    if (!isIPv6 && iter != end) {
+        nsACString::const_iterator iter2(iter);
+        iter2++; // Skip over the first ':' character
+        if (FindCharInReadable(':', iter2, end)) {
+            // If there is more than one ':' character it suggests an IPv6
+            // The format should be [2001::1]:80 where the port is optional
+            return NS_ERROR_MALFORMED_URI;
+        }
+    }
+
+    nsresult rv = SetHost(Substring(start, iter));
+    NS_ENSURE_SUCCESS(rv, rv);
+
+    // Also set the port if needed.
+    if (iter != end) {
+        iter++;
+        if (iter != end) {
+            nsCString portStr(Substring(iter, end));
+            nsresult rv;
+            int32_t port = portStr.ToInteger(&rv);
+            if (NS_SUCCEEDED(rv)) {
+                rv = SetPort(port);
+                NS_ENSURE_SUCCESS(rv, rv);
+            } else {
+                // Failure parsing port number
+                return NS_ERROR_MALFORMED_URI;
+            }
+        } else {
+            // port number is missing
+            return NS_ERROR_MALFORMED_URI;
+        }
+    }
+
+    return NS_OK;
 }
 
 NS_IMETHODIMP
@@ -1454,7 +1511,15 @@ nsStandardURL::SetHost(const nsACString &input)
 {
     ENSURE_MUTABLE();
 
-    const nsPromiseFlatCString &flat = PromiseFlatCString(input);
+    const nsPromiseFlatCString &hostname = PromiseFlatCString(input);
+
+    nsACString::const_iterator start, end;
+    hostname.BeginReading(start);
+    hostname.EndReading(end);
+
+    FindHostLimit(start, end);
+
+    const nsCString flat(Substring(start, end));
     const char *host = flat.get();
 
     LOG(("nsStandardURL::SetHost [host=%s]\n", host));
@@ -1464,6 +1529,12 @@ nsStandardURL::SetHost(const nsACString &input)
             return NS_OK;
         NS_WARNING("cannot set host on no-auth url");
         return NS_ERROR_UNEXPECTED;
+    } else {
+        if (flat.IsEmpty()) {
+            // Setting an empty hostname is not allowed for
+            // URLTYPE_STANDARD and URLTYPE_AUTHORITY.
+            return NS_ERROR_UNEXPECTED;
+        }
     }
 
     if (strlen(host) < flat.Length())
@@ -1474,32 +1545,16 @@ nsStandardURL::SetHost(const nsACString &input)
     if (strchr(host, ' '))
         return NS_ERROR_MALFORMED_URI;
 
+    if (!ValidIPv6orHostname(host)) {
+        return NS_ERROR_MALFORMED_URI;
+    }
+
     InvalidateCache();
     mHostEncoding = eEncoding_ASCII;
 
-    if (!*host) {
-        // remove existing hostname
-        if (mHost.mLen > 0) {
-            // remove entire authority
-            mSpec.Cut(mAuthority.mPos, mAuthority.mLen);
-            ShiftFromPath(-mAuthority.mLen);
-            mAuthority.mLen = 0;
-            mUsername.mLen = -1;
-            mPassword.mLen = -1;
-            mHost.mLen = -1;
-            mPort = -1;
-        }
-        return NS_OK;
-    }
-
-    // handle IPv6 unescaped address literal
     int32_t len;
     nsAutoCString hostBuf;
-    if (EscapeIPv6(host, hostBuf)) {
-        host = hostBuf.get();
-        len = hostBuf.Length();
-    }
-    else if (NormalizeIDN(flat, hostBuf)) {
+    if (NormalizeIDN(flat, hostBuf)) {
         host = hostBuf.get();
         len = hostBuf.Length();
     }
@@ -1507,7 +1562,14 @@ nsStandardURL::SetHost(const nsACString &input)
         len = flat.Length();
 
     if (mHost.mLen < 0) {
-        mHost.mPos = mAuthority.mPos;
+        int port_length = 0;
+        if (mPort != -1) {
+            nsAutoCString buf;
+            buf.Assign(':');
+            buf.AppendInt(mPort);
+            port_length = buf.Length();
+        }
+        mHost.mPos = mAuthority.mPos + mAuthority.mLen - port_length;
         mHost.mLen = 0;
     }
 
@@ -1551,7 +1613,7 @@ nsStandardURL::SetPort(int32_t port)
         nsAutoCString buf;
         buf.Assign(':');
         buf.AppendInt(port);
-        mSpec.Insert(buf, mHost.mPos + mHost.mLen);
+        mSpec.Insert(buf, mAuthority.mPos + mAuthority.mLen);
         mAuthority.mLen += buf.Length();
         ShiftFromPath(buf.Length());
     }
@@ -1559,9 +1621,14 @@ nsStandardURL::SetPort(int32_t port)
         // Don't allow mPort == mDefaultPort
         port = -1;
 
+        // compute length of the current port
+        nsAutoCString buf;
+        buf.Assign(':');
+        buf.AppendInt(mPort);
+
         // need to remove the port number from the URL spec
-        uint32_t start = mHost.mPos + mHost.mLen;
-        int32_t lengthToCut = mPath.mPos - start;
+        uint32_t start = mAuthority.mPos + mAuthority.mLen - buf.Length();
+        int32_t lengthToCut = buf.Length();
         mSpec.Cut(start, lengthToCut);
         mAuthority.mLen -= lengthToCut;
         ShiftFromPath(-lengthToCut);
@@ -1569,9 +1636,13 @@ nsStandardURL::SetPort(int32_t port)
     else {
         // need to replace the existing port
         nsAutoCString buf;
+        buf.Assign(':');
+        buf.AppendInt(mPort);
+        uint32_t start = mAuthority.mPos + mAuthority.mLen - buf.Length();
+        uint32_t length = buf.Length();
+
+        buf.Assign(':');
         buf.AppendInt(port);
-        uint32_t start = mHost.mPos + mHost.mLen + 1;
-        uint32_t length = mPath.mPos - start;
         mSpec.Replace(start, length, buf);
         if (buf.Length() != length) {
             mAuthority.mLen += buf.Length() - length;

@@ -11,7 +11,7 @@
 #include "nsGlobalWindow.h"
 #include "nsClassHashtable.h"
 #include "nsRefPtrHashtable.h"
-#include "nsObserverService.h"
+#include "nsIObserver.h"
 #include "nsIPrefService.h"
 #include "nsIPrefBranch.h"
 
@@ -21,6 +21,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/dom/MediaStreamBinding.h"
 #include "mozilla/dom/MediaStreamTrackBinding.h"
 #include "prlog.h"
 #include "DOMMediaStream.h"
@@ -35,7 +36,7 @@
 
 namespace mozilla {
 namespace dom {
-class MediaStreamConstraints;
+struct MediaStreamConstraints;
 class NavigatorUserMediaSuccessCallback;
 class NavigatorUserMediaErrorCallback;
 }
@@ -127,7 +128,8 @@ public:
   void
   AudioConfig(bool aEchoOn, uint32_t aEcho,
               bool aAgcOn, uint32_t aAGC,
-              bool aNoiseOn, uint32_t aNoise)
+              bool aNoiseOn, uint32_t aNoise,
+              int32_t aPlayoutDelay)
   {
     if (mAudioSource) {
 #ifdef MOZ_WEBRTC
@@ -135,7 +137,7 @@ public:
       RUN_ON_THREAD(mMediaThread,
                     WrapRunnable(nsRefPtr<MediaEngineSource>(mAudioSource), // threadsafe
                                  &MediaEngineSource::Config,
-                                 aEchoOn, aEcho, aAgcOn, aAGC, aNoiseOn, aNoise),
+                                 aEchoOn, aEcho, aAgcOn, aAGC, aNoiseOn, aNoise, aPlayoutDelay),
                     NS_DISPATCH_NORMAL);
 #endif
     }
@@ -380,7 +382,7 @@ public:
                                               mWindowID, mError.forget());
           // event must always be released on mainthread due to the JS callbacks
           // in the TracksAvailableCallback
-          NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+          NS_DispatchToMainThread(event);
         }
         break;
 
@@ -407,7 +409,7 @@ public:
                                               mWindowID);
           // event must always be released on mainthread due to the JS callbacks
           // in the TracksAvailableCallback
-          NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+          NS_DispatchToMainThread(event);
         }
         break;
 
@@ -439,19 +441,34 @@ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIMEDIADEVICE
 
-  MediaDevice(MediaEngineVideoSource* aSource);
-  MediaDevice(MediaEngineAudioSource* aSource);
-  virtual ~MediaDevice() {}
+  static MediaDevice* Create(MediaEngineVideoSource* source);
+  static MediaDevice* Create(MediaEngineAudioSource* source);
 
-  MediaEngineSource* GetSource();
-private:
+protected:
+  virtual ~MediaDevice() {}
+  MediaDevice(MediaEngineSource* aSource);
   nsString mName;
-  nsString mType;
   nsString mID;
   bool mHasFacingMode;
     dom::VideoFacingModeEnum mFacingMode;
     dom::MozMediaSourceEnum mMozMediaSource;
   nsRefPtr<MediaEngineSource> mSource;
+};
+
+class VideoDevice : public MediaDevice
+{
+public:
+  VideoDevice(MediaEngineVideoSource* aSource);
+  NS_IMETHOD GetType(nsAString& aType);
+  MediaEngineVideoSource* GetSource();
+};
+
+class AudioDevice : public MediaDevice
+{
+public:
+  AudioDevice(MediaEngineAudioSource* aSource);
+  NS_IMETHOD GetType(nsAString& aType);
+  MediaEngineAudioSource* GetSource();
 };
 
 class MediaManager MOZ_FINAL : public nsIMediaManagerService,
@@ -494,14 +511,14 @@ public:
   void RemoveFromWindowList(uint64_t aWindowID,
     GetUserMediaCallbackMediaStreamListener *aListener);
 
-  nsresult GetUserMedia(JSContext* aCx, bool aPrivileged,
+  nsresult GetUserMedia(bool aPrivileged,
     nsPIDOMWindow* aWindow,
     const dom::MediaStreamConstraints& aRawConstraints,
     nsIDOMGetUserMediaSuccessCallback* onSuccess,
     nsIDOMGetUserMediaErrorCallback* onError);
 
   nsresult GetUserMediaDevices(nsPIDOMWindow* aWindow,
-    const dom::MediaStreamConstraintsInternal& aConstraints,
+    const dom::MediaStreamConstraints& aConstraints,
     nsIGetUserMediaDevicesSuccessCallback* onSuccess,
     nsIDOMGetUserMediaErrorCallback* onError,
     uint64_t aInnerWindowID = 0);

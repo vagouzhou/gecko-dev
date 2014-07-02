@@ -16,6 +16,7 @@
 #include "gfxPangoFonts.h"
 #include "gfxContext.h"
 #include "gfxUserFontSet.h"
+#include "gfxUtils.h"
 #include "gfxFT2FontBase.h"
 
 #include "mozilla/gfx/2D.h"
@@ -49,7 +50,9 @@ using namespace mozilla::unicode;
 
 gfxFontconfigUtils *gfxPlatformGtk::sFontconfigUtils = nullptr;
 
+#if (MOZ_WIDGET_GTK == 2)
 static cairo_user_data_key_t cairo_gdk_drawable_key;
+#endif
 
 #ifdef MOZ_X11
     bool gfxPlatformGtk::sUseXRender = true;
@@ -123,9 +126,7 @@ gfxPlatformGtk::CreateOffscreenSurface(const IntSize& size,
     }
 
     if (newSurface && needsClear) {
-        gfxContext tmpCtx(newSurface);
-        tmpCtx.SetOperator(gfxContext::OPERATOR_CLEAR);
-        tmpCtx.Paint();
+        gfxUtils::ClearThebesSurface(newSurface);
     }
 
     return newSurface.forget();
@@ -147,27 +148,17 @@ gfxPlatformGtk::UpdateFontList()
 }
 
 nsresult
-gfxPlatformGtk::ResolveFontName(const nsAString& aFontName,
-                                FontResolverCallback aCallback,
-                                void *aClosure,
-                                bool& aAborted)
-{
-    return sFontconfigUtils->ResolveFontName(aFontName, aCallback,
-                                             aClosure, aAborted);
-}
-
-nsresult
 gfxPlatformGtk::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
 {
     return sFontconfigUtils->GetStandardFamilyName(aFontName, aFamilyName);
 }
 
 gfxFontGroup *
-gfxPlatformGtk::CreateFontGroup(const nsAString &aFamilies,
+gfxPlatformGtk::CreateFontGroup(const FontFamilyList& aFontFamilyList,
                                 const gfxFontStyle *aStyle,
                                 gfxUserFontSet *aUserFontSet)
 {
-    return new gfxPangoFontGroup(aFamilies, aStyle, aUserFontSet);
+    return new gfxPangoFontGroup(aFontFamilyList, aStyle, aUserFontSet);
 }
 
 gfxFontEntry*
@@ -258,18 +249,6 @@ gfxPlatformGtk::GetScreenDepth() const
     }
 
     return sDepth;
-}
-
-bool
-gfxPlatformGtk::SupportsOffMainThreadCompositing()
-{
-  // Nightly builds have OMTC support by default for Electrolysis testing.
-#if defined(MOZ_X11) && !defined(NIGHTLY_BUILD)
-  return (PR_GetEnv("MOZ_USE_OMTC") != nullptr) ||
-         (PR_GetEnv("MOZ_OMTC_ENABLED") != nullptr);
-#else
-  return true;
-#endif
 }
 
 void

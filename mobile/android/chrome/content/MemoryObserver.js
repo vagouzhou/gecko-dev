@@ -29,6 +29,12 @@ var MemoryObserver = {
       }
     }
     Telemetry.addData("FENNEC_LOWMEM_TAB_COUNT", tabs.length);
+
+    // Change some preferences temporarily for only this session
+    let defaults = Services.prefs.getDefaultBranch(null);
+
+    // Reduce the amount of decoded image data we keep around
+    defaults.setIntPref("image.mem.max_decoded_image_kb", 0);
   },
 
   zombify: function(tab) {
@@ -60,6 +66,7 @@ var MemoryObserver = {
 
   dumpMemoryStats: function(aLabel) {
     let memDumper = Cc["@mozilla.org/memory-info-dumper;1"].getService(Ci.nsIMemoryInfoDumper);
-    memDumper.dumpMemoryInfoToTempDir(aLabel, /* minimize = */ false);
+    memDumper.dumpMemoryInfoToTempDir(aLabel, /* anonymize = */ false,
+                                      /* minimize = */ false);
   },
 };

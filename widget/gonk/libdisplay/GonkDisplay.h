@@ -17,6 +17,7 @@
 #define GONKDISPLAY_H
 
 #include <system/window.h>
+#include "mozilla/Types.h"
 
 namespace mozilla {
 
@@ -27,7 +28,7 @@ class Layer;
 typedef void * EGLDisplay;
 typedef void * EGLSurface;
 
-class GonkDisplay {
+class MOZ_EXPORT GonkDisplay {
 public:
     virtual ANativeWindow* GetNativeWindow() = 0;
 
@@ -49,15 +50,24 @@ public:
 
     virtual void UpdateFBSurface(EGLDisplay dpy, EGLSurface sur) = 0;
 
+    /**
+     * Set FramebufferSurface ReleaseFence's file descriptor.
+     * ReleaseFence will be signaled after the HWC has finished reading
+     * from a buffer.
+     */
     virtual void SetFBReleaseFd(int fd) = 0;
 
+    /**
+     * Get FramebufferSurface AcquireFence's file descriptor
+     * AcquireFence will be signaled when a buffer's content is available.
+     */
     virtual int GetPrevFBAcquireFd() = 0;
 
     float xdpi;
     uint32_t surfaceformat;
 };
 
-__attribute__ ((weak))
+MOZ_EXPORT __attribute__ ((weak))
 GonkDisplay* GetGonkDisplay();
 
 }

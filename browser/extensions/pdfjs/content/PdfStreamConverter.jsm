@@ -1,4 +1,4 @@
-/* -*- Mode: Java; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set shiftwidth=2 tabstop=2 autoindent cindent expandtab: */
 /* Copyright 2012 Mozilla Foundation
  *
@@ -32,14 +32,15 @@ const PDFJS_EVENT_ID = 'pdf.js.message';
 const PDF_CONTENT_TYPE = 'application/pdf';
 const PREF_PREFIX = 'pdfjs';
 const PDF_VIEWER_WEB_PAGE = 'resource://pdf.js/web/viewer.html';
-const MAX_DATABASE_LENGTH = 4096;
 const MAX_NUMBER_OF_PREFS = 50;
 const MAX_STRING_PREF_LENGTH = 128;
 
 Cu.import('resource://gre/modules/XPCOMUtils.jsm');
 Cu.import('resource://gre/modules/Services.jsm');
 Cu.import('resource://gre/modules/NetUtil.jsm');
-Cu.import('resource://pdf.js/network.js');
+
+XPCOMUtils.defineLazyModuleGetter(this, 'NetworkManager',
+  'resource://pdf.js/network.js');
 
 XPCOMUtils.defineLazyModuleGetter(this, 'PrivateBrowsingUtils',
   'resource://gre/modules/PrivateBrowsingUtils.jsm');
@@ -52,12 +53,28 @@ XPCOMUtils.defineLazyServiceGetter(Svc, 'mime',
                                    '@mozilla.org/mime;1',
                                    'nsIMIMEService');
 
+function getContainingBrowser(domWindow) {
+  return domWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                  .getInterface(Ci.nsIWebNavigation)
+                  .QueryInterface(Ci.nsIDocShell)
+                  .chromeEventHandler;
+}
+
 function getChromeWindow(domWindow) {
-  var containingBrowser = domWindow.QueryInterface(Ci.nsIInterfaceRequestor)
-                                   .getInterface(Ci.nsIWebNavigation)
-                                   .QueryInterface(Ci.nsIDocShell)
-                                   .chromeEventHandler;
-  return containingBrowser.ownerDocument.defaultView;
+  return getContainingBrowser(domWindow).ownerDocument.defaultView;
+}
+
+function getFindBar(domWindow) {
+  var browser = getContainingBrowser(domWindow);
+  try {
+    var tabbrowser = browser.getTabBrowser();
+    var tab = tabbrowser._getTabForBrowser(browser);
+    return tabbrowser.getFindBar(tab);
+  } catch (e) {
+    // FF22 has no _getTabForBrowser, and FF24 has no getFindBar
+    var chromeWindow = browser.ownerDocument.defaultView;
+    return chromeWindow.gFindBar;
+  }
 }
 
 function setBoolPref(pref, value) {
@@ -143,6 +160,10 @@ function getLocalizedString(strings, id, property) {
   return id;
 }
 
+function makeContentReadable(obj, window) {
+  return Cu.cloneInto(obj, window);
+}
+
 // PDF data storage
 function PdfDataListener(length) {
   this.length = length; // less than 0, if length is unknown
@@ -226,7 +247,8 @@ ChromeActions.prototype = {
     // the original url.
     var originalUri = NetUtil.newURI(data.originalUrl);
     var filename = data.filename;
-    if (typeof filename !== 'string' || !/\.pdf$/i.test(filename)) {
+    if (typeof filename !== 'string' || 
+        (!/\.pdf$/i.test(filename) && !data.isAttachment)) {
       filename = 'document.pdf';
     }
     var blobUri = data.blobUrl ? NetUtil.newURI(data.blobUrl) : originalUri;
@@ -272,8 +294,10 @@ ChromeActions.prototype = {
       var listener = {
         extListener: null,
         onStartRequest: function(aRequest, aContext) {
-          this.extListener = extHelperAppSvc.doContent('application/pdf',
-                                aRequest, frontWindow, false);
+          this.extListener = extHelperAppSvc.doContent(
+            (data.isAttachment ? 'application/octet-stream' :
+                                 'application/pdf'),
+            aRequest, frontWindow, false);
           this.extListener.onStartRequest(aRequest, aContext);
         },
         onStopRequest: function(aRequest, aContext, aStatusCode) {
@@ -292,19 +316,6 @@ ChromeActions.prototype = {
 
       channel.asyncOpen(listener, null);
     });
-  },
-  setDatabase: function(data) {
-    if (this.isInPrivateBrowsing())
-      return;
-    // Protect against something sending tons of data to setDatabase.
-    if (data.length > MAX_DATABASE_LENGTH)
-      return;
-    setStringPref(PREF_PREFIX + '.database', data);
-  },
-  getDatabase: function() {
-    if (this.isInPrivateBrowsing())
-      return '{}';
-    return getStringPref(PREF_PREFIX + '.database', '{}');
   },
   getLocale: function() {
     return getStringPref('general.useragent.locale', 'en-US');
@@ -326,11 +337,13 @@ ChromeActions.prototype = {
     return getBoolPref(PREF_PREFIX + '.pdfBugEnabled', false);
   },
   supportsIntegratedFind: function() {
-    // Integrated find is only supported when we're not in a frame and when the
-    // new find events code exists.
-    return this.domWindow.frameElement === null &&
-           getChromeWindow(this.domWindow).gFindBar &&
-           'updateControlState' in getChromeWindow(this.domWindow).gFindBar;
+    // Integrated find is only supported when we're not in a frame
+    if (this.domWindow.frameElement !== null) {
+      return false;
+    }
+    // ... and when the new find events code exists.
+    var findBar = getFindBar(this.domWindow);
+    return findBar && ('updateControlState' in findBar);
   },
   supportsDocumentFonts: function() {
     var prefBrowser = getIntPref('browser.display.use_document_fonts', 1);
@@ -447,10 +460,9 @@ ChromeActions.prototype = {
         (findPreviousType !== 'undefined' && findPreviousType !== 'boolean')) {
       return;
     }
-    getChromeWindow(this.domWindow).gFindBar
-                                   .updateControlState(result, findPrevious);
+    getFindBar(this.domWindow).updateControlState(result, findPrevious);
   },
-  setPreferences: function(prefs) {
+  setPreferences: function(prefs, sendResponse) {
     var defaultBranch = Services.prefs.getDefaultBranch(PREF_PREFIX + '.');
     var numberOfPrefs = 0;
     var prefValue, prefName;
@@ -481,8 +493,11 @@ ChromeActions.prototype = {
           break;
       }
     }
+    if (sendResponse) {
+      sendResponse(true);
+    }
   },
-  getPreferences: function(prefs) {
+  getPreferences: function(prefs, sendResponse) {
     var defaultBranch = Services.prefs.getDefaultBranch(PREF_PREFIX + '.');
     var currentPrefs = {}, numberOfPrefs = 0;
     var prefValue, prefName;
@@ -508,7 +523,11 @@ ChromeActions.prototype = {
           break;
       }
     }
-    return JSON.stringify(currentPrefs);
+    if (sendResponse) {
+      sendResponse(JSON.stringify(currentPrefs));
+    } else {
+      return JSON.stringify(currentPrefs);
+    }
   }
 };
 
@@ -671,7 +690,7 @@ var StandardChromeActions = (function StandardChromeActionsClosure() {
   return StandardChromeActions;
 })();
 
-// Event listener to trigger chrome privedged code.
+// Event listener to trigger chrome privileged code.
 function RequestListener(actions) {
   this.actions = actions;
 }
@@ -689,21 +708,18 @@ RequestListener.prototype.receive = function(event) {
   }
   if (sync) {
     var response = actions[action].call(this.actions, data);
-    var detail = event.detail;
-    detail.__exposedProps__ = {response: 'r'};
-    detail.response = response;
+    event.detail.response = response;
   } else {
     var response;
-    if (!event.detail.callback) {
+    if (!event.detail.responseExpected) {
       doc.documentElement.removeChild(message);
       response = null;
     } else {
       response = function sendResponse(response) {
         try {
           var listener = doc.createEvent('CustomEvent');
-          listener.initCustomEvent('pdf.js.response', true, false,
-                                   {response: response,
-                                    __exposedProps__: {response: 'r'}});
+          let detail = makeContentReadable({response: response}, doc.defaultView);
+          listener.initCustomEvent('pdf.js.response', true, false, detail);
           return message.dispatchEvent(listener);
         } catch (e) {
           // doc is no longer accessible because the requestor is already
@@ -746,13 +762,13 @@ FindEventManager.prototype.handleEvent = function(e) {
   var contentWindow = this.contentWindow;
   // Only forward the events if they are for our dom window.
   if (chromeWindow.gBrowser.selectedBrowser.contentWindow === contentWindow) {
-    var detail = e.detail;
-    detail.__exposedProps__ = {
-      query: 'r',
-      caseSensitive: 'r',
-      highlightAll: 'r',
-      findPrevious: 'r'
+    var detail = {
+      query: e.detail.query,
+      caseSensitive: e.detail.caseSensitive,
+      highlightAll: e.detail.highlightAll,
+      findPrevious: e.detail.findPrevious
     };
+    detail = makeContentReadable(detail, contentWindow);
     var forward = contentWindow.document.createEvent('CustomEvent');
     forward.initCustomEvent(e.type, true, true, detail);
     contentWindow.dispatchEvent(forward);
@@ -919,7 +935,8 @@ PdfStreamConverter.prototype = {
         }, false, true);
         if (actions.supportsIntegratedFind()) {
           var chromeWindow = getChromeWindow(domWindow);
-          var findEventManager = new FindEventManager(chromeWindow.gFindBar,
+          var findBar = getFindBar(domWindow);
+          var findEventManager = new FindEventManager(findBar,
                                                       domWindow,
                                                       chromeWindow);
           findEventManager.bind();
@@ -961,3 +978,4 @@ PdfStreamConverter.prototype = {
     delete this.binaryStream;
   }
 };
+

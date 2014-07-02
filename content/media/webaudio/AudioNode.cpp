@@ -9,30 +9,36 @@
 #include "AudioNodeStream.h"
 #include "AudioNodeEngine.h"
 #include "mozilla/dom/AudioParam.h"
+#include "mozilla/Services.h"
+#include "nsIObserverService.h"
 
 namespace mozilla {
 namespace dom {
 
 static const uint32_t INVALID_PORT = 0xffffffff;
+static uint32_t gId = 0;
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(AudioNode)
 
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(AudioNode, nsDOMEventTargetHelper)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(AudioNode, DOMEventTargetHelper)
   tmp->DisconnectFromGraph();
-  tmp->mContext->UpdateNodeCount(-1);
+  if (tmp->mContext) {
+    tmp->mContext->UpdateNodeCount(-1);
+  }
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mContext)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOutputNodes)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOutputParams)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(AudioNode, nsDOMEventTargetHelper)
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(AudioNode,
+                                                  DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mContext)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOutputNodes)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOutputParams)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
-NS_IMPL_ADDREF_INHERITED(AudioNode, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(AudioNode, DOMEventTargetHelper)
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 AudioNode::Release()
 {
   if (mRefCnt.get() == 1) {
@@ -40,26 +46,31 @@ AudioNode::Release()
     // the derived type is destroyed.
     DisconnectFromGraph();
   }
-  nsrefcnt r = nsDOMEventTargetHelper::Release();
+  nsrefcnt r = DOMEventTargetHelper::Release();
   NS_LOG_RELEASE(this, r, "AudioNode");
   return r;
 }
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(AudioNode)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+  NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 AudioNode::AudioNode(AudioContext* aContext,
                      uint32_t aChannelCount,
                      ChannelCountMode aChannelCountMode,
                      ChannelInterpretation aChannelInterpretation)
-  : nsDOMEventTargetHelper(aContext->GetParentObject())
+  : DOMEventTargetHelper(aContext->GetParentObject())
   , mContext(aContext)
   , mChannelCount(aChannelCount)
   , mChannelCountMode(aChannelCountMode)
   , mChannelInterpretation(aChannelInterpretation)
+  , mId(gId++)
+#ifdef DEBUG
+  , mDemiseNotified(false)
+#endif
 {
   MOZ_ASSERT(aContext);
-  nsDOMEventTargetHelper::BindToOwner(aContext->GetParentObject());
+  DOMEventTargetHelper::BindToOwner(aContext->GetParentObject());
   SetIsDOMBinding();
   aContext->UpdateNodeCount(1);
 }
@@ -69,16 +80,51 @@ AudioNode::~AudioNode()
   MOZ_ASSERT(mInputNodes.IsEmpty());
   MOZ_ASSERT(mOutputNodes.IsEmpty());
   MOZ_ASSERT(mOutputParams.IsEmpty());
+#ifdef DEBUG
+  MOZ_ASSERT(mDemiseNotified,
+             "The webaudio-node-demise notification must have been sent");
+#endif
   if (mContext) {
     mContext->UpdateNodeCount(-1);
   }
 }
 
+size_t
+AudioNode::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  // Not owned:
+  // - mContext
+  // - mStream
+  size_t amount = 0;
+
+  amount += mInputNodes.SizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mInputNodes.Length(); i++) {
+    amount += mInputNodes[i].SizeOfExcludingThis(aMallocSizeOf);
+  }
+
+  // Just measure the array. The entire audio node graph is measured via the
+  // MediaStreamGraph's streams, so we don't want to double-count the elements.
+  amount += mOutputNodes.SizeOfExcludingThis(aMallocSizeOf);
+
+  amount += mOutputParams.SizeOfExcludingThis(aMallocSizeOf);
+  for (size_t i = 0; i < mOutputParams.Length(); i++) {
+    amount += mOutputParams[i]->SizeOfIncludingThis(aMallocSizeOf);
+  }
+
+  return amount;
+}
+
+size_t
+AudioNode::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
+{
+  return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
+}
+
 template <class InputNode>
-static uint32_t
+static size_t
 FindIndexOfNode(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode)
 {
-  for (uint32_t i = 0; i < aInputNodes.Length(); ++i) {
+  for (size_t i = 0; i < aInputNodes.Length(); ++i) {
     if (aInputNodes[i].mInputNode == aNode) {
       return i;
     }
@@ -87,11 +133,11 @@ FindIndexOfNode(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode)
 }
 
 template <class InputNode>
-static uint32_t
+static size_t
 FindIndexOfNodeWithPorts(const nsTArray<InputNode>& aInputNodes, const AudioNode* aNode,
                          uint32_t aInputPort, uint32_t aOutputPort)
 {
-  for (uint32_t i = 0; i < aInputNodes.Length(); ++i) {
+  for (size_t i = 0; i < aInputNodes.Length(); ++i) {
     if (aInputNodes[i].mInputNode == aNode &&
         aInputNodes[i].mInputPort == aInputPort &&
         aInputNodes[i].mOutputPort == aOutputPort) {
@@ -113,27 +159,27 @@ AudioNode::DisconnectFromGraph()
 
   // Disconnect inputs. We don't need them anymore.
   while (!mInputNodes.IsEmpty()) {
-    uint32_t i = mInputNodes.Length() - 1;
+    size_t i = mInputNodes.Length() - 1;
     nsRefPtr<AudioNode> input = mInputNodes[i].mInputNode;
     mInputNodes.RemoveElementAt(i);
     input->mOutputNodes.RemoveElement(this);
   }
 
   while (!mOutputNodes.IsEmpty()) {
-    uint32_t i = mOutputNodes.Length() - 1;
+    size_t i = mOutputNodes.Length() - 1;
     nsRefPtr<AudioNode> output = mOutputNodes[i].forget();
     mOutputNodes.RemoveElementAt(i);
-    uint32_t inputIndex = FindIndexOfNode(output->mInputNodes, this);
+    size_t inputIndex = FindIndexOfNode(output->mInputNodes, this);
     // It doesn't matter which one we remove, since we're going to remove all
     // entries for this node anyway.
     output->mInputNodes.RemoveElementAt(inputIndex);
   }
 
   while (!mOutputParams.IsEmpty()) {
-    uint32_t i = mOutputParams.Length() - 1;
+    size_t i = mOutputParams.Length() - 1;
     nsRefPtr<AudioParam> output = mOutputParams[i].forget();
     mOutputParams.RemoveElementAt(i);
-    uint32_t inputIndex = FindIndexOfNode(output->InputNodes(), this);
+    size_t inputIndex = FindIndexOfNode(output->InputNodes(), this);
     // It doesn't matter which one we remove, since we're going to remove all
     // entries for this node anyway.
     output->RemoveInputNode(inputIndex);
@@ -351,6 +397,16 @@ AudioNode::DestroyMediaStream()
 
     mStream->Destroy();
     mStream = nullptr;
+
+    nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+    if (obs) {
+      nsAutoString id;
+      id.AppendPrintf("%u", mId);
+      obs->NotifyObservers(nullptr, "webaudio-node-demise", id.get());
+    }
+#ifdef DEBUG
+    mDemiseNotified = true;
+#endif
   }
 }
 

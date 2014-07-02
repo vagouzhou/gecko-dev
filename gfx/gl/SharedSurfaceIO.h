@@ -49,11 +49,14 @@ public:
         return LOCAL_GL_TEXTURE_RECTANGLE_ARB;
     }
 
+    MacIOSurface* GetIOSurface() const {
+        return mSurface;
+    }
+
 private:
     SharedSurface_IOSurface(MacIOSurface* surface, GLContext* gl, const gfx::IntSize& size, bool hasAlpha);
 
     RefPtr<MacIOSurface> mSurface;
-    nsRefPtr<gfxImageSurface> mImageSurface;
     GLuint mProdTex;
     const GLContext* mCurConsGL;
     GLuint mConsTex;

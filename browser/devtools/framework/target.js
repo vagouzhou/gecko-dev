@@ -242,6 +242,10 @@ TabTarget.prototype = {
     return !this.isLocalTab;
   },
 
+  get isAddon() {
+    return !!(this._form && this._form.addonActor);
+  },
+
   get isLocalTab() {
     return !!this._tab;
   },
@@ -361,7 +365,7 @@ TabTarget.prototype = {
     };
     this.client.addListener("tabDetached", this._onTabDetached);
 
-    this._onTabNavigated = function onRemoteTabNavigated(aType, aPacket) {
+    this._onTabNavigated = (aType, aPacket) => {
       let event = Object.create(null);
       event.url = aPacket.url;
       event.title = aPacket.title;
@@ -377,7 +381,7 @@ TabTarget.prototype = {
         this.emit("navigate", event);
         this._navWindow = null;
       }
-    }.bind(this);
+    };
     this.client.addListener("tabNavigated", this._onTabNavigated);
   },
 

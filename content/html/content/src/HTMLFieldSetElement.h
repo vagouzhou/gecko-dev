@@ -27,7 +27,7 @@ public:
   using nsIConstraintValidation::CheckValidity;
   using nsIConstraintValidation::GetValidationMessage;
 
-  HTMLFieldSetElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLFieldSetElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLFieldSetElement();
 
   NS_IMPL_FROMCONTENT_HTML_WITH_TAG(HTMLFieldSetElement, fieldset)
@@ -52,7 +52,7 @@ public:
   NS_IMETHOD Reset() MOZ_OVERRIDE;
   NS_IMETHOD SubmitNamesValues(nsFormSubmission* aFormSubmission) MOZ_OVERRIDE;
   virtual bool IsDisabledForEvents(uint32_t aMessage) MOZ_OVERRIDE;
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_OVERRIDE;
 
   const nsIContent* GetFirstLegend() const { return mFirstLegend; }
 
@@ -94,7 +94,7 @@ public:
 
   // XPCOM SetCustomValidity is OK for us
 
-  virtual nsEventStates IntrinsicState() const;
+  virtual EventStates IntrinsicState() const;
 
 
   /*
@@ -110,8 +110,7 @@ public:
   void UpdateValidity(bool aElementValidityState);
 
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
 private:
 

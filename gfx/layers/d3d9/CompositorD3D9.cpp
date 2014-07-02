@@ -16,11 +16,12 @@
 #include "mozilla/layers/PCompositorParent.h"
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "gfxPrefs.h"
-
-using namespace mozilla::gfx;
+#include "gfxCrashReporterUtils.h"
 
 namespace mozilla {
 namespace layers {
+
+using namespace mozilla::gfx;
 
 CompositorD3D9::CompositorD3D9(PCompositorParent* aParent, nsIWidget *aWidget)
   : Compositor(aParent)
@@ -39,6 +40,10 @@ CompositorD3D9::~CompositorD3D9()
 bool
 CompositorD3D9::Initialize()
 {
+  bool force = gfxPrefs::LayersAccelerationForceEnabled();
+
+  ScopedGfxFeatureReporter reporter("D3D9 Layers", force);
+
   if (!gfxPlatform::CanUseDirect3D9()) {
     NS_WARNING("Direct3D 9-accelerated layers are not supported on this system.");
     return false;
@@ -56,6 +61,7 @@ CompositorD3D9::Initialize()
     return false;
   }
 
+  reporter.SetSuccessful();
   return true;
 }
 
@@ -195,19 +201,32 @@ static DeviceManagerD3D9::ShaderMode
 ShaderModeForEffectType(EffectTypes aEffectType, gfx::SurfaceFormat aFormat)
 {
   switch (aEffectType) {
-  case EFFECT_SOLID_COLOR:
+  case EffectTypes::SOLID_COLOR:
     return DeviceManagerD3D9::SOLIDCOLORLAYER;
-  case EFFECT_RENDER_TARGET:
+  case EffectTypes::RENDER_TARGET:
     return DeviceManagerD3D9::RGBALAYER;
-  case EFFECT_RGB:
+  case EffectTypes::RGB:
     if (aFormat == SurfaceFormat::B8G8R8A8 || aFormat == SurfaceFormat::R8G8B8A8)
       return DeviceManagerD3D9::RGBALAYER;
     return DeviceManagerD3D9::RGBLAYER;
-  case EFFECT_YCBCR:
+  case EffectTypes::YCBCR:
     return DeviceManagerD3D9::YCBCRLAYER;
   }
 
   MOZ_CRASH("Bad effect type");
+}
+
+void
+CompositorD3D9::ClearRect(const gfx::Rect& aRect)
+{
+  D3DRECT rect;
+  rect.x1 = aRect.X();
+  rect.y1 = aRect.Y();
+  rect.x2 = aRect.XMost();
+  rect.y2 = aRect.YMost();
+
+  device()->Clear(1, &rect, D3DCLEAR_TARGET,
+                  0x00000000, 0, 0);
 }
 
 void
@@ -240,7 +259,7 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
                                        1);
   bool target = false;
 
-  if (aEffectChain.mPrimaryEffect->mType != EFFECT_SOLID_COLOR) {
+  if (aEffectChain.mPrimaryEffect->mType != EffectTypes::SOLID_COLOR) {
     float opacity[4];
     /*
      * We always upload a 4 component float, but the shader will use only the
@@ -252,13 +271,13 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
 
   bool isPremultiplied = true;
 
-  MaskType maskType = MaskNone;
+  MaskType maskType = MaskType::MaskNone;
 
-  if (aEffectChain.mSecondaryEffects[EFFECT_MASK]) {
+  if (aEffectChain.mSecondaryEffects[EffectTypes::MASK]) {
     if (aTransform.Is2D()) {
-      maskType = Mask2d;
+      maskType = MaskType::Mask2d;
     } else {
-      maskType = Mask3d;
+      maskType = MaskType::Mask3d;
     }
   }
 
@@ -271,7 +290,7 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
 
   uint32_t maskTexture = 0;
   switch (aEffectChain.mPrimaryEffect->mType) {
-  case EFFECT_SOLID_COLOR:
+  case EffectTypes::SOLID_COLOR:
     {
       // output color is premultiplied, so we need to adjust all channels.
       Color layerColor =
@@ -288,8 +307,8 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
         ->SetShaderMode(DeviceManagerD3D9::SOLIDCOLORLAYER, maskType);
     }
     break;
-  case EFFECT_RENDER_TARGET:
-  case EFFECT_RGB:
+  case EffectTypes::RENDER_TARGET:
+  case EffectTypes::RGB:
     {
       TexturedEffect* texturedEffect =
         static_cast<TexturedEffect*>(aEffectChain.mPrimaryEffect.get());
@@ -316,7 +335,7 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
       isPremultiplied = texturedEffect->mPremultiplied;
     }
     break;
-  case EFFECT_YCBCR:
+  case EffectTypes::YCBCR:
     {
       EffectYCbCr* ycbcrEffect =
         static_cast<EffectYCbCr*>(aEffectChain.mPrimaryEffect.get());
@@ -402,7 +421,7 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
       maskTexture = mDeviceManager->SetShaderMode(DeviceManagerD3D9::YCBCRLAYER, maskType);
     }
     break;
-  case EFFECT_COMPONENT_ALPHA:
+  case EffectTypes::COMPONENT_ALPHA:
     {
       MOZ_ASSERT(gfxPrefs::ComponentAlphaEnabled());
       EffectComponentAlpha* effectComponentAlpha =
@@ -420,9 +439,9 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
                                            1);
 
       SetSamplerForFilter(effectComponentAlpha->mFilter);
-      SetMask(aEffectChain, maskTexture);
 
       maskTexture = mDeviceManager->SetShaderMode(DeviceManagerD3D9::COMPONENTLAYERPASS1, maskType);
+      SetMask(aEffectChain, maskTexture);
       d3d9Device->SetTexture(0, sourceOnBlack->GetD3D9Texture());
       d3d9Device->SetTexture(1, sourceOnWhite->GetD3D9Texture());
       d3d9Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ZERO);
@@ -430,6 +449,7 @@ CompositorD3D9::DrawQuad(const gfx::Rect &aRect,
       d3d9Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 
       maskTexture = mDeviceManager->SetShaderMode(DeviceManagerD3D9::COMPONENTLAYERPASS2, maskType);
+      SetMask(aEffectChain, maskTexture);
       d3d9Device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
       d3d9Device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_ONE);
       d3d9Device->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
@@ -462,7 +482,7 @@ void
 CompositorD3D9::SetMask(const EffectChain &aEffectChain, uint32_t aMaskTexture)
 {
   EffectMask *maskEffect =
-    static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EFFECT_MASK].get());
+    static_cast<EffectMask*>(aEffectChain.mSecondaryEffects[EffectTypes::MASK].get());
   if (!maskEffect) {
     return;
   }
@@ -575,14 +595,6 @@ CompositorD3D9::Ready()
     return true;
   }
   return false;
-}
-
-static void
-CancelCompositing(Rect* aRenderBoundsOut)
-{
-  if (aRenderBoundsOut) {
-    *aRenderBoundsOut = Rect(0, 0, 0, 0);
-  }
 }
 
 void
@@ -729,7 +741,7 @@ CompositorD3D9::PaintToTarget()
                                              SurfaceFormat::B8G8R8A8);
   mTarget->CopySurface(sourceSurface,
                        IntRect(0, 0, desc.Width, desc.Height),
-                       IntPoint());
+                       IntPoint(-mTargetBounds.x, -mTargetBounds.y));
   mTarget->Flush();
   destSurf->UnlockRect();
 }

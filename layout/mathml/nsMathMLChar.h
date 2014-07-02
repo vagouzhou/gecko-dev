@@ -20,9 +20,9 @@ class nsDisplayListBuilder;
 class nsDisplayListSet;
 class nsPresContext;
 class nsRenderingContext;
-class nsBoundingMetrics;
+struct nsBoundingMetrics;
 class nsStyleContext;
-class nsFont;
+struct nsFont;
 
 // Hints for Stretch() to indicate criteria for stretching
 enum {
@@ -199,6 +199,8 @@ public:
 
 protected:
   friend class nsGlyphTable;
+  friend class nsPropertiesTable;
+  friend class nsOpenTypeTable;
   nsString           mData;
 
 private:
@@ -236,7 +238,7 @@ private:
   SetFontFamily(nsPresContext*          aPresContext,
                 const nsGlyphTable*     aGlyphTable,
                 const nsGlyphCode&      aGlyphCode,
-                const nsAString&        aDefaultFamily,
+                const mozilla::FontFamilyList& aDefaultFamily,
                 nsFont&                 aFont,
                 nsRefPtr<gfxFontGroup>* aFontGroup);
 

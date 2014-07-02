@@ -8,10 +8,12 @@
 
 #include "nsIStreamConverterService.h"
 
-#include "nsHashtable.h"
+#include "nsClassHashtable.h"
+#include "nsCOMArray.h"
 #include "nsTArrayForwardDeclare.h"
 
 class nsCString;
+class nsIAtom;
 
 class nsStreamConverterService : public nsIStreamConverterService {
 public:
@@ -27,9 +29,10 @@ public:
     /////////////////////////////////////////////////////
     // nsStreamConverterService methods
     nsStreamConverterService();
-    virtual ~nsStreamConverterService();
 
 private:
+    virtual ~nsStreamConverterService();
+
     // Responsible for finding a converter for the given MIME-type.
     nsresult FindConverter(const char *aContractID, nsTArray<nsCString> **aEdgeList);
     nsresult BuildGraph(void);
@@ -37,7 +40,7 @@ private:
     nsresult ParseFromTo(const char *aContractID, nsCString &aFromRes, nsCString &aToRes);
 
     // member variables
-    nsObjectHashtable mAdjacencyList;
+    nsClassHashtable<nsCStringHashKey, nsCOMArray<nsIAtom>> mAdjacencyList;
 };
 
 #endif // __nsstreamconverterservice__h___

@@ -10,9 +10,12 @@ include protocol PBlob;
 include protocol PBluetooth;
 include protocol PBrowser;
 include protocol PCompositor;
+include protocol PContentBridge;
+include protocol PCycleCollectWithLogs;
 include protocol PCrashReporter;
 include protocol PExternalHelperApp;
 include protocol PDeviceStorageRequest;
+include protocol PFileDescriptorSet;
 include protocol PFMRadio;
 include protocol PFileSystemRequest;
 include protocol PHal;
@@ -20,6 +23,7 @@ include protocol PImageBridge;
 include protocol PIndexedDB;
 include protocol PMemoryReportRequest;
 include protocol PNecko;
+include protocol PSharedBufferManager;
 include protocol PSms;
 include protocol PSpeechSynthesis;
 include protocol PStorage;
@@ -45,7 +49,7 @@ using struct mozilla::null_t from "ipc/IPCMessageUtils.h";
 using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
 using mozilla::dom::asmjscache::OpenMode from "mozilla/dom/asmjscache/AsmJSCache.h";
 using mozilla::dom::asmjscache::WriteParams from "mozilla/dom/asmjscache/AsmJSCache.h";
-using mozilla::dom::AudioChannelType from "AudioChannelCommon.h";
+using mozilla::dom::AudioChannel from "mozilla/dom/AudioChannelBinding.h";
 using mozilla::dom::AudioChannelState from "AudioChannelCommon.h";
 using mozilla::dom::NativeThreadId from "mozilla/dom/TabMessageUtils.h";
 using mozilla::hal::ProcessPriority from "mozilla/HalTypes.h";
@@ -62,6 +66,7 @@ struct FontListEntry {
     int16_t   stretch;
     uint8_t   italic;
     uint8_t   index;
+    bool      isHidden;
 };
 
 struct DeviceStorageFreeSpaceParams
@@ -114,6 +119,14 @@ struct DeviceStorageAddParams
   PBlob blob;
 };
 
+struct DeviceStorageAppendParams
+{
+  nsString type;
+  nsString storageName;
+  nsString relpath;
+  PBlob blob;
+};
+
 struct DeviceStorageCreateFdParams
 {
   nsString type;
@@ -147,6 +160,7 @@ struct DeviceStorageEnumerationParams
 union DeviceStorageParams
 {
   DeviceStorageAddParams;
+  DeviceStorageAppendParams;
   DeviceStorageCreateFdParams;
   DeviceStorageGetParams;
   DeviceStorageDeleteParams;
@@ -200,6 +214,20 @@ struct FileSystemCreateDirectoryParams
   nsString realPath;
 };
 
+union FileSystemFileDataValue
+{
+  uint8_t[];
+  PBlob;
+};
+
+struct FileSystemCreateFileParams
+{
+  nsString filesystem;
+  nsString realPath;
+  FileSystemFileDataValue data;
+  bool replace;
+};
+
 struct FileSystemGetFileOrDirectoryParams
 {
   nsString filesystem;
@@ -223,6 +251,7 @@ struct FileSystemRemoveParams
 union FileSystemParams
 {
   FileSystemCreateDirectoryParams;
+  FileSystemCreateFileParams;
   FileSystemGetFileOrDirectoryParams;
   FileSystemRemoveParams;
 };
@@ -244,9 +273,18 @@ struct PrefSetting {
   MaybePrefValue userValue;
 };
 
+struct DataStoreSetting {
+  nsString name;
+  nsString originURL;
+  nsString manifestURL;
+  bool readOnly;
+  bool enabled;
+};
+
 intr protocol PContent
 {
     parent opens PCompositor;
+    parent opens PSharedBufferManager;
     parent opens PImageBridge;
     child opens PBackground;
 
@@ -255,9 +293,11 @@ intr protocol PContent
     manages PBluetooth;
     manages PBrowser;
     manages PCrashReporter;
+    manages PCycleCollectWithLogs;
     manages PDeviceStorageRequest;
     manages PFileSystemRequest;
     manages PExternalHelperApp;
+    manages PFileDescriptorSet;
     manages PFMRadio;
     manages PHal;
     manages PIndexedDB;
@@ -294,11 +334,14 @@ both:
     // privileges by requesting a PBrowser corresponding to a highly-privileged
     // app; the child can only request privileges for an app which the child has
     // access to (in the form of a TabChild).
-    async PBrowser(IPCTabContext context, uint32_t chromeFlags);
+    //
+    // Keep the last 3 attributes in sync with GetProcessAttributes!
+    async PBrowser(IPCTabContext context, uint32_t chromeFlags,
+                   uint64_t id, bool isForApp, bool isForBrowser);
 
     async PBlob(BlobConstructorParams params);
 
-    async PJavaScript();
+    PFileDescriptorSet(FileDescriptor fd);
 
 child:
     /**
@@ -308,7 +351,8 @@ child:
      */
     async SetProcessSandbox();
 
-    PMemoryReportRequest(uint32_t generation, bool minimizeMemoryUsage, nsString DMDDumpIdent);
+    PMemoryReportRequest(uint32_t generation, bool anonymize,
+                         bool minimizeMemoryUsage, nsString DMDDumpIdent);
 
     /**
      * Notify the AudioChannelService in the child processes.
@@ -317,15 +361,18 @@ child:
 
     async SpeakerManagerNotify();
 
+    async DataStoreNotify(uint32_t aAppId, nsString aName,
+                          nsString aManifestURL);
+
     /**
-     * Dump this process's GC and CC logs.
+     * Dump this process's GC and CC logs to the provided files.
      *
-     * For documentation on the args, see dumpGCAndCCLogsToFile in
+     * For documentation on the other args, see dumpGCAndCCLogsToFile in
      * nsIMemoryInfoDumper.idl
      */
-    async DumpGCAndCCLogsToFile(nsString identifier,
-                                bool dumpAllTraces,
-                                bool dumpChildProcesses);
+    PCycleCollectWithLogs(bool dumpAllTraces,
+                          FileDescriptor gcLog,
+                          FileDescriptor ccLog);
 
     PTestShell();
 
@@ -335,6 +382,8 @@ child:
     async SetOffline(bool offline);
 
     async NotifyVisited(URIParams uri);
+
+    async SystemMemoryAvailable(uint64_t getterId, uint32_t memoryAvailable);
 
     PreferenceUpdate(PrefSetting pref);
 
@@ -367,7 +416,7 @@ child:
 
     FileSystemUpdate(nsString fsName, nsString mountPoint, int32_t fsState,
                      int32_t mountGeneration, bool isMediaPresent,
-                     bool isSharing, bool isFormatting);
+                     bool isSharing, bool isFormatting, bool isFake);
 
     // Ask the Nuwa process to create a new child process.
     NuwaFork();
@@ -398,11 +447,20 @@ parent:
      * isForBrowser|, we're loading <browser> for an app.  When
      * |isForBrowser|, we're loading <browser>.  When |!isForApp &&
      * !isForBrowser|, we're probably loading <xul:browser remote>.
+     *
+     * Keep the return values in sync with PBrowser()!
      */
     sync GetProcessAttributes()
         returns (uint64_t id, bool isForApp, bool isForBrowser);
     sync GetXPCOMProcessAttributes()
         returns (bool isOffline);
+
+    sync CreateChildProcess(IPCTabContext context,
+                            ProcessPriority priority)
+        returns (uint64_t id, bool isForApp, bool isForBrowser);
+    intr BridgeToChildProcess(uint64_t id);
+
+    async PJavaScript();
 
     PDeviceStorageRequest(DeviceStorageParams params);
 
@@ -412,6 +470,8 @@ parent:
 
     sync GetRandomValues(uint32_t length)
         returns (uint8_t[] randomValues);
+
+    async GetSystemMemory(uint64_t getterId);
 
     PHal();
 
@@ -511,18 +571,20 @@ parent:
     async FirstIdle();
 
     // Get Muted from the main AudioChannelService.
-    sync AudioChannelGetState(AudioChannelType aType, bool aElementHidden,
+    sync AudioChannelGetState(AudioChannel aChannel, bool aElementHidden,
                               bool aElementWasHidden)
         returns (AudioChannelState value);
 
-    sync AudioChannelRegisterType(AudioChannelType aType, bool aWithVideo);
-    sync AudioChannelUnregisterType(AudioChannelType aType,
+    sync AudioChannelRegisterType(AudioChannel aChannel, bool aWithVideo);
+    sync AudioChannelUnregisterType(AudioChannel aChannel,
                                     bool aElementHidden,
                                     bool aWithVideo);
 
     async AudioChannelChangedNotification();
-    async AudioChannelChangeDefVolChannel(AudioChannelType aType,
-                                          bool aHidden);
+    async AudioChannelChangeDefVolChannel(int32_t aChannel, bool aHidden);
+
+    sync DataStoreGetStores(nsString aName, Principal aPrincipal)
+        returns (DataStoreSetting[] dataStores);
 
     async FilePathUpdateNotify(nsString aType,
                                nsString aStorageName,
@@ -544,6 +606,11 @@ parent:
 
     sync KeywordToURI(nsCString keyword)
         returns (OptionalInputStreamParams postData, OptionalURIParams uri);
+
+    // Tell the compositor to allocate a layer tree id for nested remote mozbrowsers.
+    sync AllocateLayerTreeId()
+        returns (uint64_t id);
+    async DeallocateLayerTreeId(uint64_t id);
 
     sync SpeakerManagerForceSpeaker(bool aEnable);
 
@@ -579,6 +646,8 @@ parent:
      * use the newly-invalid surface.
      */
     BackUpXResources(FileDescriptor aXSocketFd);
+
+    sync OpenAnonymousTemporaryFile() returns (FileDescriptor aFD);
 
 both:
      AsyncMessage(nsString aMessage, ClonedMessageData aData,

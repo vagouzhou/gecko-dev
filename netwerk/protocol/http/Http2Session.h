@@ -25,12 +25,15 @@ namespace net {
 
 class Http2PushedStream;
 class Http2Stream;
+class nsHttpTransaction;
 
 class Http2Session MOZ_FINAL : public ASpdySession
   , public nsAHttpConnection
   , public nsAHttpSegmentReader
   , public nsAHttpSegmentWriter
 {
+  ~Http2Session();
+
 public:
   NS_DECL_ISUPPORTS
     NS_DECL_NSAHTTPTRANSACTION
@@ -38,10 +41,10 @@ public:
     NS_DECL_NSAHTTPSEGMENTREADER
     NS_DECL_NSAHTTPSEGMENTWRITER
 
-   Http2Session(nsAHttpTransaction *, nsISocketTransport *, int32_t);
-  ~Http2Session();
+  Http2Session(nsISocketTransport *);
 
-  bool AddStream(nsAHttpTransaction *, int32_t);
+  bool AddStream(nsAHttpTransaction *, int32_t,
+                 bool, nsIInterfaceRequestor *);
   bool CanReuse() { return !mShouldGoAway && !mClosed; }
   bool RoomForMoreStreams();
 
@@ -80,10 +83,9 @@ public:
     FRAME_TYPE_PUSH_PROMISE = 5,
     FRAME_TYPE_PING = 6,
     FRAME_TYPE_GOAWAY = 7,
-    FRAME_TYPE_UNUSED1 = 8,
-    FRAME_TYPE_WINDOW_UPDATE = 9,
-    FRAME_TYPE_CONTINUATION = 10,
-    FRAME_TYPE_LAST = 11
+    FRAME_TYPE_WINDOW_UPDATE = 8,
+    FRAME_TYPE_CONTINUATION = 9,
+    FRAME_TYPE_LAST = 10
   };
 
   // NO_ERROR is a macro defined on windows, so we'll name the HTTP2 goaway
@@ -100,23 +102,25 @@ public:
     CANCEL_ERROR = 8,
     COMPRESSION_ERROR = 9,
     CONNECT_ERROR = 10,
-    ENHANCE_YOUR_CALM = 420
+    ENHANCE_YOUR_CALM = 11,
+    INADEQUATE_SECURITY = 12
   };
 
   // These are frame flags. If they, or other undefined flags, are
   // used on frames other than the comments indicate they MUST be ignored.
   const static uint8_t kFlag_END_STREAM = 0x01; // data, headers
   const static uint8_t kFlag_END_HEADERS = 0x04; // headers, continuation
-  const static uint8_t kFlag_PRIORITY = 0x08; //headers
   const static uint8_t kFlag_END_PUSH_PROMISE = 0x04; // push promise
   const static uint8_t kFlag_ACK = 0x01; // ping and settings
+  const static uint8_t kFlag_END_SEGMENT = 0x02; // data
+  const static uint8_t kFlag_PADDED = 0x08; // data, headers, push promise, continuation
+  const static uint8_t kFlag_PRIORITY = 0x20; // headers
 
   enum {
     SETTINGS_TYPE_HEADER_TABLE_SIZE = 1, // compression table size
     SETTINGS_TYPE_ENABLE_PUSH = 2,     // can be used to disable push
-    SETTINGS_TYPE_MAX_CONCURRENT = 4,  // streams recvr allowed to initiate
-    SETTINGS_TYPE_INITIAL_WINDOW = 7,  // bytes for flow control default
-    SETTINGS_TYPE_FLOW_CONTROL = 10    // flow control details
+    SETTINGS_TYPE_MAX_CONCURRENT = 3,  // streams recvr allowed to initiate
+    SETTINGS_TYPE_INITIAL_WINDOW = 4  // bytes for flow control default
   };
 
   // This should be big enough to hold all of your control packets,
@@ -155,13 +159,9 @@ public:
   static nsresult RecvPushPromise(Http2Session *);
   static nsresult RecvPing(Http2Session *);
   static nsresult RecvGoAway(Http2Session *);
-  static nsresult RecvUnused1(Http2Session *);
   static nsresult RecvWindowUpdate(Http2Session *);
   static nsresult RecvContinuation(Http2Session *);
 
-  template<typename T>
-  static void EnsureBuffer(nsAutoArrayPtr<T> &,
-                           uint32_t, uint32_t, uint32_t &);
   char       *EnsureOutputBuffer(uint32_t needed);
 
   template<typename charType>
@@ -188,6 +188,7 @@ public:
   uint32_t GetServerInitialStreamWindow() { return mServerInitialStreamWindow; }
 
   void ConnectPushedStream(Http2Stream *stream);
+  void MaybeDecrementConcurrent(Http2Stream *stream);
 
   nsresult ConfirmTLSProfile();
 
@@ -201,7 +202,6 @@ public:
   Http2Compressor *Compressor() { return &mCompressor; }
   nsISocketTransport *SocketTransport() { return mSocketTransport; }
   int64_t ServerSessionWindow() { return mServerSessionWindow; }
-  bool ServerUsesFlowControl() { return mServerUsesFlowControl; }
   void DecrementServerSessionWindow (uint32_t bytes) { mServerSessionWindow -= bytes; }
 
 private:
@@ -211,7 +211,9 @@ private:
     BUFFERING_OPENING_SETTINGS,
     BUFFERING_FRAME_HEADER,
     BUFFERING_CONTROL_FRAME,
+    PROCESSING_DATA_FRAME_PADDING_CONTROL,
     PROCESSING_DATA_FRAME,
+    DISCARDING_DATA_FRAME_PADDING,
     DISCARDING_DATA_FRAME,
     PROCESSING_COMPLETE_HEADERS,
     PROCESSING_CONTROL_RST_STREAM
@@ -223,17 +225,18 @@ private:
   uint32_t    GetWriteQueueSize();
   void        ChangeDownstreamState(enum internalStateType);
   void        ResetDownstreamState();
+  nsresult    ReadyToProcessDataFrame(enum internalStateType);
   nsresult    UncompressAndDiscard();
-  void        MaybeDecrementConcurrent(Http2Stream *);
   void        GeneratePing(bool);
   void        GenerateSettingsAck();
-  void        GeneratePriority(uint32_t, uint32_t);
+  void        GeneratePriority(uint32_t, uint8_t);
   void        GenerateRstStream(uint32_t, uint32_t);
   void        GenerateGoAway(uint32_t);
   void        CleanupStream(Http2Stream *, nsresult, errorType);
   void        CloseStream(Http2Stream *, nsresult);
   void        SendHello();
   void        RemoveStreamFromQueues(Http2Stream *);
+  nsresult    ParsePadding(uint8_t &, uint16_t &);
 
   void        SetWriteCallbacks();
   void        RealignOutputQueue();
@@ -333,6 +336,7 @@ private:
   uint8_t              mInputFrameType;
   uint8_t              mInputFrameFlags;
   uint32_t             mInputFrameID;
+  uint16_t             mPaddingLength;
 
   // When a frame has been received that is addressed to a particular stream
   // (e.g. a data frame after the stream-id has been decoded), this points
@@ -372,11 +376,6 @@ private:
 
   // the session received a GoAway frame with a valid GoAwayID
   bool                 mCleanShutdown;
-
-  // if server has enabled flow control for all streams in this session.
-  // If disabled it does not generate window updates and does not expect
-  // the client to ever block on sending data frames
-  bool                 mServerUsesFlowControl;
 
   // The TLS comlpiance checks are not done in the ctor beacuse of bad
   // exception handling - so we do them at IO time and cache the result
@@ -441,6 +440,22 @@ private:
   // by the load group and the serial number can be used as part of the cache key
   // to make sure streams aren't shared across sessions.
   uint64_t        mSerial;
+
+  // If push is disabled, we want to be able to send PROTOCOL_ERRORs if we
+  // receive a PUSH_PROMISE, but we have to wait for the SETTINGS ACK before
+  // we can actually tell the other end to go away. These help us keep track
+  // of that state so we can behave appropriately.
+  bool mWaitingForSettingsAck;
+  bool mGoAwayOnPush;
+
+private:
+/// connect tunnels
+  void DispatchOnTunnel(nsAHttpTransaction *, nsIInterfaceRequestor *);
+  void RegisterTunnel(Http2Stream *);
+  void UnRegisterTunnel(Http2Stream *);
+  uint32_t FindTunnelCount(nsHttpConnectionInfo *);
+
+  nsDataHashtable<nsCStringHashKey, uint32_t> mTunnelHash;
 };
 
 } // namespace mozilla::net

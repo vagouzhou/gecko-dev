@@ -389,8 +389,10 @@ public:
  ******************************************************************************/
 class InsertCookieDBListener MOZ_FINAL : public DBListenerErrorHandler
 {
-protected:
+private:
   virtual const char *GetOpType() { return "INSERT"; }
+
+  ~InsertCookieDBListener() {}
 
 public:
   NS_DECL_ISUPPORTS
@@ -415,7 +417,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(InsertCookieDBListener, mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(InsertCookieDBListener, mozIStorageStatementCallback)
 
 /******************************************************************************
  * UpdateCookieDBListener impl:
@@ -423,8 +425,10 @@ NS_IMPL_ISUPPORTS1(InsertCookieDBListener, mozIStorageStatementCallback)
  ******************************************************************************/
 class UpdateCookieDBListener MOZ_FINAL : public DBListenerErrorHandler
 {
-protected:
+private:
   virtual const char *GetOpType() { return "UPDATE"; }
+
+  ~UpdateCookieDBListener() {}
 
 public:
   NS_DECL_ISUPPORTS
@@ -441,7 +445,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(UpdateCookieDBListener, mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(UpdateCookieDBListener, mozIStorageStatementCallback)
 
 /******************************************************************************
  * RemoveCookieDBListener impl:
@@ -449,8 +453,10 @@ NS_IMPL_ISUPPORTS1(UpdateCookieDBListener, mozIStorageStatementCallback)
  ******************************************************************************/
 class RemoveCookieDBListener MOZ_FINAL : public DBListenerErrorHandler
 {
-protected:
+private:
   virtual const char *GetOpType() { return "REMOVE"; }
+
+  ~RemoveCookieDBListener() {}
 
 public:
   NS_DECL_ISUPPORTS
@@ -467,7 +473,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(RemoveCookieDBListener, mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(RemoveCookieDBListener, mozIStorageStatementCallback)
 
 /******************************************************************************
  * ReadCookieDBListener impl:
@@ -475,9 +481,11 @@ NS_IMPL_ISUPPORTS1(RemoveCookieDBListener, mozIStorageStatementCallback)
  ******************************************************************************/
 class ReadCookieDBListener MOZ_FINAL : public DBListenerErrorHandler
 {
-protected:
+private:
   virtual const char *GetOpType() { return "READ"; }
   bool mCanceled;
+
+  ~ReadCookieDBListener() {}
 
 public:
   NS_DECL_ISUPPORTS
@@ -546,7 +554,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(ReadCookieDBListener, mozIStorageStatementCallback)
+NS_IMPL_ISUPPORTS(ReadCookieDBListener, mozIStorageStatementCallback)
 
 /******************************************************************************
  * CloseCookieDBListener imp:
@@ -555,6 +563,8 @@ NS_IMPL_ISUPPORTS1(ReadCookieDBListener, mozIStorageStatementCallback)
  ******************************************************************************/
 class CloseCookieDBListener MOZ_FINAL :  public mozIStorageCompletionCallback
 {
+  ~CloseCookieDBListener() {}
+
 public:
   CloseCookieDBListener(DBState* dbState) : mDBState(dbState) { }
   nsRefPtr<DBState> mDBState;
@@ -567,11 +577,14 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(CloseCookieDBListener, mozIStorageCompletionCallback)
+NS_IMPL_ISUPPORTS(CloseCookieDBListener, mozIStorageCompletionCallback)
 
 namespace {
 
 class AppClearDataObserver MOZ_FINAL : public nsIObserver {
+
+  ~AppClearDataObserver() {}
+
 public:
   NS_DECL_ISUPPORTS
 
@@ -594,7 +607,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(AppClearDataObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(AppClearDataObserver, nsIObserver)
 
 } // anonymous namespace
 
@@ -707,7 +720,7 @@ nsCookieService::GetSingleton()
 nsCookieService::AppClearDataObserverInit()
 {
   nsCOMPtr<nsIObserverService> observerService = do_GetService("@mozilla.org/observer-service;1");
-  nsCOMPtr<AppClearDataObserver> obs = new AppClearDataObserver();
+  nsCOMPtr<nsIObserver> obs = new AppClearDataObserver();
   observerService->AddObserver(obs, TOPIC_WEB_APP_CLEAR_DATA,
                                /* holdsWeak= */ false);
 }
@@ -717,13 +730,13 @@ nsCookieService::AppClearDataObserverInit()
  * public methods
  ******************************************************************************/
 
-NS_IMPL_ISUPPORTS6(nsCookieService,
-                   nsICookieService,
-                   nsICookieManager,
-                   nsICookieManager2,
-                   nsIObserver,
-                   nsISupportsWeakReference,
-                   nsIMemoryReporter)
+NS_IMPL_ISUPPORTS(nsCookieService,
+                  nsICookieService,
+                  nsICookieManager,
+                  nsICookieManager2,
+                  nsIObserver,
+                  nsISupportsWeakReference,
+                  nsIMemoryReporter)
 
 nsCookieService::nsCookieService()
  : mDBState(nullptr)
@@ -4360,7 +4373,7 @@ MOZ_DEFINE_MALLOC_SIZE_OF(CookieServiceMallocSizeOf)
 
 NS_IMETHODIMP
 nsCookieService::CollectReports(nsIHandleReportCallback* aHandleReport,
-                                nsISupports* aData)
+                                nsISupports* aData, bool aAnonymize)
 {
   return MOZ_COLLECT_REPORT(
     "explicit/cookie-service", KIND_HEAP, UNITS_BYTES,

@@ -36,7 +36,6 @@ class PSMContentDownloader : public nsIStreamListener
 public:
   PSMContentDownloader() {NS_ASSERTION(false, "don't use this constructor."); }
   PSMContentDownloader(uint32_t type);
-  virtual ~PSMContentDownloader();
   void setSilentDownload(bool flag);
 
   NS_DECL_ISUPPORTS
@@ -50,6 +49,8 @@ public:
   enum {X509_SERVER_CERT  = 4};
 
 protected:
+  virtual ~PSMContentDownloader();
+
   char* mByteData;
   int32_t mBufferOffset;
   int32_t mBufferSize;
@@ -69,7 +70,7 @@ PSMContentDownloader::~PSMContentDownloader()
     nsMemory::Free(mByteData);
 }
 
-NS_IMPL_ISUPPORTS2(PSMContentDownloader, nsIStreamListener, nsIRequestObserver)
+NS_IMPL_ISUPPORTS(PSMContentDownloader, nsIStreamListener, nsIRequestObserver)
 
 const int32_t kDefaultCertAllocLength = 2048;
 
@@ -213,9 +214,9 @@ getPSMContentType(const char * aContentType)
 
 } // unnamed namespace
 
-NS_IMPL_ISUPPORTS2(PSMContentListener,
-                   nsIURIContentListener,
-                   nsISupportsWeakReference) 
+NS_IMPL_ISUPPORTS(PSMContentListener,
+                  nsIURIContentListener,
+                  nsISupportsWeakReference) 
 
 PSMContentListener::PSMContentListener()
 {

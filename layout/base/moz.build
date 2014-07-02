@@ -8,12 +8,6 @@ XPIDL_SOURCES += [
     'nsIStyleSheetService.idl',
 ]
 
-if CONFIG['IBMBIDI']:
-    UNIFIED_SOURCES += [
-        'nsBidi.cpp',
-        'nsBidiPresUtils.cpp',
-    ]
-
 if CONFIG['MOZ_DEBUG']:
     UNIFIED_SOURCES += [
         'nsAutoLayoutPhase.cpp',
@@ -72,6 +66,8 @@ UNIFIED_SOURCES += [
     'FramePropertyTable.cpp',
     'GeometryUtils.cpp',
     'MaskLayerImageCache.cpp',
+    'nsBidi.cpp',
+    'nsBidiPresUtils.cpp',
     'nsCaret.cpp',
     'nsCounterManager.cpp',
     'nsCSSColorUtils.cpp',
@@ -94,7 +90,9 @@ UNIFIED_SOURCES += [
     'PositionedEventTargeting.cpp',
     'RestyleManager.cpp',
     'RestyleTracker.cpp',
+    'SelectionCarets.cpp',
     'StackArena.cpp',
+    'TouchCaret.cpp',
 ]
 
 # nsDocumentViewer.cpp and nsPresShell.cpp need to be built separately
@@ -130,9 +128,7 @@ LOCAL_INCLUDES += [
     '../xul/tree/',
     '/docshell/base',
     '/dom/base',
-    '/dom/events',
     '/dom/xbl',
-    '/xpcom/ds',
 ]
 
 FINAL_LIBRARY = 'gklayout'

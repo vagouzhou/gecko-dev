@@ -13,15 +13,6 @@
 
 using namespace mozilla;
 
-void
-IntPointDtorFunc(void *aObject, nsIAtom *aPropertyName,
-                 void *aPropertyValue, void *aData)
-{
-  nsIntPoint *propertyValue = static_cast<nsIntPoint*>(aPropertyValue);
-  delete propertyValue;
-}
-
-
 typedef nsImageFrame nsImageControlFrameSuper;
 class nsImageControlFrame : public nsImageControlFrameSuper,
                             public nsIFormControlFrame
@@ -31,14 +22,14 @@ public:
   ~nsImageControlFrame();
 
   virtual void DestroyFrom(nsIFrame* aDestructRoot) MOZ_OVERRIDE;
-  virtual void Init(nsIContent*      aContent,
-                    nsIFrame*        aParent,
-                    nsIFrame*        aPrevInFlow) MOZ_OVERRIDE;
+  virtual void Init(nsIContent*       aContent,
+                    nsContainerFrame* aParent,
+                    nsIFrame*         aPrevInFlow) MOZ_OVERRIDE;
 
   NS_DECL_QUERYFRAME
   NS_DECL_FRAMEARENA_HELPERS
 
-  virtual nsresult Reflow(nsPresContext*           aPresContext,
+  virtual void Reflow(nsPresContext*           aPresContext,
                           nsHTMLReflowMetrics&     aDesiredSize,
                           const nsHTMLReflowState& aReflowState,
                           nsReflowStatus&          aStatus) MOZ_OVERRIDE;
@@ -95,9 +86,9 @@ NS_NewImageControlFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
 NS_IMPL_FRAMEARENA_HELPERS(nsImageControlFrame)
 
 void
-nsImageControlFrame::Init(nsIContent*      aContent,
-                          nsIFrame*        aParent,
-                          nsIFrame*        aPrevInFlow)
+nsImageControlFrame::Init(nsIContent*       aContent,
+                          nsContainerFrame* aParent,
+                          nsIFrame*         aPrevInFlow)
 {
   nsImageControlFrameSuper::Init(aContent, aParent, aPrevInFlow);
 
@@ -107,7 +98,7 @@ nsImageControlFrame::Init(nsIContent*      aContent,
   
   mContent->SetProperty(nsGkAtoms::imageClickedPoint,
                         new nsIntPoint(0, 0),
-                        IntPointDtorFunc);
+                        nsINode::DeleteProperty<nsIntPoint>);
 }
 
 NS_QUERYFRAME_HEAD(nsImageControlFrame)
@@ -133,7 +124,7 @@ nsImageControlFrame::GetType() const
   return nsGkAtoms::imageControlFrame; 
 }
 
-nsresult
+void
 nsImageControlFrame::Reflow(nsPresContext*         aPresContext,
                            nsHTMLReflowMetrics&     aDesiredSize,
                            const nsHTMLReflowState& aReflowState,

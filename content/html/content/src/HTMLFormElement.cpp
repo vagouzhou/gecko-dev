@@ -8,11 +8,13 @@
 #include "jsapi.h"
 #include "mozilla/ContentEvents.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStateManager.h"
+#include "mozilla/EventStates.h"
+#include "mozilla/dom/AutocompleteErrorEvent.h"
 #include "mozilla/dom/HTMLFormControlsCollection.h"
 #include "mozilla/dom/HTMLFormElementBinding.h"
+#include "mozilla/Move.h"
 #include "nsIHTMLDocument.h"
-#include "nsEventStateManager.h"
-#include "nsEventStates.h"
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
 #include "nsPresContext.h"
@@ -27,6 +29,7 @@
 #include "nsAutoPtr.h"
 #include "nsTArray.h"
 #include "nsIMutableArray.h"
+#include "nsIFormAutofillContentService.h"
 
 // form submission
 #include "nsIFormSubmitObserver.h"
@@ -61,7 +64,7 @@
 
 // construction, destruction
 nsGenericHTMLElement*
-NS_NewHTMLFormElement(already_AddRefed<nsINodeInfo>&& aNodeInfo,
+NS_NewHTMLFormElement(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
                       mozilla::dom::FromParser aFromParser)
 {
   mozilla::dom::HTMLFormElement* it = new mozilla::dom::HTMLFormElement(aNodeInfo);
@@ -93,7 +96,7 @@ static const nsAttrValue::EnumTable* kFormDefaultAutocomplete = &kFormAutocomple
 bool HTMLFormElement::gFirstFormSubmitted = false;
 bool HTMLFormElement::gPasswordManagerInitialized = false;
 
-HTMLFormElement::HTMLFormElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLFormElement::HTMLFormElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo),
     mSelectedRadioButtons(4),
     mRequiredRadioButtonCounts(4),
@@ -177,11 +180,11 @@ NS_IMPL_RELEASE_INHERITED(HTMLFormElement, Element)
 
 // QueryInterface implementation for HTMLFormElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLFormElement)
-  NS_INTERFACE_TABLE_INHERITED4(HTMLFormElement,
-                                nsIDOMHTMLFormElement,
-                                nsIForm,
-                                nsIWebProgressListener,
-                                nsIRadioGroupContainer)
+  NS_INTERFACE_TABLE_INHERITED(HTMLFormElement,
+                               nsIDOMHTMLFormElement,
+                               nsIForm,
+                               nsIWebProgressListener,
+                               nsIRadioGroupContainer)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 
@@ -297,6 +300,31 @@ HTMLFormElement::CheckValidity(bool* retVal)
 {
   *retVal = CheckValidity();
   return NS_OK;
+}
+
+void
+HTMLFormElement::RequestAutocomplete()
+{
+  bool dummy;
+  nsCOMPtr<nsIDOMWindow> window =
+    do_QueryInterface(OwnerDoc()->GetScriptHandlingObject(dummy));
+  nsCOMPtr<nsIFormAutofillContentService> formAutofillContentService =
+    do_GetService("@mozilla.org/formautofill/content-service;1");
+
+  if (!formAutofillContentService || !window) {
+    AutocompleteErrorEventInit init;
+    init.mBubbles = true;
+    init.mCancelable = false;
+    init.mReason = AutoCompleteErrorReason::Disabled;
+
+    nsRefPtr<AutocompleteErrorEvent> event =
+      AutocompleteErrorEvent::Constructor(this, NS_LITERAL_STRING("autocompleteerror"), init);
+
+    (new AsyncEventDispatcher(this, event))->PostDOMEvent();
+    return;
+  }
+
+  formAutofillContentService->RequestAutocomplete(this, window);
 }
 
 bool
@@ -658,7 +686,7 @@ HTMLFormElement::DoSubmit(WidgetEvent* aEvent)
     mSubmitPopupState = openAbused;
   }
 
-  mSubmitInitiatedFromUserInput = nsEventStateManager::IsHandlingUserInput();
+  mSubmitInitiatedFromUserInput = EventStateManager::IsHandlingUserInput();
 
   if(mDeferSubmission) { 
     // we are in an event handler, JS submitted so we have to
@@ -1252,7 +1280,7 @@ HTMLFormElement::RemoveElement(nsGenericHTMLFormElement* aChild,
   
   // Find the index of the child. This will be used later if necessary
   // to find the default submit.
-  uint32_t index = controls.IndexOf(aChild);
+  size_t index = controls.IndexOf(aChild);
   NS_ENSURE_STATE(index != controls.NoIndex);
 
   controls.RemoveElementAt(index);
@@ -1434,8 +1462,14 @@ HTMLFormElement::NamedGetter(const nsAString& aName, bool &aFound)
   return nullptr;
 }
 
+bool
+HTMLFormElement::NameIsEnumerable(const nsAString& aName)
+{
+  return true;
+}
+
 void
-HTMLFormElement::GetSupportedNames(nsTArray<nsString >& aRetval)
+HTMLFormElement::GetSupportedNames(unsigned, nsTArray<nsString >& aRetval)
 {
   // TODO https://www.w3.org/Bugs/Public/show_bug.cgi?id=22320
 }
@@ -1505,7 +1539,7 @@ HTMLFormElement::FlushPendingSubmission()
   if (mPendingSubmission) {
     // Transfer owning reference so that the submissioin doesn't get deleted
     // if we reenter
-    nsAutoPtr<nsFormSubmission> submission = mPendingSubmission;
+    nsAutoPtr<nsFormSubmission> submission = Move(mPendingSubmission);
 
     SubmitSubmission(submission);
   }
@@ -2039,6 +2073,7 @@ HTMLFormElement::GetNextRadioButton(const nsAString& aName,
   radioGroup->GetLength(&numRadios);
   nsRefPtr<HTMLInputElement> radio;
 
+  bool isRadio = false;
   do {
     if (aPrevious) {
       if (--index < 0) {
@@ -2052,10 +2087,11 @@ HTMLFormElement::GetNextRadioButton(const nsAString& aName,
     if (!radio)
       continue;
 
-    if (radio->GetType() != NS_FORM_INPUT_RADIO)
+    isRadio = radio->GetType() == NS_FORM_INPUT_RADIO;
+    if (!isRadio)
       continue;
 
-  } while (radio->Disabled() && radio != currentRadio);
+  } while ((radio->Disabled() && radio != currentRadio) || !isRadio);
 
   NS_IF_ADDREF(*aRadioOut = radio);
   return NS_OK;
@@ -2194,10 +2230,10 @@ HTMLFormElement::SetValueMissingState(const nsAString& aName, bool aValue)
   mValueMissingRadioGroups.Put(aName, aValue);
 }
 
-nsEventStates
+EventStates
 HTMLFormElement::IntrinsicState() const
 {
-  nsEventStates state = nsGenericHTMLElement::IntrinsicState();
+  EventStates state = nsGenericHTMLElement::IntrinsicState();
 
   if (mInvalidElementsCount) {
     state |= NS_EVENT_STATE_INVALID;
@@ -2331,7 +2367,7 @@ HTMLFormElement::AddImageElementToTable(HTMLImageElement* aChild,
 nsresult
 HTMLFormElement::RemoveImageElement(HTMLImageElement* aChild)
 {
-  uint32_t index = mImageElements.IndexOf(aChild);
+  size_t index = mImageElements.IndexOf(aChild);
   NS_ENSURE_STATE(index != mImageElements.NoIndex);
 
   mImageElements.RemoveElementAt(index);
@@ -2366,9 +2402,9 @@ HTMLFormElement::AddToPastNamesMap(const nsAString& aName,
 }
  
 JSObject*
-HTMLFormElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLFormElement::WrapNode(JSContext* aCx)
 {
-  return HTMLFormElementBinding::Wrap(aCx, aScope, this);
+  return HTMLFormElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

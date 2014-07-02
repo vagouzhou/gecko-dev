@@ -1,4 +1,5 @@
 /* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -28,7 +29,7 @@ namespace mozilla {
  * BackgroundHangManager is the global object that
  * manages all instances of BackgroundHangThread.
  */
-class BackgroundHangManager : public AtomicRefCounted<BackgroundHangManager>
+class BackgroundHangManager
 {
 private:
   // Background hang monitor thread function
@@ -38,7 +39,7 @@ private:
 
 #ifdef MOZ_NUWA_PROCESS
     if (IsNuwaProcess()) {
-      NS_ASSERTION(NuwaMarkCurrentThread != nullptr,
+      NS_ASSERTION(NuwaMarkCurrentThread,
                    "NuwaMarkCurrentThread is undefined!");
       NuwaMarkCurrentThread(nullptr, nullptr);
     }
@@ -62,7 +63,7 @@ private:
   void RunMonitorThread();
 
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(BackgroundHangManager)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(BackgroundHangManager)
   static StaticRefPtr<BackgroundHangManager> sInstance;
 
   // Lock for access to members of this class
@@ -89,6 +90,7 @@ public:
   }
 
   BackgroundHangManager();
+private:
   ~BackgroundHangManager();
 };
 
@@ -96,14 +98,14 @@ public:
  * BackgroundHangThread is a per-thread object that is used
  * by all instances of BackgroundHangMonitor to monitor hangs.
  */
-class BackgroundHangThread : public RefCounted<BackgroundHangThread>
-                           , public LinkedListElement<BackgroundHangThread>
+class BackgroundHangThread : public LinkedListElement<BackgroundHangThread>
 {
 private:
   static ThreadLocal<BackgroundHangThread*> sTlsKey;
 
   BackgroundHangThread(const BackgroundHangThread&);
   BackgroundHangThread& operator=(const BackgroundHangThread&);
+  ~BackgroundHangThread();
 
   /* Keep a reference to the manager, so we can keep going even
      after BackgroundHangManager::Shutdown is called. */
@@ -112,14 +114,13 @@ private:
   const PRThread* mThreadID;
 
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(BackgroundHangThread)
+  NS_INLINE_DECL_REFCOUNTING(BackgroundHangThread)
   static BackgroundHangThread* FindThread();
 
   static void Startup()
   {
-    /* We can tolerate init() failing.
-       The if block turns off warn_unused_result. */
-    if (!sTlsKey.init()) {}
+    /* We can tolerate init() failing. */
+    (void)!sTlsKey.init();
   }
 
   // Hang timeout in ticks
@@ -137,14 +138,13 @@ public:
   // Platform-specific helper to get hang stacks
   ThreadStackHelper mStackHelper;
   // Stack of current hang
-  Telemetry::HangHistogram::Stack mHangStack;
+  Telemetry::HangStack mHangStack;
   // Statistics for telemetry
   Telemetry::ThreadHangStats mStats;
 
   BackgroundHangThread(const char* aName,
                        uint32_t aTimeoutMs,
                        uint32_t aMaxTimeoutMs);
-  ~BackgroundHangThread();
 
   // Report a hang; aManager->mLock IS locked
   void ReportHang(PRIntervalTime aHangTime);
@@ -177,18 +177,14 @@ BackgroundHangManager::BackgroundHangManager()
     PR_USER_THREAD, MonitorThread, this,
     PR_PRIORITY_LOW, PR_GLOBAL_THREAD, PR_JOINABLE_THREAD, 0);
 
-  MOZ_ASSERT(mHangMonitorThread,
-    "Failed to create monitor thread");
+  MOZ_ASSERT(mHangMonitorThread, "Failed to create monitor thread");
 }
 
 BackgroundHangManager::~BackgroundHangManager()
 {
-  MOZ_ASSERT(mShutdown,
-    "Destruction without Shutdown call");
-  MOZ_ASSERT(mHangThreads.isEmpty(),
-    "Destruction with outstanding monitors");
-  MOZ_ASSERT(mHangMonitorThread,
-    "No monitor thread");
+  MOZ_ASSERT(mShutdown, "Destruction without Shutdown call");
+  MOZ_ASSERT(mHangThreads.isEmpty(), "Destruction with outstanding monitors");
+  MOZ_ASSERT(mHangMonitorThread, "No monitor thread");
 
   // PR_CreateThread could have failed above due to resource limitation
   if (mHangMonitorThread) {

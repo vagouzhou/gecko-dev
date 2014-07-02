@@ -105,7 +105,7 @@
                 onget="return this._contentTitle"
                 readonly="true"/>
 
-      <field name="_characterSet">null</field>
+      <field name="_characterSet">""</field>
 
       <property name="characterSet"
                 onget="return this._characterSet"
@@ -226,7 +226,7 @@
             case "Browser:Init":
               let result = {};
               result.useGlobalHistory = !this.hasAttribute("disableglobalhistory");
-              result.initPopup = this.autoCompletePopup;
+              result.initPopup = this.autoCompletePopup != null;
               return result;
               break;
             case "DOMTitleChanged":

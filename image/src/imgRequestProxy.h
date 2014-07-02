@@ -17,6 +17,7 @@
 #include "nsCOMPtr.h"
 #include "nsAutoPtr.h"
 #include "nsThreadUtils.h"
+#include "mozilla/TimeStamp.h"
 
 #include "imgRequest.h"
 
@@ -31,7 +32,7 @@
 class imgINotificationObserver;
 class imgRequestNotifyRunnable;
 class imgStatusNotifyRunnable;
-class nsIntRect;
+struct nsIntRect;
 class ProxyBehaviour;
 
 namespace mozilla {
@@ -47,6 +48,9 @@ class imgRequestProxy : public imgIRequest,
                         public nsITimedChannel,
                         public mozilla::SupportsWeakPtr<imgRequestProxy>
 {
+protected:
+  virtual ~imgRequestProxy();
+
 public:
   MOZ_DECLARE_REFCOUNTED_TYPENAME(imgRequestProxy)
   typedef mozilla::image::ImageURL ImageURL;
@@ -58,7 +62,6 @@ public:
   // nsITimedChannel declared below
 
   imgRequestProxy();
-  virtual ~imgRequestProxy();
 
   // Callers to Init or ChangeOwner are required to call NotifyListener after
   // (although not immediately after) doing so.

@@ -6,6 +6,9 @@
 
 #include "builtin/TestingFunctions.h"
 
+#include "mozilla/Move.h"
+#include "mozilla/Scoped.h"
+
 #include "jsapi.h"
 #include "jscntxt.h"
 #include "jsfriendapi.h"
@@ -18,11 +21,17 @@
 
 #include "jit/AsmJS.h"
 #include "jit/AsmJSLink.h"
+#include "js/HashTable.h"
 #include "js/StructuredClone.h"
+#include "js/UbiNode.h"
+#include "js/UbiNodeTraverse.h"
+#include "js/Vector.h"
 #include "vm/ForkJoin.h"
 #include "vm/GlobalObject.h"
 #include "vm/Interpreter.h"
 #include "vm/ProxyObject.h"
+#include "vm/SavedStacks.h"
+#include "vm/TraceLogging.h"
 
 #include "jscntxtinlines.h"
 #include "jsobjinlines.h"
@@ -31,6 +40,8 @@ using namespace js;
 using namespace JS;
 
 using mozilla::ArrayLength;
+using mozilla::Move;
+using mozilla::ScopedFreePtr;
 
 // If fuzzingSafe is set, remove functionality that could cause problems with
 // fuzzers. Set this via the environment variable MOZ_FUZZING_SAFE.
@@ -43,13 +54,8 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     RootedObject info(cx, JS_NewObject(cx, nullptr, JS::NullPtr(), JS::NullPtr()));
     if (!info)
         return false;
-    RootedValue value(cx);
 
-#ifdef JSGC_ROOT_ANALYSIS
-    value = BooleanValue(true);
-#else
-    value = BooleanValue(false);
-#endif
+    RootedValue value(cx, BooleanValue(false));
     if (!JS_SetProperty(cx, info, "rooting-analysis", value))
         return false;
 
@@ -91,6 +97,14 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     value = BooleanValue(false);
 #endif
     if (!JS_SetProperty(cx, info, "x64", value))
+        return false;
+
+#ifdef JS_ARM_SIMULATOR
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "arm-simulator", value))
         return false;
 
 #ifdef MOZ_ASAN
@@ -197,6 +211,14 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     if (!JS_SetProperty(cx, info, "binary-data", value))
         return false;
 
+#ifdef EXPOSE_INTL_API
+    value = BooleanValue(true);
+#else
+    value = BooleanValue(false);
+#endif
+    if (!JS_SetProperty(cx, info, "intl-api", value))
+        return false;
+
     args.rval().setObject(*info);
     return true;
 }
@@ -225,7 +247,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
     }
 
 #ifndef JS_MORE_DETERMINISTIC
-    size_t preBytes = cx->runtime()->gcBytes;
+    size_t preBytes = cx->runtime()->gc.bytes;
 #endif
 
     if (compartment)
@@ -237,7 +259,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
     char buf[256] = { '\0' };
 #ifndef JS_MORE_DETERMINISTIC
     JS_snprintf(buf, sizeof(buf), "before %lu, after %lu\n",
-                (unsigned long)preBytes, (unsigned long)cx->runtime()->gcBytes);
+                (unsigned long)preBytes, (unsigned long)cx->runtime()->gc.bytes);
 #endif
     JSString *str = JS_NewStringCopyZ(cx, buf);
     if (!str)
@@ -252,7 +274,7 @@ MinorGC(JSContext *cx, unsigned argc, jsval *vp)
     CallArgs args = CallArgsFromVp(argc, vp);
 #ifdef JSGC_GENERATIONAL
     if (args.get(0) == BooleanValue(true))
-        cx->runtime()->gcStoreBuffer.setAboutToOverflow();
+        cx->runtime()->gc.storeBuffer.setAboutToOverflow();
 
     MinorGC(cx, gcreason::API);
 #endif
@@ -432,7 +454,7 @@ GCPreserveCode(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    cx->runtime()->alwaysPreserveCode = true;
+    cx->runtime()->gc.setAlwaysPreserveCode();
 
     args.rval().setUndefined();
     return true;
@@ -497,10 +519,17 @@ SelectForGC(JSContext *cx, unsigned argc, Value *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
+    /*
+     * The selectedForMarking set is intended to be manually marked at slice
+     * start to detect missing pre-barriers. It is invalid for nursery things
+     * to be in the set, so evict the nursery before adding items.
+     */
     JSRuntime *rt = cx->runtime();
+    MinorGC(rt, JS::gcreason::EVICT_NURSERY);
+
     for (unsigned i = 0; i < args.length(); i++) {
         if (args[i].isObject()) {
-            if (!rt->gcSelectedForMarking.append(&args[i].toObject()))
+            if (!rt->gc.selectForMarking(&args[i].toObject()))
                 return false;
         }
     }
@@ -551,7 +580,7 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     const char *state;
-    gc::State globalState = cx->runtime()->gcIncrementalState;
+    gc::State globalState = cx->runtime()->gc.state();
     if (globalState == gc::NO_INCREMENTAL)
         state = "none";
     else if (globalState == gc::MARK)
@@ -579,7 +608,7 @@ DeterministicGC(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    gc::SetDeterministicGC(cx, ToBoolean(args[0]));
+    cx->runtime()->gc.setDeterministic(ToBoolean(args[0]));
     args.rval().setUndefined();
     return true;
 }
@@ -621,7 +650,7 @@ ValidateGC(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    gc::SetValidateGC(cx, ToBoolean(args[0]));
+    cx->runtime()->gc.setValidate(ToBoolean(args[0]));
     args.rval().setUndefined();
     return true;
 }
@@ -637,7 +666,7 @@ FullCompartmentChecks(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    gc::SetFullCompartmentChecks(cx, ToBoolean(args[0]));
+    cx->runtime()->gc.setFullCompartmentChecks(ToBoolean(args[0]));
     args.rval().setUndefined();
     return true;
 }
@@ -680,20 +709,24 @@ struct JSCountHeapNode {
 
 typedef HashSet<void *, PointerHasher<void *, 3>, SystemAllocPolicy> VisitedSet;
 
-typedef struct JSCountHeapTracer {
+class CountHeapTracer
+{
+  public:
+    CountHeapTracer(JSRuntime *rt, JSTraceCallback callback) : base(rt, callback) {}
+
     JSTracer            base;
     VisitedSet          visited;
     JSCountHeapNode     *traceList;
     JSCountHeapNode     *recycleList;
     bool                ok;
-} JSCountHeapTracer;
+};
 
 static void
 CountHeapNotify(JSTracer *trc, void **thingp, JSGCTraceKind kind)
 {
     JS_ASSERT(trc->callback == CountHeapNotify);
 
-    JSCountHeapTracer *countTracer = (JSCountHeapTracer *)trc;
+    CountHeapTracer *countTracer = (CountHeapTracer *)trc;
     void *thing = *thingp;
 
     if (!countTracer->ok)
@@ -731,6 +764,7 @@ static const struct TraceKindPair {
     { "all",        -1                  },
     { "object",     JSTRACE_OBJECT      },
     { "string",     JSTRACE_STRING      },
+    { "symbol",     JSTRACE_SYMBOL      },
 };
 
 static bool
@@ -741,9 +775,9 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
     RootedValue startValue(cx, UndefinedValue());
     if (args.length() > 0) {
         jsval v = args[0];
-        if (JSVAL_IS_TRACEABLE(v)) {
+        if (v.isMarkable()) {
             startValue = v;
-        } else if (!JSVAL_IS_NULL(v)) {
+        } else if (!v.isNull()) {
             JS_ReportError(cx,
                            "the first argument is not null or a heap-allocated "
                            "thing");
@@ -768,11 +802,11 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
                 return false;
             }
             traceValue = args[2];
-            if (!JSVAL_IS_TRACEABLE(traceValue)){
+            if (!traceValue.isMarkable()){
                 JS_ReportError(cx, "cannot trace this kind of value");
                 return false;
             }
-            traceThing = JSVAL_TO_TRACEABLE(traceValue);
+            traceThing = traceValue.toGCThing();
         } else {
             for (size_t i = 0; ;) {
                 if (JS_FlatStringEqualsAscii(flatStr, traceKindNames[i].name)) {
@@ -789,8 +823,7 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
         }
     }
 
-    JSCountHeapTracer countTracer;
-    JS_TracerInit(&countTracer.base, JS_GetRuntime(cx), CountHeapNotify);
+    CountHeapTracer countTracer(JS_GetRuntime(cx), CountHeapNotify);
     if (!countTracer.visited.init()) {
         JS_ReportOutOfMemory(cx);
         return false;
@@ -835,7 +868,40 @@ CountHeap(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-#ifdef DEBUG
+static bool
+GetSavedFrameCount(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setNumber(cx->compartment()->savedStacks().count());
+    return true;
+}
+
+static bool
+SaveStack(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    Rooted<JSObject*> stack(cx);
+    if (!JS::CaptureCurrentStack(cx, &stack))
+        return false;
+    args.rval().setObject(*stack);
+    return true;
+}
+
+static bool
+EnableTrackAllocations(JSContext *cx, unsigned argc, jsval *vp)
+{
+    SetObjectMetadataCallback(cx, SavedStacksMetadataCallback);
+    return true;
+}
+
+static bool
+DisableTrackAllocations(JSContext *cx, unsigned argc, jsval *vp)
+{
+    SetObjectMetadataCallback(cx, nullptr);
+    return true;
+}
+
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
 static bool
 OOMAfterAllocations(JSContext *cx, unsigned argc, jsval *vp)
 {
@@ -967,21 +1033,22 @@ Terminate(JSContext *cx, unsigned arg, jsval *vp)
     return false;
 }
 
+#define SPS_PROFILING_STACK_MAX_SIZE 1000
+static ProfileEntry SPS_PROFILING_STACK[SPS_PROFILING_STACK_MAX_SIZE];
+static uint32_t SPS_PROFILING_STACK_SIZE = 0;
+
 static bool
-EnableSPSProfilingAssertions(JSContext *cx, unsigned argc, jsval *vp)
+EnableSPSProfiling(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-    if (!args.get(0).isBoolean()) {
-        RootedObject arg(cx, &args.callee());
-        ReportUsageError(cx, arg, "Must have one boolean argument");
-        return false;
-    }
 
-    static ProfileEntry stack[1000];
-    static uint32_t stack_size = 0;
+    // Disable before re-enabling; see the assertion in |SPSProfiler::setProfilingStack|.
+    if (cx->runtime()->spsProfiler.installed())
+        cx->runtime()->spsProfiler.enable(false);
 
-    SetRuntimeProfilingStack(cx->runtime(), stack, &stack_size, 1000);
-    cx->runtime()->spsProfiler.enableSlowAssertions(args[0].toBoolean());
+    SetRuntimeProfilingStack(cx->runtime(), SPS_PROFILING_STACK, &SPS_PROFILING_STACK_SIZE,
+                             SPS_PROFILING_STACK_MAX_SIZE);
+    cx->runtime()->spsProfiler.enableSlowAssertions(false);
     cx->runtime()->spsProfiler.enable(true);
 
     args.rval().setUndefined();
@@ -989,10 +1056,41 @@ EnableSPSProfilingAssertions(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static bool
-DisableSPSProfiling(JSContext *cx, unsigned argc, jsval *vp)
+EnableSPSProfilingWithSlowAssertions(JSContext *cx, unsigned argc, jsval *vp)
 {
+    CallArgs args = CallArgsFromVp(argc, vp);
+    args.rval().setUndefined();
+
+    if (cx->runtime()->spsProfiler.enabled()) {
+        // If profiling already enabled with slow assertions disabled,
+        // this is a no-op.
+        if (cx->runtime()->spsProfiler.slowAssertionsEnabled())
+            return true;
+
+        // Slow assertions are off.  Disable profiling before re-enabling
+        // with slow assertions on.
+        cx->runtime()->spsProfiler.enable(false);
+    }
+
+    // Disable before re-enabling; see the assertion in |SPSProfiler::setProfilingStack|.
     if (cx->runtime()->spsProfiler.installed())
         cx->runtime()->spsProfiler.enable(false);
+
+    SetRuntimeProfilingStack(cx->runtime(), SPS_PROFILING_STACK, &SPS_PROFILING_STACK_SIZE,
+                             SPS_PROFILING_STACK_MAX_SIZE);
+    cx->runtime()->spsProfiler.enableSlowAssertions(true);
+    cx->runtime()->spsProfiler.enable(true);
+
+    return true;
+}
+
+static bool
+DisableSPSProfiling(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (cx->runtime()->spsProfiler.installed())
+        cx->runtime()->spsProfiler.enable(false);
+    args.rval().setUndefined();
     return true;
 }
 
@@ -1049,23 +1147,27 @@ ShellObjectMetadataCallback(JSContext *cx, JSObject **pmetadata)
     static int createdIndex = 0;
     createdIndex++;
 
-    if (!JS_DefineProperty(cx, obj, "index", Int32Value(createdIndex),
-                           JS_PropertyStub, JS_StrictPropertyStub, 0))
+    if (!JS_DefineProperty(cx, obj, "index", createdIndex, 0,
+                           JS_PropertyStub, JS_StrictPropertyStub))
     {
         return false;
     }
 
-    if (!JS_DefineProperty(cx, obj, "stack", ObjectValue(*stack),
-                           JS_PropertyStub, JS_StrictPropertyStub, 0))
+    if (!JS_DefineProperty(cx, obj, "stack", stack, 0,
+                           JS_PropertyStub, JS_StrictPropertyStub))
     {
         return false;
     }
 
     int stackIndex = 0;
+    RootedId id(cx);
+    RootedValue callee(cx);
     for (NonBuiltinScriptFrameIter iter(cx); !iter.done(); ++iter) {
         if (iter.isFunctionFrame() && iter.compartment() == cx->compartment()) {
-            if (!JS_DefinePropertyById(cx, stack, INT_TO_JSID(stackIndex), ObjectValue(*iter.callee()),
-                                       JS_PropertyStub, JS_StrictPropertyStub, 0))
+            id = INT_TO_JSID(stackIndex);
+            RootedObject callee(cx, iter.callee());
+            if (!JS_DefinePropertyById(cx, stack, id, callee, 0,
+                                       JS_PropertyStub, JS_StrictPropertyStub))
             {
                 return false;
             }
@@ -1276,7 +1378,7 @@ class CloneBufferObject : public JSObject {
     // Discard an owned clone buffer.
     void discard() {
         if (data())
-            JS_ClearStructuredClone(data(), nbytes());
+            JS_ClearStructuredClone(data(), nbytes(), nullptr, nullptr);
         setReservedSlot(DATA_SLOT, PrivateValue(nullptr));
     }
 
@@ -1445,8 +1547,13 @@ Neuter(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
+    if (args.length() != 2) {
+        JS_ReportError(cx, "wrong number of arguments to neuter()");
+        return false;
+    }
+
     RootedObject obj(cx);
-    if (!JS_ValueToObject(cx, args.get(0), &obj))
+    if (!JS_ValueToObject(cx, args[0], &obj))
         return false;
 
     if (!obj) {
@@ -1454,7 +1561,23 @@ Neuter(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    if (!JS_NeuterArrayBuffer(cx, obj))
+    NeuterDataDisposition changeData;
+    RootedString str(cx, JS::ToString(cx, args[1]));
+    if (!str)
+        return false;
+    JSAutoByteString dataDisposition(cx, str);
+    if (!dataDisposition)
+        return false;
+    if (strcmp(dataDisposition.ptr(), "same-data") == 0) {
+        changeData = KeepData;
+    } else if (strcmp(dataDisposition.ptr(), "change-data") == 0) {
+        changeData = ChangeData;
+    } else {
+        JS_ReportError(cx, "unknown parameter 2 to neuter()");
+        return false;
+    }
+
+    if (!JS_NeuterArrayBuffer(cx, obj, changeData))
         return false;
 
     args.rval().setUndefined();
@@ -1462,11 +1585,11 @@ Neuter(JSContext *cx, unsigned argc, jsval *vp)
 }
 
 static bool
-WorkerThreadCount(JSContext *cx, unsigned argc, jsval *vp)
+HelperThreadCount(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 #ifdef JS_THREADSAFE
-    args.rval().setInt32(cx->runtime()->useHelperThreads() ? WorkerThreadState().threadCount : 0);
+    args.rval().setInt32(HelperThreadState().threadCount);
 #else
     args.rval().setInt32(0);
 #endif
@@ -1479,6 +1602,270 @@ TimesAccessed(JSContext *cx, unsigned argc, jsval *vp)
     static int32_t accessed = 0;
     CallArgs args = CallArgsFromVp(argc, vp);
     args.rval().setInt32(++accessed);
+    return true;
+}
+
+static bool
+EnableTraceLogger(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    TraceLogger *logger = TraceLoggerForMainThread(cx->runtime());
+    args.rval().setBoolean(TraceLoggerEnable(logger));
+
+    return true;
+}
+
+static bool
+DisableTraceLogger(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    TraceLogger *logger = TraceLoggerForMainThread(cx->runtime());
+    args.rval().setBoolean(TraceLoggerDisable(logger));
+
+    return true;
+}
+
+#ifdef DEBUG
+static bool
+DumpObject(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    RootedObject obj(cx);
+    if (!JS_ConvertArguments(cx, args, "o", obj.address()))
+        return false;
+
+    js_DumpObject(obj);
+
+    args.rval().setUndefined();
+    return true;
+}
+#endif
+
+static bool
+ReportOutOfMemory(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    JS_ReportOutOfMemory(cx);
+    cx->clearPendingException();
+    args.rval().setUndefined();
+    return true;
+}
+
+static bool
+ReportLargeAllocationFailure(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    void *buf = cx->runtime()->onOutOfMemoryCanGC(NULL, JSRuntime::LARGE_ALLOCATION);
+    js_free(buf);
+    args.rval().setUndefined();
+    return true;
+}
+
+namespace heaptools {
+
+// An edge to a node from its predecessor in a path through the graph.
+class BackEdge {
+    // The node from which this edge starts.
+    JS::ubi::Node predecessor_;
+
+    // The name of this edge. We own this storage.
+    ScopedFreePtr<jschar> name_;
+
+  public:
+    BackEdge() : name_(nullptr) { }
+    // Construct an initialized back edge. Take ownership of |name|.
+    BackEdge(JS::ubi::Node predecessor, jschar *name)
+        : predecessor_(predecessor), name_(name) { }
+    BackEdge(BackEdge &&rhs) : predecessor_(rhs.predecessor_), name_(rhs.name_.forget()) { }
+    BackEdge &operator=(BackEdge &&rhs) {
+        MOZ_ASSERT(&rhs != this);
+        this->~BackEdge();
+        new(this) BackEdge(Move(rhs));
+        return *this;
+    }
+
+    jschar *forgetName() { return name_.forget(); }
+    JS::ubi::Node predecessor() const { return predecessor_; }
+
+  private:
+    // No copy constructor or copying assignment.
+    BackEdge(const BackEdge &) MOZ_DELETE;
+    BackEdge &operator=(const BackEdge &) MOZ_DELETE;
+};
+
+// A path-finding handler class for use with JS::ubi::BreadthFirst.
+struct FindPathHandler {
+    typedef BackEdge NodeData;
+    typedef JS::ubi::BreadthFirst<FindPathHandler> Traversal;
+
+    FindPathHandler(JS::ubi::Node start, JS::ubi::Node target,
+                    AutoValueVector &nodes, Vector<ScopedFreePtr<jschar> > &edges)
+      : start(start), target(target), foundPath(false),
+        nodes(nodes), edges(edges) { }
+
+    bool
+    operator()(Traversal &traversal, JS::ubi::Node origin, const JS::ubi::Edge &edge,
+               BackEdge *backEdge, bool first)
+    {
+        // We take care of each node the first time we visit it, so there's
+        // nothing to be done on subsequent visits.
+        if (!first)
+            return true;
+
+        // Record how we reached this node. This is the last edge on a
+        // shortest path to this node.
+        jschar *edgeName = js_strdup(traversal.cx, edge.name);
+        if (!edgeName)
+            return false;
+        *backEdge = mozilla::Move(BackEdge(origin, edgeName));
+
+        // Have we reached our final target node?
+        if (edge.referent == target) {
+            // Record the path that got us here, which must be a shortest path.
+            if (!recordPath(traversal))
+                return false;
+            foundPath = true;
+            traversal.stop();
+        }
+
+        return true;
+    }
+
+    // We've found a path to our target. Walk the backlinks to produce the
+    // (reversed) path, saving the path in |nodes| and |edges|. |nodes| is
+    // rooted, so it can hold the path's nodes as we leave the scope of
+    // the AutoCheckCannotGC.
+    bool recordPath(Traversal &traversal) {
+        JS::ubi::Node here = target;
+
+        do {
+            Traversal::NodeMap::Ptr p = traversal.visited.lookup(here);
+            MOZ_ASSERT(p);
+            JS::ubi::Node predecessor = p->value().predecessor();
+            if (!nodes.append(predecessor.exposeToJS()) ||
+                !edges.append(p->value().forgetName()))
+                return false;
+            here = predecessor;
+        } while (here != start);
+
+        return true;
+    }
+
+    // The node we're starting from.
+    JS::ubi::Node start;
+
+    // The node we're looking for.
+    JS::ubi::Node target;
+
+    // True if we found a path to target, false if we didn't.
+    bool foundPath;
+
+    // The nodes and edges of the path --- should we find one. The path is
+    // stored in reverse order, because that's how it's easiest for us to
+    // construct it:
+    // - edges[i] is the name of the edge from nodes[i] to nodes[i-1].
+    // - edges[0] is the name of the edge from nodes[0] to the target.
+    // - The last node, nodes[n-1], is the start node.
+    AutoValueVector &nodes;
+    Vector<ScopedFreePtr<jschar> > &edges;
+};
+
+} // namespace heaptools
+
+static bool
+FindPath(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+    if (argc < 2) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_MORE_ARGS_NEEDED,
+                             "findPath", "1", "");
+        return false;
+    }
+
+    // We don't ToString non-objects given as 'start' or 'target'. We can't
+    // see edges to non-string primitive values, and it doesn't make much
+    // sense to ask for paths to or from a freshly allocated string, so
+    // if a non-string primitive appears here it's probably a mistake.
+    if (!args[0].isObject() && !args[0].isString()) {
+        js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
+                                 JSDVG_SEARCH_STACK, args[0], JS::NullPtr(),
+                                 "neither an object nor a string", NULL);
+        return false;
+    }
+
+    if (!args[1].isObject() && !args[1].isString()) {
+        js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
+                                 JSDVG_SEARCH_STACK, args[0], JS::NullPtr(),
+                                 "neither an object nor a string", NULL);
+        return false;
+    }
+
+    AutoValueVector nodes(cx);
+    Vector<ScopedFreePtr<jschar> > edges(cx);
+
+    {
+        // We can't tolerate the GC moving things around while we're searching
+        // the heap. Check that nothing we do causes a GC.
+        JS::AutoCheckCannotGC autoCannotGC;
+
+        JS::ubi::Node start(args[0]), target(args[1]);
+
+        heaptools::FindPathHandler handler(start, target, nodes, edges);
+        heaptools::FindPathHandler::Traversal traversal(cx, handler, autoCannotGC);
+        if (!traversal.init() || !traversal.addStart(start))
+            return false;
+
+        if (!traversal.traverse())
+            return false;
+
+        if (!handler.foundPath) {
+            // We didn't find any paths from the start to the target.
+            args.rval().setUndefined();
+            return true;
+        }
+    }
+
+    // |nodes| and |edges| contain the path from |start| to |target|, reversed.
+    // Construct a JavaScript array describing the path from the start to the
+    // target. Each element has the form:
+    //
+    //   { node: <object or string>, edge: <string describing outgoing edge from node> }
+    //
+    // or, if the node is some internal thing, that isn't a proper
+    // JavaScript value:
+    //
+    //   { node: undefined, edge: <string> }
+    size_t length = nodes.length();
+    RootedObject result(cx, NewDenseAllocatedArray(cx, length));
+    if (!result)
+        return false;
+    result->ensureDenseInitializedLength(cx, 0, length);
+
+    // Walk |nodes| and |edges| in the stored order, and construct the result
+    // array in start-to-target order.
+    for (size_t i = 0; i < length; i++) {
+        // Build an object describing the node and edge.
+        RootedObject obj(cx, NewBuiltinClassInstance<JSObject>(cx));
+        if (!obj)
+            return false;
+
+        if (!JS_DefineProperty(cx, obj, "node", nodes[i],
+                               JSPROP_ENUMERATE, nullptr, nullptr))
+            return false;
+
+        RootedString edge(cx, NewString<CanGC>(cx, edges[i].get(), js_strlen(edges[i])));
+        if (!edge)
+            return false;
+        edges[i].forget();
+        RootedValue edgeString(cx, StringValue(edge));
+        if (!JS_DefineProperty(cx, obj, "edge", edgeString,
+                               JSPROP_ENUMERATE, nullptr, nullptr))
+            return false;
+
+        result->setDenseElement(length - i - 1, ObjectValue(*obj));
+    }
+
+    args.rval().setObject(*result);
     return true;
 }
 
@@ -1512,7 +1899,26 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "  then you can provide an extra argument with some specific traceable\n"
 "  thing to count.\n"),
 
-#ifdef DEBUG
+    JS_FN_HELP("getSavedFrameCount", GetSavedFrameCount, 0, 0,
+"getSavedFrameCount()",
+"  Return the number of SavedFrame instances stored in this compartment's\n"
+"  SavedStacks cache."),
+
+    JS_FN_HELP("saveStack", SaveStack, 0, 0,
+"saveStack()",
+"  Capture a stack.\n"),
+
+    JS_FN_HELP("enableTrackAllocations", EnableTrackAllocations, 0, 0,
+"enableTrackAllocations()",
+"  Start capturing the JS stack at every allocation. Note that this sets an "
+"  object metadata callback that will override any other object metadata "
+"  callback that may be set."),
+
+    JS_FN_HELP("disableTrackAllocations", DisableTrackAllocations, 0, 0,
+"disableTrackAllocations()",
+"  Stop capturing the JS stack at every allocation."),
+
+#if defined(DEBUG) || defined(JS_OOM_BREAKPOINT)
     JS_FN_HELP("oomAfterAllocations", OOMAfterAllocations, 1, 0,
 "oomAfterAllocations(count)",
 "  After 'count' js_malloc memory allocations, fail every following allocation\n"
@@ -1615,14 +2021,17 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "  Terminate JavaScript execution, as if we had run out of\n"
 "  memory or been terminated by the slow script dialog."),
 
-    JS_FN_HELP("enableSPSProfilingAssertions", EnableSPSProfilingAssertions, 1, 0,
-"enableSPSProfilingAssertions(slow)",
-"  Enables SPS instrumentation and corresponding assertions. If 'slow' is\n"
-"  true, then even slower assertions are enabled for all generated JIT code.\n"
-"  When 'slow' is false, then instrumentation is enabled, but the slow\n"
-"  assertions are disabled."),
+    JS_FN_HELP("enableSPSProfiling", EnableSPSProfiling, 0, 0,
+"enableSPSProfiling()",
+"  Enables SPS instrumentation and corresponding assertions, with slow\n"
+"  assertions disabled.\n"),
 
-    JS_FN_HELP("disableSPSProfiling", DisableSPSProfiling, 1, 0,
+    JS_FN_HELP("enableSPSProfilingWithSlowAssertions", EnableSPSProfilingWithSlowAssertions, 0, 0,
+"enableSPSProfilingWithSlowAssertions()",
+"  Enables SPS instrumentation and corresponding assertions, with slow\n"
+"  assertions enabled.\n"),
+
+    JS_FN_HELP("disableSPSProfiling", DisableSPSProfiling, 0, 0,
 "disableSPSProfiling()",
 "  Disables SPS instrumentation"),
 
@@ -1710,12 +2119,54 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "  Deserialize data generated by serialize."),
 
     JS_FN_HELP("neuter", Neuter, 1, 0,
-"neuter(buffer)",
-"  Neuter the given ArrayBuffer object as if it had been transferred to a WebWorker."),
+"neuter(buffer, \"change-data\"|\"same-data\")",
+"  Neuter the given ArrayBuffer object as if it had been transferred to a\n"
+"  WebWorker. \"change-data\" will update the internal data pointer.\n"
+"  \"same-data\" will leave it set to its original value, to mimic eg\n"
+"  asm.js ArrayBuffer neutering."),
 
-    JS_FN_HELP("workerThreadCount", WorkerThreadCount, 0, 0,
-"workerThreadCount()",
-"  Returns the number of worker threads available for off-main-thread tasks."),
+    JS_FN_HELP("helperThreadCount", HelperThreadCount, 0, 0,
+"helperThreadCount()",
+"  Returns the number of helper threads available for off-main-thread tasks."),
+
+    JS_FN_HELP("startTraceLogger", EnableTraceLogger, 0, 0,
+"startTraceLogger()",
+"  Start logging the mainThread.\n"
+"  Note: tracelogging starts automatically. Disable it by setting environment variable\n"
+"  TLOPTIONS=disableMainThread"),
+
+    JS_FN_HELP("stopTraceLogger", DisableTraceLogger, 0, 0,
+"stopTraceLogger()",
+"  Stop logging the mainThread."),
+
+    JS_FN_HELP("reportOutOfMemory", ReportOutOfMemory, 0, 0,
+"reportOutOfMemory()",
+"  Report OOM, then clear the exception and return undefined. For crash testing."),
+
+    JS_FN_HELP("reportLargeAllocationFailure", ReportLargeAllocationFailure, 0, 0,
+"reportLargeAllocationFailure()",
+"  Call the large allocation failure callback, as though a large malloc call failed,\n"
+"  then return undefined. In Gecko, this sends a memory pressure notification, which\n"
+"  can free up some memory."),
+
+    JS_FN_HELP("findPath", FindPath, 2, 0,
+"findPath(start, target)",
+"  Return an array describing one of the shortest paths of GC heap edges from\n"
+"  |start| to |target|, or |undefined| if |target| is unreachable from |start|.\n"
+"  Each element of the array is either of the form:\n"
+"    { node: <object or string>, edge: <string describing edge from node> }\n"
+"  if the node is a JavaScript object or value; or of the form:\n"
+"    { type: <string describing node>, edge: <string describing edge> }\n"
+"  if the node is some internal thing that is not a proper JavaScript value\n"
+"  (like a shape or a scope chain element). The destination of the i'th array\n"
+"  element's edge is the node of the i+1'th array element; the destination of\n"
+"  the last array element is implicitly |target|.\n"),
+
+#ifdef DEBUG
+    JS_FN_HELP("dumpObject", DumpObject, 1, 0,
+"dumpObject()",
+"  Dump an internal representation of an object."),
+#endif
 
     JS_FS_HELP_END
 };

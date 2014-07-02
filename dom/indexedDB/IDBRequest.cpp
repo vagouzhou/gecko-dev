@@ -12,6 +12,7 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/dom/ErrorEventBinding.h"
 #include "mozilla/dom/IDBOpenDBRequestBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/UnionTypes.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDOMClassInfoID.h"
@@ -169,7 +170,7 @@ IDBRequest::NotifyHelperCompleted(HelperBase* aHelper)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(!mHaveResultOrErrorCode, "Already called!");
-  NS_ASSERTION(JSVAL_IS_VOID(mResultVal), "Should be undefined!");
+  NS_ASSERTION(mResultVal.isUndefined(), "Should be undefined!");
 
   mHaveResultOrErrorCode = true;
 
@@ -188,18 +189,24 @@ IDBRequest::NotifyHelperCompleted(HelperBase* aHelper)
   }
 
   // Otherwise we need to get the result from the helper.
-  AutoPushJSContext cx(GetJSContext());
-  if (!cx) {
-    IDB_WARNING("Failed to get safe JSContext!");
-    rv = NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
-    SetError(rv);
-    return rv;
+  AutoJSAPI jsapi;
+  Maybe<JSAutoCompartment> ac;
+  if (GetScriptOwner()) {
+    // If we have a script owner we want the SafeJSContext and then to enter
+    // the script owner's compartment.
+    jsapi.Init();
+    ac.construct(jsapi.cx(), GetScriptOwner());
+  } else {
+    // Otherwise our owner is a window and we use that to initialize.
+    if (!jsapi.InitWithLegacyErrorReporting(GetOwner())) {
+      IDB_WARNING("Failed to initialise AutoJSAPI!");
+      rv = NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR;
+      SetError(rv);
+      return rv;
+    }
   }
+  JSContext* cx = jsapi.cx();
 
-  JS::Rooted<JSObject*> global(cx, IDBWrapperCache::GetParentObject());
-  NS_ASSERTION(global, "This should never be null!");
-
-  JSAutoCompartment ac(cx, global);
   AssertIsRooted();
 
   JS::Rooted<JS::Value> value(cx);
@@ -225,7 +232,7 @@ IDBRequest::NotifyHelperSentResultsToChildProcess(nsresult aRv)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(!mHaveResultOrErrorCode, "Already called!");
-  NS_ASSERTION(JSVAL_IS_VOID(mResultVal), "Should be undefined!");
+  NS_ASSERTION(mResultVal.isUndefined(), "Should be undefined!");
 
   // See if our window is still valid. If not then we're going to pretend that
   // we never completed.
@@ -263,28 +270,6 @@ IDBRequest::GetErrorCode() const
 }
 #endif
 
-JSContext*
-IDBRequest::GetJSContext()
-{
-  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
-
-  JSContext* cx;
-
-  if (GetScriptOwner()) {
-    return nsContentUtils::GetSafeJSContext();
-  }
-
-  nsresult rv;
-  nsIScriptContext* sc = GetContextForEventHandlers(&rv);
-  NS_ENSURE_SUCCESS(rv, nullptr);
-  NS_ENSURE_TRUE(sc, nullptr);
-
-  cx = sc->GetNativeContext();
-  NS_ASSERTION(cx, "Failed to get a context!");
-
-  return cx;
-}
-
 void
 IDBRequest::CaptureCaller()
 {
@@ -321,13 +306,14 @@ IDBRequest::ReadyState() const
 }
 
 JSObject*
-IDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBRequest::WrapObject(JSContext* aCx)
 {
-  return IDBRequestBinding::Wrap(aCx, aScope, this);
+  return IDBRequestBinding::Wrap(aCx, this);
 }
 
-JS::Value
-IDBRequest::GetResult(JSContext* aCx, mozilla::ErrorResult& aRv) const
+void
+IDBRequest::GetResult(JS::MutableHandle<JS::Value> aResult,
+                      ErrorResult& aRv) const
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
 
@@ -336,7 +322,8 @@ IDBRequest::GetResult(JSContext* aCx, mozilla::ErrorResult& aRv) const
     aRv.Throw(NS_ERROR_DOM_INDEXEDDB_NOT_ALLOWED_ERR);
   }
 
-  return mResultVal;
+  JS::ExposeValueToActiveJS(mResultVal);
+  aResult.set(mResultVal);
 }
 
 mozilla::dom::DOMError*
@@ -356,7 +343,7 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(IDBRequest)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
   // Don't need NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS because
-  // nsDOMEventTargetHelper does it for us.
+  // DOMEventTargetHelper does it for us.
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsObjectStore)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsIndex)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSourceAsCursor)
@@ -375,7 +362,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(IDBRequest, IDBWrapperCache)
   // Don't need NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER because
-  // nsDOMEventTargetHelper does it for us.
+  // DOMEventTargetHelper does it for us.
   NS_IMPL_CYCLE_COLLECTION_TRACE_JSVAL_MEMBER_CALLBACK(mResultVal)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
@@ -463,7 +450,7 @@ IDBOpenDBRequest::PostHandleEvent(EventChainPostVisitor& aVisitor)
 }
 
 JSObject*
-IDBOpenDBRequest::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBOpenDBRequest::WrapObject(JSContext* aCx)
 {
-  return IDBOpenDBRequestBinding::Wrap(aCx, aScope, this);
+  return IDBOpenDBRequestBinding::Wrap(aCx, this);
 }

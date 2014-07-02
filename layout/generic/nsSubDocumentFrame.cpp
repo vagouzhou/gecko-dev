@@ -95,9 +95,9 @@ static void
 EndSwapDocShellsForViews(nsView* aView);
 
 void
-nsSubDocumentFrame::Init(nsIContent*     aContent,
-                         nsIFrame*       aParent,
-                         nsIFrame*       aPrevInFlow)
+nsSubDocumentFrame::Init(nsIContent*       aContent,
+                         nsContainerFrame* aParent,
+                         nsIFrame*         aPrevInFlow)
 {
   // determine if we are a <frame> or <iframe>
   if (aContent) {
@@ -191,6 +191,61 @@ nsSubDocumentFrame::GetSubdocumentRootFrame()
   return subdocView ? subdocView->GetFrame() : nullptr;
 }
 
+nsIPresShell*
+nsSubDocumentFrame::GetSubdocumentPresShellForPainting(uint32_t aFlags)
+{
+  if (!mInnerView)
+    return nullptr;
+
+  nsView* subdocView = mInnerView->GetFirstChild();
+  if (!subdocView)
+    return nullptr;
+
+  nsIPresShell* presShell = nullptr;
+
+  nsIFrame* subdocRootFrame = subdocView->GetFrame();
+  if (subdocRootFrame) {
+    presShell = subdocRootFrame->PresContext()->PresShell();
+  }
+
+  // If painting is suppressed in the presshell, we try to look for a better
+  // presshell to use.
+  if (!presShell || (presShell->IsPaintingSuppressed() &&
+                     !(aFlags & IGNORE_PAINT_SUPPRESSION))) {
+    // During page transition mInnerView will sometimes have two children, the
+    // first being the new page that may not have any frame, and the second
+    // being the old page that will probably have a frame.
+    nsView* nextView = subdocView->GetNextSibling();
+    nsIFrame* frame = nullptr;
+    if (nextView) {
+      frame = nextView->GetFrame();
+    }
+    if (frame) {
+      nsIPresShell* ps = frame->PresContext()->PresShell();
+      if (!presShell || (ps && !ps->IsPaintingSuppressed())) {
+        subdocView = nextView;
+        subdocRootFrame = frame;
+        presShell = ps;
+      }
+    }
+    if (!presShell) {
+      // If we don't have a frame we use this roundabout way to get the pres shell.
+      if (!mFrameLoader)
+        return nullptr;
+      nsCOMPtr<nsIDocShell> docShell;
+      mFrameLoader->GetDocShell(getter_AddRefs(docShell));
+      if (!docShell)
+        return nullptr;
+      presShell = docShell->GetPresShell();
+    }
+  }
+
+  return presShell;
+}
+
+
+
+
 nsIntSize
 nsSubDocumentFrame::GetSubdocumentSize()
 {
@@ -239,7 +294,7 @@ nsSubDocumentFrame::PassPointerEventsToChildren()
       }
 
       nsCOMPtr<nsIPermissionManager> permMgr =
-        do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+        services::GetPermissionManager();
       if (permMgr) {
         uint32_t permission = nsIPermissionManager::DENY_ACTION;
         permMgr->TestPermissionFromPrincipal(GetContent()->NodePrincipal(),
@@ -322,49 +377,15 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
     return;
   }
 
-  nsView* subdocView = mInnerView->GetFirstChild();
-  if (!subdocView)
+  nsCOMPtr<nsIPresShell> presShell =
+    GetSubdocumentPresShellForPainting(
+      aBuilder->IsIgnoringPaintSuppression() ? IGNORE_PAINT_SUPPRESSION : 0);
+
+  if (!presShell) {
     return;
-
-  nsCOMPtr<nsIPresShell> presShell = nullptr;
-
-  nsIFrame* subdocRootFrame = subdocView->GetFrame();
-  if (subdocRootFrame) {
-    presShell = subdocRootFrame->PresContext()->PresShell();
   }
-  // If painting is suppressed in the presshell, we try to look for a better
-  // presshell to use.
-  if (!presShell || (presShell->IsPaintingSuppressed() &&
-                     !aBuilder->IsIgnoringPaintSuppression())) {
-    // During page transition mInnerView will sometimes have two children, the
-    // first being the new page that may not have any frame, and the second
-    // being the old page that will probably have a frame.
-    nsView* nextView = subdocView->GetNextSibling();
-    nsIFrame* frame = nullptr;
-    if (nextView) {
-      frame = nextView->GetFrame();
-    }
-    if (frame) {
-      nsIPresShell* ps = frame->PresContext()->PresShell();
-      if (!presShell || (ps && !ps->IsPaintingSuppressed())) {
-        subdocView = nextView;
-        subdocRootFrame = frame;
-        presShell = ps;
-      }
-    }
-    if (!presShell) {
-      // If we don't have a frame we use this roundabout way to get the pres shell.
-      if (!mFrameLoader)
-        return;
-      nsCOMPtr<nsIDocShell> docShell;
-      mFrameLoader->GetDocShell(getter_AddRefs(docShell));
-      if (!docShell)
-        return;
-      presShell = docShell->GetPresShell();
-      if (!presShell)
-        return;
-    }
-  }
+
+  nsIFrame* subdocRootFrame = presShell->GetRootFrame();
 
   nsPresContext* presContext = presShell->GetPresContext();
 
@@ -376,23 +397,35 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
   bool ignoreViewportScrolling = false;
   nsIFrame* savedIgnoreScrollFrame = nullptr;
   if (subdocRootFrame) {
-    nsRect displayPort;
-    if (nsLayoutUtils::ViewportHasDisplayPort(presContext, &displayPort)) {
-      haveDisplayPort = true;
-      dirty = displayPort;
-    } else {
-      // get the dirty rect relative to the root frame of the subdoc
-      dirty = aDirtyRect + GetOffsetToCrossDoc(subdocRootFrame);
-      // and convert into the appunits of the subdoc
-      dirty = dirty.ConvertAppUnitsRoundOut(parentAPD, subdocAPD);
-    }
+    // get the dirty rect relative to the root frame of the subdoc
+    dirty = aDirtyRect + GetOffsetToCrossDoc(subdocRootFrame);
+    // and convert into the appunits of the subdoc
+    dirty = dirty.ConvertAppUnitsRoundOut(parentAPD, subdocAPD);
 
-    nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame();
-    ignoreViewportScrolling =
-      rootScrollFrame && presShell->IgnoringViewportScrolling();
-    if (ignoreViewportScrolling) {
-      savedIgnoreScrollFrame = aBuilder->GetIgnoreScrollFrame();
-      aBuilder->SetIgnoreScrollFrame(rootScrollFrame);
+    if (nsIFrame* rootScrollFrame = presShell->GetRootScrollFrame()) {
+      // for root content documents we want the base to be the composition bounds
+      nsRect displayportBase = presContext->IsRootContentDocument() ?
+          nsRect(nsPoint(0,0), nsLayoutUtils::CalculateCompositionSizeForFrame(rootScrollFrame)) :
+          dirty.Intersect(nsRect(nsPoint(0,0), subdocRootFrame->GetSize()));
+      nsRect displayPort;
+      if (nsLayoutUtils::GetOrMaybeCreateDisplayPort(
+            *aBuilder, rootScrollFrame, displayportBase, &displayPort)) {
+        haveDisplayPort = true;
+        dirty = displayPort;
+      }
+
+      ignoreViewportScrolling = presShell->IgnoringViewportScrolling();
+      if (ignoreViewportScrolling) {
+        savedIgnoreScrollFrame = aBuilder->GetIgnoreScrollFrame();
+        aBuilder->SetIgnoreScrollFrame(rootScrollFrame);
+
+        if (aBuilder->IsForImageVisibility()) {
+          // The ExpandRectToNearlyVisible that the root scroll frame would do gets short
+          // circuited due to us ignoring the root scroll frame, so we do it here.
+          nsIScrollableFrame* rootScrollableFrame = do_QueryFrame(rootScrollFrame);
+          dirty = rootScrollableFrame->ExpandRectToNearlyVisible(dirty);
+        }
+      }
     }
 
     aBuilder->EnterPresShell(subdocRootFrame, dirty);
@@ -431,6 +464,12 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
     }
 
     if (subdocRootFrame) {
+      nsDisplayListBuilder::AutoCurrentScrollParentIdSetter idSetter(
+          aBuilder,
+          ignoreViewportScrolling && subdocRootFrame->GetContent()
+              ? nsLayoutUtils::FindOrCreateIDFor(subdocRootFrame->GetContent())
+              : aBuilder->GetCurrentScrollParentId());
+
       aBuilder->SetAncestorHasTouchEventHandler(false);
       subdocRootFrame->
         BuildDisplayListForStackingContext(aBuilder, dirty, &childItems);
@@ -515,7 +554,7 @@ nsSubDocumentFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 
   if (aBuilder->IsForImageVisibility()) {
     // We don't add the childItems to the return list as we're dealing with them here.
-    presShell->RebuildImageVisibility(childItems);
+    presShell->RebuildImageVisibilityDisplayList(childItems);
     childItems.DeleteAll();
   } else {
     aLists.Content()->AppendToTop(&childItems);
@@ -677,7 +716,7 @@ nsSubDocumentFrame::ComputeSize(nsRenderingContext *aRenderingContext,
                                   aMargin, aBorder, aPadding, aFlags);
 }
 
-nsresult
+void
 nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
                            nsHTMLReflowMetrics&     aDesiredSize,
                            const nsHTMLReflowState& aReflowState,
@@ -696,9 +735,7 @@ nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
                "Shouldn't happen");
 
   // XUL <iframe> or <browser>, or HTML <iframe>, <object> or <embed>
-  nsresult rv = nsLeafFrame::DoReflow(aPresContext, aDesiredSize, aReflowState,
-                                      aStatus);
-  NS_ENSURE_SUCCESS(rv, rv);
+  nsLeafFrame::DoReflow(aPresContext, aDesiredSize, aReflowState, aStatus);
 
   // "offset" is the offset of our content area from our frame's
   // top-left corner.
@@ -738,7 +775,6 @@ nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
       aDesiredSize.Width(), aDesiredSize.Height(), aStatus));
 
   NS_FRAME_SET_TRUNCATION(aStatus, aReflowState, aDesiredSize);
-  return NS_OK;
 }
 
 bool
@@ -968,7 +1004,7 @@ BeginSwapDocShellsForDocument(nsIDocument* aDocument, void*)
       ::DestroyDisplayItemDataForFrames(rootFrame);
     }
   }
-  aDocument->EnumerateFreezableElements(
+  aDocument->EnumerateActivityObservers(
     nsObjectFrame::BeginSwapDocShells, nullptr);
   aDocument->EnumerateSubDocuments(BeginSwapDocShellsForDocument, nullptr);
   return true;
@@ -1065,7 +1101,7 @@ EndSwapDocShellsForDocument(nsIDocument* aDocument, void*)
     }
   }
 
-  aDocument->EnumerateFreezableElements(
+  aDocument->EnumerateActivityObservers(
     nsObjectFrame::EndSwapDocShells, nullptr);
   aDocument->EnumerateSubDocuments(EndSwapDocShellsForDocument, nullptr);
   return true;

@@ -16,8 +16,8 @@ class nsGlobalWindow;
 class nsIPresShell;
 class nsIWidget;
 class nsPresContext;
-class nsPoint;
 class nsIDocument;
+struct nsPoint;
 
 namespace mozilla {
   namespace layers {
@@ -25,16 +25,45 @@ namespace mozilla {
   }
 }
 
+class nsTranslationNodeList MOZ_FINAL : public nsITranslationNodeList
+{
+public:
+  nsTranslationNodeList()
+  {
+    mNodes.SetCapacity(1000);
+    mNodeIsRoot.SetCapacity(1000);
+    mLength = 0;
+  }
+
+  NS_DECL_ISUPPORTS
+  NS_DECL_NSITRANSLATIONNODELIST
+
+  void AppendElement(nsIDOMNode* aElement, bool aIsRoot)
+  {
+    mNodes.AppendElement(aElement);
+    mNodeIsRoot.AppendElement(aIsRoot);
+    mLength++;
+  }
+
+private:
+  ~nsTranslationNodeList() {}
+
+  nsTArray<nsCOMPtr<nsIDOMNode> > mNodes;
+  nsTArray<bool> mNodeIsRoot;
+  uint32_t mLength;
+};
+
 class nsDOMWindowUtils MOZ_FINAL : public nsIDOMWindowUtils,
                                    public nsSupportsWeakReference
 {
 public:
   nsDOMWindowUtils(nsGlobalWindow *aWindow);
-  ~nsDOMWindowUtils();
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOMWINDOWUTILS
 
 protected:
+  ~nsDOMWindowUtils();
+
   nsWeakPtr mWindow;
 
   // If aOffset is non-null, it gets filled in with the offset of the root

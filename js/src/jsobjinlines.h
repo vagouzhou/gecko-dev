@@ -21,6 +21,7 @@
 #include "jsgcinlines.h"
 #include "jsinferinlines.h"
 
+#include "gc/ForkJoinNursery-inl.h"
 #include "vm/ObjectImpl-inl.h"
 
 /* static */ inline bool
@@ -41,13 +42,12 @@ JSObject::changePropertyAttributes(JSContext *cx, js::HandleObject obj,
 }
 
 /* static */ inline bool
-JSObject::deleteProperty(JSContext *cx, js::HandleObject obj, js::HandlePropertyName name,
+JSObject::deleteGeneric(JSContext *cx, js::HandleObject obj, js::HandleId id,
                          bool *succeeded)
 {
-    JS::RootedId id(cx, js::NameToId(name));
     js::types::MarkTypePropertyNonData(cx, obj, id);
-    js::DeletePropertyOp op = obj->getOps()->deleteProperty;
-    return (op ? op : js::baseops::DeleteProperty)(cx, obj, name, succeeded);
+    js::DeleteGenericOp op = obj->getOps()->deleteGeneric;
+    return (op ? op : js::baseops::DeleteGeneric)(cx, obj, id, succeeded);
 }
 
 /* static */ inline bool
@@ -56,9 +56,7 @@ JSObject::deleteElement(JSContext *cx, js::HandleObject obj, uint32_t index, boo
     JS::RootedId id(cx);
     if (!js::IndexToId(cx, index, &id))
         return false;
-    js::types::MarkTypePropertyNonData(cx, obj, id);
-    js::DeleteElementOp op = obj->getOps()->deleteElement;
-    return (op ? op : js::baseops::DeleteElement)(cx, obj, index, succeeded);
+    return deleteGeneric(cx, obj, id, succeeded);
 }
 
 /* static */ inline bool
@@ -223,12 +221,13 @@ JSObject::ensureDenseInitializedLengthNoPackedCheck(js::ThreadSafeContext *cx, u
     uint32_t &initlen = getElementsHeader()->initializedLength;
 
     if (initlen < index + extra) {
-        JSRuntime *rt = runtimeFromAnyThread();
         size_t offset = initlen;
         for (js::HeapSlot *sp = elements + initlen;
              sp != elements + (index + extra);
              sp++, offset++)
-            sp->init(rt, this, js::HeapSlot::Element, offset, js::MagicValue(JS_ELEMENTS_HOLE));
+        {
+            sp->init(this, js::HeapSlot::Element, offset, js::MagicValue(JS_ELEMENTS_HOLE));
+        }
         initlen = index + extra;
     }
 }
@@ -351,30 +350,32 @@ JSObject::getDenseOrTypedArrayElement(uint32_t idx)
     return getDenseElement(idx);
 }
 
-inline bool
-JSObject::setDenseOrTypedArrayElementIfHasType(js::ThreadSafeContext *cx, uint32_t index,
-                                               const js::Value &val)
-{
-    if (is<js::TypedArrayObject>())
-        return as<js::TypedArrayObject>().setElement(cx, index, val);
-    return setDenseElementIfHasType(index, val);
-}
-
-inline bool
-JSObject::setDenseOrTypedArrayElementWithType(js::ExclusiveContext *cx, uint32_t index,
-                                              const js::Value &val)
-{
-    if (is<js::TypedArrayObject>())
-        return as<js::TypedArrayObject>().setElement(cx, index, val);
-    setDenseElementWithType(cx, index, val);
-    return true;
+inline void
+JSObject::initDenseElementsUnbarriered(uint32_t dstStart, const js::Value *src, uint32_t count) {
+    /*
+     * For use by parallel threads, which since they cannot see nursery
+     * things do not require a barrier.
+     */
+    JS_ASSERT(dstStart + count <= getDenseCapacity());
+#if defined(DEBUG) && defined(JSGC_GENERATIONAL)
+    /*
+     * This asserts a global invariant: parallel code does not
+     * observe objects inside the generational GC's nursery.
+     */
+    JS_ASSERT(!js::gc::IsInsideGGCNursery(this));
+    for (uint32_t index = 0; index < count; ++index) {
+        const JS::Value& value = src[index];
+        if (value.isMarkable())
+            JS_ASSERT(!js::gc::IsInsideGGCNursery(static_cast<js::gc::Cell *>(value.toGCThing())));
+    }
+#endif
+    memcpy(&elements[dstStart], src, count * sizeof(js::HeapSlot));
 }
 
 /* static */ inline bool
 JSObject::setSingletonType(js::ExclusiveContext *cx, js::HandleObject obj)
 {
-    JS_ASSERT_IF(cx->isJSContext(),
-                 !IsInsideNursery(cx->asJSContext()->runtime(), obj.get()));
+    JS_ASSERT_IF(cx->isJSContext(), !IsInsideNursery(obj));
 
     js::types::TypeObject *type = cx->getSingletonType(obj->getClass(), obj->getTaggedProto());
     if (!type)
@@ -403,7 +404,7 @@ JSObject::clearType(JSContext *cx, js::HandleObject obj)
     JS_ASSERT(!obj->hasSingletonType());
     JS_ASSERT(cx->compartment() == obj->compartment());
 
-    js::types::TypeObject *type = cx->getNewType(obj->getClass(), nullptr);
+    js::types::TypeObject *type = cx->getNewType(obj->getClass(), js::TaggedProto(nullptr));
     if (!type)
         return false;
 
@@ -452,7 +453,16 @@ JSObject::setProto(JSContext *cx, JS::HandleObject obj, JS::HandleObject proto, 
     }
 
     /*
-     * Explicityly disallow mutating the [[Prototype]] of Location objects
+     * Disallow mutating the [[Prototype]] on Typed Objects, per the spec.
+     */
+    if (obj->is<js::TypedObject>()) {
+        JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_SETPROTOTYPEOF_FAIL,
+                             "incompatible TypedObject");
+        return false;
+    }
+
+    /*
+     * Explicitly disallow mutating the [[Prototype]] of Location objects
      * for flash-related security reasons.
      */
     if (!strcmp(obj->getClass()->name, "Location")) {
@@ -482,10 +492,12 @@ JSObject::setProto(JSContext *cx, JS::HandleObject obj, JS::HandleObject proto, 
             return false;
     }
 
-    return SetClassAndProto(cx, obj, obj->getClass(), proto, succeeded);
+    JS::Rooted<js::TaggedProto> taggedProto(cx, js::TaggedProto(proto));
+    return SetClassAndProto(cx, obj, obj->getClass(), taggedProto, succeeded);
 }
 
-inline bool JSObject::isVarObj()
+inline bool
+JSObject::isVarObj()
 {
     if (is<js::DebugScopeObject>())
         return as<js::DebugScopeObject>().scope().isVarObj();
@@ -494,28 +506,18 @@ inline bool JSObject::isVarObj()
 
 /* static */ inline JSObject *
 JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::InitialHeap heap,
-                 js::HandleShape shape, js::HandleTypeObject type,
-                 js::HeapSlot *extantSlots /* = nullptr */)
+                 js::HandleShape shape, js::HandleTypeObject type)
 {
-    /*
-     * Callers must use dynamicSlotsCount to size the initial slot array of the
-     * object. We can't check the allocated capacity of the dynamic slots, but
-     * make sure their presence is consistent with the shape.
-     */
     JS_ASSERT(shape && type);
     JS_ASSERT(type->clasp() == shape->getObjectClass());
     JS_ASSERT(type->clasp() != &js::ArrayObject::class_);
-    JS_ASSERT_IF(type->clasp() != &js::ArrayBufferObject::class_,
+    JS_ASSERT_IF(!ClassCanHaveFixedData(type->clasp()),
                  js::gc::GetGCKindSlots(kind, type->clasp()) == shape->numFixedSlots());
     JS_ASSERT_IF(type->clasp()->flags & JSCLASS_BACKGROUND_FINALIZE, IsBackgroundFinalized(kind));
     JS_ASSERT_IF(type->clasp()->finalize, heap == js::gc::TenuredHeap);
-    JS_ASSERT_IF(extantSlots, dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan(),
-                                                type->clasp()));
 
     const js::Class *clasp = type->clasp();
-    size_t nDynamicSlots = 0;
-    if (!extantSlots)
-        nDynamicSlots = dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan(), clasp);
+    size_t nDynamicSlots = dynamicSlotsCount(shape->numFixedSlots(), shape->slotSpan(), clasp);
 
     JSObject *obj = js::NewGCObject<js::CanGC>(cx, kind, nDynamicSlots, heap);
     if (!obj)
@@ -523,13 +525,7 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
 
     obj->shape_.init(shape);
     obj->type_.init(type);
-    if (extantSlots) {
-#ifdef JSGC_GENERATIONAL
-        if (cx->isJSContext())
-            cx->asJSContext()->runtime()->gcNursery.notifyInitialSlots(obj, extantSlots);
-#endif
-        obj->slots = extantSlots;
-    }
+    // Note: slots are created and assigned internally by NewGCObject.
     obj->elements = js::emptyObjectElements;
 
     if (clasp->hasPrivate())
@@ -538,6 +534,8 @@ JSObject::create(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::Initi
     size_t span = shape->slotSpan();
     if (span)
         obj->initializeSlotRange(0, span);
+
+    js::gc::TraceCreateObject(obj);
 
     return obj;
 }
@@ -574,6 +572,8 @@ JSObject::createArray(js::ExclusiveContext *cx, js::gc::AllocKind kind, js::gc::
     if (span)
         obj->initializeSlotRange(0, span);
 
+    js::gc::TraceCreateObject(obj);
+
     return &obj->as<js::ArrayObject>();
 }
 
@@ -591,11 +591,10 @@ JSObject::finish(js::FreeOp *fop)
 
 /* static */ inline bool
 JSObject::hasProperty(JSContext *cx, js::HandleObject obj,
-                      js::HandleId id, bool *foundp, unsigned flags)
+                      js::HandleId id, bool *foundp)
 {
     JS::RootedObject pobj(cx);
     js::RootedShape prop(cx);
-    JSAutoResolveFlags rf(cx, flags);
     if (!lookupGeneric(cx, obj, id, &pobj, &prop)) {
         *foundp = false;  /* initialize to shut GCC up */
         return false;
@@ -659,12 +658,17 @@ JSObject::global() const
     return *compartment()->maybeGlobal();
 }
 
+inline bool
+JSObject::isOwnGlobal() const
+{
+    return &global() == this;
+}
+
 namespace js {
 
 PropDesc::PropDesc(const Value &getter, const Value &setter,
                    Enumerability enumerable, Configurability configurable)
-  : pd_(UndefinedValue()),
-    value_(UndefinedValue()),
+  : value_(UndefinedValue()),
     get_(getter), set_(setter),
     attrs(JSPROP_GETTER | JSPROP_SETTER | JSPROP_SHARED |
           (enumerable ? JSPROP_ENUMERATE : 0) |
@@ -673,8 +677,8 @@ PropDesc::PropDesc(const Value &getter, const Value &setter,
     hasValue_(false), hasWritable_(false), hasEnumerable_(true), hasConfigurable_(true),
     isUndefined_(false)
 {
-    MOZ_ASSERT(getter.isUndefined() || js_IsCallable(getter));
-    MOZ_ASSERT(setter.isUndefined() || js_IsCallable(setter));
+    MOZ_ASSERT(getter.isUndefined() || IsCallable(getter));
+    MOZ_ASSERT(setter.isUndefined() || IsCallable(setter));
 }
 
 static MOZ_ALWAYS_INLINE bool
@@ -791,33 +795,17 @@ IsInternalFunctionObject(JSObject *funobj)
     return fun->isLambda() && !funobj->getParent();
 }
 
-class AutoPropDescArrayRooter : private AutoGCRooter
+class AutoPropDescVector : public AutoVectorRooter<PropDesc>
 {
   public:
-    AutoPropDescArrayRooter(JSContext *cx)
-      : AutoGCRooter(cx, DESCRIPTORS), descriptors(cx), skip(cx, &descriptors)
-    { }
-
-    PropDesc *append() {
-        if (!descriptors.append(PropDesc()))
-            return nullptr;
-        return &descriptors.back();
+    explicit AutoPropDescVector(JSContext *cx
+                    MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
+        : AutoVectorRooter<PropDesc>(cx, DESCVECTOR)
+    {
+        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
 
-    bool reserve(size_t n) {
-        return descriptors.reserve(n);
-    }
-
-    PropDesc& operator[](size_t i) {
-        JS_ASSERT(i < descriptors.length());
-        return descriptors[i];
-    }
-
-    friend void AutoGCRooter::trace(JSTracer *trc);
-
-  private:
-    PropDescArray descriptors;
-    SkipRoot skip;
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /*
@@ -1077,19 +1065,10 @@ NewObjectMetadata(ExclusiveContext *cxArg, JSObject **pmetadata)
 
 inline bool
 DefineNativeProperty(ExclusiveContext *cx, HandleObject obj, PropertyName *name, HandleValue value,
-                     PropertyOp getter, StrictPropertyOp setter, unsigned attrs,
-                     unsigned flags, unsigned defineHow = 0)
+                     PropertyOp getter, StrictPropertyOp setter, unsigned attrs)
 {
     Rooted<jsid> id(cx, NameToId(name));
-    return DefineNativeProperty(cx, obj, id, value, getter, setter, attrs, flags, defineHow);
-}
-
-inline bool
-LookupPropertyWithFlags(ExclusiveContext *cx, HandleObject obj, PropertyName *name, unsigned flags,
-                        js::MutableHandleObject objp, js::MutableHandleShape propp)
-{
-    Rooted<jsid> id(cx, NameToId(name));
-    return LookupPropertyWithFlags(cx, obj, id, flags, objp, propp);
+    return DefineNativeProperty(cx, obj, id, value, getter, setter, attrs);
 }
 
 namespace baseops {

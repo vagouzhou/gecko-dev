@@ -11,6 +11,7 @@
 
 #include "nsGkAtoms.h"
 #include "nsLayoutUtils.h"
+#include "nsLayoutStylesheetCache.h"
 #include "DOMSVGNumber.h"
 #include "DOMSVGLength.h"
 #include "nsSVGAngle.h"
@@ -50,13 +51,13 @@ namespace dom {
 class SVGAnimatedLength;
 
 JSObject*
-SVGSVGElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGSVGElement::WrapNode(JSContext *aCx)
 {
-  return SVGSVGElementBinding::Wrap(aCx, aScope, this);
+  return SVGSVGElementBinding::Wrap(aCx, this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(DOMSVGTranslatePoint, nsISVGPoint,
-                                     mElement)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(DOMSVGTranslatePoint, nsISVGPoint,
+                                   mElement)
 
 NS_IMPL_ADDREF_INHERITED(DOMSVGTranslatePoint, nsISVGPoint)
 NS_IMPL_RELEASE_INHERITED(DOMSVGTranslatePoint, nsISVGPoint)
@@ -68,6 +69,10 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(DOMSVGTranslatePoint)
   NS_INTERFACE_MAP_ENTRY(mozilla::nsISVGPoint)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
+
+SVGSVGElement::~SVGSVGElement()
+{
+}
 
 nsISVGPoint*
 DOMSVGTranslatePoint::Clone()
@@ -149,14 +154,14 @@ NS_IMPL_ADDREF_INHERITED(SVGSVGElement,SVGSVGElementBase)
 NS_IMPL_RELEASE_INHERITED(SVGSVGElement,SVGSVGElementBase)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGSVGElement)
-  NS_INTERFACE_TABLE_INHERITED3(SVGSVGElement, nsIDOMNode, nsIDOMElement,
-                                nsIDOMSVGElement)
+  NS_INTERFACE_TABLE_INHERITED(SVGSVGElement, nsIDOMNode, nsIDOMElement,
+                               nsIDOMSVGElement)
 NS_INTERFACE_TABLE_TAIL_INHERITING(SVGSVGElementBase)
 
 //----------------------------------------------------------------------
 // Implementation
 
-SVGSVGElement::SVGSVGElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+SVGSVGElement::SVGSVGElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                              FromParser aFromParser)
   : SVGSVGElementBase(aNodeInfo),
     mViewportWidth(0),
@@ -180,10 +185,10 @@ SVGSVGElement::SVGSVGElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
 
 // From NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGSVGElement)
 nsresult
-SVGSVGElement::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+SVGSVGElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   *aResult = nullptr;
-  already_AddRefed<nsINodeInfo> ni = nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
   SVGSVGElement *it = new SVGSVGElement(ni, NOT_FROM_PARSER);
 
   nsCOMPtr<nsINode> kungFuDeathGrip = it;
@@ -380,17 +385,17 @@ SVGSVGElement::DeselectAll()
   }
 }
 
-already_AddRefed<nsIDOMSVGNumber>
+already_AddRefed<DOMSVGNumber>
 SVGSVGElement::CreateSVGNumber()
 {
-  nsCOMPtr<nsIDOMSVGNumber> number = new DOMSVGNumber();
+  nsRefPtr<DOMSVGNumber> number = new DOMSVGNumber(ToSupports(this));
   return number.forget();
 }
 
-already_AddRefed<nsIDOMSVGLength>
+already_AddRefed<DOMSVGLength>
 SVGSVGElement::CreateSVGLength()
 {
-  nsCOMPtr<nsIDOMSVGLength> length = new DOMSVGLength();
+  nsCOMPtr<DOMSVGLength> length = new DOMSVGLength();
   return length.forget();
 }
 
@@ -722,8 +727,6 @@ SVGSVGElement::BindToTree(nsIDocument* aDocument,
                           nsIContent* aBindingParent,
                           bool aCompileEventHandlers)
 {
-  static const char kSVGStyleSheetURI[] = "resource://gre/res/svg.css";
-
   nsSMILAnimationController* smilController = nullptr;
 
   if (aDocument) {
@@ -754,7 +757,8 @@ SVGSVGElement::BindToTree(nsIDocument* aDocument,
     // Setup the style sheet during binding, not element construction,
     // because we could move the root SVG element from the document
     // that created it to another document.
-    aDocument->EnsureCatalogStyleSheet(kSVGStyleSheetURI);
+    aDocument->
+      EnsureOnDemandBuiltInUASheet(nsLayoutStylesheetCache::SVGSheet());
   }
 
   if (mTimedDocumentRoot && smilController) {
@@ -805,14 +809,11 @@ SVGSVGElement::WillBeOutermostSVG(nsIContent* aParent,
 void
 SVGSVGElement::InvalidateTransformNotifyFrame()
 {
-  nsIFrame* frame = GetPrimaryFrame();
-  if (frame) {
-    nsISVGSVGFrame* svgframe = do_QueryFrame(frame);
-    // might fail this check if we've failed conditional processing
-    if (svgframe) {
-      svgframe->NotifyViewportOrTransformChanged(
-                  nsISVGChildFrame::TRANSFORM_CHANGED);
-    }
+  nsISVGSVGFrame* svgframe = do_QueryFrame(GetPrimaryFrame());
+  // might fail this check if we've failed conditional processing
+  if (svgframe) {
+    svgframe->NotifyViewportOrTransformChanged(
+                nsISVGChildFrame::TRANSFORM_CHANGED);
   }
 }
 
@@ -1043,26 +1044,13 @@ SVGSVGElement::ShouldSynthesizeViewBox() const
     !GetParent();
 }
 
-
-// Callback function, for freeing SVGPreserveAspectRatio values stored in property table
-static void
-ReleasePreserveAspectRatioPropertyValue(void*    aObject,       /* unused */
-                                        nsIAtom* aPropertyName, /* unused */
-                                        void*    aPropertyValue,
-                                        void*    aData          /* unused */)
-{
-  SVGPreserveAspectRatio* valPtr =
-    static_cast<SVGPreserveAspectRatio*>(aPropertyValue);
-  delete valPtr;
-}
-
 bool
 SVGSVGElement::SetPreserveAspectRatioProperty(const SVGPreserveAspectRatio& aPAR)
 {
   SVGPreserveAspectRatio* pAROverridePtr = new SVGPreserveAspectRatio(aPAR);
   nsresult rv = SetProperty(nsGkAtoms::overridePreserveAspectRatio,
                             pAROverridePtr,
-                            ReleasePreserveAspectRatioPropertyValue,
+                            nsINode::DeleteProperty<SVGPreserveAspectRatio>,
                             true);
   NS_ABORT_IF_FALSE(rv != NS_PROPTABLE_PROP_OVERWRITTEN,
                     "Setting override value when it's already set...?"); 
@@ -1158,25 +1146,13 @@ SVGSVGElement::FlushImageTransformInvalidation()
   }
 }
 
-// Callback function, for freeing nsSVGViewBoxRect values stored in property table
-static void
-ReleaseViewBoxPropertyValue(void*    aObject,       /* unused */
-                            nsIAtom* aPropertyName, /* unused */
-                            void*    aPropertyValue,
-                            void*    aData          /* unused */)
-{
-  nsSVGViewBoxRect* valPtr =
-    static_cast<nsSVGViewBoxRect*>(aPropertyValue);
-  delete valPtr;
-}
-
 bool
 SVGSVGElement::SetViewBoxProperty(const nsSVGViewBoxRect& aViewBox)
 {
   nsSVGViewBoxRect* pViewBoxOverridePtr = new nsSVGViewBoxRect(aViewBox);
   nsresult rv = SetProperty(nsGkAtoms::viewBox,
                             pViewBoxOverridePtr,
-                            ReleaseViewBoxPropertyValue,
+                            nsINode::DeleteProperty<nsSVGViewBoxRect>,
                             true);
   NS_ABORT_IF_FALSE(rv != NS_PROPTABLE_PROP_OVERWRITTEN,
                     "Setting override value when it's already set...?"); 
@@ -1235,25 +1211,13 @@ SVGSVGElement::ClearZoomAndPanProperty()
   return UnsetProperty(nsGkAtoms::zoomAndPan);
 }
 
-// Callback function, for freeing SVGTransformList values stored in property table
-static void
-ReleaseTransformPropertyValue(void*    aObject,       /* unused */
-                              nsIAtom* aPropertyName, /* unused */
-                              void*    aPropertyValue,
-                              void*    aData          /* unused */)
-{
-  SVGTransformList* valPtr =
-    static_cast<SVGTransformList*>(aPropertyValue);
-  delete valPtr;
-}
-
 bool
 SVGSVGElement::SetTransformProperty(const SVGTransformList& aTransform)
 {
   SVGTransformList* pTransformOverridePtr = new SVGTransformList(aTransform);
   nsresult rv = SetProperty(nsGkAtoms::transform,
                             pTransformOverridePtr,
-                            ReleaseTransformPropertyValue,
+                            nsINode::DeleteProperty<SVGTransformList>,
                             true);
   NS_ABORT_IF_FALSE(rv != NS_PROPTABLE_PROP_OVERWRITTEN,
                     "Setting override value when it's already set...?"); 

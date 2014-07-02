@@ -149,7 +149,7 @@ InvokeConstructor(JSContext *cx, CallArgs args);
 
 /* See the fval overload of Invoke. */
 extern bool
-InvokeConstructor(JSContext *cx, Value fval, unsigned argc, Value *argv, Value *rval);
+InvokeConstructor(JSContext *cx, Value fval, unsigned argc, const Value *argv, Value *rval);
 
 /*
  * Executes a script with the given scopeChain/this. The 'type' indicates
@@ -370,6 +370,9 @@ GetScopeNameForTypeOf(JSContext *cx, HandleObject obj, HandlePropertyName name,
 JSObject *
 Lambda(JSContext *cx, HandleFunction fun, HandleObject parent);
 
+JSObject *
+LambdaArrow(JSContext *cx, HandleFunction fun, HandleObject parent, HandleValue thisv);
+
 bool
 GetElement(JSContext *cx, MutableHandleValue lref, HandleValue rref, MutableHandleValue res);
 
@@ -458,6 +461,14 @@ EnterWithOperation(JSContext *cx, AbstractFramePtr frame, HandleValue val, Handl
 bool
 InitGetterSetterOperation(JSContext *cx, jsbytecode *pc, HandleObject obj, HandleValue idval,
                           HandleObject val);
+
+bool
+SpreadOperation(JSContext *cx, HandleObject arr, HandleValue countVal,
+                HandleValue iterable, MutableHandleValue resultCountVal);
+
+bool
+SpreadCallOperation(JSContext *cx, HandleScript script, jsbytecode *pc, HandleValue thisv,
+                    HandleValue callee, HandleValue arr, MutableHandleValue res);
 
 inline bool
 SetConstOperation(JSContext *cx, HandleObject varobj, HandlePropertyName name, HandleValue rval)

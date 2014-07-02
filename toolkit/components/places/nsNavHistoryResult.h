@@ -64,6 +64,10 @@ private:
   NS_DECL_NSINAVBOOKMARKOBSERVER                                        \
   NS_IMETHOD OnTitleChanged(nsIURI* aURI, const nsAString& aPageTitle,  \
                             const nsACString& aGUID);                   \
+  NS_IMETHOD OnFrecencyChanged(nsIURI* aURI, int32_t aNewFrecency,      \
+                               const nsACString& aGUID, bool aHidden,   \
+                               PRTime aLastVisitDate);                  \
+  NS_IMETHOD OnManyFrecenciesChanged();                                 \
   NS_IMETHOD OnDeleteURI(nsIURI *aURI, const nsACString& aGUID,         \
                          uint16_t aReason);                             \
   NS_IMETHOD OnClearHistory();                                          \
@@ -132,7 +136,6 @@ public:
 public:
   // two-stage init, use NewHistoryResult to construct
   nsNavHistoryResult(nsNavHistoryContainerResultNode* mRoot);
-  virtual ~nsNavHistoryResult();
   nsresult Init(nsINavHistoryQuery** aQueries,
                 uint32_t aQueryCount,
                 nsNavHistoryQueryOptions *aOptions);
@@ -180,6 +183,9 @@ public:
 
   ContainerObserverList mRefreshParticipants;
   void requestRefresh(nsNavHistoryContainerResultNode* aContainer);
+
+protected:
+  virtual ~nsNavHistoryResult();
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsNavHistoryResult, NS_NAVHISTORYRESULT_IID)
@@ -253,7 +259,6 @@ public:
   nsNavHistoryResultNode(const nsACString& aURI, const nsACString& aTitle,
                          uint32_t aAccessCount, PRTime aTime,
                          const nsACString& aIconURI);
-  virtual ~nsNavHistoryResultNode() {}
 
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_NAVHISTORYRESULTNODE_IID)
 
@@ -285,6 +290,9 @@ public:
                            int64_t aParentId,
                            const nsACString& aGUID,
                            const nsACString& aParentGUID);
+
+protected:
+  virtual ~nsNavHistoryResultNode() {}
 
 public:
 

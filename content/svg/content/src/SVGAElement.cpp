@@ -7,6 +7,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/EventDispatcher.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/dom/SVGAElementBinding.h"
 #include "nsCOMPtr.h"
 #include "nsContentUtils.h"
@@ -20,9 +21,9 @@ namespace mozilla {
 namespace dom {
 
 JSObject*
-SVGAElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+SVGAElement::WrapNode(JSContext *aCx)
 {
-  return SVGAElementBinding::Wrap(aCx, aScope, this);
+  return SVGAElementBinding::Wrap(aCx, this);
 }
 
 nsSVGElement::StringInfo SVGAElement::sStringInfo[2] =
@@ -36,11 +37,11 @@ nsSVGElement::StringInfo SVGAElement::sStringInfo[2] =
 // nsISupports methods
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGAElement)
-  NS_INTERFACE_TABLE_INHERITED4(SVGAElement,
-                                nsIDOMNode,
-                                nsIDOMElement,
-                                nsIDOMSVGElement,
-                                Link)
+  NS_INTERFACE_TABLE_INHERITED(SVGAElement,
+                               nsIDOMNode,
+                               nsIDOMElement,
+                               nsIDOMSVGElement,
+                               Link)
 NS_INTERFACE_TABLE_TAIL_INHERITING(SVGAElementBase)
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(SVGAElement)
@@ -61,7 +62,7 @@ NS_IMPL_RELEASE_INHERITED(SVGAElement, SVGAElementBase)
 //----------------------------------------------------------------------
 // Implementation
 
-SVGAElement::SVGAElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+SVGAElement::SVGAElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : SVGAElementBase(aNodeInfo)
   , Link(MOZ_THIS_IN_INITIALIZER_LIST())
 {
@@ -268,7 +269,7 @@ SVGAElement::GetLinkTarget(nsAString& aTarget)
   }
 }
 
-nsEventStates
+EventStates
 SVGAElement::IntrinsicState() const
 {
   return Link::LinkState() | SVGAElementBase::IntrinsicState();

@@ -156,7 +156,7 @@ WindowCapturerLinux::WindowCapturerLinux(const DesktopCaptureOptions& options)
   x_display_->AddEventHandler(ConfigureNotify, this);
 }
 
-WindowCapturerLinux::~WindowCapturerLinux() {
+WindowCapturerLinux::~WindowCapturerLinux() {}
   x_display_->RemoveEventHandler(ConfigureNotify, this);
 }
 

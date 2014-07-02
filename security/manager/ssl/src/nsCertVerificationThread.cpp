@@ -10,7 +10,7 @@ using namespace mozilla;
 
 nsCertVerificationThread *nsCertVerificationThread::verification_thread_singleton;
 
-NS_IMPL_ISUPPORTS1(nsCertVerificationResult, nsICertVerificationResult)
+NS_IMPL_ISUPPORTS(nsCertVerificationResult, nsICertVerificationResult)
 
 namespace {
 class DispatchCertVerificationResult : public nsRunnable
@@ -67,22 +67,6 @@ void nsCertVerificationJob::Run()
   nsCOMPtr<nsIX509Cert3> c3 = do_QueryInterface(mCert);
   nsCOMPtr<nsIRunnable> r = new DispatchCertVerificationResult(mListener, c3, ires);
   NS_DispatchToMainThread(r);
-}
-
-void nsSMimeVerificationJob::Run()
-{
-  if (!mMessage || !mListener)
-    return;
-  
-  nsresult rv;
-  
-  if (digest_data)
-    rv = mMessage->VerifyDetachedSignature(digest_data, digest_len);
-  else
-    rv = mMessage->VerifySignature();
-  
-  nsCOMPtr<nsICMSMessage2> m2 = do_QueryInterface(mMessage);
-  mListener->Notify(m2, rv);
 }
 
 nsCertVerificationThread::nsCertVerificationThread()

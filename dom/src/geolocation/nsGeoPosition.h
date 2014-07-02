@@ -33,8 +33,8 @@ public:
                       double aAlt, double aHError,
                       double aVError, double aHeading,
                       double aSpeed);
-  ~nsGeoPositionCoords();
 private:
+  ~nsGeoPositionCoords();
   const double mLat, mLong, mAlt, mHError, mVError, mHeading, mSpeed;
 };
 
@@ -79,6 +79,8 @@ class Coordinates;
 class Position MOZ_FINAL : public nsISupports,
                            public nsWrapperCache
 {
+  ~Position();
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Position)
@@ -86,12 +88,9 @@ public:
 public:
   Position(nsISupports* aParent, nsIDOMGeoPosition* aGeoPosition);
 
-  ~Position();
-
   nsISupports* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   Coordinates* Coords();
 
@@ -108,6 +107,8 @@ private:
 class Coordinates MOZ_FINAL : public nsISupports,
                               public nsWrapperCache
 {
+  ~Coordinates();
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Coordinates)
@@ -115,12 +116,9 @@ public:
 public:
   Coordinates(Position* aPosition, nsIDOMGeoPositionCoords* aCoords);
 
-  ~Coordinates();
-
   Position* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   double Latitude() const;
 

@@ -28,7 +28,6 @@ class nsUserFontSet : public gfxUserFontSet
 {
 public:
   nsUserFontSet(nsPresContext* aContext);
-  ~nsUserFontSet();
 
   // Called when this font set is no longer associated with a presentation.
   void Destroy();
@@ -54,6 +53,10 @@ public:
   nsCSSFontFaceRule* FindRuleForEntry(gfxFontEntry* aFontEntry);
 
 protected:
+  // Protected destructor, to discourage deletion outside of Release()
+  // (since we inherit from refcounted class gfxUserFontSet):
+  ~nsUserFontSet();
+
   // The font-set keeps track of the collection of rules, and their
   // corresponding font entries (whether proxies or real entries),
   // so that we can update the set without having to throw away
@@ -84,6 +87,8 @@ protected:
 
   virtual bool GetPrivateBrowsing() MOZ_OVERRIDE;
 
+  virtual void DoRebuildUserFontSet() MOZ_OVERRIDE;
+
   nsPresContext* mPresContext;  // weak reference
 
   // Set of all loaders pointing to us. These are not strong pointers,
@@ -100,8 +105,6 @@ public:
   nsFontFaceLoader(gfxMixedFontFamily* aFontFamily,
                    gfxProxyFontEntry* aFontToLoad, nsIURI* aFontURI, 
                    nsUserFontSet* aFontSet, nsIChannel* aChannel);
-
-  virtual ~nsFontFaceLoader();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSISTREAMLOADEROBSERVER 
@@ -120,6 +123,9 @@ public:
   static nsresult CheckLoadAllowed(nsIPrincipal* aSourcePrincipal,
                                    nsIURI* aTargetURI,
                                    nsISupports* aContext);
+
+protected:
+  virtual ~nsFontFaceLoader();
 
 private:
   nsRefPtr<gfxMixedFontFamily> mFontFamily;

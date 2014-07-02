@@ -50,10 +50,6 @@ public:
   SelectState()
   {
   }
-  virtual ~SelectState()
-  {
-  }
-
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_SELECT_STATE_IID)
   NS_DECL_ISUPPORTS
 
@@ -73,9 +69,15 @@ public:
   }
 
 private:
+  virtual ~SelectState()
+  {
+  }
+
   nsCheapSet<nsStringHashKey> mValues;
   nsCheapSet<nsUint32HashKey> mIndices;
 };
+
+NS_DEFINE_STATIC_IID_ACCESSOR(SelectState, NS_SELECT_STATE_IID)
 
 class MOZ_STACK_CLASS SafeOptionListMutation
 {
@@ -134,7 +136,7 @@ public:
 
   using nsIConstraintValidation::GetValidationMessage;
 
-  HTMLSelectElement(already_AddRefed<nsINodeInfo>& aNodeInfo,
+  HTMLSelectElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo,
                     FromParser aFromParser = NOT_FROM_PARSER);
   virtual ~HTMLSelectElement();
 
@@ -259,8 +261,7 @@ public:
 
 
   // nsINode
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
 
   // nsIContent
   virtual nsresult PreHandleEvent(EventChainPreVisitor& aVisitor) MOZ_OVERRIDE;
@@ -282,7 +283,7 @@ public:
 
   virtual void FieldSetDisabledChanged(bool aNotify) MOZ_OVERRIDE;
 
-  nsEventStates IntrinsicState() const MOZ_OVERRIDE;
+  EventStates IntrinsicState() const MOZ_OVERRIDE;
 
   /**
    * To be called when stuff is added under a child of the select--but *before*
@@ -380,7 +381,7 @@ public:
                                               int32_t aModType) const MOZ_OVERRIDE;
   NS_IMETHOD_(bool) IsAttributeMapped(const nsIAtom* aAttribute) const MOZ_OVERRIDE;
 
-  virtual nsresult Clone(nsINodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
 
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(HTMLSelectElement,
                                            nsGenericHTMLFormElementWithState)
@@ -394,6 +395,7 @@ public:
   nsresult GetValidationMessage(nsAString& aValidationMessage,
                                 ValidityStateType aType) MOZ_OVERRIDE;
 
+  void UpdateValueMissingValidityState();
   /**
    * Insert aElement before the node given by aBefore
    */
@@ -510,7 +512,6 @@ protected:
   // nsIConstraintValidation
   void UpdateBarredFromConstraintValidation();
   bool IsValueMissing();
-  void UpdateValueMissingValidityState();
 
   /**
    * Find out how deep this content is from the select (1=direct child)

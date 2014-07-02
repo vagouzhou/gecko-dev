@@ -34,6 +34,7 @@ public:
         NS_ADDREF(mSink);
     }
 
+private:
     virtual ~nsTransportEventSinkProxy()
     {
         // our reference to mSink could be the last, so be sure to release
@@ -41,6 +42,7 @@ public:
         NS_ProxyRelease(mTarget, mSink);
     }
 
+public:
     nsITransportEventSink           *mSink;
     nsCOMPtr<nsIEventTarget>         mTarget;
     Mutex                            mLock;
@@ -89,7 +91,7 @@ public:
     uint64_t               mProgressMax;
 };
 
-NS_IMPL_ISUPPORTS1(nsTransportEventSinkProxy, nsITransportEventSink)
+NS_IMPL_ISUPPORTS(nsTransportEventSinkProxy, nsITransportEventSink)
 
 NS_IMETHODIMP
 nsTransportEventSinkProxy::OnTransportStatus(nsITransport *transport,

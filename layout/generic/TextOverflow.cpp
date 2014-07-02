@@ -34,7 +34,7 @@ public:
   virtual already_AddRefed<gfxContext> GetRefContext() MOZ_OVERRIDE
   {
     nsRefPtr<nsRenderingContext> rc =
-      mFrame->PresContext()->PresShell()->GetReferenceRenderingContext();
+      mFrame->PresContext()->PresShell()->CreateReferenceRenderingContext();
     nsRefPtr<gfxContext> ctx = rc->ThebesContext();
     return ctx.forget();
   }
@@ -672,12 +672,18 @@ TextOverflow::CanHaveTextOverflow(nsDisplayListBuilder* aBuilder,
                                   nsIFrame*             aBlockFrame)
 {
   const nsStyleTextReset* style = aBlockFrame->StyleTextReset();
-  // Nothing to do for text-overflow:clip or if 'overflow-x:visible'
-  // or if we're just building items for event processing.
+  // Nothing to do for text-overflow:clip or if 'overflow-x:visible' or if
+  // we're just building items for event processing or image visibility.
   if ((style->mTextOverflow.mLeft.mType == NS_STYLE_TEXT_OVERFLOW_CLIP &&
        style->mTextOverflow.mRight.mType == NS_STYLE_TEXT_OVERFLOW_CLIP) ||
       IsHorizontalOverflowVisible(aBlockFrame) ||
-      aBuilder->IsForEventDelivery()) {
+      aBuilder->IsForEventDelivery() || aBuilder->IsForImageVisibility()) {
+    return false;
+  }
+
+  // Skip ComboboxControlFrame because it would clip the drop-down arrow.
+  // Its anon block inherits 'text-overflow' and does what is expected.
+  if (aBlockFrame->GetType() == nsGkAtoms::comboboxControlFrame) {
     return false;
   }
 
@@ -708,15 +714,16 @@ TextOverflow::CreateMarkers(const nsLineBox* aLine,
   if (aCreateLeft) {
     DisplayListClipState::AutoSaveRestore clipState(mBuilder);
 
+    //XXX Needs vertical text love
     nsRect markerRect = nsRect(aInsideMarkersArea.x - mLeft.mIntrinsicWidth,
-                               aLine->mBounds.y,
-                               mLeft.mIntrinsicWidth, aLine->mBounds.height);
+                               aLine->BStart(),
+                               mLeft.mIntrinsicWidth, aLine->BSize());
     markerRect += mBuilder->ToReferenceFrame(mBlock);
     ClipMarker(mContentArea + mBuilder->ToReferenceFrame(mBlock),
                markerRect, clipState);
     nsDisplayItem* marker = new (mBuilder)
       nsDisplayTextOverflowMarker(mBuilder, mBlock, markerRect,
-                                  aLine->GetAscent(), mLeft.mStyle, 0);
+                                  aLine->GetLogicalAscent(), mLeft.mStyle, 0);
     mMarkerList.AppendNewToTop(marker);
   }
 
@@ -724,14 +731,14 @@ TextOverflow::CreateMarkers(const nsLineBox* aLine,
     DisplayListClipState::AutoSaveRestore clipState(mBuilder);
 
     nsRect markerRect = nsRect(aInsideMarkersArea.XMost(),
-                               aLine->mBounds.y,
-                               mRight.mIntrinsicWidth, aLine->mBounds.height);
+                               aLine->BStart(),
+                               mRight.mIntrinsicWidth, aLine->BSize());
     markerRect += mBuilder->ToReferenceFrame(mBlock);
     ClipMarker(mContentArea + mBuilder->ToReferenceFrame(mBlock),
                markerRect, clipState);
     nsDisplayItem* marker = new (mBuilder)
       nsDisplayTextOverflowMarker(mBuilder, mBlock, markerRect,
-                                  aLine->GetAscent(), mRight.mStyle, 1);
+                                  aLine->GetLogicalAscent(), mRight.mStyle, 1);
     mMarkerList.AppendNewToTop(marker);
   }
 }
@@ -752,7 +759,7 @@ TextOverflow::Marker::SetupString(nsIFrame* aFrame)
     }
   } else {
     nsRefPtr<nsRenderingContext> rc =
-      aFrame->PresContext()->PresShell()->GetReferenceRenderingContext();
+      aFrame->PresContext()->PresShell()->CreateReferenceRenderingContext();
     nsRefPtr<nsFontMetrics> fm;
     nsLayoutUtils::GetFontMetricsForFrame(aFrame, getter_AddRefs(fm),
       nsLayoutUtils::FontSizeInflationFor(aFrame));

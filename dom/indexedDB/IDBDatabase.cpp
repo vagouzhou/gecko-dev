@@ -11,7 +11,7 @@
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/Mutex.h"
 #include "mozilla/storage.h"
-#include "mozilla/dom/ContentParent.h"
+#include "mozilla/dom/nsIContentParent.h"
 #include "mozilla/dom/DOMStringList.h"
 #include "mozilla/dom/DOMStringListBinding.h"
 #include "mozilla/dom/quota/Client.h"
@@ -24,8 +24,8 @@
 #include "DatabaseInfo.h"
 #include "IDBEvents.h"
 #include "IDBFactory.h"
-#include "IDBFileHandle.h"
 #include "IDBIndex.h"
+#include "IDBMutableFile.h"
 #include "IDBObjectStore.h"
 #include "IDBTransaction.h"
 #include "IDBFactory.h"
@@ -39,7 +39,7 @@
 #include "mozilla/dom/IDBDatabaseBinding.h"
 
 USING_INDEXEDDB_NAMESPACE
-using mozilla::dom::ContentParent;
+using mozilla::dom::nsIContentParent;
 using mozilla::dom::quota::AssertIsOnIOThread;
 using mozilla::dom::quota::Client;
 using mozilla::dom::quota::QuotaManager;
@@ -183,7 +183,7 @@ IDBDatabase::Create(IDBWrapperCache* aOwnerCache,
                     already_AddRefed<DatabaseInfo> aDatabaseInfo,
                     const nsACString& aASCIIOrigin,
                     FileManager* aFileManager,
-                    mozilla::dom::ContentParent* aContentParent)
+                    mozilla::dom::nsIContentParent* aContentParent)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(aFactory, "Null pointer!");
@@ -276,6 +276,14 @@ IDBDatabase::Invalidate()
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
 
+  InvalidateInternal(/* aIsDead */ false);
+}
+
+void
+IDBDatabase::InvalidateInternal(bool aIsDead)
+{
+  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+
   if (IsInvalidated()) {
     return;
   }
@@ -293,7 +301,13 @@ IDBDatabase::Invalidate()
     QuotaManager::CancelPromptsForWindow(owner);
   }
 
-  DatabaseInfo::Remove(mDatabaseId);
+  // We want to forcefully remove in the child when the parent has invalidated
+  // us in IPC mode because the database might no longer exist.
+  // We don't want to forcefully remove in the parent when a child dies since
+  // other child processes may be using the referenced DatabaseInfo.
+  if (!aIsDead) {
+    DatabaseInfo::Remove(mDatabaseId);
+  }
 
   // And let the child process know as well.
   if (mActorParent) {
@@ -332,9 +346,7 @@ IDBDatabase::CloseInternal(bool aIsDead)
       mDatabaseInfo.swap(previousInfo);
 
       if (!aIsDead) {
-        nsRefPtr<DatabaseInfo> clonedInfo = previousInfo->Clone();
-
-        clonedInfo.swap(mDatabaseInfo);
+        mDatabaseInfo = previousInfo->Clone();
       }
     }
 
@@ -475,7 +487,6 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(IDBDatabase, IDBWrapperCache)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(IDBDatabase)
-  NS_INTERFACE_MAP_ENTRY(nsIFileStorage)
   NS_INTERFACE_MAP_ENTRY(nsIOfflineStorage)
 NS_INTERFACE_MAP_END_INHERITING(IDBWrapperCache)
 
@@ -483,9 +494,9 @@ NS_IMPL_ADDREF_INHERITED(IDBDatabase, IDBWrapperCache)
 NS_IMPL_RELEASE_INHERITED(IDBDatabase, IDBWrapperCache)
 
 JSObject*
-IDBDatabase::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+IDBDatabase::WrapObject(JSContext* aCx)
 {
-  return IDBDatabaseBinding::Wrap(aCx, aScope, this);
+  return IDBDatabaseBinding::Wrap(aCx, this);
 }
 
 uint64_t
@@ -673,9 +684,9 @@ IDBDatabase::Transaction(const Sequence<nsString>& aStoreNames,
 }
 
 already_AddRefed<IDBRequest>
-IDBDatabase::MozCreateFileHandle(const nsAString& aName,
-                                 const Optional<nsAString>& aType,
-                                 ErrorResult& aRv)
+IDBDatabase::CreateMutableFile(const nsAString& aName,
+                               const Optional<nsAString>& aType,
+                               ErrorResult& aRv)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
 
@@ -731,31 +742,6 @@ NS_IMETHODIMP_(const nsACString&)
 IDBDatabase::Id()
 {
   return mDatabaseId;
-}
-
-NS_IMETHODIMP_(bool)
-IDBDatabase::IsInvalidated()
-{
-  return mInvalidated;
-}
-
-NS_IMETHODIMP_(bool)
-IDBDatabase::IsShuttingDown()
-{
-  return QuotaManager::IsShuttingDown();
-}
-
-NS_IMETHODIMP_(void)
-IDBDatabase::SetThreadLocals()
-{
-  NS_ASSERTION(GetOwner(), "Should have owner!");
-  QuotaManager::SetCurrentWindow(GetOwner());
-}
-
-NS_IMETHODIMP_(void)
-IDBDatabase::UnsetThreadLocals()
-{
-  QuotaManager::SetCurrentWindow(nullptr);
 }
 
 NS_IMETHODIMP_(mozilla::dom::quota::Client*)
@@ -816,7 +802,8 @@ CreateObjectStoreHelper::DoDatabaseWork(mozIStorageConnection* aConnection)
   NS_ASSERTION(!NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_LABEL("IndexedDB", "CreateObjectStoreHelper::DoDatabaseWork");
+  PROFILER_LABEL("CreateObjectStoreHelper", "DoDatabaseWork",
+    js::ProfileEntry::Category::STORAGE);
 
   if (IndexedDatabaseManager::InLowDiskSpaceMode()) {
     NS_WARNING("Refusing to create additional objectStore because disk space "
@@ -876,7 +863,8 @@ DeleteObjectStoreHelper::DoDatabaseWork(mozIStorageConnection* aConnection)
   NS_ASSERTION(!NS_IsMainThread(), "Wrong thread!");
   NS_ASSERTION(IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_LABEL("IndexedDB", "DeleteObjectStoreHelper::DoDatabaseWork");
+  PROFILER_LABEL("DeleteObjectStoreHelper", "DoDatabaseWork",
+    js::ProfileEntry::Category::STORAGE);
 
   nsCOMPtr<mozIStorageStatement> stmt =
     mTransaction->GetCachedStatement(NS_LITERAL_CSTRING(
@@ -902,7 +890,8 @@ CreateFileHelper::DoDatabaseWork(mozIStorageConnection* aConnection)
   AssertIsOnIOThread();
   NS_ASSERTION(IndexedDatabaseManager::IsMainProcess(), "Wrong process!");
 
-  PROFILER_LABEL("IndexedDB", "CreateFileHelper::DoDatabaseWork");
+  PROFILER_LABEL("CreateFileHelper", "DoDatabaseWork",
+    js::ProfileEntry::Category::STORAGE);
 
   if (IndexedDatabaseManager::InLowDiskSpaceMode()) {
     NS_WARNING("Refusing to create file because disk space is low!");
@@ -941,9 +930,9 @@ nsresult
 CreateFileHelper::GetSuccessResult(JSContext* aCx,
                                    JS::MutableHandle<JS::Value> aVal)
 {
-  nsRefPtr<IDBFileHandle> fileHandle =
-    IDBFileHandle::Create(mDatabase, mName, mType, mFileInfo.forget());
-  IDB_ENSURE_TRUE(fileHandle, NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
+  nsRefPtr<IDBMutableFile> mutableFile =
+    IDBMutableFile::Create(mName, mType, mDatabase, mFileInfo.forget());
+  IDB_ENSURE_TRUE(mutableFile, NS_ERROR_DOM_INDEXEDDB_UNKNOWN_ERR);
 
-  return WrapNative(aCx, NS_ISUPPORTS_CAST(EventTarget*, fileHandle), aVal);
+  return WrapNative(aCx, NS_ISUPPORTS_CAST(EventTarget*, mutableFile), aVal);
 }

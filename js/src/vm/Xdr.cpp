@@ -33,6 +33,7 @@ XDRBuffer::grow(size_t n)
     size_t offset = cursor - base;
     size_t newCapacity = JS_ROUNDUP(offset + n, MEM_BLOCK);
     if (isUint32Overflow(newCapacity)) {
+        js::gc::AutoSuppressGC suppressGC(cx());
         JS_ReportErrorNumber(cx(), js_GetErrorMessage, nullptr, JSMSG_TOO_BIG_TO_ENCODE);
         return false;
     }
@@ -45,6 +46,22 @@ XDRBuffer::grow(size_t n)
     base = static_cast<uint8_t *>(data);
     cursor = base + offset;
     limit = base + newCapacity;
+    return true;
+}
+
+template<XDRMode mode>
+bool
+XDRState<mode>::codeChars(const Latin1Char *chars, size_t nchars)
+{
+    static_assert(sizeof(Latin1Char) == sizeof(uint8_t), "Latin1Char must fit in 1 byte");
+
+    MOZ_ASSERT(mode == XDR_ENCODE);
+
+    uint8_t *ptr = buf.write(nchars);
+    if (!ptr)
+        return false;
+
+    mozilla::PodCopy(ptr, chars, nchars);
     return true;
 }
 
@@ -122,12 +139,11 @@ XDRState<mode>::codeConstValue(MutableHandleValue vp)
 }
 
 XDRDecoder::XDRDecoder(JSContext *cx, const void *data, uint32_t length,
-                       JSPrincipals *principals, JSPrincipals *originPrincipals)
+                       JSPrincipals *originPrincipals)
   : XDRState<XDR_DECODE>(cx)
 {
     buf.setData(data, length);
-    this->principals_ = principals;
-    this->originPrincipals_ = NormalizeOriginPrincipals(principals, originPrincipals);
+    this->originPrincipals_ = originPrincipals;
 }
 
 template class js::XDRState<XDR_ENCODE>;

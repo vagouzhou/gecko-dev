@@ -9,9 +9,6 @@
 #include "nsDebug.h"
 #include "nsIWidget.h"
 #include <OpenGL/gl.h>
-#include "gfxASurface.h"
-#include "gfxImageSurface.h"
-#include "gfxQuartzSurface.h"
 #include "gfxPrefs.h"
 #include "gfxFailure.h"
 #include "prenv.h"
@@ -19,10 +16,10 @@
 #include "GeckoProfiler.h"
 #include "mozilla/gfx/MacIOSurface.h"
 
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace gl {
+
+using namespace mozilla::gfx;
 
 static bool gUseDoubleBufferedWindows = true;
 
@@ -177,7 +174,9 @@ GLContextCGL::SupportsRobustness() const
 bool
 GLContextCGL::SwapBuffers()
 {
-  PROFILER_LABEL("GLContext", "SwapBuffers");
+  PROFILER_LABEL("GLContextCGL", "SwapBuffers",
+    js::ProfileEntry::Category::GRAPHICS);
+
   [mContext flushBuffer];
   return true;
 }
@@ -190,12 +189,14 @@ GetGlobalContextCGL()
 }
 
 already_AddRefed<GLContext>
+GLContextProviderCGL::CreateWrappingExisting(void*, void*)
+{
+    return nullptr;
+}
+
+already_AddRefed<GLContext>
 GLContextProviderCGL::CreateForWindow(nsIWidget *aWidget)
 {
-    if (!sCGLLibrary.EnsureInitialized()) {
-        return nullptr;
-    }
-
     GLContextCGL *shareContext = GetGlobalContextCGL();
 
     NSOpenGLContext *context = [[NSOpenGLContext alloc]

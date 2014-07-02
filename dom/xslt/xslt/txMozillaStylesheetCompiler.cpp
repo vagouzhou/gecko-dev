@@ -12,7 +12,6 @@
 #include "nsIChannelEventSink.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsILoadGroup.h"
-#include "nsINodeInfo.h"
 #include "nsIParser.h"
 #include "nsCharsetSource.h"
 #include "nsIRequestObserver.h"
@@ -94,6 +93,8 @@ private:
     bool mCheckedForXML;
 
 protected:
+    ~txStylesheetSink() {}
+
     // This exists solely to suppress a warning from nsDerivedSafe
     txStylesheetSink();
 };
@@ -106,25 +107,24 @@ txStylesheetSink::txStylesheetSink(txStylesheetCompiler* aCompiler,
     mListener = do_QueryInterface(aParser);
 }
 
-NS_IMPL_ISUPPORTS6(txStylesheetSink,
-                   nsIXMLContentSink,
-                   nsIContentSink,
-                   nsIExpatSink,
-                   nsIStreamListener,
-                   nsIRequestObserver,
-                   nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(txStylesheetSink,
+                  nsIXMLContentSink,
+                  nsIContentSink,
+                  nsIExpatSink,
+                  nsIStreamListener,
+                  nsIRequestObserver,
+                  nsIInterfaceRequestor)
 
 NS_IMETHODIMP
 txStylesheetSink::HandleStartElement(const char16_t *aName,
                                      const char16_t **aAtts,
                                      uint32_t aAttsCount,
-                                     int32_t aIndex,
                                      uint32_t aLineNumber)
 {
     NS_PRECONDITION(aAttsCount % 2 == 0, "incorrect aAttsCount");
 
     nsresult rv =
-        mCompiler->startElement(aName, aAtts, aAttsCount / 2, aIndex);
+        mCompiler->startElement(aName, aAtts, aAttsCount / 2);
     if (NS_FAILED(rv)) {
         mCompiler->cancel(rv);
 
@@ -381,9 +381,13 @@ private:
     nsCOMPtr<nsILoadGroup> mLoadGroup;
     nsCOMPtr<nsIPrincipal> mCallerPrincipal;
 
-protected:
     // This exists solely to suppress a warning from nsDerivedSafe
     txCompileObserver();
+
+    // Private destructor, to discourage deletion outside of Release():
+    ~txCompileObserver()
+    {
+    }
 };
 
 txCompileObserver::txCompileObserver(txMozillaXSLTProcessor* aProcessor,
@@ -556,7 +560,7 @@ handleNode(nsINode* aNode, txStylesheetCompiler* aCompiler)
             }
         }
 
-        nsINodeInfo *ni = element->NodeInfo();
+        mozilla::dom::NodeInfo *ni = element->NodeInfo();
 
         rv = aCompiler->startElement(ni->NamespaceID(),
                                      ni->NameAtom(),
@@ -605,7 +609,12 @@ public:
     TX_DECL_ACOMPILEOBSERVER
     NS_INLINE_DECL_REFCOUNTING(txSyncCompileObserver)
 
-protected:
+private:
+    // Private destructor, to discourage deletion outside of Release():
+    ~txSyncCompileObserver()
+    {
+    }
+
     nsRefPtr<txMozillaXSLTProcessor> mProcessor;
 };
 

@@ -30,10 +30,6 @@ class WebGLFramebuffer MOZ_FINAL
 public:
     WebGLFramebuffer(WebGLContext* context);
 
-    ~WebGLFramebuffer() {
-        DeleteOnce();
-    }
-
     struct Attachment
     {
         // deleting a texture or renderbuffer immediately detaches it
@@ -163,8 +159,7 @@ public:
 
     void FinalizeAttachments() const;
 
-    virtual JSObject* WrapObject(JSContext* cx,
-                                 JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+    virtual JSObject* WrapObject(JSContext* cx) MOZ_OVERRIDE;
 
     NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(WebGLFramebuffer)
     NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_NATIVE_CLASS(WebGLFramebuffer)
@@ -182,6 +177,10 @@ public:
     void NotifyAttachableChanged() const;
 
 private:
+    ~WebGLFramebuffer() {
+        DeleteOnce();
+    }
+
     mutable GLenum mStatus;
 
     GLuint mGLName;

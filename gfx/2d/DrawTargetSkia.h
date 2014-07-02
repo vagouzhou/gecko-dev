@@ -3,7 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#pragma once
+#ifndef _MOZILLA_GFX_SOURCESURFACESKIA_H
+#define _MOZILLA_GFX_SOURCESURFACESKIA_H
 
 #ifdef USE_SKIA_GPU
 #include "skia/GrContext.h"
@@ -30,7 +31,8 @@ public:
   DrawTargetSkia();
   virtual ~DrawTargetSkia();
 
-  virtual BackendType GetType() const { return BackendType::SKIA; }
+  virtual DrawTargetType GetType() const MOZ_OVERRIDE;
+  virtual BackendType GetBackendType() const { return BackendType::SKIA; }
   virtual TemporaryRef<SourceSurface> Snapshot();
   virtual IntSize GetSize() { return mSize; }
   virtual void Flush();
@@ -106,7 +108,7 @@ public:
   void Init(unsigned char* aData, const IntSize &aSize, int32_t aStride, SurfaceFormat aFormat);
 
 #ifdef USE_SKIA_GPU
-  void InitWithGrContext(GrContext* aGrContext,
+  bool InitWithGrContext(GrContext* aGrContext,
                          const IntSize &aSize,
                          SurfaceFormat aFormat) MOZ_OVERRIDE;
 #endif
@@ -125,6 +127,8 @@ private:
 
   SkRect SkRectCoveringWholeSurface() const;
 
+  bool UsingSkiaGPU() const;
+
 #ifdef USE_SKIA_GPU
   SkRefPtr<GrContext> mGrContext;
   uint32_t mTexture;
@@ -137,3 +141,5 @@ private:
 
 }
 }
+
+#endif // _MOZILLA_GFX_SOURCESURFACESKIA_H

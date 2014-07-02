@@ -60,6 +60,8 @@ class ArrayBufferObject : public JSObject
 
     static const uint8_t RESERVED_SLOTS = 4;
 
+    static const size_t ARRAY_BUFFER_ALIGNMENT = 8;
+
     static const Class class_;
 
     static const Class protoClass;
@@ -75,7 +77,7 @@ class ArrayBufferObject : public JSObject
     static bool class_constructor(JSContext *cx, unsigned argc, Value *vp);
 
     static ArrayBufferObject *create(JSContext *cx, uint32_t nbytes, void *contents = nullptr,
-                                     NewObjectKind newKind = GenericObject);
+                                     NewObjectKind newKind = GenericObject, bool mapped = false);
 
     static JSObject *createSlice(JSContext *cx, Handle<ArrayBufferObject*> arrayBuffer,
                                  uint32_t begin, uint32_t end);
@@ -122,6 +124,7 @@ class ArrayBufferObject : public JSObject
 
     void addView(ArrayBufferViewObject *view);
 
+    void setNewOwnedData(FreeOp* fop, void *newData);
     void changeContents(JSContext *cx, void *newData);
 
     /*
@@ -150,12 +153,15 @@ class ArrayBufferObject : public JSObject
 
     bool isAsmJSArrayBuffer() const { return flags() & ASMJS_BUFFER; }
     bool isSharedArrayBuffer() const { return flags() & SHARED_BUFFER; }
+    bool isMappedArrayBuffer() const { return flags() & MAPPED_BUFFER; }
     bool isNeutered() const { return flags() & NEUTERED_BUFFER; }
 
     static bool prepareForAsmJS(JSContext *cx, Handle<ArrayBufferObject*> buffer);
     static bool canNeuterAsmJSArrayBuffer(JSContext *cx, ArrayBufferObject &buffer);
 
     static void finalize(FreeOp *fop, JSObject *obj);
+
+    static void *createMappedContents(int fd, size_t offset, size_t length);
 
     static size_t flagsOffset() {
         return getFixedSlotOffset(FLAGS_SLOT);
@@ -188,7 +194,8 @@ class ArrayBufferObject : public JSObject
 
         ASMJS_BUFFER       =  0x4,
         SHARED_BUFFER      =  0x8,
-        NEUTERED_BUFFER    = 0x10
+        MAPPED_BUFFER      = 0x10,
+        NEUTERED_BUFFER    = 0x20
     };
 
     uint32_t flags() const;
@@ -206,6 +213,7 @@ class ArrayBufferObject : public JSObject
 
     void setIsAsmJSArrayBuffer() { setFlags(flags() | ASMJS_BUFFER); }
     void setIsSharedArrayBuffer() { setFlags(flags() | SHARED_BUFFER); }
+    void setIsMappedArrayBuffer() { setFlags(flags() | MAPPED_BUFFER); }
     void setIsNeutered() { setFlags(flags() | NEUTERED_BUFFER); }
 
     void initialize(size_t byteLength, void *data, OwnsState ownsState) {
@@ -216,6 +224,7 @@ class ArrayBufferObject : public JSObject
     }
 
     void releaseAsmJSArray(FreeOp *fop);
+    void releaseMappedArray();
 };
 
 /*
@@ -228,21 +237,19 @@ class ArrayBufferViewObject : public JSObject
 {
   protected:
     /* Offset of view in underlying ArrayBufferObject */
-    static const size_t BYTEOFFSET_SLOT  = JS_TYPEDOBJ_SLOT_BYTEOFFSET;
+    static const size_t BYTEOFFSET_SLOT  = JS_BUFVIEW_SLOT_BYTEOFFSET;
 
     /* Byte length of view */
-    static const size_t BYTELENGTH_SLOT  = JS_TYPEDOBJ_SLOT_BYTELENGTH;
+    static const size_t LENGTH_SLOT      = JS_BUFVIEW_SLOT_LENGTH;
 
     /* Underlying ArrayBufferObject */
-    static const size_t BUFFER_SLOT      = JS_TYPEDOBJ_SLOT_OWNER;
+    static const size_t BUFFER_SLOT      = JS_BUFVIEW_SLOT_OWNER;
 
     /* ArrayBufferObjects point to a linked list of views, chained through this slot */
-    static const size_t NEXT_VIEW_SLOT   = JS_TYPEDOBJ_SLOT_NEXT_VIEW;
+    static const size_t NEXT_VIEW_SLOT   = JS_BUFVIEW_SLOT_NEXT_VIEW;
 
   public:
-    JSObject *bufferObject() const {
-        return &getFixedSlot(BUFFER_SLOT).toObject();
-    }
+    static ArrayBufferObject *bufferObject(JSContext *cx, Handle<ArrayBufferViewObject *> obj);
 
     ArrayBufferViewObject *nextView() const {
         return static_cast<ArrayBufferViewObject*>(getFixedSlot(NEXT_VIEW_SLOT).toPrivate());
@@ -268,8 +275,8 @@ PostBarrierTypedArrayObject(JSObject *obj)
 #ifdef JSGC_GENERATIONAL
     JS_ASSERT(obj);
     JSRuntime *rt = obj->runtimeFromMainThread();
-    if (!rt->isHeapBusy() && !IsInsideNursery(rt, obj))
-        rt->gcStoreBuffer.putWholeCell(obj);
+    if (!rt->isHeapBusy() && !IsInsideNursery(JS::AsCell(obj)))
+        rt->gc.storeBuffer.putWholeCellFromMainThread(obj);
 #endif
 }
 
@@ -314,13 +321,13 @@ struct uint8_clamped {
     uint8_clamped(const uint8_clamped& other) : val(other.val) { }
 
     // invoke our assignment helpers for constructor conversion
-    uint8_clamped(uint8_t x)    { *this = x; }
-    uint8_clamped(uint16_t x)   { *this = x; }
-    uint8_clamped(uint32_t x)   { *this = x; }
-    uint8_clamped(int8_t x)     { *this = x; }
-    uint8_clamped(int16_t x)    { *this = x; }
-    uint8_clamped(int32_t x)    { *this = x; }
-    uint8_clamped(double x)     { *this = x; }
+    explicit uint8_clamped(uint8_t x)    { *this = x; }
+    explicit uint8_clamped(uint16_t x)   { *this = x; }
+    explicit uint8_clamped(uint32_t x)   { *this = x; }
+    explicit uint8_clamped(int8_t x)     { *this = x; }
+    explicit uint8_clamped(int16_t x)    { *this = x; }
+    explicit uint8_clamped(int32_t x)    { *this = x; }
+    explicit uint8_clamped(double x)     { *this = x; }
 
     uint8_clamped& operator=(const uint8_clamped& x) {
         val = x.val;
@@ -381,14 +388,14 @@ struct uint8_clamped {
 };
 
 /* Note that we can't use std::numeric_limits here due to uint8_clamped. */
-template<typename T> inline const bool TypeIsFloatingPoint() { return false; }
-template<> inline const bool TypeIsFloatingPoint<float>() { return true; }
-template<> inline const bool TypeIsFloatingPoint<double>() { return true; }
+template<typename T> inline bool TypeIsFloatingPoint() { return false; }
+template<> inline bool TypeIsFloatingPoint<float>() { return true; }
+template<> inline bool TypeIsFloatingPoint<double>() { return true; }
 
-template<typename T> inline const bool TypeIsUnsigned() { return false; }
-template<> inline const bool TypeIsUnsigned<uint8_t>() { return true; }
-template<> inline const bool TypeIsUnsigned<uint16_t>() { return true; }
-template<> inline const bool TypeIsUnsigned<uint32_t>() { return true; }
+template<typename T> inline bool TypeIsUnsigned() { return false; }
+template<> inline bool TypeIsUnsigned<uint8_t>() { return true; }
+template<> inline bool TypeIsUnsigned<uint16_t>() { return true; }
+template<> inline bool TypeIsUnsigned<uint32_t>() { return true; }
 
 } // namespace js
 

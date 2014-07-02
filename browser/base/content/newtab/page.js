@@ -19,9 +19,21 @@ let gPage = {
     // Listen for 'unload' to unregister this page.
     addEventListener("unload", this, false);
 
-    // Listen for toggle button clicks.
-    let button = document.getElementById("newtab-toggle");
-    button.addEventListener("click", this, false);
+    // XXX bug 991111 - Not all click events are correctly triggered when
+    // listening from xhtml nodes -- in particular middle clicks on sites, so
+    // listen from the xul window and filter then delegate
+    addEventListener("click", this, false);
+
+    // Initialize sponsored panel
+    this._sponsoredPanel = document.getElementById("sponsored-panel");
+    let link = this._sponsoredPanel.querySelector(".text-link");
+    link.addEventListener("click", () => this._sponsoredPanel.hidePopup());
+    if (UpdateChannel.get().startsWith("release")) {
+      document.getElementById("sponsored-panel-trial-descr").style.display = "none";
+    }
+    else {
+      document.getElementById("sponsored-panel-release-descr").style.display = "none";
+    }
 
     // Check if the new tab feature is enabled.
     let enabled = gAllPages.enabled;
@@ -29,15 +41,6 @@ let gPage = {
       this._init();
 
     this._updateAttributes(enabled);
-  },
-
-  /**
-   * True if the page is allowed to capture thumbnails using the background
-   * thumbnail service.
-   */
-  get allowBackgroundCaptures() {
-    return document.documentElement.getAttribute("allow-background-captures") ==
-           "true";
   },
 
   /**
@@ -65,12 +68,30 @@ let gPage = {
 
   /**
    * Updates the whole page and the grid when the storage has changed.
+   * @param aOnlyIfHidden If true, the page is updated only if it's hidden in
+   *                      the preloader.
    */
-  update: function Page_update() {
+  update: function Page_update(aOnlyIfHidden=false) {
+    let skipUpdate = aOnlyIfHidden && !document.hidden;
     // The grid might not be ready yet as we initialize it asynchronously.
-    if (gGrid.ready) {
+    if (gGrid.ready && !skipUpdate) {
       gGrid.refresh();
     }
+  },
+
+  /**
+   * Shows sponsored panel
+   */
+  showSponsoredPanel: function Page_showSponsoredPanel(aTarget) {
+    if (this._sponsoredPanel.state == "closed") {
+      let self = this;
+      this._sponsoredPanel.addEventListener("popuphidden", function onPopupHidden(aEvent) {
+        self._sponsoredPanel.removeEventListener("popuphidden", onPopupHidden, false);
+        aTarget.removeAttribute("panelShown");
+      });
+    }
+    aTarget.setAttribute("panelShown", "true");
+    this._sponsoredPanel.openPopup(aTarget);
   },
 
   /**
@@ -83,35 +104,26 @@ let gPage = {
 
     this._initialized = true;
 
-    this._mutationObserver = new MutationObserver(() => {
-      if (this.allowBackgroundCaptures) {
-        Services.telemetry.getHistogramById("NEWTAB_PAGE_SHOWN").add(true);
+    // Initialize search.
+    gSearch.init();
 
-        for (let site of gGrid.sites) {
-          if (site) {
-            site.captureIfMissing();
-          }
-        }
-      }
-    });
-    this._mutationObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["allow-background-captures"],
-    });
+    if (document.hidden) {
+      addEventListener("visibilitychange", this);
+    } else {
+      this.onPageFirstVisible();
+    }
 
-    gLinks.populateCache(function () {
-      // Initialize and render the grid.
-      gGrid.init();
+    // Initialize and render the grid.
+    gGrid.init();
 
-      // Initialize the drop target shim.
-      gDropTargetShim.init();
+    // Initialize the drop target shim.
+    gDropTargetShim.init();
 
 #ifdef XP_MACOSX
-      // Workaround to prevent a delay on MacOSX due to a slow drop animation.
-      document.addEventListener("dragover", this, false);
-      document.addEventListener("drop", this, false);
+    // Workaround to prevent a delay on MacOSX due to a slow drop animation.
+    document.addEventListener("dragover", this, false);
+    document.addEventListener("drop", this, false);
 #endif
-    }.bind(this));
   },
 
   /**
@@ -120,7 +132,7 @@ let gPage = {
    */
   _updateAttributes: function Page_updateAttributes(aValue) {
     // Set the nodes' states.
-    let nodeSelector = "#newtab-scrollbox, #newtab-toggle, #newtab-grid";
+    let nodeSelector = "#newtab-scrollbox, #newtab-toggle, #newtab-grid, #newtab-search-container";
     for (let node of document.querySelectorAll(nodeSelector)) {
       if (aValue)
         node.removeAttribute("page-disabled");
@@ -148,12 +160,25 @@ let gPage = {
   handleEvent: function Page_handleEvent(aEvent) {
     switch (aEvent.type) {
       case "unload":
-        if (this._mutationObserver)
-          this._mutationObserver.disconnect();
         gAllPages.unregister(this);
         break;
       case "click":
-        gAllPages.enabled = !gAllPages.enabled;
+        let {button, target} = aEvent;
+        if (target.id == "newtab-toggle") {
+          if (button == 0) {
+            gAllPages.enabled = !gAllPages.enabled;
+          }
+          break;
+        }
+
+        // Go up ancestors until we find a Site or not
+        while (target) {
+          if (target.hasOwnProperty("_newtabSite")) {
+            target._newtabSite.onClick(aEvent);
+            break;
+          }
+          target = target.parentNode;
+        }
         break;
       case "dragover":
         if (gDrag.isValid(aEvent) && gDrag.draggedSite)
@@ -165,6 +190,53 @@ let gPage = {
           aEvent.stopPropagation();
         }
         break;
+      case "visibilitychange":
+        setTimeout(() => this.onPageFirstVisible());
+        removeEventListener("visibilitychange", this);
+        break;
+    }
+  },
+
+  onPageFirstVisible: function () {
+    // Record another page impression.
+    Services.telemetry.getHistogramById("NEWTAB_PAGE_SHOWN").add(true);
+
+    // Initialize type counting with the types we want to count
+    let directoryCount = {};
+    for (let type of DirectoryLinksProvider.linkTypes) {
+      directoryCount[type] = 0;
+    }
+
+    for (let site of gGrid.sites) {
+      if (site) {
+        site.captureIfMissing();
+
+        // Record which tile index a directory link was shown
+        let {directoryIndex, type} = site.link;
+        if (directoryIndex !== undefined) {
+          let tileIndex = site.cell.index;
+          // For telemetry, only handle the first 9 links in the first 9 cells
+          if (directoryIndex < 9) {
+            let shownId = "NEWTAB_PAGE_DIRECTORY_LINK" + directoryIndex + "_SHOWN";
+            Services.telemetry.getHistogramById(shownId).add(Math.min(9, tileIndex));
+          }
+        }
+
+        // Aggregate tile impression counts into directory types
+        if (type in directoryCount) {
+          directoryCount[type]++;
+        }
+      }
+    }
+
+    DirectoryLinksProvider.reportShownCount(directoryCount);
+    // Record how many directory sites were shown, but place counts over the
+    // default 9 in the same bucket
+    for (let type of Object.keys(directoryCount)) {
+      let count = directoryCount[type];
+      let shownId = "NEWTAB_PAGE_DIRECTORY_" + type.toUpperCase() + "_SHOWN";
+      let shownCount = Math.min(10, count);
+      Services.telemetry.getHistogramById(shownId).add(shownCount);
     }
   }
 };

@@ -17,7 +17,7 @@ using namespace mozilla;
 
 #define ALERT_CHROME_URL "chrome://global/content/alerts/alert.xul"
 
-NS_IMPL_ISUPPORTS1(nsXULAlertObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(nsXULAlertObserver, nsIObserver)
 
 NS_IMETHODIMP
 nsXULAlertObserver::Observe(nsISupports* aSubject, const char* aTopic,
@@ -152,7 +152,8 @@ nsXULAlerts::CloseAlert(const nsAString& aAlertName)
   nsIDOMWindow* alert = mNamedWindows.GetWeak(aAlertName);
   nsCOMPtr<nsPIDOMWindow> domWindow = do_QueryInterface(alert);
   if (domWindow) {
-    domWindow->DispatchCustomEvent("XULAlertClose");
+    MOZ_ASSERT(domWindow->IsOuterWindow());
+    domWindow->DispatchCustomEvent(NS_LITERAL_STRING("XULAlertClose"));
   }
   return NS_OK;
 }

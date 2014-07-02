@@ -26,7 +26,7 @@ class WebVTTListener;
 class HTMLTrackElement MOZ_FINAL : public nsGenericHTMLElement
 {
 public:
-  HTMLTrackElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  HTMLTrackElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   virtual ~HTMLTrackElement();
 
   // nsISupports
@@ -86,10 +86,11 @@ public:
   }
 
   uint16_t ReadyState() const;
+  void SetReadyState(uint16_t aReadyState);
 
-  TextTrack* Track();
+  TextTrack* GetTrack();
 
-  virtual nsresult Clone(nsINodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo* aNodeInfo, nsINode** aResult) const MOZ_OVERRIDE;
 
   // For Track, ItemValue reflects the src attribute
   virtual void GetItemValueText(nsAString& aText) MOZ_OVERRIDE
@@ -121,9 +122,13 @@ public:
   // Check enabling preference.
   static bool IsWebVTTEnabled();
 
+  void DispatchTrackRunnable(const nsString& aEventName);
+  void DispatchTrustedEvent(const nsAString& aName);
+
+  void DropChannel();
+
 protected:
-  virtual JSObject* WrapNode(JSContext* aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext* aCx) MOZ_OVERRIDE;
   void OnChannelRedirect(nsIChannel* aChannel, nsIChannel* aNewChannel,
                          uint32_t aFlags);
   // Open a new channel to the HTMLTrackElement's src attribute and call

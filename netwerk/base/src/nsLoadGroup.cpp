@@ -1098,6 +1098,8 @@ nsresult nsLoadGroup::MergeLoadFlags(nsIRequest *aRequest, nsLoadFlags& outFlags
 
 class nsLoadGroupConnectionInfo MOZ_FINAL : public nsILoadGroupConnectionInfo
 {
+    ~nsLoadGroupConnectionInfo() {}
+
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
     NS_DECL_NSILOADGROUPCONNECTIONINFO
@@ -1108,7 +1110,7 @@ private:
     nsAutoPtr<mozilla::net::SpdyPushCache> mSpdyCache;
 };
 
-NS_IMPL_ISUPPORTS1(nsLoadGroupConnectionInfo, nsILoadGroupConnectionInfo)
+NS_IMPL_ISUPPORTS(nsLoadGroupConnectionInfo, nsILoadGroupConnectionInfo)
 
 nsLoadGroupConnectionInfo::nsLoadGroupConnectionInfo()
     : mBlockingTransactionCount(0)

@@ -5,10 +5,9 @@
 
 #include "CellBroadcast.h"
 #include "mozilla/dom/MozCellBroadcastBinding.h"
-#include "nsIDOMMozCellBroadcastEvent.h"
+#include "mozilla/dom/MozCellBroadcastEvent.h"
 #include "nsIDOMMozCellBroadcastMessage.h"
 #include "nsServiceManagerUtils.h"
-#include "GeneratedEvents.h"
 
 #define NS_RILCONTENTHELPER_CONTRACTID "@mozilla.org/ril/content-helper;1"
 
@@ -40,7 +39,7 @@ public:
   }
 };
 
-NS_IMPL_ISUPPORTS1(CellBroadcast::Listener, nsICellBroadcastListener)
+NS_IMPL_ISUPPORTS(CellBroadcast::Listener, nsICellBroadcastListener)
 
 /**
  * CellBroadcast Implementation.
@@ -66,7 +65,7 @@ CellBroadcast::Create(nsPIDOMWindow* aWindow, ErrorResult& aRv)
 
 CellBroadcast::CellBroadcast(nsPIDOMWindow *aWindow,
                              nsICellBroadcastProvider *aProvider)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , mProvider(aProvider)
 {
   mListener = new Listener(this);
@@ -84,10 +83,9 @@ CellBroadcast::~CellBroadcast()
 }
 
 JSObject*
-CellBroadcast::WrapObject(JSContext* aCx,
-                          JS::Handle<JSObject*> aScope)
+CellBroadcast::WrapObject(JSContext* aCx)
 {
-  return MozCellBroadcastBinding::Wrap(aCx, aScope, this);
+  return MozCellBroadcastBinding::Wrap(aCx, this);
 }
 
 // Forwarded nsICellBroadcastListener methods
@@ -95,13 +93,12 @@ CellBroadcast::WrapObject(JSContext* aCx,
 NS_IMETHODIMP
 CellBroadcast::NotifyMessageReceived(nsIDOMMozCellBroadcastMessage* aMessage)
 {
-  nsCOMPtr<nsIDOMEvent> event;
-  NS_NewDOMMozCellBroadcastEvent(getter_AddRefs(event), this, nullptr, nullptr);
+  MozCellBroadcastEventInit init;
+  init.mBubbles = true;
+  init.mCancelable = false;
+  init.mMessage = aMessage;
 
-  nsCOMPtr<nsIDOMMozCellBroadcastEvent> ce = do_QueryInterface(event);
-  nsresult rv = ce->InitMozCellBroadcastEvent(NS_LITERAL_STRING("received"),
-                                              true, false, aMessage);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return DispatchTrustedEvent(ce);
+  nsRefPtr<MozCellBroadcastEvent> event =
+    MozCellBroadcastEvent::Constructor(this, NS_LITERAL_STRING("received"), init);
+  return DispatchTrustedEvent(event);
 }

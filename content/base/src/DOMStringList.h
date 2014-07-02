@@ -17,17 +17,19 @@ namespace dom {
 class DOMStringList : public nsISupports,
                       public nsWrapperCache
 {
+protected:
+  virtual ~DOMStringList();
+
 public:
   DOMStringList()
   {
     SetIsDOMBinding();
   }
-  virtual ~DOMStringList();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMStringList)
 
-  virtual JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  virtual JSObject* WrapObject(JSContext* aCx);
   nsISupports* GetParentObject()
   {
     return nullptr;

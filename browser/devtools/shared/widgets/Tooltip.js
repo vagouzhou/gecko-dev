@@ -5,14 +5,14 @@
 "use strict";
 
 const {Cc, Cu, Ci} = require("chrome");
-const promise = require("sdk/core/promise");
+const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 const IOService = Cc["@mozilla.org/network/io-service;1"]
   .getService(Ci.nsIIOService);
 const {Spectrum} = require("devtools/shared/widgets/Spectrum");
 const EventEmitter = require("devtools/toolkit/event-emitter");
 const {colorUtils} = require("devtools/css-color");
 const Heritage = require("sdk/core/heritage");
-const {CSSTransformPreviewer} = require("devtools/shared/widgets/CSSTransformPreviewer");
+const {Eyedropper} = require("devtools/eyedropper/eyedropper");
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -25,6 +25,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "VariablesView",
   "resource:///modules/devtools/VariablesView.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "VariablesViewController",
   "resource:///modules/devtools/VariablesViewController.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Task",
+  "resource://gre/modules/Task.jsm");
 
 const GRADIENT_RE = /\b(repeating-)?(linear|radial)-gradient\(((rgb|hsl)a?\(.+?\)|[^\)])+\)/gi;
 const BORDERCOLOR_RE = /^border-[-a-z]*color$/ig;
@@ -100,6 +102,7 @@ let PanelFactory = {
     let panel = doc.createElement("panel");
     panel.setAttribute("hidden", true);
     panel.setAttribute("ignorekeys", true);
+    panel.setAttribute("animate", false);
 
     panel.setAttribute("consumeoutsideclicks", options.get("consumeOutsideClick"));
     panel.setAttribute("noautofocus", options.get("noAutoFocus"));
@@ -419,7 +422,8 @@ Tooltip.prototype = {
         return false;
       });
     } else {
-      return res ? promise.resolve(res) : promise.reject(false);
+      let newTarget = res instanceof Ci.nsIDOMNode ? res : target;
+      return res ? promise.resolve(newTarget) : promise.reject(false);
     }
   },
 
@@ -586,26 +590,24 @@ Tooltip.prototype = {
    * Uses the provided inspectorFront's getImageDataFromURL method to resolve
    * the relative URL on the server-side, in the page context, and then sets the
    * tooltip content with the resulting image just like |setImageContent| does.
-   *
-   * @return a promise that resolves when the image is shown in the tooltip
+   * @return a promise that resolves when the image is shown in the tooltip or
+   * resolves when the broken image tooltip content is ready, but never rejects.
    */
-  setRelativeImageContent: function(imageUrl, inspectorFront, maxDim) {
+  setRelativeImageContent: Task.async(function*(imageUrl, inspectorFront, maxDim) {
     if (imageUrl.startsWith("data:")) {
       // If the imageUrl already is a data-url, save ourselves a round-trip
       this.setImageContent(imageUrl, {maxDim: maxDim});
-      return promise.resolve();
     } else if (inspectorFront) {
-      return inspectorFront.getImageDataFromURL(imageUrl, maxDim).then(res => {
-        res.size.maxDim = maxDim;
-        return res.data.string().then(str => {
-          this.setImageContent(str, res.size);
-        });
-      }, () => {
+      try {
+        let {data, size} = yield inspectorFront.getImageDataFromURL(imageUrl, maxDim);
+        size.maxDim = maxDim;
+        let str = yield data.string();
+        this.setImageContent(str, size);
+      } catch (e) {
         this.setBrokenImageContent();
-      });
+      }
     }
-    return promise.resolve();
-  },
+  }),
 
   /**
    * Fill the tooltip with a message explaining the the image is missing
@@ -632,7 +634,9 @@ Tooltip.prototype = {
    *        it was resized, if if was resized before this function was called.
    *        If not provided, will be measured on the loaded image.
    *        - maxDim : if the image should be resized before being shown, pass
-   *        a number here
+   *        a number here.
+   *        - hideDimensionLabel : if the dimension label should be appended
+   *        after the image.
    */
   setImageContent: function(imageUrl, options={}) {
     if (!imageUrl) {
@@ -652,25 +656,28 @@ Tooltip.prototype = {
     }
     vbox.appendChild(image);
 
-    // Dimension label
-    let label = this.doc.createElement("label");
-    label.classList.add("devtools-tooltip-caption");
-    label.classList.add("theme-comment");
-    if (options.naturalWidth && options.naturalHeight) {
-      label.textContent = this._getImageDimensionLabel(options.naturalWidth,
-        options.naturalHeight);
-    } else {
-      // If no dimensions were provided, load the image to get them
-      label.textContent = l10n.strings.GetStringFromName("previewTooltip.image.brokenImage");
-      let imgObj = new this.doc.defaultView.Image();
-      imgObj.src = imageUrl;
-      imgObj.onload = () => {
-        imgObj.onload = null;
-        label.textContent = this._getImageDimensionLabel(imgObj.naturalWidth,
-          imgObj.naturalHeight);
+    if (!options.hideDimensionLabel) {
+      let label = this.doc.createElement("label");
+      label.classList.add("devtools-tooltip-caption");
+      label.classList.add("theme-comment");
+
+      if (options.naturalWidth && options.naturalHeight) {
+        label.textContent = this._getImageDimensionLabel(options.naturalWidth,
+          options.naturalHeight);
+      } else {
+        // If no dimensions were provided, load the image to get them
+        label.textContent = l10n.strings.GetStringFromName("previewTooltip.image.brokenImage");
+        let imgObj = new this.doc.defaultView.Image();
+        imgObj.src = imageUrl;
+        imgObj.onload = () => {
+          imgObj.onload = null;
+            label.textContent = this._getImageDimensionLabel(imgObj.naturalWidth,
+              imgObj.naturalHeight);
+        }
       }
+
+      vbox.appendChild(label);
     }
-    vbox.appendChild(label);
 
     this.content = vbox;
   },
@@ -689,7 +696,7 @@ Tooltip.prototype = {
     let iframe = this.doc.createElementNS(XHTML_NS, "iframe");
     iframe.setAttribute("transparent", true);
     iframe.setAttribute("width", "210");
-    iframe.setAttribute("height", "195");
+    iframe.setAttribute("height", "216");
     iframe.setAttribute("flex", "1");
     iframe.setAttribute("class", "devtools-tooltip-iframe");
 
@@ -704,12 +711,21 @@ Tooltip.prototype = {
       let container = win.document.getElementById("spectrum");
       let spectrum = new Spectrum(container, color);
 
-      // Finalize spectrum's init when the tooltip becomes visible
-      panel.addEventListener("popupshown", function shown() {
-        panel.removeEventListener("popupshown", shown, true);
+      function finalizeSpectrum() {
         spectrum.show();
         def.resolve(spectrum);
-      }, true);
+      }
+
+      // Finalize spectrum's init when the tooltip becomes visible
+      if (panel.state == "open") {
+        finalizeSpectrum();
+      }
+      else {
+        panel.addEventListener("popupshown", function shown() {
+          panel.removeEventListener("popupshown", shown, true);
+          finalizeSpectrum();
+        }, true);
+      }
     }
     iframe.addEventListener("load", onLoad, true);
     iframe.setAttribute("src", SPECTRUM_FRAME);
@@ -721,83 +737,34 @@ Tooltip.prototype = {
   },
 
   /**
-   * Set the content of the tooltip to be the result of CSSTransformPreviewer.
-   * Meaning a canvas previewing a css transformation.
-   *
-   * @param {String} transform
-   *        The CSS transform value (e.g. "rotate(45deg) translateX(50px)")
-   * @param {PageStyleActor} pageStyle
-   *        An instance of the PageStyleActor that will be used to retrieve
-   *        computed styles
-   * @param {NodeActor} node
-   *        The NodeActor for the currently selected node
-   * @return A promise that resolves when the tooltip content is ready, or
-   *         rejects if no transform is provided or is invalid
-   */
-  setCssTransformContent: function(transform, pageStyle, node) {
-    let def = promise.defer();
-
-    if (transform) {
-      // Look into the computed styles to find the width and height and possibly
-      // the origin if it hadn't been provided
-      pageStyle.getComputed(node, {
-        filter: "user",
-        markMatched: false,
-        onlyMatched: false
-      }).then(styles => {
-        let origin = styles["transform-origin"].value;
-        let width = parseInt(styles["width"].value);
-        let height = parseInt(styles["height"].value);
-
-        let root = this.doc.createElementNS(XHTML_NS, "div");
-        let previewer = new CSSTransformPreviewer(root);
-        this.content = root;
-        if (!previewer.preview(transform, origin, width, height)) {
-          def.reject();
-        } else {
-          def.resolve();
-        }
-      });
-    } else {
-      def.reject();
-    }
-
-    return def.promise;
-  },
-
-  /**
    * Set the content of the tooltip to display a font family preview.
    * This is based on Lea Verou's Dablet. See https://github.com/LeaVerou/dabblet
    * for more info.
-   *
-   * @param {String} font
-   *        The font family value.
+   * @param {String} font The font family value.
+   * @param {object} nodeFront
+   *        The NodeActor that will used to retrieve the dataURL for the font
+   *        family tooltip contents.
+   * @return A promise that resolves when the font tooltip content is ready, or
+   *         rejects if no font is provided
    */
-  setFontFamilyContent: function(font) {
-    let def = promise.defer();
-
-    if (font) {
-      // Main container
-      let vbox = this.doc.createElement("vbox");
-      vbox.setAttribute("flex", "1");
-
-      // Display the font family previewer
-      let previewer = this.doc.createElement("description");
-      previewer.setAttribute("flex", "1");
-      previewer.style.fontFamily = font;
-      previewer.classList.add("devtools-tooltip-font-previewer-text");
-      previewer.textContent = "(ABCabc123&@%)";
-      vbox.appendChild(previewer);
-
-      this.content = vbox;
-
-      def.resolve();
-    } else {
-      def.reject();
+  setFontFamilyContent: Task.async(function*(font, nodeFront) {
+    if (!font || !nodeFront) {
+      throw "Missing font";
     }
 
-    return def.promise;
-  }
+    if (typeof nodeFront.getFontFamilyDataURL === "function") {
+      font = font.replace(/"/g, "'");
+      font = font.replace("!important", "");
+      font = font.trim();
+
+      let fillStyle = (Services.prefs.getCharPref("devtools.theme") === "light") ?
+        "black" : "white";
+
+      let {data, size} = yield nodeFront.getFontFamilyDataURL(font, fillStyle);
+      let str = yield data.string();
+      this.setImageContent(str, { hideDimensionLabel: true, maxDim: size });
+    }
+  })
 };
 
 /**
@@ -843,6 +810,11 @@ SwatchBasedEditorTooltip.prototype = {
   show: function() {
     if (this.activeSwatch) {
       this.tooltip.show(this.activeSwatch, "topcenter bottomleft");
+      this.tooltip.once("hidden", () => {
+        if (!this.eyedropperOpen) {
+          this.activeSwatch = null;
+        }
+      });
     }
   },
 
@@ -860,19 +832,18 @@ SwatchBasedEditorTooltip.prototype = {
    * @param {object} callbacks
    *        Callbacks that will be executed when the editor wants to preview a
    *        value change, or revert a change, or commit a change.
-   * @param {object} originalValue
-   *        The original value before the editor in the tooltip makes changes
-   *        This can be of any type, and will be passed, as is, in the revert
-   *        callback
+   *        - onPreview: will be called when one of the sub-classes calls preview
+   *        - onRevert: will be called when the user ESCapes out of the tooltip
+   *        - onCommit: will be called when the user presses ENTER or clicks
+   *        outside the tooltip.
    */
-  addSwatch: function(swatchEl, callbacks={}, originalValue) {
+  addSwatch: function(swatchEl, callbacks={}) {
     if (!callbacks.onPreview) callbacks.onPreview = function() {};
     if (!callbacks.onRevert) callbacks.onRevert = function() {};
     if (!callbacks.onCommit) callbacks.onCommit = function() {};
 
     this.swatches.set(swatchEl, {
-      callbacks: callbacks,
-      originalValue: originalValue
+      callbacks: callbacks
     });
     swatchEl.addEventListener("click", this._onSwatchClick, false);
   },
@@ -913,7 +884,7 @@ SwatchBasedEditorTooltip.prototype = {
   revert: function() {
     if (this.activeSwatch) {
       let swatch = this.swatches.get(this.activeSwatch);
-      swatch.callbacks.onRevert(swatch.originalValue);
+      swatch.callbacks.onRevert();
     }
   },
 
@@ -951,6 +922,7 @@ function SwatchColorPickerTooltip(doc) {
   // resolves to the spectrum instance
   this.spectrum = this.tooltip.setColorPickerContent([0, 0, 0, 1]);
   this._onSpectrumColorChange = this._onSpectrumColorChange.bind(this);
+  this._openEyeDropper = this._openEyeDropper.bind(this);
 }
 
 module.exports.SwatchColorPickerTooltip = SwatchColorPickerTooltip;
@@ -965,6 +937,7 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
     SwatchBasedEditorTooltip.prototype.show.call(this);
     // Then set spectrum's color and listen to color changes to preview them
     if (this.activeSwatch) {
+      this.currentSwatchColor = this.activeSwatch.nextSibling;
       let swatch = this.swatches.get(this.activeSwatch);
       let color = this.activeSwatch.style.backgroundColor;
       this.spectrum.then(spectrum => {
@@ -974,14 +947,58 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
         spectrum.updateUI();
       });
     }
+
+    let tooltipDoc = this.tooltip.content.contentDocument;
+    let eyeButton = tooltipDoc.querySelector("#eyedropper-button");
+    eyeButton.addEventListener("click", this._openEyeDropper);
   },
 
   _onSpectrumColorChange: function(event, rgba, cssColor) {
+    this._selectColor(cssColor);
+  },
+
+  _selectColor: function(color) {
     if (this.activeSwatch) {
-      this.activeSwatch.style.backgroundColor = cssColor;
-      this.activeSwatch.nextSibling.textContent = cssColor;
-      this.preview(cssColor);
+      this.activeSwatch.style.backgroundColor = color;
+      this.activeSwatch.parentNode.dataset.color = color;
+      this.currentSwatchColor.textContent = color;
+      this.preview(color);
     }
+  },
+
+ _openEyeDropper: function() {
+    let chromeWindow = this.tooltip.doc.defaultView.top;
+    let windowType = chromeWindow.document.documentElement
+                     .getAttribute("windowtype");
+    let toolboxWindow;
+    if (windowType != "navigator:browser") {
+      // this means the toolbox is in a seperate window. We need to make
+      // sure we'll be inspecting the browser window instead
+      toolboxWindow = chromeWindow;
+      chromeWindow = Services.wm.getMostRecentWindow("navigator:browser");
+      chromeWindow.focus();
+    }
+    let dropper = new Eyedropper(chromeWindow, { copyOnSelect: false });
+
+    dropper.once("select", (event, color) => {
+      if (toolboxWindow) {
+        toolboxWindow.focus();
+      }
+      this._selectColor(color);
+    });
+
+    dropper.once("destroy", () => {
+      this.eyedropperOpen = false;
+      this.activeSwatch = null;
+    })
+
+    dropper.open();
+    this.eyedropperOpen = true;
+
+    // close the colorpicker tooltip so that only the eyedropper is open.
+    this.hide();
+
+    this.tooltip.emit("eyedropper-opened", dropper);
   },
 
   _colorToRgba: function(color) {
@@ -992,6 +1009,7 @@ SwatchColorPickerTooltip.prototype = Heritage.extend(SwatchBasedEditorTooltip.pr
 
   destroy: function() {
     SwatchBasedEditorTooltip.prototype.destroy.call(this);
+    this.currentSwatchColor = null;
     this.spectrum.then(spectrum => {
       spectrum.off("changed", this._onSpectrumColorChange);
       spectrum.destroy();

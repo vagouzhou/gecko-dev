@@ -19,9 +19,11 @@
 
 #include "GonkGPSGeolocationProvider.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Services.h"
 #include "nsGeoPosition.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsINetworkManager.h"
+#include "nsIObserverService.h"
 #include "nsJSUtils.h"
 #include "nsServiceManagerUtils.h"
 #include "nsThreadUtils.h"
@@ -30,32 +32,33 @@
 
 #ifdef MOZ_B2G_RIL
 #include "nsIDOMIccInfo.h"
-#include "nsIDOMMobileConnection.h"
+#include "nsIMobileConnectionInfo.h"
+#include "nsIMobileCellInfo.h"
 #include "nsIRadioInterfaceLayer.h"
 #endif
+
+#define SETTING_DEBUG_ENABLED "geolocation.debugging.enabled"
 
 #ifdef AGPS_TYPE_INVALID
 #define AGPS_HAVE_DUAL_APN
 #endif
 
-#define DEBUG_GPS 0
+#define FLUSH_AIDE_DATA 0
 
 using namespace mozilla;
 
 static const int kDefaultPeriod = 1000; // ms
+static int gGPSDebugging = false;
+
+static const char* kNetworkConnStateChangedTopic = "network-connection-state-changed";
 
 // While most methods of GonkGPSGeolocationProvider should only be
 // called from main thread, we deliberately put the Init and ShutdownGPS
 // methods off main thread to avoid blocking.
-#ifdef MOZ_B2G_RIL
-NS_IMPL_ISUPPORTS3(GonkGPSGeolocationProvider,
-                   nsIGeolocationProvider,
-                   nsIRILDataCallback,
-                   nsISettingsServiceCallback)
-#else
-NS_IMPL_ISUPPORTS1(GonkGPSGeolocationProvider,
-                   nsIGeolocationProvider)
-#endif
+NS_IMPL_ISUPPORTS(GonkGPSGeolocationProvider,
+                  nsIGeolocationProvider,
+                  nsIObserver,
+                  nsISettingsServiceCallback)
 
 /* static */ GonkGPSGeolocationProvider* GonkGPSGeolocationProvider::sSingleton = nullptr;
 GpsCallbacks GonkGPSGeolocationProvider::mCallbacks = {
@@ -136,12 +139,11 @@ GonkGPSGeolocationProvider::SvStatusCallback(GpsSvStatus* sv_info)
 void
 GonkGPSGeolocationProvider::NmeaCallback(GpsUtcTime timestamp, const char* nmea, int length)
 {
-#if DEBUG_GPS
-  printf_stderr("*** nmea info\n");
-  printf_stderr("timestamp:\t%lld\n", timestamp);
-  printf_stderr("nmea:     \t%s\n", nmea);
-  printf_stderr("length:   \t%d\n", length);
-#endif
+  if (gGPSDebugging) {
+    nsContentUtils::LogMessageToConsole("NMEA: timestamp:\t%lld", timestamp);
+    nsContentUtils::LogMessageToConsole("NMEA: nmea:     \t%s", nmea);
+    nsContentUtils::LogMessageToConsole("NMEA  length:   \%d", length);
+  }
 }
 
 void
@@ -375,6 +377,8 @@ GonkGPSGeolocationProvider::SetAGpsDataConn(nsAString& aApn)
   }
 }
 
+#endif // MOZ_B2G_RIL
+
 void
 GonkGPSGeolocationProvider::RequestSettingValue(char* aKey)
 {
@@ -389,6 +393,7 @@ GonkGPSGeolocationProvider::RequestSettingValue(char* aKey)
   lock->Get(aKey, this);
 }
 
+#ifdef MOZ_B2G_RIL
 void
 GonkGPSGeolocationProvider::RequestDataConnection()
 {
@@ -496,10 +501,10 @@ GonkGPSGeolocationProvider::SetReferenceLocation()
         location.u.cellID.mnc = 0;
       }
     }
-    nsCOMPtr<nsIDOMMozMobileConnectionInfo> voice;
+    nsCOMPtr<nsIMobileConnectionInfo> voice;
     rilCtx->GetVoice(getter_AddRefs(voice));
     if (voice) {
-      nsCOMPtr<nsIDOMMozMobileCellInfo> cell;
+      nsCOMPtr<nsIMobileCellInfo> cell;
       voice->GetCell(getter_AddRefs(cell));
       if (cell) {
         int32_t lac;
@@ -533,13 +538,13 @@ GonkGPSGeolocationProvider::InjectLocation(double latitude,
                                            double longitude,
                                            float accuracy)
 {
-#ifdef DEBUG_GPS
-  printf_stderr("*** injecting location\n");
-  printf_stderr("*** lat: %f\n", latitude);
-  printf_stderr("*** lon: %f\n", longitude);
-  printf_stderr("*** accuracy: %f\n", accuracy);
-#endif
-
+  if (gGPSDebugging) {
+    nsContentUtils::LogMessageToConsole("*** injecting location");
+    nsContentUtils::LogMessageToConsole("*** lat: %f", latitude);
+    nsContentUtils::LogMessageToConsole("*** lon: %f", longitude);
+    nsContentUtils::LogMessageToConsole("*** accuracy: %f", accuracy);
+  }
+  
   MOZ_ASSERT(NS_IsMainThread());
   if (!mGpsInterface) {
     return;
@@ -612,7 +617,7 @@ GonkGPSGeolocationProvider::StartGPS()
   mGpsInterface->set_position_mode(positionMode,
                                    GPS_POSITION_RECURRENCE_PERIODIC,
                                    update, 0, 0);
-#if DEBUG_GPS
+#if FLUSH_AIDE_DATA
   // Delete cached data
   mGpsInterface->delete_aiding_data(GPS_DELETE_ALL);
 #endif
@@ -636,22 +641,23 @@ GonkGPSGeolocationProvider::SetupAGPS()
     return;
   }
 
-  // Setup network state listener
+  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+  if (obs) {
+    obs->AddObserver(this, kNetworkConnStateChangedTopic, false);
+  }
+
   nsCOMPtr<nsIRadioInterfaceLayer> ril = do_GetService("@mozilla.org/ril;1");
   if (ril) {
     // TODO: Bug 878748 - B2G GPS: acquire correct RadioInterface instance in
     // MultiSIM configuration
     ril->GetRadioInterface(0 /* clientId */, getter_AddRefs(mRadioInterface));
-    if (mRadioInterface) {
-      mRadioInterface->RegisterDataCallCallback(this);
-    }
   }
 }
 #endif // MOZ_B2G_RIL
 
 
-NS_IMPL_ISUPPORTS1(GonkGPSGeolocationProvider::NetworkLocationUpdate,
-                   nsIGeolocationUpdate)
+NS_IMPL_ISUPPORTS(GonkGPSGeolocationProvider::NetworkLocationUpdate,
+                  nsIGeolocationUpdate)
 
 NS_IMETHODIMP
 GonkGPSGeolocationProvider::NetworkLocationUpdate::Update(nsIDOMGeoPosition *position)
@@ -665,17 +671,48 @@ GonkGPSGeolocationProvider::NetworkLocationUpdate::Update(nsIDOMGeoPosition *pos
     return NS_ERROR_FAILURE;
   }
 
-  // if we haven't seen anything from the GPS device for 1s,
-  // use this network derived location.
-  int64_t diff = PR_Now() - provider->mLastGPSDerivedLocationTime;
-  if (provider->mLocationCallback && diff > kDefaultPeriod) {
-    provider->mLocationCallback->Update(position);
-  }
-
   double lat, lon, acc;
   coords->GetLatitude(&lat);
   coords->GetLongitude(&lon);
   coords->GetAccuracy(&acc);
+
+  double delta = MAXFLOAT;
+
+  static double sLastMLSPosLat = 0;
+  static double sLastMLSPosLon = 0;
+
+  if (0 != sLastMLSPosLon || 0 != sLastMLSPosLat) {
+    // Use spherical law of cosines to calculate difference
+    // Not quite as correct as the Haversine but simpler and cheaper
+    // Should the following be a utility function? Others might need this calc.
+    const double radsInDeg = 3.14159265 / 180.0;
+    const double rNewLat = lat * radsInDeg;
+    const double rNewLon = lon * radsInDeg;
+    const double rOldLat = sLastMLSPosLat * radsInDeg;
+    const double rOldLon = sLastMLSPosLon * radsInDeg;
+    // WGS84 equatorial radius of earth = 6378137m
+    delta = acos( (sin(rNewLat) * sin(rOldLat)) +
+                  (cos(rNewLat) * cos(rOldLat) * cos(rOldLon - rNewLon)) )
+                  * 6378137;
+  }
+
+  sLastMLSPosLat = lat;
+  sLastMLSPosLon = lon;
+
+  // if the MLS coord change is smaller than this arbitrarily small value
+  // assume the MLS coord is unchanged, and stick with the GPS location
+  const double kMinMLSCoordChangeInMeters = 10;
+
+  // if we haven't seen anything from the GPS device for 10s,
+  // use this network derived location.
+  const int kMaxGPSDelayBeforeConsideringMLS = 10000;
+  int64_t diff = PR_Now() - provider->mLastGPSDerivedLocationTime;
+  if (provider->mLocationCallback && diff > kMaxGPSDelayBeforeConsideringMLS
+      && delta > kMinMLSCoordChangeInMeters)
+  {
+    provider->mLocationCallback->Update(position);
+  }
+
   provider->InjectLocation(lat, lon, acc);
   return NS_OK;
 }
@@ -697,6 +734,7 @@ GonkGPSGeolocationProvider::Startup()
 {
   MOZ_ASSERT(NS_IsMainThread());
 
+  RequestSettingValue(SETTING_DEBUG_ENABLED);
   if (mStarted) {
     return NS_OK;
   }
@@ -746,8 +784,9 @@ GonkGPSGeolocationProvider::Shutdown()
     mNetworkLocationProvider = nullptr;
   }
 #ifdef MOZ_B2G_RIL
-  if (mRadioInterface) {
-    mRadioInterface->UnregisterDataCallCallback(this);
+  nsCOMPtr<nsIObserverService> obs = services::GetObserverService();
+  if (obs) {
+    obs->RemoveObserver(this, kNetworkConnStateChangedTopic);
   }
 #endif
 
@@ -774,27 +813,24 @@ GonkGPSGeolocationProvider::SetHighAccuracy(bool)
   return NS_OK;
 }
 
-#ifdef MOZ_B2G_RIL
-/** nsIRILDataCallback interface **/
-
 NS_IMETHODIMP
-GonkGPSGeolocationProvider::DataCallStateChanged(nsIRILDataCallInfo* aDataCall)
+GonkGPSGeolocationProvider::Observe(nsISupports* aSubject,
+                                    const char* aTopic,
+                                    const char16_t* aData)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(aDataCall);
 
-  // We call Setting Service before we get the state of supl data connection
-  // since it is possible that state of supl data connection haven't been
-  // updated and will be updated after we finished this function (code that
-  // updates the state is in another dataCallStateChanged callback).
-  RequestSettingValue("ril.supl.apn");
-  return NS_OK;
-}
+#ifdef MOZ_B2G_RIL
+  if (!strcmp(aTopic, kNetworkConnStateChangedTopic)) {
+    nsCOMPtr<nsIRilNetworkInterface> iface = do_QueryInterface(aSubject);
+    if (!iface) {
+      return NS_OK;
+    }
 
-NS_IMETHODIMP
-GonkGPSGeolocationProvider::ReceiveDataCallList(nsIRILDataCallInfo** aDataCalls,
-                                                uint32_t aLength)
-{
+    RequestSettingValue("ril.supl.apn");
+  }
+#endif
+
   return NS_OK;
 }
 
@@ -804,12 +840,13 @@ NS_IMETHODIMP
 GonkGPSGeolocationProvider::Handle(const nsAString& aName,
                                    JS::Handle<JS::Value> aResult)
 {
+#ifdef MOZ_B2G_RIL
   if (aName.EqualsLiteral("ril.supl.apn")) {
-    JSContext *cx = nsContentUtils::GetCurrentJSContext();
-    NS_ENSURE_TRUE(cx, NS_OK);
-
     // When we get the APN, we attempt to call data_call_open of AGPS.
     if (aResult.isString()) {
+      JSContext *cx = nsContentUtils::GetCurrentJSContext();
+      NS_ENSURE_TRUE(cx, NS_OK);
+
       // NB: No need to enter a compartment to read the contents of a string.
       nsDependentJSString apn;
       apn.init(cx, aResult.toString());
@@ -817,6 +854,11 @@ GonkGPSGeolocationProvider::Handle(const nsAString& aName,
         SetAGpsDataConn(apn);
       }
     }
+  } else
+#endif // MOZ_B2G_RIL
+  if (aName.EqualsLiteral(SETTING_DEBUG_ENABLED)) {
+    gGPSDebugging = aResult.isBoolean() ? aResult.toBoolean() : false;
+    return NS_OK;
   }
   return NS_OK;
 }
@@ -826,4 +868,3 @@ GonkGPSGeolocationProvider::HandleError(const nsAString& aErrorMessage)
 {
   return NS_OK;
 }
-#endif // MOZ_B2G_RIL

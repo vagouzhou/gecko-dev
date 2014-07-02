@@ -16,17 +16,19 @@ import org.mozilla.gecko.background.fxa.FxAccountClient20.LoginResponse;
 import org.mozilla.gecko.background.fxa.FxAccountClientException.FxAccountClientRemoteException;
 import org.mozilla.gecko.background.fxa.FxAccountUtils;
 import org.mozilla.gecko.background.fxa.PasswordStretcher;
+import org.mozilla.gecko.fxa.FirefoxAccounts;
 import org.mozilla.gecko.fxa.FxAccountConstants;
-import org.mozilla.gecko.fxa.activities.FxAccountSetupTask.FxAccountSignInTask;
 import org.mozilla.gecko.fxa.authenticator.AndroidFxAccount;
 import org.mozilla.gecko.fxa.login.Engaged;
 import org.mozilla.gecko.fxa.login.State;
 import org.mozilla.gecko.fxa.login.State.StateLabel;
+import org.mozilla.gecko.fxa.tasks.FxAccountSignInTask;
 import org.mozilla.gecko.sync.setup.activities.ActivityUtils;
 
 import android.os.Bundle;
 import android.view.View;
 import android.view.View.OnClickListener;
+import android.widget.AutoCompleteTextView;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ProgressBar;
@@ -58,7 +60,7 @@ public class FxAccountUpdateCredentialsActivity extends FxAccountAbstractSetupAc
     super.onCreate(icicle);
     setContentView(R.layout.fxaccount_update_credentials);
 
-    emailEdit = (EditText) ensureFindViewById(null, R.id.email, "email edit");
+    emailEdit = (AutoCompleteTextView) ensureFindViewById(null, R.id.email, "email edit");
     passwordEdit = (EditText) ensureFindViewById(null, R.id.password, "password edit");
     showPasswordButton = (Button) ensureFindViewById(null, R.id.show_password, "show password button");
     remoteErrorTextView = (TextView) ensureFindViewById(null, R.id.remote_error, "remote error text view");
@@ -75,6 +77,8 @@ public class FxAccountUpdateCredentialsActivity extends FxAccountAbstractSetupAc
 
     TextView view = (TextView) findViewById(R.id.forgot_password_link);
     ActivityUtils.linkTextView(view, R.string.fxaccount_sign_in_forgot_password, R.string.fxaccount_link_forgot_password);
+
+    updateFromIntentExtras();
   }
 
   @Override
@@ -115,7 +119,14 @@ public class FxAccountUpdateCredentialsActivity extends FxAccountAbstractSetupAc
 
     @Override
     public void handleFailure(FxAccountClientRemoteException e) {
-      // TODO On isUpgradeRequired, transition to Doghouse state.
+      if (e.isUpgradeRequired()) {
+        Logger.error(LOG_TAG, "Got upgrade required from remote server; transitioning Firefox Account to Doghouse state.");
+        final State state = fxAccount.getState();
+        fxAccount.setState(state.makeDoghouseState());
+        // The status activity will say that the user needs to upgrade.
+        redirectToActivity(FxAccountStatusActivity.class);
+        return;
+      }
       showRemoteError(e, R.string.fxaccount_update_credentials_unknown_error);
     }
 
@@ -142,6 +153,7 @@ public class FxAccountUpdateCredentialsActivity extends FxAccountAbstractSetupAc
         return;
       }
       fxAccount.setState(new Engaged(email, result.uid, result.verified, unwrapkB, result.sessionToken, result.keyFetchToken));
+      fxAccount.requestSync(FirefoxAccounts.FORCE);
 
       // For great debugging.
       if (FxAccountConstants.LOG_PERSONAL_INFORMATION) {

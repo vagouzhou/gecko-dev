@@ -18,6 +18,7 @@
 #include "jit/MIR.h"
 #include "jit/MIRGraph.h"
 #include "vm/Shape.h"
+#include "vm/TraceLogging.h"
 
 #include "jsscriptinlines.h"
 
@@ -39,38 +40,58 @@ CodeGeneratorARM::CodeGeneratorARM(MIRGenerator *gen, LIRGraph *graph, MacroAsse
 bool
 CodeGeneratorARM::generatePrologue()
 {
-    if (gen->compilingAsmJS()) {
-        masm.Push(lr);
-        // Note that this automatically sets MacroAssembler::framePushed().
-        masm.reserveStack(frameDepth_);
-    } else {
-        // Note that this automatically sets MacroAssembler::framePushed().
-        masm.reserveStack(frameSize());
-        masm.checkStackAlignment();
+    JS_ASSERT(!gen->compilingAsmJS());
+
+    // Note that this automatically sets MacroAssembler::framePushed().
+    masm.reserveStack(frameSize());
+    masm.checkStackAlignment();
+    return true;
+}
+
+bool
+CodeGeneratorARM::generateAsmJSPrologue(Label *stackOverflowLabel)
+{
+    JS_ASSERT(gen->compilingAsmJS());
+
+    // See comment in Assembler-arm.h about AsmJSFrameSize.
+    masm.push(lr);
+
+    // The asm.js over-recursed handler wants to be able to assume that SP
+    // points to the return address, so perform the check after pushing lr but
+    // before pushing frameDepth.
+    if (!omitOverRecursedCheck()) {
+        masm.branchPtr(Assembler::AboveOrEqual,
+                       AsmJSAbsoluteAddress(AsmJSImm_StackLimit),
+                       StackPointer,
+                       stackOverflowLabel);
     }
 
+    // Note that this automatically sets MacroAssembler::framePushed().
+    masm.reserveStack(frameDepth_);
+    masm.checkStackAlignment();
     return true;
 }
 
 bool
 CodeGeneratorARM::generateEpilogue()
 {
-    masm.bind(&returnLabel_); 
-#if JS_TRACE_LOGGING
-    masm.tracelogStop();
-#endif
-    if (gen->compilingAsmJS()) {
-        // Pop the stack we allocated at the start of the function.
-        masm.freeStack(frameDepth_);
-        masm.Pop(pc);
-        JS_ASSERT(masm.framePushed() == 0);
-        //masm.as_bkpt();
-    } else {
-        // Pop the stack we allocated at the start of the function.
-        masm.freeStack(frameSize());
-        JS_ASSERT(masm.framePushed() == 0);
-        masm.ma_pop(pc);
+    masm.bind(&returnLabel_);
+
+#ifdef JS_TRACE_LOGGING
+    if (!gen->compilingAsmJS() && gen->info().executionMode() == SequentialExecution) {
+        if (!emitTracelogStopEvent(TraceLogger::IonMonkey))
+            return false;
+        if (!emitTracelogScriptStop())
+            return false;
     }
+#endif
+
+    if (gen->compilingAsmJS())
+        masm.freeStack(frameDepth_);
+    else
+        masm.freeStack(frameSize());
+    JS_ASSERT(masm.framePushed() == 0);
+    masm.pop(pc);
     masm.dumpPool();
     return true;
 }
@@ -157,7 +178,7 @@ CodeGeneratorARM::generateOutOfLineCode()
         // Push the frame size, so the handler can recover the IonScript.
         masm.ma_mov(Imm32(frameSize()), lr);
 
-        JitCode *handler = gen->jitRuntime()->getGenericBailoutHandler();
+        JitCode *handler = gen->jitRuntime()->getGenericBailoutHandler(gen->info().executionMode());
         masm.branch(handler);
     }
 
@@ -167,22 +188,6 @@ CodeGeneratorARM::generateOutOfLineCode()
 bool
 CodeGeneratorARM::bailoutIf(Assembler::Condition condition, LSnapshot *snapshot)
 {
-    CompileInfo &info = snapshot->mir()->block()->info();
-    switch (info.executionMode()) {
-
-      case ParallelExecution: {
-        // in parallel mode, make no attempt to recover, just signal an error.
-        OutOfLineAbortPar *ool = oolAbortPar(ParallelBailoutUnsupported,
-                                             snapshot->mir()->block(),
-                                             snapshot->mir()->pc());
-        masm.ma_b(ool->entry(), condition);
-        return true;
-      }
-      case SequentialExecution:
-        break;
-      default:
-        MOZ_ASSUME_UNREACHABLE("No such execution mode");
-    }
     if (!encode(snapshot))
         return false;
 
@@ -216,23 +221,6 @@ CodeGeneratorARM::bailoutFrom(Label *label, LSnapshot *snapshot)
         return false;
     JS_ASSERT(label->used());
     JS_ASSERT(!label->bound());
-
-    CompileInfo &info = snapshot->mir()->block()->info();
-    switch (info.executionMode()) {
-
-      case ParallelExecution: {
-        // in parallel mode, make no attempt to recover, just signal an error.
-        OutOfLineAbortPar *ool = oolAbortPar(ParallelBailoutUnsupported,
-                                             snapshot->mir()->block(),
-                                             snapshot->mir()->pc());
-        masm.retarget(label, ool->entry());
-        return true;
-      }
-      case SequentialExecution:
-        break;
-      default:
-        MOZ_ASSUME_UNREACHABLE("No such execution mode");
-    }
 
     if (!encode(snapshot))
         return false;
@@ -516,7 +504,7 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
         // The integer division will give INT32_MIN, but we want -(double)INT32_MIN.
         masm.ma_cmp(lhs, Imm32(INT32_MIN)); // sets EQ if lhs == INT32_MIN
         masm.ma_cmp(rhs, Imm32(-1), Assembler::Equal); // if EQ (LHS == INT32_MIN), sets EQ if rhs == -1
-        if (mir->isTruncated()) {
+        if (mir->canTruncateOverflow()) {
             // (-INT32_MIN)|0 = INT32_MIN
             Label skip;
             masm.ma_b(&skip, Assembler::NotEqual);
@@ -530,24 +518,11 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
         }
     }
 
-    // 0/X (with X < 0) is bad because both of these values *should* be doubles, and
-    // the result should be -0.0, which cannot be represented in integers.
-    // X/0 is bad because it will give garbage (or abort), when it should give
-    // either \infty, -\infty or NAN.
-
-    // Prevent 0 / X (with X < 0) and X / 0
-    // testing X / Y.  Compare Y with 0.
-    // There are three cases: (Y < 0), (Y == 0) and (Y > 0)
-    // If (Y < 0), then we compare X with 0, and bail if X == 0
-    // If (Y == 0), then we simply want to bail.  Since this does not set
-    // the flags necessary for LT to trigger, we don't test X, and take the
-    // bailout because the EQ flag is set.
-    // if (Y > 0), we don't set EQ, and we don't trigger LT, so we don't take the bailout.
-    if (mir->canBeDivideByZero() || mir->canBeNegativeZero()) {
+    // Handle divide by zero.
+    if (mir->canBeDivideByZero()) {
         masm.ma_cmp(rhs, Imm32(0));
-        masm.ma_cmp(lhs, Imm32(0), Assembler::LessThan);
-        if (mir->isTruncated()) {
-            // Infinity|0 == 0 and -0|0 == 0
+        if (mir->canTruncateInfinities()) {
+            // Infinity|0 == 0
             Label skip;
             masm.ma_b(&skip, Assembler::NotEqual);
             masm.ma_mov(Imm32(0), output);
@@ -558,6 +533,18 @@ CodeGeneratorARM::divICommon(MDiv *mir, Register lhs, Register rhs, Register out
             if (!bailoutIf(Assembler::Equal, snapshot))
                 return false;
         }
+    }
+
+    // Handle negative 0.
+    if (!mir->canTruncateNegativeZero() && mir->canBeNegativeZero()) {
+        Label nonzero;
+        masm.ma_cmp(lhs, Imm32(0));
+        masm.ma_b(&nonzero, Assembler::NotEqual);
+        masm.ma_cmp(rhs, Imm32(0));
+        JS_ASSERT(mir->fallible());
+        if (!bailoutIf(Assembler::LessThan, snapshot))
+            return false;
+        masm.bind(&nonzero);
     }
 
     return true;
@@ -577,7 +564,7 @@ CodeGeneratorARM::visitDivI(LDivI *ins)
     if (!divICommon(mir, lhs, rhs, output, ins->snapshot(), done))
         return false;
 
-    if (mir->isTruncated()) {
+    if (mir->canTruncateRemainder()) {
         masm.ma_sdiv(lhs, rhs, output);
     } else {
         masm.ma_sdiv(lhs, rhs, ScratchRegister);
@@ -594,8 +581,8 @@ CodeGeneratorARM::visitDivI(LDivI *ins)
 }
 
 extern "C" {
-    extern int64_t __aeabi_idivmod(int,int);
-    extern int64_t __aeabi_uidivmod(int,int);
+    extern MOZ_EXPORT int64_t __aeabi_idivmod(int,int);
+    extern MOZ_EXPORT int64_t __aeabi_uidivmod(int,int);
 }
 
 bool
@@ -619,7 +606,7 @@ CodeGeneratorARM::visitSoftDivI(LSoftDivI *ins)
     else
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, __aeabi_idivmod));
     // idivmod returns the quotient in r0, and the remainder in r1.
-    if (!mir->isTruncated()) {
+    if (!mir->canTruncateRemainder()) {
         JS_ASSERT(mir->fallible());
         masm.ma_cmp(r1, Imm32(0));
         if (!bailoutIf(Assembler::NonZero, ins->snapshot()))
@@ -839,9 +826,10 @@ CodeGeneratorARM::visitModMaskI(LModMaskI *ins)
 {
     Register src = ToRegister(ins->getOperand(0));
     Register dest = ToRegister(ins->getDef(0));
-    Register tmp = ToRegister(ins->getTemp(0));
+    Register tmp1 = ToRegister(ins->getTemp(0));
+    Register tmp2 = ToRegister(ins->getTemp(1));
     MMod *mir = ins->mir();
-    masm.ma_mod_mask(src, dest, tmp, ins->shift());
+    masm.ma_mod_mask(src, dest, tmp1, tmp2, ins->shift());
     if (mir->canBeNegativeDividend()) {
         if (!mir->isTruncated()) {
             JS_ASSERT(mir->fallible());
@@ -1001,14 +989,14 @@ CodeGeneratorARM::visitPowHalfD(LPowHalfD *ins)
     Label done;
 
     // Masm.pow(-Infinity, 0.5) == Infinity.
-    masm.ma_vimm(NegativeInfinity<double>(), ScratchFloatReg);
-    masm.compareDouble(input, ScratchFloatReg);
-    masm.ma_vneg(ScratchFloatReg, output, Assembler::Equal);
+    masm.ma_vimm(NegativeInfinity<double>(), ScratchDoubleReg);
+    masm.compareDouble(input, ScratchDoubleReg);
+    masm.ma_vneg(ScratchDoubleReg, output, Assembler::Equal);
     masm.ma_b(&done, Assembler::Equal);
 
     // Math.pow(-0, 0.5) == 0 == Math.pow(0, 0.5). Adding 0 converts any -0 to 0.
-    masm.ma_vimm(0.0, ScratchFloatReg);
-    masm.ma_vadd(ScratchFloatReg, input, output);
+    masm.ma_vimm(0.0, ScratchDoubleReg);
+    masm.ma_vadd(ScratchDoubleReg, input, output);
     masm.ma_vsqrt(output, output);
 
     masm.bind(&done);
@@ -1022,14 +1010,8 @@ CodeGeneratorARM::toMoveOperand(const LAllocation *a) const
         return MoveOperand(ToRegister(a));
     if (a->isFloatReg())
         return MoveOperand(ToFloatRegister(a));
-    JS_ASSERT((ToStackOffset(a) & 3) == 0);
     int32_t offset = ToStackOffset(a);
-
-    // The way the stack slots work, we assume that everything from depth == 0 downwards is writable
-    // however, since our frame is included in this, ensure that the frame gets skipped
-    if (gen->compilingAsmJS())
-        offset -= AlignmentMidPrologue;
-
+    JS_ASSERT((offset & 3) == 0);
     return MoveOperand(StackPointer, offset);
 }
 
@@ -1067,7 +1049,7 @@ CodeGeneratorARM::visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool)
 
     size_t numCases = mir->numCases();
     for (size_t i = 0; i < numCases; i++) {
-        LBlock *caseblock = mir->getCase(numCases - 1 - i)->lir();
+        LBlock *caseblock = skipTrivialBlocks(mir->getCase(numCases - 1 - i))->lir();
         Label *caseheader = caseblock->label();
         uint32_t caseoffset = caseheader->offset();
 
@@ -1083,8 +1065,7 @@ CodeGeneratorARM::visitOutOfLineTableSwitch(OutOfLineTableSwitch *ool)
 }
 
 bool
-CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, const Register &index,
-                                          const Register &base)
+CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, Register index, Register base)
 {
     // the code generated by this is utter hax.
     // the end result looks something like:
@@ -1112,7 +1093,7 @@ CodeGeneratorARM::emitTableSwitchDispatch(MTableSwitch *mir, const Register &ind
     // unhandled case is the default case (both out of range high and out of range low)
     // I then insert a branch to default case into the extra slot, which ensures
     // we don't attempt to execute the address table.
-    Label *defaultcase = mir->getDefault()->lir()->label();
+    Label *defaultcase = skipTrivialBlocks(mir->getDefault())->lir()->label();
 
     int32_t cases = mir->numCases();
     // Lower value with low value
@@ -1215,6 +1196,30 @@ CodeGeneratorARM::visitFloorF(LFloorF *lir)
 }
 
 bool
+CodeGeneratorARM::visitCeil(LCeil *lir)
+{
+    FloatRegister input = ToFloatRegister(lir->input());
+    Register output = ToRegister(lir->output());
+    Label bail;
+    masm.ceil(input, output, &bail);
+    if (!bailoutFrom(&bail, lir->snapshot()))
+        return false;
+    return true;
+}
+
+bool
+CodeGeneratorARM::visitCeilF(LCeilF *lir)
+{
+    FloatRegister input = ToFloatRegister(lir->input());
+    Register output = ToRegister(lir->output());
+    Label bail;
+    masm.ceilf(input, output, &bail);
+    if (!bailoutFrom(&bail, lir->snapshot()))
+        return false;
+    return true;
+}
+
+bool
 CodeGeneratorARM::visitRound(LRound *lir)
 {
     FloatRegister input = ToFloatRegister(lir->input());
@@ -1245,10 +1250,10 @@ CodeGeneratorARM::visitRoundF(LRoundF *lir)
 }
 
 void
-CodeGeneratorARM::emitRoundDouble(const FloatRegister &src, const Register &dest, Label *fail)
+CodeGeneratorARM::emitRoundDouble(FloatRegister src, Register dest, Label *fail)
 {
-    masm.ma_vcvt_F64_I32(src, ScratchFloatReg);
-    masm.ma_vxfer(ScratchFloatReg, dest);
+    masm.ma_vcvt_F64_I32(src, ScratchDoubleReg);
+    masm.ma_vxfer(ScratchDoubleReg, dest);
     masm.ma_cmp(dest, Imm32(0x7fffffff));
     masm.ma_cmp(dest, Imm32(0x80000000), Assembler::NotEqual);
     masm.ma_b(fail, Assembler::Equal);
@@ -1350,8 +1355,8 @@ CodeGeneratorARM::visitBoxFloatingPoint(LBoxFloatingPoint *box)
 
     FloatRegister reg = ToFloatRegister(in);
     if (box->type() == MIRType_Float32) {
-        masm.convertFloat32ToDouble(reg, ScratchFloatReg);
-        reg = ScratchFloatReg;
+        masm.convertFloat32ToDouble(reg, ScratchFloat32Reg);
+        reg = ScratchFloat32Reg;
     }
 
     //masm.as_vxfer(ToRegister(payload), ToRegister(type),
@@ -1680,132 +1685,6 @@ CodeGeneratorARM::visitNotF(LNotF *ins)
 }
 
 bool
-CodeGeneratorARM::visitLoadSlotV(LLoadSlotV *load)
-{
-    const ValueOperand out = ToOutValue(load);
-    Register base = ToRegister(load->input());
-    int32_t offset = load->mir()->slot() * sizeof(js::Value);
-
-    masm.loadValue(Address(base, offset), out);
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitLoadSlotT(LLoadSlotT *load)
-{
-    Register base = ToRegister(load->input());
-    int32_t offset = load->mir()->slot() * sizeof(js::Value);
-
-    if (load->mir()->type() == MIRType_Double)
-        masm.loadInt32OrDouble(Operand(base, offset), ToFloatRegister(load->output()));
-    else
-        masm.ma_ldr(Operand(base, offset + NUNBOX32_PAYLOAD_OFFSET), ToRegister(load->output()));
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitStoreSlotT(LStoreSlotT *store)
-{
-
-    Register base = ToRegister(store->slots());
-    int32_t offset = store->mir()->slot() * sizeof(js::Value);
-
-    const LAllocation *value = store->value();
-    MIRType valueType = store->mir()->value()->type();
-
-    if (store->mir()->needsBarrier())
-        emitPreBarrier(Address(base, offset), store->mir()->slotType());
-
-    if (valueType == MIRType_Double) {
-        masm.ma_vstr(ToFloatRegister(value), Operand(base, offset));
-        return true;
-    }
-
-    // Store the type tag if needed.
-    if (valueType != store->mir()->slotType())
-        masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), Operand(base, offset));
-
-    // Store the payload.
-    if (value->isConstant())
-        masm.storePayload(*value->toConstant(), Operand(base, offset));
-    else
-        masm.storePayload(ToRegister(value), Operand(base, offset));
-
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitLoadElementT(LLoadElementT *load)
-{
-    Register base = ToRegister(load->elements());
-    if (load->mir()->type() == MIRType_Double) {
-        FloatRegister fpreg = ToFloatRegister(load->output());
-        if (load->index()->isConstant()) {
-            Address source(base, ToInt32(load->index()) * sizeof(Value));
-            if (load->mir()->loadDoubles())
-                masm.loadDouble(source, fpreg);
-            else
-                masm.loadInt32OrDouble(source, fpreg);
-        } else {
-            Register index = ToRegister(load->index());
-            if (load->mir()->loadDoubles())
-                masm.loadDouble(BaseIndex(base, index, TimesEight), fpreg);
-            else
-                masm.loadInt32OrDouble(base, index, fpreg);
-        }
-    } else {
-        if (load->index()->isConstant()) {
-            Address source(base, ToInt32(load->index()) * sizeof(Value));
-            masm.load32(source, ToRegister(load->output()));
-        } else {
-            masm.ma_ldr(DTRAddr(base, DtrRegImmShift(ToRegister(load->index()), LSL, 3)),
-                        ToRegister(load->output()));
-        }
-    }
-    JS_ASSERT(!load->mir()->needsHoleCheck());
-    return true;
-}
-
-void
-CodeGeneratorARM::storeElementTyped(const LAllocation *value, MIRType valueType, MIRType elementType,
-                                    const Register &elements, const LAllocation *index)
-{
-    if (index->isConstant()) {
-        Address dest = Address(elements, ToInt32(index) * sizeof(Value));
-        if (valueType == MIRType_Double) {
-            masm.ma_vstr(ToFloatRegister(value), Operand(dest));
-            return;
-        }
-
-        // Store the type tag if needed.
-        if (valueType != elementType)
-            masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
-
-        // Store the payload.
-        if (value->isConstant())
-            masm.storePayload(*value->toConstant(), dest);
-        else
-            masm.storePayload(ToRegister(value), dest);
-    } else {
-        Register indexReg = ToRegister(index);
-        if (valueType == MIRType_Double) {
-            masm.ma_vstr(ToFloatRegister(value), elements, indexReg);
-            return;
-        }
-
-        // Store the type tag if needed.
-        if (valueType != elementType)
-            masm.storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), elements, indexReg);
-
-        // Store the payload.
-        if (value->isConstant())
-            masm.storePayload(*value->toConstant(), elements, indexReg);
-        else
-            masm.storePayload(ToRegister(value), elements, indexReg);
-    }
-}
-
-bool
 CodeGeneratorARM::visitGuardShape(LGuardShape *guard)
 {
     Register obj = ToRegister(guard->input());
@@ -1841,40 +1720,6 @@ CodeGeneratorARM::visitGuardClass(LGuardClass *guard)
     masm.ma_cmp(tmp, Imm32((uint32_t)guard->mir()->getClass()));
     if (!bailoutIf(Assembler::NotEqual, guard->snapshot()))
         return false;
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitImplicitThis(LImplicitThis *lir)
-{
-    Register callee = ToRegister(lir->callee());
-    const ValueOperand out = ToOutValue(lir);
-
-    // The implicit |this| is always |undefined| if the function's environment
-    // is the current global.
-    masm.ma_ldr(DTRAddr(callee, DtrOffImm(JSFunction::offsetOfEnvironment())), out.typeReg());
-    masm.ma_cmp(out.typeReg(), ImmGCPtr(&gen->info().script()->global()));
-
-    // TODO: OOL stub path.
-    if (!bailoutIf(Assembler::NotEqual, lir->snapshot()))
-        return false;
-
-    masm.moveValue(UndefinedValue(), out);
-    return true;
-}
-
-bool
-CodeGeneratorARM::visitInterruptCheck(LInterruptCheck *lir)
-{
-    OutOfLineCode *ool = oolCallVM(InterruptCheckInfo, lir, (ArgList()), StoreNothing());
-    if (!ool)
-        return false;
-
-    void *interrupt = (void*)GetIonContext()->runtime->addressOfInterrupt();
-    masm.load32(AbsoluteAddress(interrupt), lr);
-    masm.ma_cmp(lr, Imm32(0));
-    masm.ma_b(ool->entry(), Assembler::NonZero);
-    masm.bind(ool->rejoin());
     return true;
 }
 
@@ -2004,7 +1849,7 @@ CodeGeneratorARM::visitAsmJSLoadHeap(LAsmJSLoadHeap *ins)
         masm.ma_mov(Imm32(0), d, NoSetCond, Assembler::AboveOrEqual);
         masm.ma_dataTransferN(IsLoad, size, isSigned, HeapReg, ptrReg, d, Offset, Assembler::Below);
     }
-    return gen->noteHeapAccess(AsmJSHeapAccess(bo.getOffset()));
+    return masm.append(AsmJSHeapAccess(bo.getOffset()));
 }
 
 bool
@@ -2071,7 +1916,7 @@ CodeGeneratorARM::visitAsmJSStoreHeap(LAsmJSStoreHeap *ins)
         masm.ma_dataTransferN(IsStore, size, isSigned, HeapReg, ptrReg,
                               ToRegister(ins->value()), Offset, Assembler::Below);
     }
-    return gen->noteHeapAccess(AsmJSHeapAccess(bo.getOffset()));
+    return masm.append(AsmJSHeapAccess(bo.getOffset()));
 }
 
 bool

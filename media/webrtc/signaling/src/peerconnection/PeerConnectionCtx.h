@@ -43,8 +43,6 @@ protected:
 
 namespace sipcc {
 
-using namespace mozilla;
-
 class OnCallEventArgs {
 public:
   OnCallEventArgs(ccapi_call_event_e aCallEvent, CSF::CC_CallInfoPtr aInfo)
@@ -82,6 +80,13 @@ class PeerConnectionCtx : public CSF::CC_Observer {
   friend class PeerConnectionWrapper;
   friend class mozilla::dom::WebrtcGlobalInformation;
 
+#ifdef MOZILLA_INTERNAL_API
+  // WebrtcGlobalInformation uses this; we put it here so we don't need to
+  // create another shutdown observer class.
+  mozilla::dom::Sequence<mozilla::dom::RTCStatsReportInternal>
+    mStatsForClosedPeerConnections;
+#endif
+
  private:
   // We could make these available only via accessors but it's too much trouble.
   std::map<const std::string, PeerConnectionImpl *> mPeerConnections;
@@ -91,7 +96,7 @@ class PeerConnectionCtx : public CSF::CC_Observer {
   // This is a singleton, so don't copy construct it, etc.
   PeerConnectionCtx(const PeerConnectionCtx& other) MOZ_DELETE;
   void operator=(const PeerConnectionCtx& other) MOZ_DELETE;
-  virtual ~PeerConnectionCtx() {};
+  virtual ~PeerConnectionCtx();
 
   nsresult Initialize();
   nsresult Cleanup();
@@ -100,8 +105,20 @@ class PeerConnectionCtx : public CSF::CC_Observer {
     mSipccState = aState;
   }
 
+  static void
+  EverySecondTelemetryCallback_m(nsITimer* timer, void *);
+
+#ifdef MOZILLA_INTERNAL_API
   // Telemetry Peer conection counter
   int mConnectionCounter;
+
+  nsCOMPtr<nsITimer> mTelemetryTimer;
+public:
+  // TODO(jib): If we ever enable move semantics on std::map...
+  //std::map<nsString,nsAutoPtr<mozilla::dom::RTCStatsReportInternal>> mLastReports;
+  nsTArray<nsAutoPtr<mozilla::dom::RTCStatsReportInternal>> mLastReports;
+private:
+#endif
 
   // SIPCC objects
   mozilla::dom::PCImplSipccState mSipccState;  // TODO(ekr@rtfm.com): refactor this out? What does it do?
@@ -111,7 +128,7 @@ class PeerConnectionCtx : public CSF::CC_Observer {
   static PeerConnectionCtx *gInstance;
 public:
   static nsIThread *gMainThread;
-  static StaticRefPtr<mozilla::PeerConnectionCtxShutdown> gPeerConnectionCtxShutdown;
+  static mozilla::StaticRefPtr<mozilla::PeerConnectionCtxShutdown> gPeerConnectionCtxShutdown;
 };
 
 }  // namespace sipcc

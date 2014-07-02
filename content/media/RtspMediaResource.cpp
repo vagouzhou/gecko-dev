@@ -15,6 +15,10 @@
 #include "nsIScriptSecurityManager.h"
 #include "nsIStreamingProtocolService.h"
 #include "nsServiceManagerUtils.h"
+#ifdef NECKO_PROTOCOL_rtsp
+#include "mozilla/net/RtspChannelChild.h"
+#endif
+using namespace mozilla::net;
 
 #ifdef PR_LOGGING
 PRLogModuleInfo* gRtspMediaResourceLog;
@@ -39,13 +43,14 @@ namespace mozilla {
  * */
 #define BUFFER_SLOT_NUM 8192
 #define BUFFER_SLOT_DEFAULT_SIZE 256
-#define BUFFER_SLOT_MAX_SIZE 8192
+#define BUFFER_SLOT_MAX_SIZE 512
 #define BUFFER_SLOT_INVALID -1
 #define BUFFER_SLOT_EMPTY 0
 
 struct BufferSlotData {
   int32_t mLength;
   uint64_t mTime;
+  int32_t  mFrameType;
 };
 
 class RtspTrackBuffer
@@ -172,6 +177,9 @@ nsresult RtspTrackBuffer::ReadBuffer(uint8_t* aToBuffer, uint32_t aToBufferSize,
   // 3. No data in this buffer
   // 4. mIsStarted is not set
   while (1) {
+    if (mBufferSlotData[mConsumerIdx].mFrameType & MEDIASTREAM_FRAMETYPE_END_OF_STREAM) {
+      return NS_BASE_STREAM_CLOSED;
+    }
     if (mBufferSlotData[mConsumerIdx].mLength > 0) {
       // Check the aToBuffer space is enough for data copy.
       if ((int32_t)aToBufferSize < mBufferSlotData[mConsumerIdx].mLength) {
@@ -302,15 +310,23 @@ void RtspTrackBuffer::WriteBuffer(const char *aFromBuffer, uint32_t aWriteCount,
     mProducerIdx = 0;
   }
 
-  memcpy(&(mRingBuffer[mSlotSize * mProducerIdx]), aFromBuffer, aWriteCount);
+  if (!(aFrameType & MEDIASTREAM_FRAMETYPE_END_OF_STREAM)) {
+    memcpy(&(mRingBuffer[mSlotSize * mProducerIdx]), aFromBuffer, aWriteCount);
+  }
 
   if (mProducerIdx <= mConsumerIdx && mConsumerIdx < mProducerIdx + slots
       && mBufferSlotData[mConsumerIdx].mLength > 0) {
     // Wrote one or more slots that the decode thread has not yet read.
     RTSPMLOG("overwrite!! %d time %lld"
              ,mTrackIdx,mBufferSlotData[mConsumerIdx].mTime);
-    mBufferSlotData[mProducerIdx].mLength = aWriteCount;
-    mBufferSlotData[mProducerIdx].mTime = aFrameTime;
+    if (aFrameType & MEDIASTREAM_FRAMETYPE_END_OF_STREAM) {
+      mBufferSlotData[mProducerIdx].mLength = 0;
+      mBufferSlotData[mProducerIdx].mTime = 0;
+    } else {
+      mBufferSlotData[mProducerIdx].mLength = aWriteCount;
+      mBufferSlotData[mProducerIdx].mTime = aFrameTime;
+    }
+    mBufferSlotData[mProducerIdx].mFrameType = aFrameType;
     // Clear the mBufferSlotDataLength except the start slot.
     if (isMultipleSlots) {
       for (i = mProducerIdx + 1; i < mProducerIdx + slots; ++i) {
@@ -323,8 +339,14 @@ void RtspTrackBuffer::WriteBuffer(const char *aFromBuffer, uint32_t aWriteCount,
     mConsumerIdx = mProducerIdx;
   } else {
     // Normal case, the writer doesn't take over the reader.
-    mBufferSlotData[mProducerIdx].mLength = aWriteCount;
-    mBufferSlotData[mProducerIdx].mTime = aFrameTime;
+    if (aFrameType & MEDIASTREAM_FRAMETYPE_END_OF_STREAM) {
+      mBufferSlotData[mProducerIdx].mLength = 0;
+      mBufferSlotData[mProducerIdx].mTime = 0;
+    } else {
+      mBufferSlotData[mProducerIdx].mLength = aWriteCount;
+      mBufferSlotData[mProducerIdx].mTime = aFrameTime;
+    }
+    mBufferSlotData[mProducerIdx].mFrameType = aFrameType;
     // Clear the mBufferSlotData[].mLength except the start slot.
     if (isMultipleSlots) {
       for (i = mProducerIdx + 1; i < mProducerIdx + slots; ++i) {
@@ -344,6 +366,7 @@ void RtspTrackBuffer::Reset() {
   for (uint32_t i = 0; i < BUFFER_SLOT_NUM; ++i) {
     mBufferSlotData[i].mLength = BUFFER_SLOT_EMPTY;
     mBufferSlotData[i].mTime = BUFFER_SLOT_EMPTY;
+    mBufferSlotData[i].mFrameType = MEDIASTREAM_FRAMETYPE_NORMAL;
   }
   mMonitor.NotifyAll();
 }
@@ -353,21 +376,22 @@ RtspMediaResource::RtspMediaResource(MediaDecoder* aDecoder,
   : BaseMediaResource(aDecoder, aChannel, aURI, aContentType)
   , mIsConnected(false)
   , mRealTime(false)
+  , mIsSuspend(true)
 {
-  nsCOMPtr<nsIStreamingProtocolControllerService> mediaControllerService =
-    do_GetService(MEDIASTREAMCONTROLLERSERVICE_CONTRACTID);
-  MOZ_ASSERT(mediaControllerService);
-  if (mediaControllerService) {
-    mediaControllerService->Create(mChannel,
-                                   getter_AddRefs(mMediaStreamController));
-    MOZ_ASSERT(mMediaStreamController);
-    mListener = new Listener(this);
-    mMediaStreamController->AsyncOpen(mListener);
-  }
+#ifndef NECKO_PROTOCOL_rtsp
+  MOZ_CRASH("Should not be called except for B2G platform");
+#else
+  MOZ_ASSERT(aChannel);
+  mMediaStreamController =
+    static_cast<RtspChannelChild*>(aChannel)->GetController();
+  MOZ_ASSERT(mMediaStreamController);
+  mListener = new Listener(this);
+  mMediaStreamController->AsyncOpen(mListener);
 #ifdef PR_LOGGING
   if (!gRtspMediaResourceLog) {
     gRtspMediaResourceLog = PR_NewLogModule("RtspMediaResource");
   }
+#endif
 #endif
 }
 
@@ -377,6 +401,28 @@ RtspMediaResource::~RtspMediaResource()
   if (mListener) {
     // Kill its reference to us since we're going away
     mListener->Revoke();
+  }
+}
+
+void RtspMediaResource::SetSuspend(bool aIsSuspend)
+{
+  NS_ASSERTION(!NS_IsMainThread(), "Don't call on main thread");
+  RTSPMLOG("SetSuspend %d",aIsSuspend);
+
+  nsCOMPtr<nsIRunnable> runnable =
+    NS_NewRunnableMethodWithArg<bool>(this, &RtspMediaResource::NotifySuspend,
+                                      aIsSuspend);
+  NS_DispatchToMainThread(runnable);
+}
+
+void RtspMediaResource::NotifySuspend(bool aIsSuspend)
+{
+  NS_ASSERTION(NS_IsMainThread(), "Only call on main thread");
+  RTSPMLOG("NotifySuspend %d",aIsSuspend);
+
+  mIsSuspend = aIsSuspend;
+  if (mDecoder) {
+    mDecoder->NotifySuspendedStatusChanged();
   }
 }
 
@@ -397,8 +443,11 @@ RtspMediaResource::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
   return size;
 }
 
-NS_IMPL_ISUPPORTS2(RtspMediaResource::Listener,
-                   nsIInterfaceRequestor, nsIStreamingProtocolListener);
+//----------------------------------------------------------------------------
+// RtspMediaResource::Listener
+//----------------------------------------------------------------------------
+NS_IMPL_ISUPPORTS(RtspMediaResource::Listener,
+                  nsIInterfaceRequestor, nsIStreamingProtocolListener);
 
 nsresult
 RtspMediaResource::Listener::OnMediaDataAvailable(uint8_t aTrackIdx,
@@ -433,6 +482,15 @@ nsresult
 RtspMediaResource::Listener::GetInterface(const nsIID & aIID, void **aResult)
 {
   return QueryInterface(aIID, aResult);
+}
+
+void
+RtspMediaResource::Listener::Revoke()
+{
+  NS_ASSERTION(NS_IsMainThread(), "Don't call on non-main thread");
+  if (mResource) {
+    mResource = nullptr;
+  }
 }
 
 nsresult
@@ -514,7 +572,7 @@ RtspMediaResource::OnConnected(uint8_t aTrackIdx,
     // Give up, report error to media element.
     nsCOMPtr<nsIRunnable> event =
       NS_NewRunnableMethod(mDecoder, &MediaDecoder::DecodeError);
-    NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+    NS_DispatchToMainThread(event);
     return NS_ERROR_FAILURE;
   }
   uint64_t duration = 0;
@@ -549,9 +607,7 @@ RtspMediaResource::OnConnected(uint8_t aTrackIdx,
   if (duration) {
     // Not live stream.
     mRealTime = false;
-    bool seekable = true;
     mDecoder->SetInfinite(false);
-    mDecoder->SetTransportSeekable(seekable);
     mDecoder->SetDuration(duration);
   } else {
     // Live stream.
@@ -560,13 +616,12 @@ RtspMediaResource::OnConnected(uint8_t aTrackIdx,
       // Give up, report error to media element.
       nsCOMPtr<nsIRunnable> event =
         NS_NewRunnableMethod(mDecoder, &MediaDecoder::DecodeError);
-      NS_DispatchToMainThread(event, NS_DISPATCH_NORMAL);
+      NS_DispatchToMainThread(event);
       return NS_ERROR_FAILURE;
     } else {
       mRealTime = true;
       bool seekable = false;
       mDecoder->SetInfinite(true);
-      mDecoder->SetTransportSeekable(seekable);
       mDecoder->SetMediaSeekable(seekable);
     }
   }
@@ -595,31 +650,38 @@ RtspMediaResource::OnDisconnected(uint8_t aTrackIdx, nsresult aReason)
     mTrackBuffer[i]->Reset();
   }
 
-  // If mDecoder is null pointer, it means this OnDisconnected event is
-  // triggered when media element was destroyed and mDecoder was already
-  // shutdown.
-  if (!mDecoder) {
-    return NS_OK;
+  if (mDecoder) {
+    if (aReason == NS_ERROR_NOT_INITIALIZED ||
+        aReason == NS_ERROR_CONNECTION_REFUSED ||
+        aReason == NS_ERROR_NOT_CONNECTED ||
+        aReason == NS_ERROR_NET_TIMEOUT) {
+      // Report error code to Decoder.
+      RTSPMLOG("Error in OnDisconnected 0x%x", aReason);
+      mDecoder->NetworkError();
+    } else {
+      // Resetting the decoder and media element when the connection
+      // between RTSP client and server goes down.
+      mDecoder->ResetConnectionState();
+    }
   }
 
-  if (aReason == NS_ERROR_NOT_INITIALIZED ||
-      aReason == NS_ERROR_CONNECTION_REFUSED ||
-      aReason == NS_ERROR_NOT_CONNECTED ||
-      aReason == NS_ERROR_NET_TIMEOUT) {
-    RTSPMLOG("Error in OnDisconnected 0x%x", aReason);
-    mDecoder->NetworkError();
-    return NS_OK;
+  if (mListener) {
+    // Note: Listener's Revoke() kills its reference to us, which means it would
+    // release |this| object. So, ensure it is called in the end of this method.
+    mListener->Revoke();
   }
 
-  // Resetting the decoder and media element when the connection
-  // between Rtsp client and server goes down.
-  mDecoder->ResetConnectionState();
   return NS_OK;
 }
 
 void RtspMediaResource::Suspend(bool aCloseImmediately)
 {
   NS_ASSERTION(NS_IsMainThread(), "Don't call on non-main thread");
+
+  mIsSuspend = true;
+  if (NS_WARN_IF(!mDecoder)) {
+    return;
+  }
 
   MediaDecoderOwner* owner = mDecoder->GetMediaOwner();
   NS_ENSURE_TRUE_VOID(owner);
@@ -628,11 +690,17 @@ void RtspMediaResource::Suspend(bool aCloseImmediately)
 
   mMediaStreamController->Suspend();
   element->DownloadSuspended();
+  mDecoder->NotifySuspendedStatusChanged();
 }
 
 void RtspMediaResource::Resume()
 {
   NS_ASSERTION(NS_IsMainThread(), "Don't call on non-main thread");
+
+  mIsSuspend = false;
+  if (NS_WARN_IF(!mDecoder)) {
+    return;
+  }
 
   MediaDecoderOwner* owner = mDecoder->GetMediaOwner();
   NS_ENSURE_TRUE_VOID(owner);
@@ -643,6 +711,7 @@ void RtspMediaResource::Resume()
     element->DownloadResumed();
   }
   mMediaStreamController->Resume();
+  mDecoder->NotifySuspendedStatusChanged();
 }
 
 nsresult RtspMediaResource::Open(nsIStreamListener **aStreamListener)

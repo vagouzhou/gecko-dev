@@ -1,3 +1,4 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2; fill-column: 80 -*- */
 /* vim:set ts=2 sw=2 sts=2 et tw=80:
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -11,12 +12,20 @@ const TAB_SIZE    = "devtools.editor.tabsize";
 const EXPAND_TAB  = "devtools.editor.expandtab";
 const KEYMAP      = "devtools.editor.keymap";
 const AUTO_CLOSE  = "devtools.editor.autoclosebrackets";
+const AUTOCOMPLETE  = "devtools.editor.autocomplete";
+const DETECT_INDENT = "devtools.editor.detectindentation";
+const DETECT_INDENT_MAX_LINES = 500;
 const L10N_BUNDLE = "chrome://browser/locale/devtools/sourceeditor.properties";
 const XUL_NS      = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
 
 // Maximum allowed margin (in number of lines) from top or bottom of the editor
 // while shifting to a line which was initially out of view.
 const MAX_VERTICAL_OFFSET = 3;
+
+// Match @Scratchpad/N:LINE[:COLUMN] or (LINE[:COLUMN]) anywhere at an end of
+// line in text selection.
+const RE_SCRATCHPAD_ERROR = /(?:@Scratchpad\/\d+:|\()(\d+):?(\d+)?(?:\)|\n)/;
+const RE_JUMP_TO_LINE = /^(\d+):?(\d+)?/;
 
 const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 const events  = require("devtools/toolkit/event-emitter");
@@ -53,6 +62,7 @@ const CM_SCRIPTS  = [
   "chrome://browser/content/devtools/codemirror/trailingspace.js",
   "chrome://browser/content/devtools/codemirror/emacs.js",
   "chrome://browser/content/devtools/codemirror/vim.js",
+  "chrome://browser/content/devtools/codemirror/sublime.js",
   "chrome://browser/content/devtools/codemirror/foldcode.js",
   "chrome://browser/content/devtools/codemirror/brace-fold.js",
   "chrome://browser/content/devtools/codemirror/comment-fold.js",
@@ -67,7 +77,7 @@ const CM_IFRAME   =
   "    <style>" +
   "      html, body { height: 100%; }" +
   "      body { margin: 0; overflow: hidden; }" +
-  "      .CodeMirror { width: 100%; height: 100% !important; line-height: normal!important}" +
+  "      .CodeMirror { width: 100%; height: 100% !important; line-height: 1.25 !important;}" +
   "    </style>" +
 [ "    <link rel='stylesheet' href='" + style + "'>" for (style of CM_STYLES) ].join("\n") +
   "  </head>" +
@@ -89,9 +99,7 @@ const CM_MAPPING = [
   "clearHistory",
   "openDialog",
   "refresh",
-  "getScrollInfo",
-  "getOption",
-  "setOption"
+  "getScrollInfo"
 ];
 
 const { cssProperties, cssValues, cssColors } = getCSSKeywords();
@@ -147,7 +155,9 @@ function Editor(config) {
     styleActiveLine:   true,
     autoCloseBrackets: "()[]{}''\"\"",
     autoCloseEnabled:  useAutoClose,
-    theme:             "mozilla"
+    theme:             "mozilla",
+    themeSwitching:    true,
+    autocomplete:      false
   };
 
   // Additional shortcuts.
@@ -161,7 +171,7 @@ function Editor(config) {
   this.config.extraKeys[Editor.keyFor("indentMore")] = false;
 
   // If alternative keymap is provided, use it.
-  if (keyMap === "emacs" || keyMap === "vim")
+  if (keyMap === "emacs" || keyMap === "vim" || keyMap === "sublime")
     this.config.keyMap = keyMap;
 
   // Overwrite default config with user-provided, if needed.
@@ -248,6 +258,9 @@ Editor.prototype = {
       env.removeEventListener("load", onLoad, true);
       let win = env.contentWindow.wrappedJSObject;
 
+      if (!this.config.themeSwitching)
+        win.document.documentElement.setAttribute("force-theme", "light");
+
       CM_SCRIPTS.forEach((url) =>
         Services.scriptloader.loadSubScript(url, win, "utf8"));
 
@@ -300,7 +313,7 @@ Editor.prototype = {
           return;
         }
 
-        this.emit("gutterClick", line);
+        this.emit("gutterClick", line, ev.button);
       });
 
       win.CodeMirror.defineExtension("l10n", (name) => {
@@ -311,6 +324,9 @@ Editor.prototype = {
 
       this.container = env;
       editors.set(this, cm);
+
+      this.resetIndentUnit();
+
       def.resolve();
     };
 
@@ -331,11 +347,29 @@ Editor.prototype = {
   },
 
   /**
+   * Load a script into editor's containing window.
+   */
+  loadScript: function (url) {
+    if (!this.container) {
+      throw new Error("Can't load a script until the editor is loaded.")
+    }
+    let win = this.container.contentWindow.wrappedJSObject;
+    Services.scriptloader.loadSubScript(url, win, "utf8");
+  },
+
+  /**
    * Changes the value of a currently used highlighting mode.
-   * See Editor.modes for the list of all suppoert modes.
+   * See Editor.modes for the list of all supported modes.
    */
   setMode: function (value) {
     this.setOption("mode", value);
+
+    // If autocomplete was set up and the mode is changing, then
+    // turn it off and back on again so the proper mode can be used.
+    if (this.config.autocomplete) {
+      this.setOption("autocomplete", false);
+      this.setOption("autocomplete", true);
+    }
   },
 
   /**
@@ -359,6 +393,33 @@ Editor.prototype = {
   setText: function (value) {
     let cm = editors.get(this);
     cm.setValue(value);
+
+    this.resetIndentUnit();
+  },
+
+  /**
+   * Set the editor's indentation based on the current prefs and
+   * re-detect indentation if we should.
+   */
+  resetIndentUnit: function() {
+    let cm = editors.get(this);
+
+    let indentWithTabs = !Services.prefs.getBoolPref(EXPAND_TAB);
+    let indentUnit = Services.prefs.getIntPref(TAB_SIZE);
+    let shouldDetect = Services.prefs.getBoolPref(DETECT_INDENT);
+
+    cm.setOption("tabSize", indentUnit);
+
+    if (shouldDetect) {
+      let indent = detectIndentation(this);
+      if (indent != null) {
+        indentWithTabs = indent.tabs;
+        indentUnit = indent.spaces ? indent.spaces : indentUnit;
+      }
+    }
+
+    cm.setOption("indentUnit", indentUnit);
+    cm.setOption("indentWithTabs", indentWithTabs);
   },
 
   /**
@@ -401,6 +462,14 @@ Editor.prototype = {
       return;
 
     this.setCursor(this.getCursor());
+  },
+
+  /**
+   * Returns true if there is more than one selection in the editor.
+   */
+  hasMultipleSelections: function () {
+    let cm = editors.get(this);
+    return cm.listSelections().length > 1;
   },
 
   /**
@@ -468,16 +537,7 @@ Editor.prototype = {
    * Returns whether a marker of a specified class exists in a line's gutter.
    */
   hasMarker: function (line, gutterName, markerClass) {
-    let cm = editors.get(this);
-    let info = cm.lineInfo(line);
-    if (!info)
-      return false;
-
-    let gutterMarkers = info.gutterMarkers;
-    if (!gutterMarkers)
-      return false;
-
-    let marker = gutterMarkers[gutterName];
+    let marker = this.getMarker(line, gutterName);
     if (!marker)
       return false;
 
@@ -518,6 +578,19 @@ Editor.prototype = {
 
     let cm = editors.get(this);
     cm.lineInfo(line).gutterMarkers[gutterName].classList.remove(markerClass);
+  },
+
+  getMarker: function(line, gutterName) {
+    let cm = editors.get(this);
+    let info = cm.lineInfo(line);
+    if (!info)
+      return null;
+
+    let gutterMarkers = info.gutterMarkers;
+    if (!gutterMarkers)
+      return null;
+
+    return gutterMarkers[gutterName];
   },
 
   /**
@@ -695,7 +768,28 @@ Editor.prototype = {
     div.appendChild(txt);
     div.appendChild(inp);
 
-    this.openDialog(div, (line) => this.setCursor({ line: line - 1, ch: 0 }));
+    if (!this.hasMultipleSelections()) {
+      let cm = editors.get(this);
+      let sel = cm.getSelection();
+      // Scratchpad inserts and selects a comment after an error happens:
+      // "@Scratchpad/1:10:2". Parse this to get the line and column.
+      // In the string above this is line 10, column 2.
+      let match = sel.match(RE_SCRATCHPAD_ERROR);
+      if (match) {
+        let [ , line, column ] = match;
+        inp.value = column ? line + ":" + column : line;
+        inp.selectionStart = inp.selectionEnd = inp.value.length;
+      }
+    }
+
+    this.openDialog(div, (line) => {
+      // Handle LINE:COLUMN as well as LINE
+      let match = line.toString().match(RE_JUMP_TO_LINE);
+      if (match) {
+        let [ , line, column ] = match;
+        this.setCursor({line: line - 1, ch: column ? column - 1 : 0 });
+      }
+    });
   },
 
   /**
@@ -775,6 +869,57 @@ Editor.prototype = {
     let cm = editors.get(this);
     cm.getWrapperElement().style.fontSize = parseInt(size, 10) + "px";
     cm.refresh();
+  },
+
+  /**
+   * Sets an option for the editor.  For most options it just defers to
+   * CodeMirror.setOption, but certain ones are maintained within the editor
+   * instance.
+   */
+  setOption: function(o, v) {
+    let cm = editors.get(this);
+    if (o === "autocomplete") {
+      this.config.autocomplete = v;
+      this.setupAutoCompletion();
+    } else {
+      cm.setOption(o, v);
+    }
+  },
+
+  /**
+   * Gets an option for the editor.  For most options it just defers to
+   * CodeMirror.getOption, but certain ones are maintained within the editor
+   * instance.
+   */
+  getOption: function(o) {
+    let cm = editors.get(this);
+    if (o === "autocomplete") {
+      return this.config.autocomplete;
+    } else {
+      return cm.getOption(o);
+    }
+  },
+
+  /**
+   * Sets up autocompletion for the editor. Lazily imports the required
+   * dependencies because they vary by editor mode.
+   *
+   * Autocompletion is special, because we don't want to automatically use
+   * it just because it is preffed on (it still needs to be requested by the
+   * editor), but we do want to always disable it if it is preffed off.
+   */
+  setupAutoCompletion: function (options = {}) {
+    // The autocomplete module will overwrite this.initializeAutoCompletion
+    // with a mode specific autocompletion handler.
+    if (!this.initializeAutoCompletion) {
+      this.extend(require("./autocomplete"));
+    }
+
+    if (this.config.autocomplete && Services.prefs.getBoolPref(AUTOCOMPLETE)) {
+      this.initializeAutoCompletion(options);
+    } else {
+      this.destroyAutoCompletion();
+    }
   },
 
   /**
@@ -957,6 +1102,75 @@ function controller(ed) {
 
     onEvent: function () {}
   };
+}
+
+/**
+ * Detect the indentation used in an editor. Returns an object
+ * with 'tabs' - whether this is tab-indented and 'spaces' - the
+ * width of one indent in spaces. Or `null` if it's inconclusive.
+ */
+function detectIndentation(ed) {
+  let cm = editors.get(ed);
+
+  let spaces = {};  // # spaces indent -> # lines with that indent
+  let last = 0;     // indentation width of the last line we saw
+  let tabs = 0;     // # of lines that start with a tab
+  let total = 0;    // # of indented lines (non-zero indent)
+
+  cm.eachLine(0, DETECT_INDENT_MAX_LINES, (line) => {
+    let text = line.text;
+
+    if (text.startsWith("\t")) {
+      tabs++;
+      total++;
+      return;
+    }
+    let width = 0;
+    while (text[width] === " ") {
+      width++;
+    }
+    // don't count lines that are all spaces
+    if (width == text.length) {
+      last = 0;
+      return;
+    }
+    if (width > 1) {
+      total++;
+    }
+
+    // see how much this line is offset from the line above it
+    let indent = Math.abs(width - last);
+    if (indent > 1 && indent <= 8) {
+      spaces[indent] = (spaces[indent] || 0) + 1;
+    }
+    last = width;
+  });
+
+  // this file is not indented at all
+  if (total == 0) {
+    return null;
+  }
+
+  // mark as tabs if they start more than half the lines
+  if (tabs >= total / 2) {
+    return { tabs: true };
+  }
+
+  // find most frequent non-zero width difference between adjacent lines
+  let freqIndent = null, max = 1;
+  for (let width in spaces) {
+    width = parseInt(width, 10);
+    let tally = spaces[width];
+    if (tally > max) {
+      max = tally;
+      freqIndent = width;
+    }
+  }
+  if (!freqIndent) {
+    return null;
+  }
+
+  return { tabs: false, spaces: freqIndent };
 }
 
 module.exports = Editor;

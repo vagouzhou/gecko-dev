@@ -14,9 +14,9 @@ namespace dom {
 // nsISupports implementation
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(XMLStylesheetProcessingInstruction)
-  NS_INTERFACE_TABLE_INHERITED3(XMLStylesheetProcessingInstruction, nsIDOMNode,
-                                nsIDOMProcessingInstruction,
-                                nsIStyleSheetLinkingElement)
+  NS_INTERFACE_TABLE_INHERITED(XMLStylesheetProcessingInstruction, nsIDOMNode,
+                               nsIDOMProcessingInstruction,
+                               nsIStyleSheetLinkingElement)
 NS_INTERFACE_TABLE_TAIL_INHERITING(ProcessingInstruction)
 
 NS_IMPL_ADDREF_INHERITED(XMLStylesheetProcessingInstruction,
@@ -42,9 +42,9 @@ XMLStylesheetProcessingInstruction::~XMLStylesheetProcessingInstruction()
 }
 
 JSObject*
-XMLStylesheetProcessingInstruction::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+XMLStylesheetProcessingInstruction::WrapNode(JSContext *aCx)
 {
-  return XMLStylesheetProcessingInstructionBinding::Wrap(aCx, aScope, this);
+  return XMLStylesheetProcessingInstructionBinding::Wrap(aCx, this);
 }
 
 // nsIContent
@@ -182,12 +182,12 @@ XMLStylesheetProcessingInstruction::GetStyleSheetInfo(nsAString& aTitle,
 }
 
 nsGenericDOMDataNode*
-XMLStylesheetProcessingInstruction::CloneDataNode(nsINodeInfo *aNodeInfo,
+XMLStylesheetProcessingInstruction::CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo,
                                                   bool aCloneText) const
 {
   nsAutoString data;
   nsGenericDOMDataNode::GetData(data);
-  nsCOMPtr<nsINodeInfo> ni = aNodeInfo;
+  nsRefPtr<mozilla::dom::NodeInfo> ni = aNodeInfo;
   return new XMLStylesheetProcessingInstruction(ni.forget(), data);
 }
 

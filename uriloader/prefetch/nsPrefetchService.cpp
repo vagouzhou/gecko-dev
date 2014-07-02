@@ -75,9 +75,10 @@ public:
     NS_DECL_ISUPPORTS
     NS_DECL_NSISIMPLEENUMERATOR
     nsPrefetchQueueEnumerator(nsPrefetchService *aService);
-    ~nsPrefetchQueueEnumerator();
 
 private:
+    ~nsPrefetchQueueEnumerator();
+
     void Increment();
 
     nsRefPtr<nsPrefetchService> mService;
@@ -156,7 +157,7 @@ nsPrefetchQueueEnumerator::Increment()
 // nsPrefetchQueueEnumerator::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsPrefetchQueueEnumerator, nsISimpleEnumerator)
+NS_IMPL_ISUPPORTS(nsPrefetchQueueEnumerator, nsISimpleEnumerator)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchNode <public>
@@ -223,12 +224,12 @@ nsPrefetchNode::CancelChannel(nsresult error)
 // nsPrefetchNode::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS5(nsPrefetchNode,
-                   nsIRequestObserver,
-                   nsIStreamListener,
-                   nsIInterfaceRequestor,
-                   nsIChannelEventSink,
-                   nsIRedirectResultListener)
+NS_IMPL_ISUPPORTS(nsPrefetchNode,
+                  nsIRequestObserver,
+                  nsIStreamListener,
+                  nsIInterfaceRequestor,
+                  nsIChannelEventSink,
+                  nsIRedirectResultListener)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchNode::nsIStreamListener
@@ -618,11 +619,11 @@ nsPrefetchService::StopPrefetching()
 // nsPrefetchService::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS4(nsPrefetchService,
-                   nsIPrefetchService,
-                   nsIWebProgressListener,
-                   nsIObserver,
-                   nsISupportsWeakReference)
+NS_IMPL_ISUPPORTS(nsPrefetchService,
+                  nsIPrefetchService,
+                  nsIWebProgressListener,
+                  nsIObserver,
+                  nsISupportsWeakReference)
 
 //-----------------------------------------------------------------------------
 // nsPrefetchService::nsIPrefetchService

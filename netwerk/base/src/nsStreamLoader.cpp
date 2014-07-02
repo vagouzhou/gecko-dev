@@ -18,9 +18,7 @@ nsStreamLoader::nsStreamLoader()
 
 nsStreamLoader::~nsStreamLoader()
 {
-  if (mData) {
-    NS_Free(mData);
-  }
+  ReleaseData();
 }
 
 NS_IMETHODIMP
@@ -45,8 +43,8 @@ nsStreamLoader::Create(nsISupports *aOuter, REFNSIID aIID, void **aResult)
   return rv;
 }
 
-NS_IMPL_ISUPPORTS3(nsStreamLoader, nsIStreamLoader,
-                   nsIRequestObserver, nsIStreamListener)
+NS_IMPL_ISUPPORTS(nsStreamLoader, nsIStreamLoader,
+                  nsIRequestObserver, nsIStreamListener)
 
 NS_IMETHODIMP 
 nsStreamLoader::GetNumBytesRead(uint32_t* aNumBytes)
@@ -93,7 +91,9 @@ NS_IMETHODIMP
 nsStreamLoader::OnStopRequest(nsIRequest* request, nsISupports *ctxt,
                               nsresult aStatus)
 {
-  PROFILER_LABEL("network", "nsStreamLoader::OnStopRequest");
+  PROFILER_LABEL("nsStreamLoader", "OnStopRequest",
+    js::ProfileEntry::Category::NETWORK);
+
   if (mObserver) {
     // provide nsIStreamLoader::request during call to OnStreamComplete
     mRequest = request;
@@ -103,10 +103,9 @@ nsStreamLoader::OnStopRequest(nsIRequest* request, nsISupports *ctxt,
       // the observer now owns the data buffer, and the loader must
       // not deallocate it
       mData = nullptr;
-      mLength = 0;
-      mAllocated = 0;
     }
     // done.. cleanup
+    ReleaseData();
     mRequest = 0;
     mObserver = 0;
     mContext = 0;
@@ -132,8 +131,7 @@ nsStreamLoader::WriteSegmentFun(nsIInputStream *inStr,
     self->mData = static_cast<uint8_t*>(NS_Realloc(self->mData,
                                                    self->mLength + count));
     if (!self->mData) {
-      self->mLength = 0;
-      self->mAllocated = 0;
+      self->ReleaseData();
       return NS_ERROR_OUT_OF_MEMORY;
     }
     self->mAllocated = self->mLength + count;
@@ -154,4 +152,15 @@ nsStreamLoader::OnDataAvailable(nsIRequest* request, nsISupports *ctxt,
 {
   uint32_t countRead;
   return inStr->ReadSegments(WriteSegmentFun, this, count, &countRead);
+}
+
+void
+nsStreamLoader::ReleaseData()
+{
+  if (mData) {
+    NS_Free(mData);
+    mData = nullptr;
+  }
+  mLength = 0;
+  mAllocated = 0;
 }

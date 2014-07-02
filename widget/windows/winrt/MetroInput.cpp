@@ -13,12 +13,13 @@
 #include "InputData.h"
 #include "UIABridgePrivate.h"
 #include "MetroAppShell.h"
+#include "mozilla/EventStateManager.h"
+#include "mozilla/EventStates.h"
 #include "mozilla/MouseEvents.h"
 #include "mozilla/TouchEvents.h"
 #include "mozilla/Preferences.h"  // for Preferences
 #include "WinUtils.h"
 #include "nsIPresShell.h"
-#include "nsEventStateManager.h"
 
 // System headers (alphabetical)
 #include <windows.ui.core.h> // ABI::Window::UI::Core namespace
@@ -487,6 +488,7 @@ MetroInput::OnPointerNonTouch(UI::Input::IPointerPoint* aPoint) {
                          WidgetMouseEvent::eReal,
                          WidgetMouseEvent::eNormal);
   event->button = button;
+  aPoint->get_PointerId(&event->pointerId);
   InitGeckoMouseEventFromPointerPoint(event, aPoint);
   DispatchAsyncEventIgnoreStatus(event);
 }
@@ -807,6 +809,7 @@ MetroInput::InitGeckoMouseEventFromPointerPoint(
   aPointerPoint->get_PointerDevice(device.GetAddressOf());
   device->get_PointerDeviceType(&deviceType);
   aPointerPoint->get_Properties(props.GetAddressOf());
+  aPointerPoint->get_PointerId(&aEvent->pointerId);
   props->get_Pressure(&pressure);
   props->get_XTilt(&tiltX);
   props->get_YTilt(&tiltY);
@@ -887,6 +890,7 @@ MetroInput::OnPointerExited(UI::Core::ICoreWindow* aSender,
     WidgetMouseEvent* event =
       new WidgetMouseEvent(true, NS_MOUSE_EXIT, mWidget.Get(),
                            WidgetMouseEvent::eReal, WidgetMouseEvent::eNormal);
+    event->exit = WidgetMouseEvent::eTopLevel;
     UpdateInputLevel(LEVEL_PRECISE);
     InitGeckoMouseEventFromPointerPoint(event, currentPoint.Get());
     DispatchAsyncEventIgnoreStatus(event);
@@ -1128,7 +1132,7 @@ MetroInput::DeliverNextQueuedEventIgnoreStatus()
   }
   nsCOMPtr<nsIPresShell> presShell = mWidget->GetPresShell();
   if (presShell) {
-    nsEventStateManager* esm = presShell->GetPresContext()->EventStateManager();
+    EventStateManager* esm = presShell->GetPresContext()->EventStateManager();
     if (esm) {
       esm->SetContentState(nullptr, NS_EVENT_STATE_HOVER);
     }
@@ -1228,7 +1232,10 @@ MetroInput::HandleFirstTouchStartEvent(WidgetTouchEvent* aEvent)
 
   WidgetTouchEvent transformedEvent(*aEvent);
   DUMP_TOUCH_IDS("APZC(1)", aEvent);
-  mWidget->ApzReceiveInputEvent(&transformedEvent, &mTargetAPZCGuid);
+  nsEventStatus result = mWidget->ApzReceiveInputEvent(&transformedEvent, &mTargetAPZCGuid);
+  if (result == nsEventStatus_eConsumeNoDefault) {
+    return;
+  }
 
   if (gTouchActionPropertyEnabled) {
     nsTArray<TouchBehaviorFlags> touchBehaviors;
@@ -1282,6 +1289,9 @@ MetroInput::HandleFirstTouchMoveEvent(WidgetTouchEvent* aEvent)
   WidgetTouchEvent transformedEvent(*aEvent);
   DUMP_TOUCH_IDS("APZC(2)", aEvent);
   apzcStatus = mWidget->ApzReceiveInputEvent(&transformedEvent, &mTargetAPZCGuid);
+  if (apzcStatus == nsEventStatus_eConsumeNoDefault) {
+    return;
+  }
 
   // We need to dispatch here only touch event, not pointer one.
   // That's because according to the spec pointer events doesn't imply pointermove event
@@ -1303,7 +1313,7 @@ MetroInput::HandleFirstTouchMoveEvent(WidgetTouchEvent* aEvent)
   if (nsEventStatus_eConsumeNoDefault == contentStatus) {
     // Touchmove handler consumed touch.
     mContentConsumingTouch = true;
-  } else if (nsEventStatus_eConsumeNoDefault == apzcStatus) {
+  } else if (nsEventStatus_eConsumeDoDefault == apzcStatus) {
     // Apzc triggered default behavior.
     mApzConsumingTouch = true;
   }
@@ -1415,6 +1425,9 @@ MetroInput::DeliverNextQueuedTouchEvent()
 
   DUMP_TOUCH_IDS("APZC(3)", event);
   status = mWidget->ApzReceiveInputEvent(event, nullptr);
+  if (status == nsEventStatus_eConsumeNoDefault) {
+    return;
+  }
 
   // If we're getting a new touch (touch start) after some touch start/move
   // events we need to reset touch behavior for touches.
@@ -1427,7 +1440,7 @@ MetroInput::DeliverNextQueuedTouchEvent()
 
   // Send the event to content unless APZC is consuming it.
   if (!mApzConsumingTouch) {
-    if (status == nsEventStatus_eConsumeNoDefault) {
+    if (status == nsEventStatus_eConsumeDoDefault) {
       mApzConsumingTouch = true;
       DispatchTouchCancel(event);
       return;

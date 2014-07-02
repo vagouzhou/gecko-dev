@@ -12,6 +12,7 @@
 #include "mozilla/dom/HTMLCollectionBinding.h"
 #include "mozilla/dom/HTMLTableElementBinding.h"
 #include "nsContentUtils.h"
+#include "jsfriendapi.h"
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Table)
 
@@ -28,7 +29,6 @@ class TableRowsCollection : public nsIHTMLCollection,
 {
 public:
   TableRowsCollection(HTMLTableElement *aParent);
-  virtual ~TableRowsCollection();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_NSIDOMHTMLCOLLECTION
@@ -41,7 +41,8 @@ public:
 
   virtual Element*
   GetFirstNamedElement(const nsAString& aName, bool& aFound) MOZ_OVERRIDE;
-  virtual void GetSupportedNames(nsTArray<nsString>& aNames);
+  virtual void GetSupportedNames(unsigned aFlags,
+                                 nsTArray<nsString>& aNames) MOZ_OVERRIDE;
 
   NS_IMETHOD    ParentDestroyed();
 
@@ -49,9 +50,10 @@ public:
 
   // nsWrapperCache
   using nsWrapperCache::GetWrapperPreserveColor;
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 protected:
+  virtual ~TableRowsCollection();
+
   virtual JSObject* GetWrapperPreserveColorInternal() MOZ_OVERRIDE
   {
     return nsWrapperCache::GetWrapperPreserveColor();
@@ -83,20 +85,19 @@ TableRowsCollection::~TableRowsCollection()
 }
 
 JSObject*
-TableRowsCollection::WrapObject(JSContext* aCx,
-                                JS::Handle<JSObject*> aScope)
+TableRowsCollection::WrapObject(JSContext* aCx)
 {
-  return HTMLCollectionBinding::Wrap(aCx, aScope, this);
+  return HTMLCollectionBinding::Wrap(aCx, this);
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(TableRowsCollection, mOrphanRows)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(TableRowsCollection, mOrphanRows)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(TableRowsCollection)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(TableRowsCollection)
 
 NS_INTERFACE_TABLE_HEAD(TableRowsCollection)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_TABLE2(TableRowsCollection, nsIHTMLCollection,
-                      nsIDOMHTMLCollection)
+  NS_INTERFACE_TABLE(TableRowsCollection, nsIHTMLCollection,
+                     nsIDOMHTMLCollection)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(TableRowsCollection)
 NS_INTERFACE_MAP_END
 
@@ -236,13 +237,18 @@ TableRowsCollection::GetFirstNamedElement(const nsAString& aName, bool& aFound)
 }
 
 void
-TableRowsCollection::GetSupportedNames(nsTArray<nsString>& aNames)
+TableRowsCollection::GetSupportedNames(unsigned aFlags,
+                                       nsTArray<nsString>& aNames)
 {
+  if (!(aFlags & JSITER_HIDDEN)) {
+    return;
+  }
+
   DO_FOR_EACH_ROWGROUP(
     nsTArray<nsString> names;
     nsCOMPtr<nsIHTMLCollection> coll = do_QueryInterface(rows);
     if (coll) {
-      coll->GetSupportedNames(names);
+      coll->GetSupportedNames(aFlags, names);
       for (uint32_t i = 0; i < names.Length(); ++i) {
         if (!aNames.Contains(names[i])) {
           aNames.AppendElement(names[i]);
@@ -282,7 +288,7 @@ TableRowsCollection::ParentDestroyed()
 
 /* --------------------------- HTMLTableElement ---------------------------- */
 
-HTMLTableElement::HTMLTableElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLTableElement::HTMLTableElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo),
     mTableInheritedAttributes(TABLE_ATTRS_DIRTY)
 {
@@ -298,9 +304,9 @@ HTMLTableElement::~HTMLTableElement()
 }
 
 JSObject*
-HTMLTableElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLTableElement::WrapNode(JSContext *aCx)
 {
-  return HTMLTableElementBinding::Wrap(aCx, aScope, this);
+  return HTMLTableElementBinding::Wrap(aCx, this);
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(HTMLTableElement)
@@ -323,7 +329,7 @@ NS_IMPL_RELEASE_INHERITED(HTMLTableElement, Element)
 
 // QueryInterface implementation for HTMLTableElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLTableElement)
-  NS_INTERFACE_TABLE_INHERITED1(HTMLTableElement, nsIDOMHTMLTableElement)
+  NS_INTERFACE_TABLE_INHERITED(HTMLTableElement, nsIDOMHTMLTableElement)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 
@@ -365,7 +371,7 @@ HTMLTableElement::CreateTHead()
   nsRefPtr<nsGenericHTMLElement> head = GetTHead();
   if (!head) {
     // Create a new head rowgroup.
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
     nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::thead,
                                 getter_AddRefs(nodeInfo));
 
@@ -397,7 +403,7 @@ HTMLTableElement::CreateTFoot()
   nsRefPtr<nsGenericHTMLElement> foot = GetTFoot();
   if (!foot) {
     // create a new foot rowgroup
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
     nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::tfoot,
                                 getter_AddRefs(nodeInfo));
 
@@ -428,7 +434,7 @@ HTMLTableElement::CreateCaption()
   nsRefPtr<nsGenericHTMLElement> caption = GetCaption();
   if (!caption) {
     // Create a new caption.
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
     nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::caption,
                                 getter_AddRefs(nodeInfo));
 
@@ -456,7 +462,7 @@ HTMLTableElement::DeleteCaption()
 already_AddRefed<nsGenericHTMLElement>
 HTMLTableElement::CreateTBody()
 {
-  nsCOMPtr<nsINodeInfo> nodeInfo =
+  nsRefPtr<mozilla::dom::NodeInfo> nodeInfo =
     OwnerDoc()->NodeInfoManager()->GetNodeInfo(nsGkAtoms::tbody, nullptr,
                                                kNameSpaceID_XHTML,
                                                nsIDOMNode::ELEMENT_NODE);
@@ -521,7 +527,7 @@ HTMLTableElement::InsertRow(int32_t aIndex, ErrorResult& aError)
     nsINode* parent = refRow->GetParentNode();
 
     // create the row
-    nsCOMPtr<nsINodeInfo> nodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
     nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::tr,
                                 getter_AddRefs(nodeInfo));
 
@@ -543,24 +549,19 @@ HTMLTableElement::InsertRow(int32_t aIndex, ErrorResult& aError)
     }
   } else {
     // the row count was 0, so 
-    // find the first row group and insert there as first child
+    // find the last row group and insert there as first child
     nsCOMPtr<nsIContent> rowGroup;
-    for (nsIContent* child = nsINode::GetFirstChild();
+    for (nsIContent* child = nsINode::GetLastChild();
          child;
-         child = child->GetNextSibling()) {
-      nsINodeInfo *childInfo = child->NodeInfo();
-      nsIAtom *localName = childInfo->NameAtom();
-      if (childInfo->NamespaceID() == kNameSpaceID_XHTML &&
-          (localName == nsGkAtoms::thead ||
-           localName == nsGkAtoms::tbody ||
-           localName == nsGkAtoms::tfoot)) {
+         child = child->GetPreviousSibling()) {
+      if (child->IsHTML(nsGkAtoms::tbody)) {
         rowGroup = child;
         break;
       }
     }
 
     if (!rowGroup) { // need to create a TBODY
-      nsCOMPtr<nsINodeInfo> nodeInfo;
+      nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
       nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::tbody,
                                   getter_AddRefs(nodeInfo));
 
@@ -574,7 +575,7 @@ HTMLTableElement::InsertRow(int32_t aIndex, ErrorResult& aError)
     }
 
     if (rowGroup) {
-      nsCOMPtr<nsINodeInfo> nodeInfo;
+      nsRefPtr<mozilla::dom::NodeInfo> nodeInfo;
       nsContentUtils::NameChanged(mNodeInfo, nsGkAtoms::tr,
                                   getter_AddRefs(nodeInfo));
 

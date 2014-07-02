@@ -4,16 +4,14 @@
 
 package org.mozilla.gecko.tests.helpers;
 
-import static org.mozilla.gecko.tests.helpers.AssertionHelper.*;
+import static org.mozilla.gecko.tests.helpers.AssertionHelper.fAssertNotNull;
 
-import org.mozilla.gecko.tests.components.AppMenuComponent;
-import org.mozilla.gecko.tests.components.ToolbarComponent;
 import org.mozilla.gecko.tests.UITestContext;
 import org.mozilla.gecko.tests.UITestContext.ComponentType;
+import org.mozilla.gecko.tests.components.AppMenuComponent;
+import org.mozilla.gecko.tests.components.ToolbarComponent;
 
 import com.jayway.android.robotium.solo.Solo;
-
-import android.text.TextUtils;
 
 /**
  * Provides helper functionality for navigating around the Firefox UI. These functions will often
@@ -90,9 +88,17 @@ final public class NavigationHelper {
     }
 
     public static void reload() {
-        // TODO: On tablets, press reload in TOOLBAR. Note that this is technically
-        // an app menu item so tread carefully.
-        //       On phones, press reload in APPMENU.
-        throw new UnsupportedOperationException("Not yet implemented.");
+        if (DeviceHelper.isTablet()) {
+            sToolbar.pressReloadButton(); // Waits for page load & asserts isNotEditing.
+            return;
+        }
+
+        sToolbar.assertIsNotEditing();
+        WaitHelper.waitForPageLoad(new Runnable() {
+            @Override
+            public void run() {
+                sAppMenu.pressMenuItem(AppMenuComponent.MenuItem.RELOAD);
+            }
+        });
     }
 }

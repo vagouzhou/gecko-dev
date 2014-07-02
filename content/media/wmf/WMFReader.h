@@ -47,8 +47,12 @@ public:
                 int64_t aStartTime,
                 int64_t aEndTime,
                 int64_t aCurrentTime) MOZ_OVERRIDE;
+
+  bool IsMediaSeekable() MOZ_OVERRIDE;
+  
 private:
 
+  HRESULT CreateSourceReader();
   HRESULT ConfigureAudioDecoder();
   HRESULT ConfigureVideoDecoder();
   HRESULT ConfigureVideoFrameGeometry(IMFMediaType* aMediaType);

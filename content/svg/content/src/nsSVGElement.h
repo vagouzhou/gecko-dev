@@ -64,7 +64,7 @@ class Matrix;
 
 }
 
-struct gfxMatrix;
+class gfxMatrix;
 struct nsSVGEnumMapping;
 
 typedef nsStyledElementNotElementCSSInlineStyle nsSVGElementBase;
@@ -73,15 +73,15 @@ class nsSVGElement : public nsSVGElementBase    // nsIContent
                    , public nsIDOMSVGElement
 {
 protected:
-  nsSVGElement(already_AddRefed<nsINodeInfo>& aNodeInfo);
+  nsSVGElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
   friend nsresult NS_NewSVGElement(mozilla::dom::Element **aResult,
-                                   already_AddRefed<nsINodeInfo>&& aNodeInfo);
+                                   already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo);
   nsresult Init();
   virtual ~nsSVGElement(){}
 
 public:
 
-  virtual nsresult Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const MOZ_MUST_OVERRIDE MOZ_OVERRIDE;
+  virtual nsresult Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const MOZ_MUST_OVERRIDE MOZ_OVERRIDE;
 
   typedef mozilla::SVGNumberList SVGNumberList;
   typedef mozilla::SVGAnimatedNumberList SVGAnimatedNumberList;
@@ -96,7 +96,6 @@ public:
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
 
-  virtual const nsAttrValue* DoGetClasses() const MOZ_OVERRIDE;
   void DidAnimateClass();
 
   // nsIContent interface methods
@@ -239,7 +238,7 @@ public:
   void DidAnimateLengthList(uint8_t aAttrEnum);
   void DidAnimatePointList();
   void DidAnimatePathSegList();
-  void DidAnimateTransformList();
+  void DidAnimateTransformList(int32_t aModType);
   void DidAnimateString(uint8_t aAttrEnum);
 
   enum {
@@ -305,6 +304,13 @@ public:
   virtual nsIAtom* GetTransformListAttrName() const {
     return nullptr;
   }
+  const nsAttrValue* GetAnimatedClassName() const
+  {
+    if (!mClassAttribute.IsAnimated()) {
+      return nullptr;
+    }
+    return mClassAnimAttr;
+  }
 
   virtual nsIDOMNode* AsDOMNode() MOZ_FINAL MOZ_OVERRIDE { return this; }
   virtual bool IsTransformable() { return false; }
@@ -314,8 +320,7 @@ public:
   nsSVGElement* GetViewportElement();
   already_AddRefed<mozilla::dom::SVGAnimatedString> ClassName();
 protected:
-  virtual JSObject* WrapNode(JSContext *cx,
-                             JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *cx) MOZ_OVERRIDE;
 
 #ifdef DEBUG
   // We define BeforeSetAttr here and mark it MOZ_FINAL to ensure it is NOT used
@@ -634,7 +639,7 @@ private:
 #define NS_IMPL_NS_NEW_SVG_ELEMENT(_elementName)                             \
 nsresult                                                                     \
 NS_NewSVG##_elementName##Element(nsIContent **aResult,                       \
-                                 already_AddRefed<nsINodeInfo>&& aNodeInfo)  \
+                                 already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)  \
 {                                                                            \
   nsRefPtr<nsSVG##_elementName##Element> it =                                \
     new nsSVG##_elementName##Element(aNodeInfo);                             \
@@ -653,7 +658,7 @@ NS_NewSVG##_elementName##Element(nsIContent **aResult,                       \
 #define NS_IMPL_NS_NEW_NAMESPACED_SVG_ELEMENT(_elementName)                  \
 nsresult                                                                     \
 NS_NewSVG##_elementName##Element(nsIContent **aResult,                       \
-                                 already_AddRefed<nsINodeInfo>&& aNodeInfo)  \
+                                 already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo)  \
 {                                                                            \
   nsRefPtr<mozilla::dom::SVG##_elementName##Element> it =                    \
     new mozilla::dom::SVG##_elementName##Element(aNodeInfo);                 \
@@ -672,7 +677,7 @@ NS_NewSVG##_elementName##Element(nsIContent **aResult,                       \
 #define NS_IMPL_NS_NEW_NAMESPACED_SVG_ELEMENT_CHECK_PARSER(_elementName)     \
 nsresult                                                                     \
 NS_NewSVG##_elementName##Element(nsIContent **aResult,                       \
-                                 already_AddRefed<nsINodeInfo>&& aNodeInfo,  \
+                                 already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,  \
                                  mozilla::dom::FromParser aFromParser)       \
 {                                                                            \
   nsRefPtr<mozilla::dom::SVG##_elementName##Element> it =                    \

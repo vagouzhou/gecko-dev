@@ -1,4 +1,4 @@
-/* -*- Mode: javascript; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim: set ts=2 et sw=2 tw=80: */
 
 /**
@@ -72,6 +72,12 @@ Cu.import("resource://gre/modules/devtools/event-emitter.js");
  *       to the next element.
  *    {boolean} stopOnReturn:
  *       If true, the return key will not advance the editor to the next
+ *       focusable element.
+ *    {boolean} stopOnTab:
+ *       If true, the tab key will not advance the editor to the next
+ *       focusable element.
+ *    {boolean} stopOnShiftTab:
+ *       If true, shift tab will not advance the editor to the previous
  *       focusable element.
  *    {string} trigger: The DOM event that should trigger editing,
  *      defaults to "click"
@@ -171,6 +177,8 @@ function InplaceEditor(aOptions, aEvent)
   this.destroy = aOptions.destroy;
   this.initial = aOptions.initial ? aOptions.initial : this.elt.textContent;
   this.multiline = aOptions.multiline || false;
+  this.stopOnShiftTab = !!aOptions.stopOnShiftTab;
+  this.stopOnTab = !!aOptions.stopOnTab;
   this.stopOnReturn = !!aOptions.stopOnReturn;
   this.contentType = aOptions.contentType || CONTENT_TYPES.PLAIN_TEXT;
   this.property = aOptions.property;
@@ -202,6 +210,10 @@ function InplaceEditor(aOptions, aEvent)
     this.input.select();
   }
   this.input.focus();
+
+  if (this.contentType == CONTENT_TYPES.CSS_VALUE && this.input.value == "") {
+    this._maybeSuggestCompletion(true);
+  }
 
   this.input.addEventListener("blur", this._onBlur, false);
   this.input.addEventListener("keypress", this._onKeyPress, false);
@@ -371,6 +383,11 @@ InplaceEditor.prototype = {
     this.input.value = newValue.value;
     this.input.setSelectionRange(newValue.start, newValue.end);
     this._doValidation();
+
+    // Call the user's change handler if available.
+    if (this.change) {
+      this.change(this.input.value.trim());
+    }
 
     return true;
   },
@@ -716,7 +733,8 @@ InplaceEditor.prototype = {
   _cycleCSSSuggestion:
   function InplaceEditor_cycleCSSSuggestion(aReverse, aNoSelect)
   {
-    let {label, preLabel} = this.popup.selectedItem;
+    // selectedItem can be null when nothing is selected in an empty editor.
+    let {label, preLabel} = this.popup.selectedItem || {label: "", preLabel: ""};
     if (aReverse) {
       this.popup.selectPreviousItem();
     } else {
@@ -773,7 +791,7 @@ InplaceEditor.prototype = {
   _onBlur: function InplaceEditor_onBlur(aEvent, aDoNotClear)
   {
     if (aEvent && this.popup && this.popup.isOpen &&
-        this.contentType == CONTENT_TYPES.CSS_MIXED) {
+        this.popup.selectedIndex >= 0) {
       let label, preLabel;
       if (this._selectedIndex === undefined) {
         ({label, preLabel}) = this.popup.getItemAtIndex(this.popup.selectedIndex);
@@ -809,6 +827,11 @@ InplaceEditor.prototype = {
       };
       this.popup._panel.addEventListener("popuphidden", onPopupHidden);
       this.popup.hidePopup();
+      // Content type other than CSS_MIXED is used in rule-view where the values
+      // are live previewed. So we apply the value before returning.
+      if (this.contentType != CONTENT_TYPES.CSS_MIXED) {
+        this._apply();
+      }
       return;
     }
     this._apply();
@@ -853,6 +876,7 @@ InplaceEditor.prototype = {
     if (increment && this._incrementValue(increment) ) {
       this._updateSize();
       prevent = true;
+      cycling = true;
     } else if (increment && this.popup && this.popup.isOpen) {
       cycling = true;
       prevent = true;
@@ -867,7 +891,7 @@ InplaceEditor.prototype = {
       if (this.popup && this.popup.isOpen) {
         this.popup.hidePopup();
       }
-    } else if (!cycling) {
+    } else if (!cycling && !aEvent.metaKey && !aEvent.altKey && !aEvent.ctrlKey) {
       this._maybeSuggestCompletion();
     }
 
@@ -883,14 +907,26 @@ InplaceEditor.prototype = {
       let direction = FOCUS_FORWARD;
       if (aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_TAB &&
           aEvent.shiftKey) {
-        direction = FOCUS_BACKWARD;
+        if (this.stopOnShiftTab) {
+          direction = null;
+        } else {
+          direction = FOCUS_BACKWARD;
+        }
       }
-      if (this.stopOnReturn && aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_RETURN) {
+      if ((this.stopOnReturn &&
+           aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_RETURN) ||
+          (this.stopOnTab && aEvent.keyCode === Ci.nsIDOMKeyEvent.DOM_VK_TAB)) {
         direction = null;
       }
 
       // Now we don't want to suggest anything as we are moving out.
       this._preventSuggestions = true;
+      // But we still want to show suggestions for css values. i.e. moving out
+      // of css property input box in forward direction
+      if (this.contentType == CONTENT_TYPES.CSS_PROPERTY &&
+          direction == FOCUS_FORWARD) {
+        this._preventSuggestions = false;
+      }
 
       let input = this.input;
 
@@ -992,8 +1028,16 @@ InplaceEditor.prototype = {
 
   /**
    * Handles displaying suggestions based on the current input.
+   *
+   * @param {boolean} aNoAutoInsert
+   *        true if you don't want to automatically insert the first suggestion
    */
-  _maybeSuggestCompletion: function() {
+  _maybeSuggestCompletion: function(aNoAutoInsert) {
+    // Input can be null in cases when you intantaneously switch out of it.
+    if (!this.input) {
+      return;
+    }
+    let preTimeoutQuery = this.input.value;
     // Since we are calling this method from a keypress event handler, the
     // |input.value| does not include currently typed character. Thus we perform
     // this method async.
@@ -1005,15 +1049,26 @@ InplaceEditor.prototype = {
       if (this.contentType == CONTENT_TYPES.PLAIN_TEXT) {
         return;
       }
-
+      if (!this.input) {
+        return;
+      }
       let input = this.input;
-      // Input can be null in cases when you intantaneously switch out of it.
-      if (!input) {
+      // The length of input.value should be increased by 1
+      if (input.value.length - preTimeoutQuery.length > 1) {
         return;
       }
       let query = input.value.slice(0, input.selectionStart);
       let startCheckQuery = query;
-      if (!query) {
+      if (query == null) {
+        return;
+      }
+      // If nothing is selected and there is a non-space character after the
+      // cursor, do not autocomplete.
+      if (input.selectionStart == input.selectionEnd &&
+          input.selectionStart < input.value.length &&
+          input.value.slice(input.selectionStart)[0] != " ") {
+        // This emit is mainly to make the test flow simpler.
+        this.emit("after-suggest", "nothing to autocomplete");
         return;
       }
       let list = [];
@@ -1030,43 +1085,54 @@ InplaceEditor.prototype = {
 
         list =
           ["!important", ...domUtils.getCSSValuesForProperty(this.property.name)];
+
+        if (query == "") {
+          // Do not suggest '!important' without any manually typed character.
+          list.splice(0, 1);
+        }
       } else if (this.contentType == CONTENT_TYPES.CSS_MIXED &&
                  /^\s*style\s*=/.test(query)) {
         // Detecting if cursor is at property or value;
-        let match = query.match(/([:;"'=]?)\s*([^"';:=]+)$/);
-        if (match && match.length == 3) {
+        let match = query.match(/([:;"'=]?)\s*([^"';:=]+)?$/);
+        if (match && match.length >= 2) {
           if (match[1] == ":") { // We are in CSS value completion
             let propertyName =
-              query.match(/[;"'=]\s*([^"';:= ]+)\s*:\s*[^"';:=]+$/)[1];
+              query.match(/[;"'=]\s*([^"';:= ]+)\s*:\s*[^"';:=]*$/)[1];
             list =
               ["!important;", ...domUtils.getCSSValuesForProperty(propertyName)];
-            let matchLastQuery = /([^\s,.\/]+$)/.exec(match[2]);
+            let matchLastQuery = /([^\s,.\/]+$)/.exec(match[2] || "");
             if (matchLastQuery) {
               startCheckQuery = matchLastQuery[0];
             } else {
               startCheckQuery = "";
             }
+            if (!match[2]) {
+              // Don't suggest '!important' without any manually typed character
+              list.splice(0, 1);
+            }
           } else if (match[1]) { // We are in CSS property name completion
             list = CSSPropertyList;
             startCheckQuery = match[2];
           }
-          if (!startCheckQuery) {
+          if (startCheckQuery == null) {
             // This emit is mainly to make the test flow simpler.
             this.emit("after-suggest", "nothing to autocomplete");
             return;
           }
         }
       }
-      list.some(item => {
-        if (startCheckQuery && item.startsWith(startCheckQuery)) {
-          input.value = query + item.slice(startCheckQuery.length) +
-                        input.value.slice(query.length);
-          input.setSelectionRange(query.length, query.length + item.length -
-                                                startCheckQuery.length);
-          this._updateSize();
-          return true;
-        }
-      });
+      if (!aNoAutoInsert) {
+        list.some(item => {
+          if (startCheckQuery != null && item.startsWith(startCheckQuery)) {
+            input.value = query + item.slice(startCheckQuery.length) +
+                          input.value.slice(query.length);
+            input.setSelectionRange(query.length, query.length + item.length -
+                                                  startCheckQuery.length);
+            this._updateSize();
+            return true;
+          }
+        });
+      }
 
       if (!this.popup) {
         // This emit is mainly to make the test flow simpler.
@@ -1076,7 +1142,7 @@ InplaceEditor.prototype = {
       let finalList = [];
       let length = list.length;
       for (let i = 0, count = 0; i < length && count < MAX_POPUP_ENTRIES; i++) {
-        if (startCheckQuery && list[i].startsWith(startCheckQuery)) {
+        if (startCheckQuery != null && list[i].startsWith(startCheckQuery)) {
           count++;
           finalList.push({
             preLabel: startCheckQuery,
@@ -1088,7 +1154,7 @@ InplaceEditor.prototype = {
           // which would have started with query, assuming that list is sorted.
           break;
         }
-        else if (list[i][0] > startCheckQuery[0]) {
+        else if (startCheckQuery != null && list[i][0] > startCheckQuery[0]) {
           // We have crossed all possible matches alphabetically.
           break;
         }
@@ -1100,6 +1166,9 @@ InplaceEditor.prototype = {
                 this.inputCharWidth;
         this.popup.setItems(finalList);
         this.popup.openPopup(this.input, x);
+        if (aNoAutoInsert) {
+          this.popup.selectedIndex = -1;
+        }
       } else {
         this.popup.hidePopup();
       }

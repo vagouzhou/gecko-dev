@@ -70,7 +70,7 @@ public:
     }
     // The XPCOM Detach() is fine for our purposes
 
-    JSObject* WrapObject(JSContext *cx, JS::Handle<JSObject*> scope);
+    JSObject* WrapObject(JSContext *cx);
 
 private:
     struct NodePointer {
@@ -115,6 +115,13 @@ private:
 };
 
 } // namespace dom
+
+template<>
+struct HasDangerousPublicDestructor<dom::NodeIterator>
+{
+  static const bool value = true;
+};
+
 } // namespace mozilla
 
 #endif // mozilla_dom_NodeIterator_h

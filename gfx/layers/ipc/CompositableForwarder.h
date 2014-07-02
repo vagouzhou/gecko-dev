@@ -23,11 +23,11 @@ namespace mozilla {
 namespace layers {
 
 class CompositableClient;
-class TextureFactoryIdentifier;
+class AsyncTransactionTracker;
+struct TextureFactoryIdentifier;
 class SurfaceDescriptor;
 class SurfaceDescriptorTiles;
 class ThebesBufferData;
-class DeprecatedTextureClient;
 class ClientTiledLayerBuffer;
 class PTextureChild;
 
@@ -43,8 +43,6 @@ class PTextureChild;
  */
 class CompositableForwarder : public ISurfaceAllocator
 {
-  friend class AutoOpenSurface;
-  friend class DeprecatedTextureClientShmem;
 public:
 
   CompositableForwarder()
@@ -58,38 +56,12 @@ public:
   virtual void Connect(CompositableClient* aCompositable) = 0;
 
   /**
-   * When using the Thebes layer pattern of swapping or updating
-   * TextureClient/Host pairs without sending SurfaceDescriptors,
-   * use these messages to assign the single or double buffer
-   * (TextureClient/Host pairs) to the CompositableHost.
-   * We expect the textures to already have been created.
-   * With these messages, the ownership of the SurfaceDescriptor(s)
-   * moves to the compositor.
-   */
-  virtual void CreatedSingleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aDescriptorOnWhite = nullptr) = 0;
-  virtual void CreatedDoubleBuffer(CompositableClient* aCompositable,
-                                   const SurfaceDescriptor& aFrontDescriptor,
-                                   const SurfaceDescriptor& aBackDescriptor,
-                                   const TextureInfo& aTextureInfo,
-                                   const SurfaceDescriptor* aFrontDescriptorOnWhite = nullptr,
-                                   const SurfaceDescriptor* aBackDescriptorOnWhite = nullptr) = 0;
-
-  /**
    * Notify the CompositableHost that it should create host-side-only
    * texture(s), that we will update incrementally using UpdateTextureIncremental.
    */
   virtual void CreatedIncrementalBuffer(CompositableClient* aCompositable,
                                         const TextureInfo& aTextureInfo,
                                         const nsIntRect& aBufferRect) = 0;
-
-  /**
-   * Tell the compositor that a Compositable is killing its buffer(s),
-   * that is TextureClient/Hosts.
-   */
-  virtual void DestroyThebesBuffer(CompositableClient* aCompositable) = 0;
 
   /**
    * Tell the CompositableHost on the compositor side what TiledLayerBuffer to
@@ -102,21 +74,6 @@ public:
    * Create a TextureChild/Parent pair as as well as the TextureHost on the parent side.
    */
   virtual PTextureChild* CreateTexture(const SurfaceDescriptor& aSharedData, TextureFlags aFlags) = 0;
-
-  /**
-   * Communicate to the compositor that the texture identified by aCompositable
-   * and aTextureId has been updated to aImage.
-   */
-  virtual void UpdateTexture(CompositableClient* aCompositable,
-                             TextureIdentifier aTextureId,
-                             SurfaceDescriptor* aDescriptor) = 0;
-
-  /**
-   * Same as UpdateTexture, but performs an asynchronous layer transaction (if possible)
-   */
-  virtual void UpdateTextureNoSwap(CompositableClient* aCompositable,
-                                   TextureIdentifier aTextureId,
-                                   SurfaceDescriptor* aDescriptor) = 0;
 
   /**
    * Communicate to the compositor that aRegion in the texture identified by
@@ -150,22 +107,28 @@ public:
                                  const nsIntRect& aRect) = 0;
 
   /**
-   * The specified layer is destroying its buffers.
-   * |aBackBufferToDestroy| is deallocated when this transaction is
-   * posted to the parent.  During the parent-side transaction, the
-   * shadow is told to destroy its front buffer.  This can happen when
-   * a new front/back buffer pair have been created because of a layer
-   * resize, e.g.
-   */
-  virtual void DestroyedThebesBuffer(const SurfaceDescriptor& aBackBufferToDestroy) = 0;
-
-  /**
-   * Tell the CompositableHost on the compositor side to remove the texture.
+   * Tell the CompositableHost on the compositor side to remove the texture
+   * from the CompositableHost.
    * This function does not delete the TextureHost corresponding to the
    * TextureClient passed in parameter.
+   * When the TextureClient has TEXTURE_DEALLOCATE_CLIENT flag,
+   * the transaction becomes synchronous.
    */
   virtual void RemoveTextureFromCompositable(CompositableClient* aCompositable,
                                              TextureClient* aTexture) = 0;
+
+  /**
+   * Tell the CompositableHost on the compositor side to remove the texture
+   * from the CompositableHost. The compositor side sends back transaction
+   * complete message.
+   * This function does not delete the TextureHost corresponding to the
+   * TextureClient passed in parameter.
+   * It is used when the TextureClient recycled.
+   * Only ImageBridge implements it.
+   */
+  virtual void RemoveTextureFromCompositableAsync(AsyncTransactionTracker* aAsyncTransactionTracker,
+                                                  CompositableClient* aCompositable,
+                                                  TextureClient* aTexture) {}
 
   /**
    * Tell the compositor side to delete the TextureHost corresponding to the
@@ -193,6 +156,16 @@ public:
     mTexturesToRemove.Clear();
   }
 
+  virtual void HoldTransactionsToRespond(uint64_t aTransactionId)
+  {
+    mTransactionsToRespond.push_back(aTransactionId);
+  }
+
+  virtual void ClearTransactionsToRespond()
+  {
+    mTransactionsToRespond.clear();
+  }
+
   /**
    * Tell the CompositableHost on the compositor side what texture to use for
    * the next composition.
@@ -211,6 +184,11 @@ public:
                               TextureClient* aTexture,
                               nsIntRegion* aRegion) = 0;
 
+
+  virtual void SendFenceHandle(AsyncTransactionTracker* aTracker,
+                               PTextureChild* aTexture,
+                               const FenceHandle& aFence) = 0;
+
   void IdentifyTextureHost(const TextureFactoryIdentifier& aIdentifier);
 
   virtual int32_t GetMaxTextureSize() const MOZ_OVERRIDE
@@ -219,6 +197,8 @@ public:
   }
 
   bool IsOnCompositorSide() const MOZ_OVERRIDE { return false; }
+
+  virtual bool IsImageBridgeChild() const { return false; }
 
   /**
    * Returns the type of backend that is used off the main thread.
@@ -250,6 +230,7 @@ public:
 protected:
   TextureFactoryIdentifier mTextureFactoryIdentifier;
   nsTArray<RefPtr<TextureClient> > mTexturesToRemove;
+  std::vector<uint64_t> mTransactionsToRespond;
   const int32_t mSerial;
   static mozilla::Atomic<int32_t> sSerialCounter;
 };

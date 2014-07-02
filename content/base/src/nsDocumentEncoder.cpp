@@ -13,8 +13,6 @@
 #include "nscore.h"
 #include "nsIFactory.h"
 #include "nsISupports.h"
-#include "nsIComponentManager.h" 
-#include "nsIServiceManager.h"
 #include "nsIDocument.h"
 #include "nsIHTMLDocument.h"
 #include "nsCOMPtr.h"
@@ -31,14 +29,13 @@
 #include "nsRange.h"
 #include "nsIDOMRange.h"
 #include "nsIDOMDocument.h"
-#include "nsICharsetConverterManager.h"
 #include "nsGkAtoms.h"
 #include "nsIContent.h"
 #include "nsIParserService.h"
 #include "nsIScriptContext.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIScriptSecurityManager.h"
-#include "mozilla/Selection.h"
+#include "mozilla/dom/Selection.h"
 #include "nsISelectionPrivate.h"
 #include "nsITransferable.h" // for kUnicodeMime
 #include "nsContentUtils.h"
@@ -53,6 +50,7 @@
 #include "nsIEditor.h"
 #include "nsIHTMLEditor.h"
 #include "nsIDocShell.h"
+#include "mozilla/dom/EncodingUtils.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -68,20 +66,22 @@ class nsDocumentEncoder : public nsIDocumentEncoder
 {
 public:
   nsDocumentEncoder();
-  virtual ~nsDocumentEncoder();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_CLASS(nsDocumentEncoder)
   NS_DECL_NSIDOCUMENTENCODER
 
 protected:
+  virtual ~nsDocumentEncoder();
+
   void Initialize(bool aClearCachedSerializer = true);
   nsresult SerializeNodeStart(nsINode* aNode, int32_t aStartOffset,
                               int32_t aEndOffset, nsAString& aStr,
                               nsINode* aOriginalNode = nullptr);
   nsresult SerializeToStringRecursive(nsINode* aNode,
                                       nsAString& aStr,
-                                      bool aDontSerializeRoot);
+                                      bool aDontSerializeRoot,
+                                      uint32_t aMaxLength = 0);
   nsresult SerializeNodeEnd(nsINode* aNode, nsAString& aStr);
   // This serializes the content of aNode.
   nsresult SerializeToStringIterative(nsINode* aNode,
@@ -149,7 +149,6 @@ protected:
   nsCOMPtr<nsIUnicodeEncoder>    mUnicodeEncoder;
   nsCOMPtr<nsINode>              mCommonParent;
   nsCOMPtr<nsIDocumentEncoderNodeFixup> mNodeFixup;
-  nsCOMPtr<nsICharsetConverterManager> mCharsetConverterManager;
 
   nsString          mMimeType;
   nsCString         mCharset;
@@ -181,8 +180,8 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsDocumentEncoder)
    NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_5(nsDocumentEncoder,
-                           mDocument, mSelection, mRange, mNode, mCommonParent)
+NS_IMPL_CYCLE_COLLECTION(nsDocumentEncoder,
+                         mDocument, mSelection, mRange, mNode, mCommonParent)
 
 nsDocumentEncoder::nsDocumentEncoder() : mCachedBuffer(nullptr)
 {
@@ -450,8 +449,13 @@ nsDocumentEncoder::SerializeNodeEnd(nsINode* aNode,
 nsresult
 nsDocumentEncoder::SerializeToStringRecursive(nsINode* aNode,
                                               nsAString& aStr,
-                                              bool aDontSerializeRoot)
+                                              bool aDontSerializeRoot,
+                                              uint32_t aMaxLength)
 {
+  if (aMaxLength > 0 && aStr.Length() >= aMaxLength) {
+    return NS_OK;
+  }
+
   if (!IsVisibleNode(aNode))
     return NS_OK;
 
@@ -487,7 +491,12 @@ nsDocumentEncoder::SerializeToStringRecursive(nsINode* aNode,
   }
 
   if (!aDontSerializeRoot) {
-    rv = SerializeNodeStart(maybeFixedNode, 0, -1, aStr, aNode);
+    int32_t endOffset = -1;
+    if (aMaxLength > 0) {
+      MOZ_ASSERT(aMaxLength >= aStr.Length());
+      endOffset = aMaxLength - aStr.Length();
+    }
+    rv = SerializeNodeStart(maybeFixedNode, 0, endOffset, aStr, aNode);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -496,7 +505,7 @@ nsDocumentEncoder::SerializeToStringRecursive(nsINode* aNode,
   for (nsINode* child = nsNodeUtils::GetFirstChildOfTemplateOrNode(node);
        child;
        child = child->GetNextSibling()) {
-    rv = SerializeToStringRecursive(child, aStr, false);
+    rv = SerializeToStringRecursive(child, aStr, false, aMaxLength);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -514,12 +523,12 @@ nsDocumentEncoder::SerializeToStringIterative(nsINode* aNode,
 {
   nsresult rv;
 
-  nsINode* node = aNode->GetFirstChild();
+  nsINode* node = nsNodeUtils::GetFirstChildOfTemplateOrNode(aNode);
   while (node) {
     nsINode* current = node;
     rv = SerializeNodeStart(current, 0, -1, aStr, current);
     NS_ENSURE_SUCCESS(rv, rv);
-    node = current->GetFirstChild();
+    node = nsNodeUtils::GetFirstChildOfTemplateOrNode(current);
     while (!node && current && current != aNode) {
       rv = SerializeNodeEnd(current, aStr);
       NS_ENSURE_SUCCESS(rv, rv);
@@ -528,6 +537,17 @@ nsDocumentEncoder::SerializeToStringIterative(nsINode* aNode,
       if (!node) {
         // Perhaps parent node has siblings.
         current = current->GetParentNode();
+
+        // Handle template element. If the parent is a template's content,
+        // then adjust the parent to be the template element.
+        if (current && current != aNode &&
+            current->NodeType() == nsIDOMNode::DOCUMENT_FRAGMENT_NODE) {
+          DocumentFragment* frag = static_cast<DocumentFragment*>(current);
+          nsIContent* host = frag->GetHost();
+          if (host && host->IsHTML(nsGkAtoms::_template)) {
+            current = host;
+          }
+        }
       }
     }
   }
@@ -1017,6 +1037,13 @@ nsDocumentEncoder::SerializeRangeToString(nsRange *aRange,
 NS_IMETHODIMP
 nsDocumentEncoder::EncodeToString(nsAString& aOutputString)
 {
+  return EncodeToStringWithMaxLength(0, aOutputString);
+}
+
+NS_IMETHODIMP
+nsDocumentEncoder::EncodeToStringWithMaxLength(uint32_t aMaxLength,
+                                               nsAString& aOutputString)
+{
   if (!mDocument)
     return NS_ERROR_NOT_INITIALIZED;
 
@@ -1046,12 +1073,6 @@ nsDocumentEncoder::EncodeToString(nsAString& aOutputString)
   nsresult rv = NS_OK;
 
   nsCOMPtr<nsIAtom> charsetAtom;
-  if (!mCharset.IsEmpty()) {
-    if (!mCharsetConverterManager) {
-      mCharsetConverterManager = do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
-  }
   
   bool rewriteEncodingDeclaration = !(mSelection || mRange || mNode) && !(mFlags & OutputDontRewriteEncodingDeclaration);
   mSerializer->Init(mFlags, mWrapColumn, mCharset.get(), mIsCopying, rewriteEncodingDeclaration);
@@ -1146,7 +1167,7 @@ nsDocumentEncoder::EncodeToString(nsAString& aOutputString)
     rv = mSerializer->AppendDocumentStart(mDocument, output);
 
     if (NS_SUCCEEDED(rv)) {
-      rv = SerializeToStringRecursive(mDocument, output, false);
+      rv = SerializeToStringRecursive(mDocument, output, false, aMaxLength);
     }
   }
 
@@ -1186,14 +1207,11 @@ nsDocumentEncoder::EncodeToStream(nsIOutputStream* aStream)
   if (!mDocument)
     return NS_ERROR_NOT_INITIALIZED;
 
-  if (!mCharsetConverterManager) {
-    mCharsetConverterManager = do_GetService(NS_CHARSETCONVERTERMANAGER_CONTRACTID, &rv);
-    NS_ENSURE_SUCCESS(rv, rv);
+  nsAutoCString encoding;
+  if (!EncodingUtils::FindEncodingForLabelNoReplacement(mCharset, encoding)) {
+    return NS_ERROR_UCONV_NOCONV;
   }
-
-  rv = mCharsetConverterManager->GetUnicodeEncoder(mCharset.get(),
-                                                   getter_AddRefs(mUnicodeEncoder));
-  NS_ENSURE_SUCCESS(rv, rv);
+  mUnicodeEncoder = EncodingUtils::EncoderForEncoding(encoding);
 
   if (mMimeType.LowerCaseEqualsLiteral("text/plain")) {
     rv = mUnicodeEncoder->SetOutputErrorBehavior(nsIUnicodeEncoder::kOnError_Replace, nullptr, '?');

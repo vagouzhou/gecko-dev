@@ -157,7 +157,6 @@ bool WindowCapturerWin::SelectWindow(WindowId id) {
   previous_size_.set(0, 0);
   return true;
 }
-
 bool WindowCapturerWin::BringSelectedWindowToFront() {
   if (!window_)
     return false;

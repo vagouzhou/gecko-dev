@@ -4,6 +4,7 @@
 #include "mozilla/dom/DesktopNotification.h"
 #include "mozilla/dom/DesktopNotificationBinding.h"
 #include "mozilla/dom/AppNotificationServiceOptionsBinding.h"
+#include "mozilla/dom/ToJSValue.h"
 #include "nsContentPermissionHelper.h"
 #include "nsXULAppAPI.h"
 #include "mozilla/dom/PBrowserChild.h"
@@ -28,6 +29,10 @@ class DesktopNotificationRequest : public nsIContentPermissionRequest,
                                    public PCOMContentPermissionRequestChild
 
 {
+  ~DesktopNotificationRequest()
+  {
+  }
+
 public:
   NS_DECL_ISUPPORTS
   NS_DECL_NSICONTENTPERMISSIONREQUEST
@@ -43,10 +48,6 @@ public:
       prompt->Prompt(this);
     }
     return NS_OK;
-  }
-
-  ~DesktopNotificationRequest()
-  {
   }
 
   virtual bool Recv__delete__(const bool& aAllow,
@@ -69,7 +70,7 @@ public:
 /* AlertServiceObserver                                                     */
 /* ------------------------------------------------------------------------ */
 
-NS_IMPL_ISUPPORTS1(AlertServiceObserver, nsIObserver)
+NS_IMPL_ISUPPORTS(AlertServiceObserver, nsIObserver)
 
 /* ------------------------------------------------------------------------ */
 /* DesktopNotification                                                      */
@@ -101,7 +102,7 @@ DesktopNotification::PostDesktopNotification()
       ops.mTextClickable = true;
       ops.mManifestURL = manifestUrl;
 
-      if (!ops.ToObject(cx, JS::NullPtr(), &val)) {
+      if (!ToJSValue(cx, ops, &val)) {
         return NS_ERROR_FAILURE;
       }
 
@@ -138,7 +139,7 @@ DesktopNotification::DesktopNotification(const nsAString & title,
                                          const nsAString & iconURL,
                                          nsPIDOMWindow *aWindow,
                                          nsIPrincipal* principal)
-  : nsDOMEventTargetHelper(aWindow)
+  : DOMEventTargetHelper(aWindow)
   , mTitle(title)
   , mDescription(description)
   , mIconURL(iconURL)
@@ -264,9 +265,9 @@ DesktopNotification::Show(ErrorResult& aRv)
 }
 
 JSObject*
-DesktopNotification::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DesktopNotification::WrapObject(JSContext* aCx)
 {
-  return DesktopNotificationBinding::Wrap(aCx, aScope, this);
+  return DesktopNotificationBinding::Wrap(aCx, this);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -299,18 +300,18 @@ DesktopNotificationCenter::CreateNotification(const nsAString& aTitle,
 }
 
 JSObject*
-DesktopNotificationCenter::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DesktopNotificationCenter::WrapObject(JSContext* aCx)
 {
-  return DesktopNotificationCenterBinding::Wrap(aCx, aScope, this);
+  return DesktopNotificationCenterBinding::Wrap(aCx, this);
 }
 
 /* ------------------------------------------------------------------------ */
 /* DesktopNotificationRequest                                               */
 /* ------------------------------------------------------------------------ */
 
-NS_IMPL_ISUPPORTS2(DesktopNotificationRequest,
-                   nsIContentPermissionRequest,
-                   nsIRunnable)
+NS_IMPL_ISUPPORTS(DesktopNotificationRequest,
+                  nsIContentPermissionRequest,
+                  nsIRunnable)
 
 NS_IMETHODIMP
 DesktopNotificationRequest::GetPrincipal(nsIPrincipal * *aRequestingPrincipal)

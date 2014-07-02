@@ -7,6 +7,7 @@
 // HttpLog.h should generally be included first
 #include "HttpLog.h"
 
+#include "mozilla/dom/FileDescriptorSetParent.h"
 #include "mozilla/net/HttpChannelParent.h"
 #include "mozilla/dom/TabParent.h"
 #include "mozilla/net/NeckoParent.h"
@@ -24,6 +25,8 @@
 #include "mozilla/ipc/InputStreamUtils.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "SerializedLoadContext.h"
+#include "nsIAuthInformation.h"
+#include "nsIAuthPromptCallback.h"
 
 using namespace mozilla::dom;
 using namespace mozilla::ipc;
@@ -31,7 +34,7 @@ using namespace mozilla::ipc;
 namespace mozilla {
 namespace net {
 
-HttpChannelParent::HttpChannelParent(PBrowserParent* iframeEmbedding,
+HttpChannelParent::HttpChannelParent(const PBrowserOrId& iframeEmbedding,
                                      nsILoadContext* aLoadContext,
                                      PBOverrideStatus aOverrideStatus)
   : mIPCClosed(false)
@@ -47,6 +50,7 @@ HttpChannelParent::HttpChannelParent(PBrowserParent* iframeEmbedding,
   , mDivertingFromChild(false)
   , mDivertedOnStartRequest(false)
   , mSuspendedForDiversion(false)
+  , mNestedFrameId(0)
 {
   // Ensure gHttpHandler is initialized: we need the atom table up and running.
   nsCOMPtr<nsIHttpProtocolHandler> dummyInitializer =
@@ -55,7 +59,11 @@ HttpChannelParent::HttpChannelParent(PBrowserParent* iframeEmbedding,
   MOZ_ASSERT(gHttpHandler);
   mHttpHandler = gHttpHandler;
 
-  mTabParent = static_cast<mozilla::dom::TabParent*>(iframeEmbedding);
+  if (iframeEmbedding.type() == PBrowserOrId::TPBrowserParent) {
+    mTabParent = static_cast<dom::TabParent*>(iframeEmbedding.get_PBrowserParent());
+  } else {
+    mNestedFrameId = iframeEmbedding.get_uint64_t();
+  }
 }
 
 HttpChannelParent::~HttpChannelParent()
@@ -82,10 +90,10 @@ HttpChannelParent::Init(const HttpChannelCreationArgs& aArgs)
                        a.apiRedirectTo(), a.loadFlags(), a.requestHeaders(),
                        a.requestMethod(), a.uploadStream(),
                        a.uploadStreamHasHeaders(), a.priority(),
-                       a.redirectionLimit(), a.allowPipelining(),
+                       a.redirectionLimit(), a.allowPipelining(), a.allowSTS(),
                        a.forceAllowThirdPartyCookie(), a.resumeAt(),
                        a.startPos(), a.entityID(), a.chooseApplicationCache(),
-                       a.appCacheClientID(), a.allowSpdy());
+                       a.appCacheClientID(), a.allowSpdy(), a.fds());
   }
   case HttpChannelCreationArgs::THttpChannelConnectArgs:
   {
@@ -102,13 +110,14 @@ HttpChannelParent::Init(const HttpChannelCreationArgs& aArgs)
 // HttpChannelParent::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS6(HttpChannelParent,
-                   nsIInterfaceRequestor,
-                   nsIProgressEventSink,
-                   nsIRequestObserver,
-                   nsIStreamListener,
-                   nsIParentChannel,
-                   nsIParentRedirectingChannel)
+NS_IMPL_ISUPPORTS(HttpChannelParent,
+                  nsIInterfaceRequestor,
+                  nsIProgressEventSink,
+                  nsIRequestObserver,
+                  nsIStreamListener,
+                  nsIParentChannel,
+                  nsIAuthPromptProvider,
+                  nsIParentRedirectingChannel)
 
 //-----------------------------------------------------------------------------
 // HttpChannelParent::nsIInterfaceRequestor
@@ -119,10 +128,16 @@ HttpChannelParent::GetInterface(const nsIID& aIID, void **result)
 {
   if (aIID.Equals(NS_GET_IID(nsIAuthPromptProvider)) ||
       aIID.Equals(NS_GET_IID(nsISecureBrowserUI))) {
-    if (!mTabParent)
-      return NS_NOINTERFACE;
+    if (mTabParent) {
+      return mTabParent->QueryInterface(aIID, result);
+    }
+  }
 
-    return mTabParent->QueryInterface(aIID, result);
+  // Only support nsIAuthPromptProvider in Content process
+  if (XRE_GetProcessType() == GeckoProcessType_Default &&
+      aIID.Equals(NS_GET_IID(nsIAuthPromptProvider))) {
+    *result = nullptr;
+    return NS_OK;
   }
 
   // Only support nsILoadContext if child channel's callbacks did too
@@ -153,13 +168,15 @@ HttpChannelParent::DoAsyncOpen(  const URIParams&           aURI,
                                  const uint16_t&            priority,
                                  const uint8_t&             redirectionLimit,
                                  const bool&              allowPipelining,
+                                 const bool&              allowSTS,
                                  const bool&              forceAllowThirdPartyCookie,
                                  const bool&                doResumeAt,
                                  const uint64_t&            startPos,
                                  const nsCString&           entityID,
                                  const bool&                chooseApplicationCache,
                                  const nsCString&           appCacheClientID,
-                                 const bool&                allowSpdy)
+                                 const bool&                allowSpdy,
+                                 const OptionalFileDescriptorSet& aFds)
 {
   nsCOMPtr<nsIURI> uri = DeserializeURI(aURI);
   if (!uri) {
@@ -219,7 +236,19 @@ HttpChannelParent::DoAsyncOpen(  const URIParams&           aURI,
 
   mChannel->SetRequestMethod(nsDependentCString(requestMethod.get()));
 
-  nsCOMPtr<nsIInputStream> stream = DeserializeInputStream(uploadStream);
+  nsTArray<mozilla::ipc::FileDescriptor> fds;
+  if (aFds.type() == OptionalFileDescriptorSet::TPFileDescriptorSetParent) {
+    FileDescriptorSetParent* fdSetActor =
+      static_cast<FileDescriptorSetParent*>(aFds.get_PFileDescriptorSetParent());
+    MOZ_ASSERT(fdSetActor);
+
+    fdSetActor->ForgetFileDescriptors(fds);
+    MOZ_ASSERT(!fds.IsEmpty());
+
+    unused << fdSetActor->Send__delete__(fdSetActor);
+  }
+
+  nsCOMPtr<nsIInputStream> stream = DeserializeInputStream(uploadStream, fds);
   if (stream) {
     mChannel->InternalSetUploadStream(stream);
     mChannel->SetUploadStreamHasHeaders(uploadStreamHasHeaders);
@@ -229,6 +258,7 @@ HttpChannelParent::DoAsyncOpen(  const URIParams&           aURI,
     mChannel->SetPriority(priority);
   mChannel->SetRedirectionLimit(redirectionLimit);
   mChannel->SetAllowPipelining(allowPipelining);
+  mChannel->SetAllowSTS(allowSTS);
   mChannel->SetForceAllowThirdPartyCookie(forceAllowThirdPartyCookie);
   mChannel->SetAllowSpdy(allowSpdy);
 
@@ -574,6 +604,8 @@ HttpChannelParent::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
   chan->GetCacheToken(getter_AddRefs(cacheEntry));
   mCacheEntry = do_QueryInterface(cacheEntry);
 
+  nsresult channelStatus = NS_OK;
+  chan->GetStatus(&channelStatus);
 
   nsCString secInfoSerialization;
   nsCOMPtr<nsISupports> secInfoSupp;
@@ -585,14 +617,18 @@ HttpChannelParent::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
       NS_SerializeToString(secInfoSer, secInfoSerialization);
   }
 
+  uint16_t redirectCount = 0;
+  mChannel->GetRedirectCount(&redirectCount);
   if (mIPCClosed ||
-      !SendOnStartRequest(responseHead ? *responseHead : nsHttpResponseHead(),
+      !SendOnStartRequest(channelStatus,
+                          responseHead ? *responseHead : nsHttpResponseHead(),
                           !!responseHead,
                           requestHead->Headers(),
                           isFromCache,
                           mCacheEntry ? true : false,
                           expirationTime, cachedCharset, secInfoSerialization,
-                          mChannel->GetSelfAddr(), mChannel->GetPeerAddr()))
+                          mChannel->GetSelfAddr(), mChannel->GetPeerAddr(),
+                          redirectCount))
   {
     return NS_ERROR_UNEXPECTED;
   }
@@ -636,13 +672,16 @@ HttpChannelParent::OnDataAvailable(nsIRequest *aRequest,
   if (NS_FAILED(rv))
     return rv;
 
+  nsresult channelStatus = NS_OK;
+  mChannel->GetStatus(&channelStatus);
+
   // OnDataAvailable is always preceded by OnStatus/OnProgress calls that set
   // mStoredStatus/mStoredProgress(Max) to appropriate values, unless
   // LOAD_BACKGROUND set.  In that case, they'll have garbage values, but
   // child doesn't use them.
-  if (mIPCClosed || !SendOnTransportAndData(mStoredStatus, mStoredProgress,
-                                            mStoredProgressMax, data, aOffset,
-                                            aCount)) {
+  if (mIPCClosed || !SendOnTransportAndData(channelStatus, mStoredStatus,
+                                            mStoredProgress, mStoredProgressMax,
+                                            data, aOffset, aCount)) {
     return NS_ERROR_UNEXPECTED;
   }
   return NS_OK;
@@ -698,6 +737,17 @@ HttpChannelParent::OnStatus(nsIRequest *aRequest,
 //-----------------------------------------------------------------------------
 // HttpChannelParent::nsIParentChannel
 //-----------------------------------------------------------------------------
+
+NS_IMETHODIMP
+HttpChannelParent::SetParentListener(HttpChannelParentListener* aListener)
+{
+  MOZ_ASSERT(aListener);
+  MOZ_ASSERT(!mParentListener, "SetParentListener should only be called for "
+                               "new HttpChannelParents after a redirect, when "
+                               "mParentListener is null.");
+  mParentListener = aListener;
+  return NS_OK;
+}
 
 NS_IMETHODIMP
 HttpChannelParent::Delete()
@@ -949,6 +999,16 @@ HttpChannelParent::NotifyDiversionFailed(nsresult aErrorCode,
   if (!mIPCClosed) {
     unused << SendDeleteSelf();
   }
+}
+
+NS_IMETHODIMP
+HttpChannelParent::GetAuthPrompt(uint32_t aPromptReason, const nsIID& iid,
+                                 void** aResult)
+{
+  nsCOMPtr<nsIAuthPrompt2> prompt =
+    new NeckoParent::NestedFrameAuthPrompt(Manager(), mNestedFrameId);
+  prompt.forget(aResult);
+  return NS_OK;
 }
 
 }} // mozilla::net

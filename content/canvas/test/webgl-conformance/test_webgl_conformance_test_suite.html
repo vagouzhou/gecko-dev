@@ -111,10 +111,10 @@ function start() {
   info('GL vendor: ' + glVendor);
   info('GL renderer: ' + glRenderer);
   
-  if (glRenderer.contains('llvmpipe')) {
-    kGLDriver = GLDRIVER_MESA;
-  } else if (glRenderer.contains('Android Emulator')) {
+  if (glRenderer.contains('Android Emulator')) {
     kGLDriver = GLDRIVER_X86EMULATOR;
+  } else if (glRenderer.contains('llvmpipe')) {
+    kGLDriver = GLDRIVER_MESA;
   } else if (glVendor.contains('NVIDIA')) {
     kGLDriver = GLDRIVER_NVIDIA;
   }
@@ -467,6 +467,7 @@ function start() {
   }
 
   SimpleTest.requestLongerTimeout(requestLongerTimeoutLen);
+  SimpleTest.requestFlakyTimeout("We're embedding the WebGL test harness, which uses timeouts internally, so we have to abide. :(");
 
   var statusElem = document.getElementById("status");
   var statusTextNode = document.createTextNode('');

@@ -191,7 +191,6 @@
 
 extern uint32_t gRestartMode;
 extern void InstallSignalHandlers(const char *ProgramName);
-#include "nsX11ErrorHandler.h"
 
 #define FILE_COMPATIBILITY_INFO NS_LITERAL_CSTRING("compatibility.ini")
 #define FILE_INVALIDATE_CACHES NS_LITERAL_CSTRING(".purgecaches")
@@ -617,13 +616,13 @@ NS_INTERFACE_MAP_BEGIN(nsXULAppInfo)
                                      XRE_GetProcessType() == GeckoProcessType_Content)
 NS_INTERFACE_MAP_END
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 nsXULAppInfo::AddRef()
 {
   return 1;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 nsXULAppInfo::Release()
 {
   return 1;
@@ -779,7 +778,7 @@ SYNC_ENUMS(CONTENT, Content)
 SYNC_ENUMS(IPDLUNITTEST, IPDLUnitTest)
 
 // .. and ensure that that is all of them:
-static_assert(GeckoProcessType_IPDLUnitTest + 1 == GeckoProcessType_End,
+static_assert(GeckoProcessType_GMPlugin + 1 == GeckoProcessType_End,
               "Did not find the final GeckoProcessType");
 
 NS_IMETHODIMP
@@ -787,6 +786,17 @@ nsXULAppInfo::GetProcessType(uint32_t* aResult)
 {
   NS_ENSURE_ARG_POINTER(aResult);
   *aResult = XRE_GetProcessType();
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXULAppInfo::GetProcessID(uint32_t* aResult)
+{
+#ifdef XP_WIN
+  *aResult = GetCurrentProcessId();
+#else
+  *aResult = getpid();
+#endif
   return NS_OK;
 }
 
@@ -1274,9 +1284,9 @@ public:
   NS_DECL_NSIFACTORY
 
   nsSingletonFactory(nsISupports* aSingleton);
-  ~nsSingletonFactory() { }
 
 private:
+  ~nsSingletonFactory() { }
   nsCOMPtr<nsISupports> mSingleton;
 };
 
@@ -1286,7 +1296,7 @@ nsSingletonFactory::nsSingletonFactory(nsISupports* aSingleton)
   NS_ASSERTION(mSingleton, "Singleton was null!");
 }
 
-NS_IMPL_ISUPPORTS1(nsSingletonFactory, nsIFactory)
+NS_IMPL_ISUPPORTS(nsSingletonFactory, nsIFactory)
 
 NS_IMETHODIMP
 nsSingletonFactory::CreateInstance(nsISupports* aOuter,
@@ -2257,7 +2267,7 @@ SelectProfile(nsIProfileLock* *aResult, nsIToolkitProfileService* aProfileSvc, n
       rv = profile->Lock(nullptr, aResult);
       if (NS_SUCCEEDED(rv)) {
         if (aProfileName)
-          aProfileName->Assign(NS_LITERAL_CSTRING("default"));
+          aProfileName->AssignLiteral("default");
         return NS_OK;
       }
     }
@@ -2906,19 +2916,8 @@ XREMain::XRE_mainInit(bool* aExitFlag)
 #endif
 
 #ifdef MOZ_ACCESSIBILITY_ATK
-  // Reset GTK_MODULES, strip atk-bridge if exists
-  // Mozilla will load libatk-bridge.so later if necessary
-  const char* gtkModules = PR_GetEnv("GTK_MODULES");
-  if (gtkModules && *gtkModules) {
-    nsCString gtkModulesStr(gtkModules);
-    gtkModulesStr.ReplaceSubstring("atk-bridge", "");
-    char* expr = PR_smprintf("GTK_MODULES=%s", gtkModulesStr.get());
-    if (expr)
-      PR_SetEnv(expr);
-    // We intentionally leak |expr| here since it is required by PR_SetEnv.
-  }
-
-  // Suppress atk-bridge init at startup, it works after GNOME 2.24.2
+  // Suppress atk-bridge init at startup, until mozilla accessibility is
+  // initialized.  This works after gnome 2.24.2.
   SaveToEnv("NO_AT_BRIDGE=1");
 #endif
 
@@ -3010,7 +3009,11 @@ XREMain::XRE_mainInit(bool* aExitFlag)
   if ((mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER) &&
       NS_SUCCEEDED(
          CrashReporter::SetExceptionHandler(mAppData->xreDirectory))) {
-    CrashReporter::UpdateCrashEventsDir();
+    nsCOMPtr<nsIFile> file;
+    rv = mDirProvider.GetUserAppDataDirectory(getter_AddRefs(file));
+    if (NS_SUCCEEDED(rv)) {
+      CrashReporter::SetUserAppDataDirectory(file);
+    }
     if (mAppData->crashReporterURL)
       CrashReporter::SetServerURL(nsDependentCString(mAppData->crashReporterURL));
 
@@ -3210,19 +3213,6 @@ XREMain::XRE_mainInit(bool* aExitFlag)
     }
     *aExitFlag = true;
     return 0;
-  }
-
-  if (PR_GetEnv("MOZ_RUN_GTEST")) {
-    int result;
-    // RunGTest will only be set if we're in xul-unit
-    if (mozilla::RunGTest) {
-      result = mozilla::RunGTest();
-    } else {
-      result = 1;
-      printf("TEST-UNEXPECTED-FAIL | gtest | Not compiled with enable-tests\n");
-    }
-    *aExitFlag = true;
-    return result;
   }
 
   return 0;
@@ -3429,7 +3419,22 @@ XREMain::XRE_mainStartup(bool* aExitFlag)
   // opens.
   if (!gtk_parse_args(&gArgc, &gArgv))
     return 1;
+#endif /* MOZ_WIDGET_GTK */
 
+  if (PR_GetEnv("MOZ_RUN_GTEST")) {
+    int result;
+    // RunGTest will only be set if we're in xul-unit
+    if (mozilla::RunGTest) {
+      result = mozilla::RunGTest();
+    } else {
+      result = 1;
+      printf("TEST-UNEXPECTED-FAIL | gtest | Not compiled with enable-tests\n");
+    }
+    *aExitFlag = true;
+    return result;
+  }
+
+#if defined(MOZ_WIDGET_GTK)
   // display_name is owned by gdk.
   const char *display_name = gdk_get_display_arg_name();
   if (display_name) {
@@ -3441,7 +3446,7 @@ XREMain::XRE_mainStartup(bool* aExitFlag)
       return 1;
     }
   }
-#endif /* MOZ_WIDGET_GTK2 */
+#endif /* MOZ_WIDGET_GTK */
 
 #ifdef MOZ_ENABLE_XREMOTE
   // handle -remote now that xpcom is fired up
@@ -3529,7 +3534,7 @@ XREMain::XRE_mainStartup(bool* aExitFlag)
 #endif /* defined(MOZ_WIDGET_GTK) */
 #ifdef MOZ_X11
   // Do this after initializing GDK, or GDK will install its own handler.
-  InstallX11ErrorHandler();
+  XRE_InstallX11ErrorHandler();
 #endif
 
   // Call the code to install our handler
@@ -3665,7 +3670,7 @@ XREMain::XRE_mainStartup(bool* aExitFlag)
   if (mAppData->flags & NS_XRE_ENABLE_CRASH_REPORTER)
       MakeOrSetMinidumpPath(mProfD);
 
-  CrashReporter::UpdateCrashEventsDir();
+  CrashReporter::SetProfileDirectory(mProfD);
 #endif
 
   nsAutoCString version;
@@ -3998,8 +4003,8 @@ XREMain::XRE_mainRun()
   }
 
 #ifdef MOZ_INSTRUMENT_EVENT_LOOP
-  if (PR_GetEnv("MOZ_INSTRUMENT_EVENT_LOOP") || profiler_is_active()) {
-    bool logToConsole = !!PR_GetEnv("MOZ_INSTRUMENT_EVENT_LOOP");
+  if (PR_GetEnv("MOZ_INSTRUMENT_EVENT_LOOP")) {
+    bool logToConsole = true;
     mozilla::InitEventTracing(logToConsole);
   }
 #endif /* MOZ_INSTRUMENT_EVENT_LOOP */
@@ -4023,9 +4028,9 @@ XREMain::XRE_main(int argc, char* argv[], const nsXREAppData* aAppData)
 {
   char aLocal;
   GeckoProfilerInitRAII profilerGuard(&aLocal);
-  PROFILER_LABEL("Startup", "XRE_Main");
 
-  mozilla::IOInterposerInit ioInterposerGuard;
+  PROFILER_LABEL("Startup", "XRE_Main",
+    js::ProfileEntry::Category::OTHER);
 
   nsresult rv = NS_OK;
 
@@ -4041,6 +4046,8 @@ XREMain::XRE_main(int argc, char* argv[], const nsXREAppData* aAppData)
   gAppData = mAppData;
 
   ScopedLogging log;
+
+  mozilla::IOInterposerInit ioInterposerGuard;
 
 #if defined(MOZ_WIDGET_GTK)
 #if defined(MOZ_MEMORY) || defined(__FreeBSD__) || defined(__NetBSD__)
@@ -4228,7 +4235,9 @@ XRE_mainMetro(int argc, char* argv[], const nsXREAppData* aAppData)
 {
   char aLocal;
   GeckoProfilerInitRAII profilerGuard(&aLocal);
-  PROFILER_LABEL("Startup", "XRE_Main");
+
+  PROFILER_LABEL("Startup", "XRE_Main",
+    js::ProfileEntry::Category::OTHER);
 
   mozilla::IOInterposerInit ioInterposerGuard;
 

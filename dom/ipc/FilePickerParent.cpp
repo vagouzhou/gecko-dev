@@ -22,8 +22,8 @@
 using mozilla::unused;
 using namespace mozilla::dom;
 
-NS_IMPL_ISUPPORTS1(FilePickerParent::FilePickerShownCallback,
-                   nsIFilePickerShownCallback);
+NS_IMPL_ISUPPORTS(FilePickerParent::FilePickerShownCallback,
+                  nsIFilePickerShownCallback);
 
 NS_IMETHODIMP
 FilePickerParent::FilePickerShownCallback::Done(int16_t aResult)
@@ -95,7 +95,7 @@ FilePickerParent::FileSizeAndDateRunnable::Run()
   }
 
   // Dispatch ourselves back on the main thread.
-  if (NS_FAILED(NS_DispatchToMainThread(this, NS_DISPATCH_NORMAL))) {
+  if (NS_FAILED(NS_DispatchToMainThread(this))) {
     // It's hard to see how we can recover gracefully in this case. The child
     // process is waiting for an IPC, but that can only happen on the main
     // thread.
@@ -113,7 +113,7 @@ FilePickerParent::FileSizeAndDateRunnable::Destroy()
 void
 FilePickerParent::SendFiles(const nsCOMArray<nsIDOMFile>& aDomfiles)
 {
-  ContentParent* parent = static_cast<ContentParent*>(Manager()->Manager());
+  nsIContentParent* parent = static_cast<TabParent*>(Manager())->Manager();
   InfallibleTArray<PBlobParent*> files;
 
   for (unsigned i = 0; i < aDomfiles.Length(); i++) {
@@ -133,26 +133,33 @@ FilePickerParent::Done(int16_t aResult)
 {
   mResult = aResult;
 
-  nsCOMArray<nsIDOMFile> domfiles;
+  if (mResult != nsIFilePicker::returnOK) {
+    unused << Send__delete__(this, void_t(), mResult);
+    return;
+  }
 
+  nsCOMArray<nsIDOMFile> domfiles;
   if (mMode == nsIFilePicker::modeOpenMultiple) {
     nsCOMPtr<nsISimpleEnumerator> iter;
     NS_ENSURE_SUCCESS_VOID(mFilePicker->GetFiles(getter_AddRefs(iter)));
 
     nsCOMPtr<nsISupports> supports;
-    nsCOMPtr<nsIFile> file;
     bool loop = true;
     while (NS_SUCCEEDED(iter->HasMoreElements(&loop)) && loop) {
       iter->GetNext(getter_AddRefs(supports));
-      file = do_QueryInterface(supports);
-      nsCOMPtr<nsIDOMFile> domfile = new nsDOMFileFile(file);
-      domfiles.AppendElement(domfile);
+      if (supports) {
+        nsCOMPtr<nsIFile> file = do_QueryInterface(supports);
+        nsCOMPtr<nsIDOMFile> domfile = DOMFile::CreateFromFile(file);
+        domfiles.AppendElement(domfile);
+      }
     }
   } else {
     nsCOMPtr<nsIFile> file;
     mFilePicker->GetFile(getter_AddRefs(file));
-    nsCOMPtr<nsIDOMFile> domfile = new nsDOMFileFile(file);
-    domfiles.AppendElement(domfile);
+    if (file) {
+      nsCOMPtr<nsIDOMFile> domfile = DOMFile::CreateFromFile(file);
+      domfiles.AppendElement(domfile);
+    }
   }
 
   MOZ_ASSERT(!mRunnable);

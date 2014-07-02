@@ -135,7 +135,7 @@ void FramebufferSurface::onFrameAvailable() {
                 strerror(-err), err);
         return;
     }
-    if (acquireFence.get())
+    if (acquireFence.get() && acquireFence->isValid())
         mPrevFBAcquireFence = new Fence(acquireFence->dup());
     else
         mPrevFBAcquireFence = Fence::NO_FENCE;
@@ -168,7 +168,7 @@ status_t FramebufferSurface::setReleaseFenceFd(int fenceFd) {
 }
 
 int FramebufferSurface::GetPrevFBAcquireFd() {
-  return mPrevFBAcquireFence->dup();
+  return mPrevFBAcquireFence.get() ? mPrevFBAcquireFence->dup() : -1;
 }
 
 status_t FramebufferSurface::setUpdateRectangle(const Rect& r)

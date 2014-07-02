@@ -38,7 +38,7 @@ const BUCKET_TIMESTEPS    = [
 ];
 
 // Time after which seen Page IDs expire.
-const SEENPAGEID_EXPIRY  = 2 * 7 * 24 * 60 * 60 * 1000; // 2 weeks.
+const SEENPAGEID_EXPIRY  = 8 * 7 * 24 * 60 * 60 * 1000; // 8 weeks.
 
 
 this.UITour = {
@@ -71,7 +71,17 @@ this.UITour = {
       widgetName: "PanelUI-fxa-status",
     }],
     ["addons",      {query: "#add-ons-button"}],
-    ["appMenu",     {query: "#PanelUI-button"}],
+    ["appMenu",     {
+      addTargetListener: (aDocument, aCallback) => {
+        let panelPopup = aDocument.getElementById("PanelUI-popup");
+        panelPopup.addEventListener("popupshown", aCallback);
+      },
+      query: "#PanelUI-button",
+      removeTargetListener: (aDocument, aCallback) => {
+        let panelPopup = aDocument.getElementById("PanelUI-popup");
+        panelPopup.removeEventListener("popupshown", aCallback);
+      },
+    }],
     ["backForward", {
       query: "#back-button",
       widgetName: "urlbar-container",
@@ -133,9 +143,6 @@ this.UITour = {
     XPCOMUtils.defineLazyGetter(this, "url", function () {
       return Services.urlFormatter.formatURLPref("browser.uitour.url");
     });
-
-    UITelemetry.addSimpleMeasureFunction("UITour",
-                                         this.getTelemetry.bind(this));
 
     // Clear the availableTargetsCache on widget changes.
     let listenerMethods = [
@@ -329,6 +336,8 @@ this.UITour = {
 
           if (typeof data.closeButtonCallbackID == "string")
             infoOptions.closeButtonCallbackID = data.closeButtonCallbackID;
+          if (typeof data.targetCallbackID == "string")
+            infoOptions.targetCallbackID = data.targetCallbackID;
 
           this.showInfo(contentDocument, target, data.title, data.text, iconURL, buttons, infoOptions);
         }).then(null, Cu.reportError);
@@ -407,6 +416,14 @@ this.UITour = {
         }
 
         this.getConfiguration(contentDocument, data.configuration, data.callbackID);
+        break;
+      }
+
+      case "showFirefoxAccounts": {
+        // 'signup' is the only action that makes sense currently, so we don't
+        // accept arbitrary actions just to be safe...
+        // We want to replace the current tab.
+        contentDocument.location.href = "about:accounts?action=signup";
         break;
       }
     }
@@ -529,6 +546,8 @@ this.UITour = {
                                          BUCKET_TIMESTEPS);
   },
 
+  // This is registered with UITelemetry by BrowserUITelemetry, so that UITour
+  // can remain lazy-loaded on-demand.
   getTelemetry: function() {
     return {
       seenPageIDs: [...this.seenPageIDs.keys()],
@@ -624,17 +643,9 @@ this.UITour = {
   },
 
   sendPageCallback: function(aDocument, aCallbackID, aData = {}) {
-    let detail = Cu.createObjectIn(aDocument.defaultView);
-    detail.data = Cu.createObjectIn(detail);
 
-    for (let key of Object.keys(aData))
-      detail.data[key] = aData[key];
-
-    Cu.makeObjectPropsNormal(detail.data);
-    Cu.makeObjectPropsNormal(detail);
-
-    detail.callbackID = aCallbackID;
-
+    let detail = {data: aData, callbackID: aCallbackID};
+    detail = Cu.cloneInto(detail, aDocument.defaultView);
     let event = new aDocument.defaultView.CustomEvent("mozUITourResponse", {
       bubbles: true,
       detail: detail
@@ -671,18 +682,22 @@ this.UITour = {
 
     let targetQuery = targetObject.query;
     aWindow.PanelUI.ensureReady().then(() => {
+      let node;
       if (typeof targetQuery == "function") {
-        deferred.resolve({
-          targetName: aTargetName,
-          node: targetQuery(aWindow.document),
-          widgetName: targetObject.widgetName,
-        });
-        return;
+        try {
+          node = targetQuery(aWindow.document);
+        } catch (ex) {
+          node = null;
+        }
+      } else {
+        node = aWindow.document.querySelector(targetQuery);
       }
 
       deferred.resolve({
+        addTargetListener: targetObject.addTargetListener,
+        node: node,
+        removeTargetListener: targetObject.removeTargetListener,
         targetName: aTargetName,
-        node: aWindow.document.querySelector(targetQuery),
         widgetName: targetObject.widgetName,
       });
     }).then(null, Cu.reportError);
@@ -801,6 +816,9 @@ this.UITour = {
           randomEffect--; // On the order of 1 in 2^62 chance of this happening.
         effect = this.highlightEffects[randomEffect];
       }
+      // Toggle the effect attribute to "none" and flush layout before setting it so the effect plays.
+      highlighter.setAttribute("active", "none");
+      aTargetEl.ownerDocument.defaultView.getComputedStyle(highlighter).animationName;
       highlighter.setAttribute("active", effect);
       highlighter.parentElement.setAttribute("targetName", aTarget.targetName);
       highlighter.parentElement.hidden = false;
@@ -933,9 +951,24 @@ this.UITour = {
           this.sendPageCallback(aContentDocument, aOptions.closeButtonCallbackID);
       };
       tooltipClose.addEventListener("command", closeButtonCallback);
+
+      let targetCallback = (event) => {
+        let details = {
+          target: aAnchor.targetName,
+          type: event.type,
+        };
+        this.sendPageCallback(aContentDocument, aOptions.targetCallbackID, details);
+      };
+      if (aOptions.targetCallbackID && aAnchor.addTargetListener) {
+        aAnchor.addTargetListener(document, targetCallback);
+      }
+
       tooltip.addEventListener("popuphiding", function tooltipHiding(event) {
         tooltip.removeEventListener("popuphiding", tooltipHiding);
         tooltipClose.removeEventListener("command", closeButtonCallback);
+        if (aOptions.targetCallbackID && aAnchor.removeTargetListener) {
+          aAnchor.removeTargetListener(document, targetCallback);
+        }
       });
 
       tooltip.setAttribute("targetName", aAnchor.targetName);

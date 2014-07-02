@@ -41,6 +41,7 @@
 #include "nsWildCard.h"
 #include "nsContentUtils.h"
 #include "nsCxPusher.h"
+#include "mozilla/dom/ScriptSettings.h"
 
 #include "nsIXPConnect.h"
 
@@ -250,6 +251,11 @@ nsNPAPIPlugin::PluginCrashed(const nsAString& pluginDumpID,
 bool
 nsNPAPIPlugin::RunPluginOOP(const nsPluginTag *aPluginTag)
 {
+#if (MOZ_WIDGET_GTK == 3)
+  // We force OOP on Linux/GTK3 because some plugins use GTK2 and both GTK
+  // libraries can't be loaded in the same process.
+  return true;
+#else
   if (PR_GetEnv("MOZ_DISABLE_OOP_PLUGINS")) {
     return false;
   }
@@ -376,6 +382,7 @@ nsNPAPIPlugin::RunPluginOOP(const nsPluginTag *aPluginTag)
   }
 
   return oopPluginsEnabled;
+#endif
 }
 
 inline PluginLibrary*
@@ -541,7 +548,7 @@ MakeNewNPAPIStreamInternal(NPP npp, const char *relativeURL, const char *target,
   // Set aCallNotify here to false.  If pluginHost->GetURL or PostURL fail,
   // the listener's destructor will do the notification while we are about to
   // return a failure code.
-  // Call SetCallNotify(true) below after we are sure we cannot return a failure 
+  // Call SetCallNotify(true) below after we are sure we cannot return a failure
   // code.
   if (!target) {
     inst->NewStreamListener(relativeURL, notifyData,
@@ -612,7 +619,7 @@ public:
     return (mFunc != nullptr);
   }
 
-private:  
+private:
   NPP mInstance;
   PluginThreadCallback mFunc;
   void *mUserData;
@@ -635,27 +642,6 @@ GetDocumentFromNPP(NPP npp)
   owner->GetDocument(getter_AddRefs(doc));
 
   return doc;
-}
-
-static JSContext *
-GetJSContextFromDoc(nsIDocument *doc)
-{
-  nsCOMPtr<nsIScriptGlobalObject> sgo = do_QueryInterface(doc->GetWindow());
-  NS_ENSURE_TRUE(sgo, nullptr);
-
-  nsIScriptContext *scx = sgo->GetContext();
-  NS_ENSURE_TRUE(scx, nullptr);
-
-  return scx->GetNativeContext();
-}
-
-static JSContext *
-GetJSContextFromNPP(NPP npp)
-{
-  nsIDocument *doc = GetDocumentFromNPP(npp);
-  NS_ENSURE_TRUE(doc, nullptr);
-
-  return GetJSContextFromDoc(doc);
 }
 
 static already_AddRefed<nsIChannel>
@@ -1064,10 +1050,10 @@ _destroystream(NPP npp, NPStream *pstream, NPError reason)
     // This type of stream (NPStream) was created via NPN_NewStream. The plugin holds
     // the reference until it is to be deleted here. Deleting the wrapper will
     // release the wrapped nsIOutputStream.
-    // 
+    //
     // The NPStream the plugin references should always be a sub-object of it's own
     // 'ndata', which is our nsNPAPIStramWrapper. See bug 548441.
-    NS_ASSERTION((char*)streamWrapper <= (char*)pstream && 
+    NS_ASSERTION((char*)streamWrapper <= (char*)pstream &&
                  ((char*)pstream) + sizeof(*pstream)
                      <= ((char*)streamWrapper) + sizeof(*streamWrapper),
                  "pstream is not a subobject of wrapper");
@@ -1233,9 +1219,16 @@ _getpluginelement(NPP npp)
   if (!element)
     return nullptr;
 
-  AutoPushJSContext cx(GetJSContextFromNPP(npp));
-  NS_ENSURE_TRUE(cx, nullptr);
-  JSAutoRequest ar(cx); // Unnecessary once bug 868130 lands.
+  nsIDocument *doc = GetDocumentFromNPP(npp);
+  if (NS_WARN_IF(!doc)) {
+    return nullptr;
+  }
+
+  dom::AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.Init(doc->GetInnerWindow()))) {
+    return nullptr;
+  }
+  JSContext* cx = jsapi.cx();
 
   nsCOMPtr<nsIXPConnect> xpc(do_GetService(nsIXPConnect::GetCID()));
   NS_ENSURE_TRUE(xpc, nullptr);
@@ -1558,7 +1551,7 @@ _evaluate(NPP npp, NPObject* npobj, NPString *script, NPVariant *result)
   JS::Rooted<JS::Value> rval(cx);
   nsJSUtils::EvaluateOptions evalOptions;
   nsresult rv = nsJSUtils::EvaluateString(cx, utf16script, obj, options,
-                                          evalOptions, rval.address());
+                                          evalOptions, &rval);
 
   return NS_SUCCEEDED(rv) &&
          (!result || JSValToNPVariant(npp, cx, rval, result));
@@ -2250,10 +2243,10 @@ _getvalue(NPP npp, NPNVariable variable, void *result)
       uint32_t* bits = reinterpret_cast<uint32_t*>(result);
       *bits = kBitmap_ANPDrawingModel && kSurface_ANPDrawingModel;
       return NPERR_NO_ERROR;
-    }  
+    }
 
     case kJavaContext_ANPGetValue: {
-      jobject ret = GeckoAppShell::GetContext();
+      jobject ret = mozilla::widget::android::GeckoAppShell::GetContext();
       if (!ret)
         return NPERR_GENERIC_ERROR;
 

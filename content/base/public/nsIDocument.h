@@ -29,11 +29,9 @@
 class imgIRequest;
 class nsAString;
 class nsBindingManager;
-class nsCSSStyleSheet;
 class nsIDocShell;
 class nsDocShell;
 class nsDOMNavigationTiming;
-class nsEventStates;
 class nsFrameLoader;
 class nsHTMLCSSStyleSheet;
 class nsHTMLDocument;
@@ -53,7 +51,6 @@ class nsIDOMDocumentType;
 class nsIDOMElement;
 class nsIDOMNodeFilter;
 class nsIDOMNodeList;
-class nsIDOMXPathExpression;
 class nsIDOMXPathNSResolver;
 class nsIHTMLCollection;
 class nsILayoutHistoryState;
@@ -81,10 +78,12 @@ class nsSmallVoidArray;
 class nsDOMCaretPosition;
 class nsViewportInfo;
 class nsIGlobalObject;
-class nsCSSSelectorList;
+struct nsCSSSelectorList;
 
 namespace mozilla {
+class CSSStyleSheet;
 class ErrorResult;
+class EventStates;
 
 namespace css {
 class Loader;
@@ -92,6 +91,7 @@ class ImageLoader;
 } // namespace css
 
 namespace dom {
+class AnimationTimeline;
 class Attr;
 class CDATASection;
 class Comment;
@@ -105,6 +105,8 @@ struct ElementRegistrationOptions;
 class Event;
 class EventTarget;
 class FrameRequestCallback;
+class ImportManager;
+class OverfillCallback;
 class HTMLBodyElement;
 struct LifecycleCallbackArgs;
 class Link;
@@ -112,11 +114,15 @@ class GlobalObject;
 class NodeFilter;
 class NodeIterator;
 class ProcessingInstruction;
+class StyleSheetList;
+class SVGDocument;
 class Touch;
 class TouchList;
 class TreeWalker;
 class UndoManager;
 class XPathEvaluator;
+class XPathExpression;
+class XPathResult;
 template<typename> class OwningNonNull;
 template<typename> class Sequence;
 
@@ -126,17 +132,15 @@ typedef CallbackObjectHolder<NodeFilter, nsIDOMNodeFilter> NodeFilterHolder;
 } // namespace mozilla
 
 #define NS_IDOCUMENT_IID \
-{ 0x94629cb0, 0xfe8a, 0x4627, \
-  { 0x8e, 0x59, 0xab, 0x1a, 0xaf, 0xdc, 0x99, 0x56 } }
-
-// Flag for AddStyleSheet().
-#define NS_STYLESHEET_FROM_CATALOG                (1 << 0)
+{ 0xc9e11955, 0xaa55, 0x49a1, \
+  { 0x94, 0x29, 0x58, 0xe9, 0xbe, 0xf6, 0x79, 0x54 } }
 
 // Enum for requesting a particular type of document when creating a doc
 enum DocumentFlavor {
   DocumentFlavorLegacyGuess, // compat with old code until made HTML5-compliant
   DocumentFlavorHTML, // HTMLDocument with HTMLness bit set to true
-  DocumentFlavorSVG // SVGDocument
+  DocumentFlavorSVG, // SVGDocument
+  DocumentFlavorPlain, // Just a Document
 };
 
 // Document states
@@ -252,6 +256,18 @@ public:
   virtual void SetDocumentURI(nsIURI* aURI) = 0;
 
   /**
+   * Set the URI for the document loaded via XHR, when accessed from
+   * chrome privileged script.
+   */
+  virtual void SetChromeXHRDocURI(nsIURI* aURI) = 0;
+
+  /**
+   * Set the base URI for the document loaded via XHR, when accessed from
+   * chrome privileged script.
+   */
+  virtual void SetChromeXHRDocBaseURI(nsIURI* aURI) = 0;
+
+  /**
    * Set the principal responsible for this document.
    */
   virtual void SetPrincipal(nsIPrincipal *aPrincipal) = 0;
@@ -278,7 +294,7 @@ public:
     }
     return mDocumentBaseURI ? mDocumentBaseURI : mDocumentURI;
   }
-  virtual already_AddRefed<nsIURI> GetBaseURI() const MOZ_OVERRIDE;
+  virtual already_AddRefed<nsIURI> GetBaseURI(bool aTryUseXHRDocBaseURI = false) const MOZ_OVERRIDE;
 
   virtual nsresult SetBaseURI(nsIURI* aURI) = 0;
 
@@ -745,7 +761,29 @@ public:
    */
 
   /**
-   * Get the number of stylesheets
+   * These exists to allow us to on-demand load user-agent style sheets that
+   * would otherwise be loaded by nsDocumentViewer::CreateStyleSet. This allows
+   * us to keep the memory used by a document's rule cascade data (the stuff in
+   * its nsStyleSet's nsCSSRuleProcessors) - which can be considerable - lower
+   * than it would be if we loaded all built-in user-agent style sheets up
+   * front.
+   *
+   * By "built-in" user-agent style sheets we mean the user-agent style sheets
+   * that gecko itself supplies (such as html.css and svg.css) as opposed to
+   * user-agent level style sheets inserted by add-ons or the like.
+   *
+   * This function prepends the given style sheet to the document's style set
+   * in order to make sure that it does not override user-agent style sheets
+   * supplied by add-ons or by the app (Firefox OS or Firefox Mobile, for
+   * example), since their sheets should override built-in sheets.
+   *
+   * TODO We can get rid of the whole concept of delayed loading if we fix
+   * bug 77999.
+   */
+  virtual void EnsureOnDemandBuiltInUASheet(mozilla::CSSStyleSheet* aSheet) = 0;
+
+  /**
+   * Get the number of (document) stylesheets
    *
    * @return the number of stylesheets
    * @throws no exceptions
@@ -804,15 +842,6 @@ public:
    */
   virtual void SetStyleSheetApplicableState(nsIStyleSheet* aSheet,
                                             bool aApplicable) = 0;  
-
-  /**
-   * Just like the style sheet API, but for "catalog" sheets,
-   * extra sheets inserted at the UA level.
-   */
-  virtual int32_t GetNumberOfCatalogStyleSheets() const = 0;
-  virtual nsIStyleSheet* GetCatalogStyleSheetAt(int32_t aIndex) const = 0;
-  virtual void AddCatalogStyleSheet(nsCSSStyleSheet* aSheet) = 0;
-  virtual void EnsureCatalogStyleSheet(const char *aStyleSheetURI) = 0;
 
   enum additionalSheetType {
     eAgentSheet,
@@ -1093,12 +1122,12 @@ public:
   // notify that a content node changed state.  This must happen under
   // a scriptblocker but NOT within a begin/end update.
   virtual void ContentStateChanged(nsIContent* aContent,
-                                   nsEventStates aStateMask) = 0;
+                                   mozilla::EventStates aStateMask) = 0;
 
   // Notify that a document state has changed.
   // This should only be called by callers whose state is also reflected in the
   // implementation of nsDocument::GetDocumentState.
-  virtual void DocumentStatesChanged(nsEventStates aStateMask) = 0;
+  virtual void DocumentStatesChanged(mozilla::EventStates aStateMask) = 0;
 
   // Observation hooks for style data to propagate notifications
   // to document observers
@@ -1187,13 +1216,39 @@ public:
                                  nsAString& aEncoding,
                                  nsAString& Standalone) = 0;
 
+  /**
+   * Returns true if this is what HTML 5 calls an "HTML document" (for example
+   * regular HTML document with Content-Type "text/html", image documents and
+   * media documents).  Returns false for XHTML and any other documents parsed
+   * by the XML parser.
+   */
   bool IsHTML() const
   {
-    return mIsRegularHTML;
+    return mType == eHTML;
+  }
+  bool IsHTMLOrXHTML() const
+  {
+    return mType == eHTML || mType == eXHTML;
+  }
+  bool IsXML() const
+  {
+    return !IsHTML();
+  }
+  bool IsSVG() const
+  {
+    return mType == eSVG;
   }
   bool IsXUL() const
   {
-    return mIsXUL;
+    return mType == eXUL;
+  }
+  bool IsUnstyledDocument()
+  {
+    return IsLoadedAsData() || IsLoadedAsInteractiveData();
+  }
+  bool LoadsFullXULStyleSheetUpFront()
+  {
+    return IsXUL() || AllowXULXBL();
   }
 
   virtual bool IsScriptEnabled() = 0;
@@ -1216,6 +1271,18 @@ public:
   {
     return mSecurityInfo;
   }
+
+  /**
+   * Get the channel that failed to load and resulted in an error page, if it
+   * exists. This is only relevant to error pages.
+   */
+  virtual nsIChannel* GetFailedChannel() const = 0;
+
+  /**
+   * Set the channel that failed to load and resulted in an error page.
+   * This is only relevant to error pages.
+   */
+  virtual void SetFailedChannel(nsIChannel* aChannel) = 0;
 
   /**
    * Returns the default namespace ID used for elements created in this
@@ -1323,12 +1390,19 @@ public:
    */
   virtual void UnblockOnload(bool aFireSync) = 0;
 
+  void BlockDOMContentLoaded()
+  {
+    ++mBlockDOMContentLoaded;
+  }
+
+  virtual void UnblockDOMContentLoaded() = 0;
+
   /**
    * Notification that the page has been shown, for documents which are loaded
    * into a DOM window.  This corresponds to the completion of document load,
    * or to the page's presentation being restored into an existing DOM window.
    * This notification fires applicable DOM events to the content window.  See
-   * nsIDOMPageTransitionEvent.idl for a description of the |aPersisted|
+   * PageTransitionEvent.webidl for a description of the |aPersisted|
    * parameter. If aDispatchStartTarget is null, the pageshow event is
    * dispatched on the ScriptGlobalObject for this document, otherwise it's
    * dispatched on aDispatchStartTarget.
@@ -1343,7 +1417,7 @@ public:
    * into a DOM window.  This corresponds to the unloading of the document, or
    * to the document's presentation being saved but removed from an existing
    * DOM window.  This notification fires applicable DOM events to the content
-   * window.  See nsIDOMPageTransitionEvent.idl for a description of the
+   * window.  See PageTransitionEvent.webidl for a description of the
    * |aPersisted| parameter. If aDispatchStartTarget is null, the pagehide
    * event is dispatched on the ScriptGlobalObject for this document,
    * otherwise it's dispatched on aDispatchStartTarget.
@@ -1624,10 +1698,17 @@ public:
    */
   bool IsActive() const { return mDocumentContainer && !mRemovedFromDocShell; }
 
-  void RegisterFreezableElement(nsIContent* aContent);
-  bool UnregisterFreezableElement(nsIContent* aContent);
-  typedef void (* FreezableElementEnumerator)(nsIContent*, void*);
-  void EnumerateFreezableElements(FreezableElementEnumerator aEnumerator,
+  /**
+   * Register/Unregister the ActivityObserver into mActivityObservers to listen
+   * the document's activity changes such as OnPageHide, visibility, activity.
+   * The ActivityObserver objects can be nsIObjectLoadingContent or
+   * nsIDocumentActivity or HTMLMEdiaElement.
+   */
+  void RegisterActivityObserver(nsISupports* aSupports);
+  bool UnregisterActivityObserver(nsISupports* aSupports);
+  // Enumerate all the observers in mActivityObservers by the aEnumerator.
+  typedef void (* ActivityObserverEnumerator)(nsISupports*, void*);
+  void EnumerateActivityObservers(ActivityObserverEnumerator aEnumerator,
                                   void* aData);
 
   // Indicates whether mAnimationController has been (lazily) initialized.
@@ -1756,7 +1837,7 @@ public:
    * DO NOT USE FOR UNTRUSTED CONTENT.
    */
   virtual nsresult LoadChromeSheetSync(nsIURI* aURI, bool aIsAgentSheet,
-                                       nsCSSStyleSheet** aSheet) = 0;
+                                       mozilla::CSSStyleSheet** aSheet) = 0;
 
   /**
    * Returns true if the locale used for the document specifies a direction of
@@ -1794,7 +1875,7 @@ public:
    * Document state bits have the form NS_DOCUMENT_STATE_* and are declared in
    * nsIDocument.h.
    */
-  virtual nsEventStates GetDocumentState() = 0;
+  virtual mozilla::EventStates GetDocumentState() = 0;
 
   virtual nsISupports* GetCurrentContentSink() = 0;
 
@@ -1837,6 +1918,8 @@ public:
   virtual Element* LookupImageElement(const nsAString& aElementId) = 0;
 
   virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() = 0;
+
+  virtual mozilla::dom::AnimationTimeline* Timeline() = 0;
 
   typedef mozilla::dom::CallbackObjectHolder<
     mozilla::dom::FrameRequestCallback,
@@ -1890,14 +1973,6 @@ public:
   virtual nsresult SetNavigationTiming(nsDOMNavigationTiming* aTiming) = 0;
 
   virtual Element* FindImageMap(const nsAString& aNormalizedMapName) = 0;
-
-  // Called to notify the document that a listener on the "mozaudioavailable"
-  // event has been added. Media elements in the document need to ensure they
-  // fire the event.
-  virtual void NotifyAudioAvailableListener() = 0;
-
-  // Returns true if the document has "mozaudioavailable" event listeners.
-  virtual bool HasAudioAvailableListeners() = 0;
 
   // Add aLink to the set of links that need their status resolved. 
   void RegisterPendingLinkUpdate(mozilla::dom::Link* aLink);
@@ -1993,6 +2068,11 @@ public:
     GetImplementation(mozilla::ErrorResult& rv) = 0;
   void GetURL(nsString& retval) const;
   void GetDocumentURI(nsString& retval) const;
+  // Return the URI for the document.
+  // The returned value may differ if the document is loaded via XHR, and
+  // when accessed from chrome privileged script and
+  // from content privileged script for compatibility.
+  void GetDocumentURIFromJS(nsString& aDocumentURI) const;
   void GetCompatMode(nsString& retval) const;
   void GetCharacterSet(nsAString& retval) const;
   // Skip GetContentType, because our NS_IMETHOD version above works fine here.
@@ -2027,10 +2107,18 @@ public:
                                     const nsAString& aTypeExtension,
                                     uint32_t aNamespaceID,
                                     mozilla::ErrorResult& rv) = 0;
-  virtual JSObject*
+  virtual void
     RegisterElement(JSContext* aCx, const nsAString& aName,
                     const mozilla::dom::ElementRegistrationOptions& aOptions,
+                    JS::MutableHandle<JSObject*> aRetval,
                     mozilla::ErrorResult& rv) = 0;
+
+  /**
+   * In some cases, new document instances must be associated with
+   * an existing web components custom element registry as specified.
+   */
+  virtual void UseRegistryFromDocument(nsIDocument* aDocument) = 0;
+
   already_AddRefed<nsContentList>
   GetElementsByTagName(const nsAString& aTagName)
   {
@@ -2121,10 +2209,7 @@ public:
   void ReleaseCapture() const;
   virtual void MozSetImageElement(const nsAString& aImageElementId,
                                   Element* aElement) = 0;
-  nsIURI* GetDocumentURIObject()
-  {
-    return GetDocumentURI();
-  }
+  nsIURI* GetDocumentURIObject() const;
   // Not const because all the full-screen goop is not const
   virtual bool MozFullScreenEnabled() = 0;
   virtual Element* GetMozFullScreenElement(mozilla::ErrorResult& rv) = 0;
@@ -2156,7 +2241,7 @@ public:
     WarnOnceAbout(ePrefixedVisibilityAPI);
     return VisibilityState();
   }
-  virtual nsIDOMStyleSheetList* StyleSheets() = 0;
+  virtual mozilla::dom::StyleSheetList* StyleSheets() = 0;
   void GetSelectedStyleSheetSet(nsAString& aSheetSet);
   virtual void SetSelectedStyleSheetSet(const nsAString& aSheetSet) = 0;
   virtual void GetLastStyleSheetSet(nsString& aSheetSet) = 0;
@@ -2184,16 +2269,16 @@ public:
                                           const nsAString& aAttrValue);
   Element* GetBindingParent(nsINode& aNode);
   void LoadBindingDocument(const nsAString& aURI, mozilla::ErrorResult& rv);
-  already_AddRefed<nsIDOMXPathExpression>
+  mozilla::dom::XPathExpression*
     CreateExpression(const nsAString& aExpression,
                      nsIDOMXPathNSResolver* aResolver,
                      mozilla::ErrorResult& rv);
   already_AddRefed<nsIDOMXPathNSResolver>
     CreateNSResolver(nsINode* aNodeResolver, mozilla::ErrorResult& rv);
-  already_AddRefed<nsISupports>
-    Evaluate(const nsAString& aExpression, nsINode* aContextNode,
+  already_AddRefed<mozilla::dom::XPathResult>
+    Evaluate(JSContext* aCx, const nsAString& aExpression, nsINode* aContextNode,
              nsIDOMXPathNSResolver* aResolver, uint16_t aType,
-             nsISupports* aResult, mozilla::ErrorResult& rv);
+             JS::Handle<JSObject*> aResult, mozilla::ErrorResult& rv);
   // Touch event handlers already on nsINode
   already_AddRefed<mozilla::dom::Touch>
     CreateTouch(nsIDOMWindow* aView, mozilla::dom::EventTarget* aTarget,
@@ -2227,9 +2312,16 @@ public:
   uint32_t ChildElementCount();
 
   virtual nsHTMLDocument* AsHTMLDocument() { return nullptr; }
+  virtual mozilla::dom::SVGDocument* AsSVGDocument() { return nullptr; }
 
-  virtual JSObject* WrapObject(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
+
+  // Each import tree has exactly one master document which is
+  // the root of the tree, and owns the browser context.
+  virtual already_AddRefed<nsIDocument> MasterDocument() = 0;
+  virtual void SetMasterDocument(nsIDocument* master) = 0;
+  virtual bool IsMasterDocument() = 0;
+  virtual already_AddRefed<mozilla::dom::ImportManager> ImportManager() = 0;
 
 private:
   uint64_t mWarnedAbout;
@@ -2276,7 +2368,9 @@ protected:
 
   nsCOMPtr<nsIURI> mDocumentURI;
   nsCOMPtr<nsIURI> mOriginalURI;
+  nsCOMPtr<nsIURI> mChromeXHRDocURI;
   nsCOMPtr<nsIURI> mDocumentBaseURI;
+  nsCOMPtr<nsIURI> mChromeXHRDocBaseURI;
 
   nsWeakPtr mDocumentLoadGroup;
 
@@ -2291,18 +2385,20 @@ protected:
   // A reference to the element last returned from GetRootElement().
   mozilla::dom::Element* mCachedRootElement;
 
-  // We hold a strong reference to mNodeInfoManager through mNodeInfo
-  nsNodeInfoManager* mNodeInfoManager; // [STRONG]
+  // This is a weak reference, but we hold a strong reference to mNodeInfo,
+  // which in turn holds a strong reference to this mNodeInfoManager.
+  nsNodeInfoManager* mNodeInfoManager;
   nsRefPtr<mozilla::css::Loader> mCSSLoader;
   nsRefPtr<mozilla::css::ImageLoader> mStyleImageLoader;
   nsRefPtr<nsHTMLStyleSheet> mAttrStyleSheet;
   nsRefPtr<nsHTMLCSSStyleSheet> mStyleAttrStyleSheet;
 
-  // The set of all object, embed, applet, video and audio elements for
-  // which this is the owner document. (They might not be in the document.)
+  // The set of all object, embed, applet, video/audio elements or
+  // nsIObjectLoadingContent or nsIDocumentActivity for which this is the
+  // owner document. (They might not be in the document.)
   // These are non-owning pointers, the elements are responsible for removing
   // themselves when they go away.
-  nsAutoPtr<nsTHashtable<nsPtrHashKey<nsIContent> > > mFreezableElements;
+  nsAutoPtr<nsTHashtable<nsPtrHashKey<nsISupports> > > mActivityObservers;
 
   // The set of all links that need their status resolved.  Links must add themselves
   // to this set by calling RegisterPendingLinkUpdate when added to a document and must
@@ -2338,15 +2434,6 @@ protected:
   // documents created to satisfy a GetDocument() on a window when there's no
   // document in it.
   bool mIsInitialDocumentInWindow;
-
-  bool mIsRegularHTML;
-  bool mIsXUL;
-
-  enum {
-    eTriUnset = 0,
-    eTriFalse,
-    eTriTrue
-  } mAllowXULXBL;
 
   // True if we're loaded as data and therefor has any dangerous stuff, such
   // as scripts and plugins, disabled.
@@ -2451,6 +2538,27 @@ protected:
   bool mIsLinkUpdateRegistrationsForbidden;
 #endif
 
+  enum Type {
+    eUnknown, // should never be used
+    eHTML,
+    eXHTML,
+    eGenericXML,
+    eSVG,
+    eXUL
+  };
+
+  uint8_t mType;
+
+  uint8_t mDefaultElementType;
+
+  enum {
+    eTriUnset = 0,
+    eTriFalse,
+    eTriTrue
+  };
+
+  uint8_t mAllowXULXBL;
+
   // The document's script global object, the object from which the
   // document can get its script context and scope. This is the
   // *inner* window object.
@@ -2479,6 +2587,10 @@ protected:
 
   // The document's security info
   nsCOMPtr<nsISupports> mSecurityInfo;
+
+  // The channel that failed to load and resulted in an error page.
+  // This only applies to error pages. Might be null.
+  nsCOMPtr<nsIChannel> mFailedChannel;
 
   // if this document is part of a multipart document,
   // the ID can be used to distinguish it from the other parts.
@@ -2533,11 +2645,12 @@ protected:
   nsCOMPtr<nsIStructuredCloneContainer> mStateObjectContainer;
   nsCOMPtr<nsIVariant> mStateObjectCached;
 
-  uint8_t mDefaultElementType;
-
   uint32_t mInSyncOperationCount;
 
   nsRefPtr<mozilla::dom::XPathEvaluator> mXPathEvaluator;
+
+  uint32_t mBlockDOMContentLoaded;
+  bool mDidFireDOMContentLoaded:1;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIDocument, NS_IDOCUMENT_IID)
@@ -2599,7 +2712,8 @@ nsresult
 NS_NewHTMLDocument(nsIDocument** aInstancePtrResult, bool aLoadedAsData = false);
 
 nsresult
-NS_NewXMLDocument(nsIDocument** aInstancePtrResult, bool aLoadedAsData = false);
+NS_NewXMLDocument(nsIDocument** aInstancePtrResult, bool aLoadedAsData = false,
+                  bool aIsPlainDocument = false);
 
 nsresult
 NS_NewSVGDocument(nsIDocument** aInstancePtrResult);

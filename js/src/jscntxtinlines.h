@@ -11,13 +11,16 @@
 #include "jscompartment.h"
 
 #include "jsiter.h"
-#include "jsworkers.h"
 
 #include "builtin/Object.h"
 #include "jit/IonFrames.h"
 #include "vm/ForkJoin.h"
+#include "vm/HelperThreads.h"
 #include "vm/Interpreter.h"
 #include "vm/ProxyObject.h"
+#include "vm/Symbol.h"
+
+#include "gc/ForkJoinNursery-inl.h"
 
 namespace js {
 
@@ -123,19 +126,7 @@ class CompartmentChecker
             check(*p);
     }
 
-    void check(jsid id) {
-        if (JSID_IS_OBJECT(id))
-            check(JSID_TO_OBJECT(id));
-    }
-
-    void check(JSIdArray *ida) {
-        if (ida) {
-            for (int i = 0; i < ida->length; i++) {
-                if (JSID_IS_OBJECT(ida->vector[i]))
-                    check(ida->vector[i]);
-            }
-        }
-    }
+    void check(jsid id) {}
 
     void check(JSScript *script) {
         if (script)
@@ -296,7 +287,7 @@ CallJSNativeConstructor(JSContext *cx, Native native, const CallArgs &args)
                  native != js::CallOrConstructBoundFunction &&
                  native != js::IteratorConstructor &&
                  (!callee->is<JSFunction>() || callee->as<JSFunction>().native() != obj_construct),
-                 !args.rval().isPrimitive() && callee != &args.rval().toObject());
+                 args.rval().isObject() && callee != &args.rval().toObject());
 
     return true;
 }
@@ -408,6 +399,13 @@ js::ExclusiveContext::enterCompartment(JSCompartment *c)
 }
 
 inline void
+js::ExclusiveContext::enterNullCompartment()
+{
+    enterCompartmentDepth_++;
+    setCompartment(nullptr);
+}
+
+inline void
 js::ExclusiveContext::leaveCompartment(JSCompartment *oldCompartment)
 {
     JS_ASSERT(hasEnteredCompartment());
@@ -417,7 +415,8 @@ js::ExclusiveContext::leaveCompartment(JSCompartment *oldCompartment)
     // compartment.
     JSCompartment *startingCompartment = compartment_;
     setCompartment(oldCompartment);
-    startingCompartment->leave();
+    if (startingCompartment)
+        startingCompartment->leave();
 }
 
 inline void

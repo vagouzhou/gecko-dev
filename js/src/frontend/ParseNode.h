@@ -90,6 +90,8 @@ class UpvarCookie
     F(NAME) \
     F(NUMBER) \
     F(STRING) \
+    F(TEMPLATE_STRING_LIST) \
+    F(TEMPLATE_STRING) \
     F(REGEXP) \
     F(TRUE) \
     F(FALSE) \
@@ -700,12 +702,13 @@ class ParseNode
 
     bool functionIsHoisted() const {
         JS_ASSERT(pn_arity == PN_CODE && getKind() == PNK_FUNCTION);
-        JS_ASSERT(isOp(JSOP_LAMBDA) ||    // lambda, genexpr
-                  isOp(JSOP_DEFFUN) ||    // non-body-level function statement
-                  isOp(JSOP_NOP) ||       // body-level function stmt in global code
-                  isOp(JSOP_GETLOCAL) ||  // body-level function stmt in function code
-                  isOp(JSOP_GETARG));     // body-level function redeclaring formal
-        return !(isOp(JSOP_LAMBDA) || isOp(JSOP_DEFFUN));
+        JS_ASSERT(isOp(JSOP_LAMBDA) ||        // lambda, genexpr
+                  isOp(JSOP_LAMBDA_ARROW) ||  // arrow function
+                  isOp(JSOP_DEFFUN) ||        // non-body-level function statement
+                  isOp(JSOP_NOP) ||           // body-level function stmt in global code
+                  isOp(JSOP_GETLOCAL) ||      // body-level function stmt in function code
+                  isOp(JSOP_GETARG));         // body-level function redeclaring formal
+        return !isOp(JSOP_LAMBDA) && !isOp(JSOP_LAMBDA_ARROW) && !isOp(JSOP_DEFFUN);
     }
 
     /*
@@ -1134,7 +1137,7 @@ class ContinueStatement : public LoopControlStatement
 class DebuggerStatement : public ParseNode
 {
   public:
-    DebuggerStatement(const TokenPos &pos)
+    explicit DebuggerStatement(const TokenPos &pos)
       : ParseNode(PNK_DEBUGGER, JSOP_NOP, PN_NULLARY, pos)
     { }
 };
@@ -1177,13 +1180,13 @@ class ConditionalExpression : public ParseNode
 class ThisLiteral : public ParseNode
 {
   public:
-    ThisLiteral(const TokenPos &pos) : ParseNode(PNK_THIS, JSOP_THIS, PN_NULLARY, pos) { }
+    explicit ThisLiteral(const TokenPos &pos) : ParseNode(PNK_THIS, JSOP_THIS, PN_NULLARY, pos) { }
 };
 
 class NullLiteral : public ParseNode
 {
   public:
-    NullLiteral(const TokenPos &pos) : ParseNode(PNK_NULL, JSOP_NULL, PN_NULLARY, pos) { }
+    explicit NullLiteral(const TokenPos &pos) : ParseNode(PNK_NULL, JSOP_NULL, PN_NULLARY, pos) { }
 };
 
 class BooleanLiteral : public ParseNode

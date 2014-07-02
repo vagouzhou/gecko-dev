@@ -8,9 +8,8 @@
 
 #include "jit/IonSpewer.h"
 
-#include "jsworkers.h"
-
 #include "jit/Ion.h"
+#include "vm/HelperThreads.h"
 
 #ifndef ION_SPEW_DIR
 # if defined(_WIN32)
@@ -151,7 +150,6 @@ IonSpewer::beginFunction(MIRGraph *graph, HandleScript function)
     }
 
     this->graph = graph;
-    this->function.repoint(function);
 
     c1Spewer.beginFunction(graph, function);
     jsonSpewer.beginFunction(function);
@@ -251,7 +249,6 @@ jit::CheckLogging()
             "  cacheflush Instruction Cache flushes (ARM only for now)\n"
             "  range      Range Analysis\n"
             "  logs       C1 and JSON visualization logging\n"
-            "  trace      Generate calls to js::jit::Trace() for effectful instructions\n"
             "  all        Everything\n"
             "\n"
             "  bl-aborts  Baseline compiler abort messages\n"
@@ -261,6 +258,7 @@ jit::CheckLogging()
             "  bl-ic-fb   Baseline IC fallback stub messages\n"
             "  bl-osr     Baseline IC OSR messages\n"
             "  bl-bails   Baseline bailouts\n"
+            "  bl-dbg-osr Baseline debug mode on stack recompile messages\n"
             "  bl-all     All baseline spew\n"
             "\n"
         );
@@ -303,8 +301,6 @@ jit::CheckLogging()
         EnableChannel(IonSpew_CacheFlush);
     if (ContainsFlag(env, "logs"))
         EnableIonDebugLogging();
-    if (ContainsFlag(env, "trace"))
-        EnableChannel(IonSpew_Trace);
     if (ContainsFlag(env, "all"))
         LoggingBits = uint32_t(-1);
 
@@ -322,6 +318,8 @@ jit::CheckLogging()
         EnableChannel(IonSpew_BaselineOSR);
     if (ContainsFlag(env, "bl-bails"))
         EnableChannel(IonSpew_BaselineBailouts);
+    if (ContainsFlag(env, "bl-dbg-osr"))
+        EnableChannel(IonSpew_BaselineDebugModeOSR);
     if (ContainsFlag(env, "bl-all")) {
         EnableChannel(IonSpew_BaselineAbort);
         EnableChannel(IonSpew_BaselineScripts);
@@ -330,6 +328,7 @@ jit::CheckLogging()
         EnableChannel(IonSpew_BaselineICFallback);
         EnableChannel(IonSpew_BaselineOSR);
         EnableChannel(IonSpew_BaselineBailouts);
+        EnableChannel(IonSpew_BaselineDebugModeOSR);
     }
 
     IonSpewFile = stderr;
@@ -424,6 +423,16 @@ jit::DisableChannel(IonSpewChannel channel)
 {
     JS_ASSERT(LoggingChecked);
     LoggingBits &= ~(1 << uint32_t(channel));
+}
+
+IonSpewFunction::IonSpewFunction(MIRGraph *graph, JS::HandleScript function)
+{
+    IonSpewNewFunction(graph, function);
+}
+
+IonSpewFunction::~IonSpewFunction()
+{
+    IonSpewEndFunction();
 }
 
 #endif /* DEBUG */

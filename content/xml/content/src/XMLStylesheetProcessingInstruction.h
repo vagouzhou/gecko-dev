@@ -19,7 +19,7 @@ class XMLStylesheetProcessingInstruction MOZ_FINAL
 , public nsStyleLinkElement
 {
 public:
-  XMLStylesheetProcessingInstruction(already_AddRefed<nsINodeInfo>&& aNodeInfo,
+  XMLStylesheetProcessingInstruction(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
                                      const nsAString& aData)
     : ProcessingInstruction(Move(aNodeInfo), aData)
   {
@@ -37,8 +37,7 @@ public:
 
   virtual ~XMLStylesheetProcessingInstruction();
 
-  virtual JSObject* WrapNode(JSContext *aCx,
-                             JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
@@ -83,7 +82,7 @@ protected:
                          nsAString& aMedia,
                          bool* aIsScoped,
                          bool* aIsAlternate) MOZ_OVERRIDE;
-  virtual nsGenericDOMDataNode* CloneDataNode(nsINodeInfo *aNodeInfo,
+  virtual nsGenericDOMDataNode* CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo,
                                               bool aCloneText) const MOZ_OVERRIDE;
 };
 

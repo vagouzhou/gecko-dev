@@ -54,13 +54,13 @@ public:
   void DelayedNuwaFork();
   void PublishSpareProcess(ContentParent* aContent);
   void MaybeForgetSpare(ContentParent* aContent);
+  bool IsNuwaReady();
   void OnNuwaReady();
   bool PreallocatedProcessReady();
   already_AddRefed<ContentParent> GetSpareProcess();
   void RunAfterPreallocatedProcessReady(nsIRunnable* aRunnable);
 
 private:
-  void OnNuwaForkTimeout();
   void NuwaFork();
 
   // initialization off the critical path of app startup.
@@ -69,7 +69,6 @@ private:
   // The array containing the preallocated processes. 4 as the inline storage size
   // should be enough so we don't need to grow the nsAutoTArray.
   nsAutoTArray<nsRefPtr<ContentParent>, 4> mSpareProcesses;
-  nsTArray<CancelableTask*> mNuwaForkWaitTasks;
 
   nsTArray<nsCOMPtr<nsIRunnable> > mDelayedContentParentRequests;
 
@@ -81,6 +80,7 @@ private:
   static mozilla::StaticRefPtr<PreallocatedProcessManagerImpl> sSingleton;
 
   PreallocatedProcessManagerImpl();
+  ~PreallocatedProcessManagerImpl() {}
   DISALLOW_EVIL_CONSTRUCTORS(PreallocatedProcessManagerImpl);
 
   void Init();
@@ -111,7 +111,7 @@ PreallocatedProcessManagerImpl::Singleton()
   return sSingleton;
 }
 
-NS_IMPL_ISUPPORTS1(PreallocatedProcessManagerImpl, nsIObserver)
+NS_IMPL_ISUPPORTS(PreallocatedProcessManagerImpl, nsIObserver)
 
 PreallocatedProcessManagerImpl::PreallocatedProcessManagerImpl()
   : mEnabled(false)
@@ -230,10 +230,8 @@ PreallocatedProcessManagerImpl::RunAfterPreallocatedProcessReady(nsIRunnable* aR
   MOZ_ASSERT(NS_IsMainThread());
   mDelayedContentParentRequests.AppendElement(aRequest);
 
-  if (!mPreallocateAppProcessTask) {
-    // This is an urgent NuwaFork() request.
-    DelayedNuwaFork();
-  }
+  // This is an urgent NuwaFork() request. Request to fork at once.
+  DelayedNuwaFork();
 }
 
 void
@@ -312,11 +310,6 @@ PreallocatedProcessManagerImpl::PublishSpareProcess(ContentParent* aContent)
       JS::NullHandleValue, JS::NullHandleValue, cx, 1);
   }
 
-  if (!mNuwaForkWaitTasks.IsEmpty()) {
-    mNuwaForkWaitTasks.ElementAt(0)->Cancel();
-    mNuwaForkWaitTasks.RemoveElementAt(0);
-  }
-
   mSpareProcesses.AppendElement(aContent);
 
   if (!mDelayedContentParentRequests.IsEmpty()) {
@@ -345,8 +338,19 @@ PreallocatedProcessManagerImpl::MaybeForgetSpare(ContentParent* aContent)
   if (aContent == mPreallocatedAppProcess) {
     mPreallocatedAppProcess = nullptr;
     mIsNuwaReady = false;
+    while (mSpareProcesses.Length() > 0) {
+      nsRefPtr<ContentParent> process = mSpareProcesses[mSpareProcesses.Length() - 1];
+      process->Close();
+      mSpareProcesses.RemoveElementAt(mSpareProcesses.Length() - 1);
+    }
     ScheduleDelayedNuwaFork();
   }
+}
+
+bool
+PreallocatedProcessManagerImpl::IsNuwaReady()
+{
+  return mIsNuwaReady;
 }
 
 void
@@ -375,27 +379,8 @@ PreallocatedProcessManagerImpl::PreallocatedProcessReady()
 
 
 void
-PreallocatedProcessManagerImpl::OnNuwaForkTimeout()
-{
-  if (!mNuwaForkWaitTasks.IsEmpty()) {
-    mNuwaForkWaitTasks.RemoveElementAt(0);
-  }
-
-  // We haven't RecvAddNewProcess() after NuwaFork(). Maybe the main
-  // thread of the Nuwa process is in deadlock.
-  MOZ_ASSERT(false, "Can't fork from the nuwa process.");
-}
-
-void
 PreallocatedProcessManagerImpl::NuwaFork()
 {
-  CancelableTask* nuwaForkTimeoutTask = NewRunnableMethod(
-    this, &PreallocatedProcessManagerImpl::OnNuwaForkTimeout);
-  mNuwaForkWaitTasks.AppendElement(nuwaForkTimeoutTask);
-
-  MessageLoop::current()->PostDelayedTask(FROM_HERE,
-                                          nuwaForkTimeoutTask,
-                                          NUWA_FORK_WAIT_DURATION_MS);
   mPreallocatedAppProcess->SendNuwaFork();
 }
 #endif
@@ -508,6 +493,12 @@ PreallocatedProcessManager::MaybeForgetSpare(ContentParent* aContent)
 PreallocatedProcessManager::OnNuwaReady()
 {
   GetPPMImpl()->OnNuwaReady();
+}
+
+/* static */ bool
+PreallocatedProcessManager::IsNuwaReady()
+{
+  return GetPPMImpl()->IsNuwaReady();
 }
 
 /*static */ bool

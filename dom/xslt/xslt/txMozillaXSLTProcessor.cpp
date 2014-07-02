@@ -20,7 +20,7 @@
 #include "nsIStringBundle.h"
 #include "nsIURI.h"
 #include "nsNetUtil.h"
-#include "nsXPathResult.h"
+#include "XPathResult.h"
 #include "txExecutionState.h"
 #include "txMozillaTextOutput.h"
 #include "txMozillaXMLOutput.h"
@@ -470,10 +470,6 @@ txMozillaXSLTProcessor::AddXSLTParam(const nsString& aName,
 
         if (!mRecycler) {
             mRecycler = new txResultRecycler;
-            NS_ENSURE_TRUE(mRecycler, NS_ERROR_OUT_OF_MEMORY);
-
-            rv = mRecycler->init();
-            NS_ENSURE_SUCCESS(rv, rv);
         }
 
         txXSLTParamContext paramContext(&mParamNamespaceMap, *contextNode,
@@ -809,7 +805,7 @@ txMozillaXSLTProcessor::SetParameter(const nsAString & aNamespaceURI,
                     }
                 }
 
-                // Clone the nsXPathResult so that mutations don't affect this
+                // Clone the XPathResult so that mutations don't affect this
                 // variable.
                 nsCOMPtr<nsIXPathResult> clone;
                 rv = xpathResult->Clone(getter_AddRefs(clone));
@@ -1252,15 +1248,8 @@ NS_IMETHODIMP
 txMozillaXSLTProcessor::Initialize(nsISupports* aOwner, JSContext* cx,
                                    JSObject* obj, const JS::CallArgs& args)
 {
-    nsCOMPtr<nsIPrincipal> prin;
-    nsIScriptSecurityManager* secMan = nsContentUtils::GetSecurityManager();
-    NS_ENSURE_TRUE(secMan, NS_ERROR_UNEXPECTED);
-
-    nsresult rv = secMan->GetSubjectPrincipal(getter_AddRefs(prin));
-    NS_ENSURE_SUCCESS(rv, rv);
-    NS_ENSURE_TRUE(prin, NS_ERROR_UNEXPECTED);
-
-    return Init(prin);
+    MOZ_ASSERT(nsContentUtils::GetCurrentJSContext());
+    return Init(nsContentUtils::SubjectPrincipal());
 }
 
 NS_IMETHODIMP

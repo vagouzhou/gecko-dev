@@ -47,7 +47,6 @@
 #include "secasn1.h"
 #include "secder.h"
 #include "ssl.h"
-#include "ocsp.h"
 #include "plbase64.h"
 
 using namespace mozilla;
@@ -83,7 +82,7 @@ attemptToLogInWithDefaultPassword()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS2(nsNSSCertificateDB, nsIX509CertDB, nsIX509CertDB2)
+NS_IMPL_ISUPPORTS(nsNSSCertificateDB, nsIX509CertDB, nsIX509CertDB2)
 
 nsNSSCertificateDB::nsNSSCertificateDB()
 : mBadCertsLock("nsNSSCertificateDB::mBadCertsLock")
@@ -634,9 +633,10 @@ nsNSSCertificateDB::ImportEmailCertificate(uint8_t * data, uint32_t length,
 
     mozilla::pkix::ScopedCERTCertList certChain;
 
-    SECStatus rv = certVerifier->VerifyCert(node->cert, nullptr,
+    SECStatus rv = certVerifier->VerifyCert(node->cert,
                                             certificateUsageEmailRecipient,
-                                            now, ctx, 0, &certChain);
+                                            now, ctx, nullptr, 0,
+                                            nullptr, &certChain);
 
     if (rv != SECSuccess) {
       nsCOMPtr<nsIX509Cert> certToShow = nsNSSCertificate::Create(node->cert);
@@ -801,9 +801,10 @@ nsNSSCertificateDB::ImportValidCACertsInList(CERTCertList *certList, nsIInterfac
        !CERT_LIST_END(node,certList);
        node = CERT_LIST_NEXT(node)) {
     mozilla::pkix::ScopedCERTCertList certChain;
-    SECStatus rv = certVerifier->VerifyCert(node->cert, nullptr,
+    SECStatus rv = certVerifier->VerifyCert(node->cert,
                                             certificateUsageVerifyCA,
-                                            PR_Now(), ctx, 0, &certChain);
+                                            PR_Now(), ctx, nullptr, 0, nullptr,
+                                            &certChain);
     if (rv != SECSuccess) {
       nsCOMPtr<nsIX509Cert> certToShow = nsNSSCertificate::Create(node->cert);
       DisplayCertificateAlert(ctx, "NotImportingUnverifiedCert", certToShow, proofOfLock);
@@ -1381,9 +1382,10 @@ nsNSSCertificateDB::FindCertByEmailAddress(nsISupports *aToken, const char *aEma
        !CERT_LIST_END(node, certlist);
        node = CERT_LIST_NEXT(node)) {
 
-    SECStatus srv = certVerifier->VerifyCert(node->cert, nullptr,
+    SECStatus srv = certVerifier->VerifyCert(node->cert,
                                              certificateUsageEmailRecipient,
-                                             PR_Now(), nullptr /*XXX pinarg*/);
+                                             PR_Now(), nullptr /*XXX pinarg*/,
+                                             nullptr /*hostname*/);
     if (srv == SECSuccess) {
       break;
     }
@@ -1772,10 +1774,12 @@ nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
   SECOidTag evOidPolicy;
   SECStatus srv;
 
-  srv = certVerifier->VerifyCert(nssCert, nullptr,
+  srv = certVerifier->VerifyCert(nssCert,
                                  aUsage, PR_Now(),
                                  nullptr, // Assume no context
+                                 nullptr, // hostname
                                  aFlags,
+                                 nullptr, // stapledOCSPResponse
                                  &resultChain,
                                  &evOidPolicy);
 
@@ -1811,14 +1815,6 @@ nsNSSCertificateDB::ClearOCSPCache()
 
   RefPtr<SharedCertVerifier> certVerifier(GetDefaultCertVerifier());
   NS_ENSURE_TRUE(certVerifier, NS_ERROR_FAILURE);
-  if (certVerifier->mImplementation == CertVerifier::mozillapkix) {
-    certVerifier->ClearOCSPCache();
-  } else {
-    SECStatus srv = CERT_ClearOCSPCache();
-    if (srv != SECSuccess) {
-      return MapSECStatus(srv);
-    }
-  }
-
+  certVerifier->ClearOCSPCache();
   return NS_OK;
 }

@@ -14,7 +14,6 @@
 #include "mozIPersonalDictionary.h"
 #include "mozISpellCheckingEngine.h"
 #include "nsClassHashtable.h"
-#include "nsVoidArray.h"
 #include "nsTArray.h"
 #include "mozISpellI18NUtil.h"
 #include "nsCycleCollectionParticipant.h"
@@ -26,7 +25,6 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS(mozSpellChecker)
 
   mozSpellChecker();
-  virtual ~mozSpellChecker();
 
   nsresult Init();
 
@@ -47,6 +45,8 @@ public:
   NS_IMETHOD CheckCurrentDictionary();
 
 protected:
+  virtual ~mozSpellChecker();
+
   nsCOMPtr<mozISpellI18NUtil> mConverter;
   nsCOMPtr<nsITextServicesDocument> mTsDoc;
   nsCOMPtr<mozIPersonalDictionary> mPersonalDictionary;

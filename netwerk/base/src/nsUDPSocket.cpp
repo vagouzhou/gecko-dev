@@ -5,6 +5,8 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/Endian.h"
+#include "mozilla/dom/TypedArray.h"
+#include "mozilla/HoldDropJSObjects.h"
 
 #include "nsSocketTransport2.h"
 #include "nsUDPSocket.h"
@@ -63,9 +65,29 @@ ResolveHost(const nsACString &host, nsIDNSListener *listener)
 }
 
 //-----------------------------------------------------------------------------
+
+class SetSocketOptionRunnable : public nsRunnable
+{
+public:
+  SetSocketOptionRunnable(nsUDPSocket* aSocket, const PRSocketOptionData& aOpt)
+    : mSocket(aSocket)
+    , mOpt(aOpt)
+  {}
+
+  NS_IMETHOD Run()
+  {
+    return mSocket->SetSocketOption(mOpt);
+  }
+
+private:
+  nsRefPtr<nsUDPSocket> mSocket;
+  PRSocketOptionData    mOpt;
+};
+
+//-----------------------------------------------------------------------------
 // nsUDPOutputStream impl
 //-----------------------------------------------------------------------------
-NS_IMPL_ISUPPORTS1(nsUDPOutputStream, nsIOutputStream)
+NS_IMPL_ISUPPORTS(nsUDPOutputStream, nsIOutputStream)
 
 nsUDPOutputStream::nsUDPOutputStream(nsUDPSocket* aSocket,
                                      PRFileDesc* aFD,
@@ -139,48 +161,89 @@ NS_IMETHODIMP nsUDPOutputStream::IsNonBlocking(bool *_retval)
 //-----------------------------------------------------------------------------
 // nsUDPMessage impl
 //-----------------------------------------------------------------------------
-NS_IMPL_ISUPPORTS1(nsUDPMessage, nsIUDPMessage)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(nsUDPMessage)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(nsUDPMessage)
 
-nsUDPMessage::nsUDPMessage(PRNetAddr* aAddr,
-             nsIOutputStream* aOutputStream,
-             const nsACString& aData)
+NS_IMPL_CYCLE_COLLECTION_CLASS(nsUDPMessage)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsUDPMessage)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+  NS_INTERFACE_MAP_ENTRY(nsIUDPMessage)
+NS_INTERFACE_MAP_END
+
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(nsUDPMessage)
+  NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mJsobj)
+NS_IMPL_CYCLE_COLLECTION_TRACE_END
+
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsUDPMessage)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsUDPMessage)
+  tmp->mJsobj = nullptr;
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+nsUDPMessage::nsUDPMessage(NetAddr* aAddr,
+                           nsIOutputStream* aOutputStream,
+                           FallibleTArray<uint8_t>& aData)
   : mOutputStream(aOutputStream)
-  , mData(aData)
 {
   memcpy(&mAddr, aAddr, sizeof(NetAddr));
+  aData.SwapElements(mData);
 }
 
 nsUDPMessage::~nsUDPMessage()
 {
+  mozilla::DropJSObjects(this);
 }
 
 /* readonly attribute nsINetAddr from; */
-NS_IMETHODIMP nsUDPMessage::GetFromAddr(nsINetAddr * *aFromAddr)
+NS_IMETHODIMP
+nsUDPMessage::GetFromAddr(nsINetAddr * *aFromAddr)
 {
   NS_ENSURE_ARG_POINTER(aFromAddr);
 
-  NetAddr clientAddr;
-  PRNetAddrToNetAddr(&mAddr, &clientAddr);
-
-  nsCOMPtr<nsINetAddr> result = new nsNetAddr(&clientAddr);
+  nsCOMPtr<nsINetAddr> result = new nsNetAddr(&mAddr);
   result.forget(aFromAddr);
 
   return NS_OK;
 }
 
 /* readonly attribute ACString data; */
-NS_IMETHODIMP nsUDPMessage::GetData(nsACString & aData)
+NS_IMETHODIMP
+nsUDPMessage::GetData(nsACString & aData)
 {
-  aData = mData;
+  aData.Assign(reinterpret_cast<const char*>(mData.Elements()), mData.Length());
   return NS_OK;
 }
 
 /* readonly attribute nsIOutputStream outputStream; */
-NS_IMETHODIMP nsUDPMessage::GetOutputStream(nsIOutputStream * *aOutputStream)
+NS_IMETHODIMP
+nsUDPMessage::GetOutputStream(nsIOutputStream * *aOutputStream)
 {
   NS_ENSURE_ARG_POINTER(aOutputStream);
   NS_IF_ADDREF(*aOutputStream = mOutputStream);
   return NS_OK;
+}
+
+/* readonly attribute jsval rawData; */
+NS_IMETHODIMP
+nsUDPMessage::GetRawData(JSContext* cx,
+                         JS::MutableHandleValue aRawData)
+{
+  if(!mJsobj){
+    mJsobj = mozilla::dom::Uint8Array::Create(cx, nullptr, mData.Length(), mData.Elements());
+    mozilla::HoldJSObjects(this);
+  }
+  aRawData.setObject(*mJsobj);
+  return NS_OK;
+}
+
+/* [noscript, notxpcom, nostdcall] Uint8ArrayRef getDataAsTArray(); */
+FallibleTArray<uint8_t>&
+nsUDPMessage::GetDataAsTArray()
+{
+  return mData;
 }
 
 //-----------------------------------------------------------------------------
@@ -303,6 +366,80 @@ nsUDPSocket::TryAttach()
   return NS_OK;
 }
 
+namespace {
+//-----------------------------------------------------------------------------
+// UDPMessageProxy
+//-----------------------------------------------------------------------------
+class UDPMessageProxy MOZ_FINAL : public nsIUDPMessage
+{
+public:
+  UDPMessageProxy(NetAddr* aAddr,
+                  nsIOutputStream* aOutputStream,
+                  FallibleTArray<uint8_t>& aData)
+  : mOutputStream(aOutputStream)
+  {
+    memcpy(&mAddr, aAddr, sizeof(NetAddr));
+    aData.SwapElements(mData);
+  }
+
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_NSIUDPMESSAGE
+
+private:
+  ~UDPMessageProxy() {}
+
+  NetAddr mAddr;
+  nsCOMPtr<nsIOutputStream> mOutputStream;
+  FallibleTArray<uint8_t> mData;
+};
+
+NS_IMPL_ISUPPORTS(UDPMessageProxy, nsIUDPMessage)
+
+/* readonly attribute nsINetAddr from; */
+NS_IMETHODIMP
+UDPMessageProxy::GetFromAddr(nsINetAddr * *aFromAddr)
+{
+  NS_ENSURE_ARG_POINTER(aFromAddr);
+
+  nsCOMPtr<nsINetAddr> result = new nsNetAddr(&mAddr);
+  result.forget(aFromAddr);
+
+  return NS_OK;
+}
+
+/* readonly attribute ACString data; */
+NS_IMETHODIMP
+UDPMessageProxy::GetData(nsACString & aData)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+/* [noscript, notxpcom, nostdcall] Uint8TArrayRef getDataAsTArray(); */
+FallibleTArray<uint8_t>&
+UDPMessageProxy::GetDataAsTArray()
+{
+  return mData;
+}
+
+/* readonly attribute jsval rawData; */
+NS_IMETHODIMP
+UDPMessageProxy::GetRawData(JSContext* cx,
+                            JS::MutableHandleValue aRawData)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+/* readonly attribute nsIOutputStream outputStream; */
+NS_IMETHODIMP
+UDPMessageProxy::GetOutputStream(nsIOutputStream * *aOutputStream)
+{
+  NS_ENSURE_ARG_POINTER(aOutputStream);
+  NS_IF_ADDREF(*aOutputStream = mOutputStream);
+  return NS_OK;
+}
+
+} //anonymous namespace
+
 //-----------------------------------------------------------------------------
 // nsUDPSocket::nsASocketHandler
 //-----------------------------------------------------------------------------
@@ -333,9 +470,9 @@ nsUDPSocket::OnSocketReady(PRFileDesc *fd, int16_t outFlags)
   }
   mByteReadCount += count;
 
-  nsCString data;
-  if (!data.Assign(buff, count, mozilla::fallible_t())) {
-    mCondition = NS_ERROR_OUT_OF_MEMORY;
+  FallibleTArray<uint8_t> data;
+  if(!data.AppendElements(buff, count)){
+    mCondition = NS_ERROR_UNEXPECTED;
     return;
   }
 
@@ -360,7 +497,9 @@ nsUDPSocket::OnSocketReady(PRFileDesc *fd, int16_t outFlags)
     return;
   }
 
-  nsCOMPtr<nsIUDPMessage> message = new nsUDPMessage(&prClientAddr, pipeOut, data);
+  NetAddr netAddr;
+  PRNetAddrToNetAddr(&prClientAddr, &netAddr);
+  nsCOMPtr<nsIUDPMessage> message = new UDPMessageProxy(&netAddr, pipeOut, data);
   mListener->OnPacketReceived(this, message);
 }
 
@@ -405,7 +544,7 @@ nsUDPSocket::IsLocal(bool *aIsLocal)
 // nsSocket::nsISupports
 //-----------------------------------------------------------------------------
 
-NS_IMPL_ISUPPORTS1(nsUDPSocket, nsIUDPSocket)
+NS_IMPL_ISUPPORTS(nsUDPSocket, nsIUDPSocket)
 
 
 //-----------------------------------------------------------------------------
@@ -534,9 +673,13 @@ nsUDPSocket::GetAddress(NetAddr *aResult)
 }
 
 namespace {
-
+//-----------------------------------------------------------------------------
+// SocketListenerProxy
+//-----------------------------------------------------------------------------
 class SocketListenerProxy MOZ_FINAL : public nsIUDPSocketListener
 {
+  ~SocketListenerProxy() {}
+
 public:
   SocketListenerProxy(nsIUDPSocketListener* aListener)
     : mListener(new nsMainThreadPtrHolder<nsIUDPSocketListener>(aListener))
@@ -589,8 +732,8 @@ private:
   nsCOMPtr<nsIEventTarget> mTargetThread;
 };
 
-NS_IMPL_ISUPPORTS1(SocketListenerProxy,
-                   nsIUDPSocketListener)
+NS_IMPL_ISUPPORTS(SocketListenerProxy,
+                  nsIUDPSocketListener)
 
 NS_IMETHODIMP
 SocketListenerProxy::OnPacketReceived(nsIUDPSocket* aSocket,
@@ -613,7 +756,20 @@ SocketListenerProxy::OnStopListening(nsIUDPSocket* aSocket,
 NS_IMETHODIMP
 SocketListenerProxy::OnPacketReceivedRunnable::Run()
 {
-  mListener->OnPacketReceived(mSocket, mMessage);
+  NetAddr netAddr;
+  nsCOMPtr<nsINetAddr> nsAddr;
+  mMessage->GetFromAddr(getter_AddRefs(nsAddr));
+  nsAddr->GetNetAddr(&netAddr);
+
+  nsCOMPtr<nsIOutputStream> outputStream;
+  mMessage->GetOutputStream(getter_AddRefs(outputStream));
+
+  FallibleTArray<uint8_t>& data = mMessage->GetDataAsTArray();
+
+  nsCOMPtr<nsIUDPMessage> message = new nsUDPMessage(&netAddr,
+                                                     outputStream,
+                                                     data);
+  mListener->OnPacketReceived(mSocket, message);
   return NS_OK;
 }
 
@@ -638,15 +794,15 @@ public:
     mData.SwapElements(aData);
   }
 
+private:
   virtual ~PendingSend() {}
 
-private:
   nsRefPtr<nsUDPSocket> mSocket;
   uint16_t mPort;
   FallibleTArray<uint8_t> mData;
 };
 
-NS_IMPL_ISUPPORTS1(PendingSend, nsIDNSListener)
+NS_IMPL_ISUPPORTS(PendingSend, nsIDNSListener)
 
 NS_IMETHODIMP
 PendingSend::OnLookupComplete(nsICancelable *request,
@@ -790,5 +946,250 @@ nsUDPSocket::SendWithAddress(const NetAddr *aAddr, const uint8_t *aData,
     NS_ENSURE_SUCCESS(rv, rv);
     *_retval = aDataLength;
   }
+  return NS_OK;
+}
+
+nsresult
+nsUDPSocket::SetSocketOption(const PRSocketOptionData& aOpt)
+{
+  bool onSTSThread = false;
+  mSts->IsOnCurrentThread(&onSTSThread);
+
+  if (!onSTSThread) {
+    // Dispatch to STS thread and re-enter this method there
+    nsCOMPtr<nsIRunnable> runnable = new SetSocketOptionRunnable(this, aOpt);
+    nsresult rv = mSts->Dispatch(runnable, NS_DISPATCH_NORMAL);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+    return NS_OK;
+  }
+
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  if (PR_SetSocketOption(mFD, &aOpt) != PR_SUCCESS) {
+    SOCKET_LOG(("nsUDPSocket::SetSocketOption [this=%p] failed for type %d, "
+      "error %d\n", this, aOpt.option, PR_GetError()));
+    return NS_ERROR_FAILURE;
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::JoinMulticast(const nsACString& aAddr, const nsACString& aIface)
+{
+  if (NS_WARN_IF(aAddr.IsEmpty())) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prAddr;
+  if (PR_StringToNetAddr(aAddr.BeginReading(), &prAddr) != PR_SUCCESS) {
+    return NS_ERROR_FAILURE;
+  }
+
+  PRNetAddr prIface;
+  if (aIface.IsEmpty()) {
+    PR_InitializeNetAddr(PR_IpAddrAny, 0, &prIface);
+  } else {
+    if (PR_StringToNetAddr(aIface.BeginReading(), &prIface) != PR_SUCCESS) {
+      return NS_ERROR_FAILURE;
+    }
+  }
+
+  return JoinMulticastInternal(prAddr, prIface);
+}
+
+NS_IMETHODIMP
+nsUDPSocket::JoinMulticastAddr(const NetAddr aAddr, const NetAddr* aIface)
+{
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prAddr;
+  NetAddrToPRNetAddr(&aAddr, &prAddr);
+
+  PRNetAddr prIface;
+  if (!aIface) {
+    PR_InitializeNetAddr(PR_IpAddrAny, 0, &prIface);
+  } else {
+    NetAddrToPRNetAddr(aIface, &prIface);
+  }
+
+  return JoinMulticastInternal(prAddr, prIface);
+}
+
+nsresult
+nsUDPSocket::JoinMulticastInternal(const PRNetAddr& aAddr,
+                                   const PRNetAddr& aIface)
+{
+  PRSocketOptionData opt;
+
+  opt.option = PR_SockOpt_AddMember;
+  opt.value.add_member.mcaddr = aAddr;
+  opt.value.add_member.ifaddr = aIface;
+
+  nsresult rv = SetSocketOption(opt);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::LeaveMulticast(const nsACString& aAddr, const nsACString& aIface)
+{
+  if (NS_WARN_IF(aAddr.IsEmpty())) {
+    return NS_ERROR_INVALID_ARG;
+  }
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prAddr;
+  if (PR_StringToNetAddr(aAddr.BeginReading(), &prAddr) != PR_SUCCESS) {
+    return NS_ERROR_FAILURE;
+  }
+
+  PRNetAddr prIface;
+  if (aIface.IsEmpty()) {
+    PR_InitializeNetAddr(PR_IpAddrAny, 0, &prIface);
+  } else {
+    if (PR_StringToNetAddr(aIface.BeginReading(), &prIface) != PR_SUCCESS) {
+      return NS_ERROR_FAILURE;
+    }
+  }
+
+  return LeaveMulticastInternal(prAddr, prIface);
+}
+
+NS_IMETHODIMP
+nsUDPSocket::LeaveMulticastAddr(const NetAddr aAddr, const NetAddr* aIface)
+{
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prAddr;
+  NetAddrToPRNetAddr(&aAddr, &prAddr);
+
+  PRNetAddr prIface;
+  if (!aIface) {
+    PR_InitializeNetAddr(PR_IpAddrAny, 0, &prIface);
+  } else {
+    NetAddrToPRNetAddr(aIface, &prIface);
+  }
+
+  return LeaveMulticastInternal(prAddr, prIface);
+}
+
+nsresult
+nsUDPSocket::LeaveMulticastInternal(const PRNetAddr& aAddr,
+                                    const PRNetAddr& aIface)
+{
+  PRSocketOptionData opt;
+
+  opt.option = PR_SockOpt_DropMember;
+  opt.value.drop_member.mcaddr = aAddr;
+  opt.value.drop_member.ifaddr = aIface;
+
+  nsresult rv = SetSocketOption(opt);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::GetMulticastLoopback(bool* aLoopback)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::SetMulticastLoopback(bool aLoopback)
+{
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRSocketOptionData opt;
+
+  opt.option = PR_SockOpt_McastLoopback;
+  opt.value.mcast_loopback = aLoopback;
+
+  nsresult rv = SetSocketOption(opt);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_FAILURE;
+  }
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::GetMulticastInterface(nsACString& aIface)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::GetMulticastInterfaceAddr(NetAddr* aIface)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsUDPSocket::SetMulticastInterface(const nsACString& aIface)
+{
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prIface;
+  if (aIface.IsEmpty()) {
+    PR_InitializeNetAddr(PR_IpAddrAny, 0, &prIface);
+  } else {
+    if (PR_StringToNetAddr(aIface.BeginReading(), &prIface) != PR_SUCCESS) {
+      return NS_ERROR_FAILURE;
+    }
+  }
+
+  return SetMulticastInterfaceInternal(prIface);
+}
+
+NS_IMETHODIMP
+nsUDPSocket::SetMulticastInterfaceAddr(NetAddr aIface)
+{
+  if (NS_WARN_IF(!mFD)) {
+    return NS_ERROR_NOT_INITIALIZED;
+  }
+
+  PRNetAddr prIface;
+  NetAddrToPRNetAddr(&aIface, &prIface);
+
+  return SetMulticastInterfaceInternal(prIface);
+}
+
+nsresult
+nsUDPSocket::SetMulticastInterfaceInternal(const PRNetAddr& aIface)
+{
+  PRSocketOptionData opt;
+
+  opt.option = PR_SockOpt_McastInterface;
+  opt.value.mcast_if = aIface;
+
+  nsresult rv = SetSocketOption(opt);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return NS_ERROR_FAILURE;
+  }
+
   return NS_OK;
 }

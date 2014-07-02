@@ -60,8 +60,8 @@ enum UIStateChangeType
 };
 
 #define NS_PIDOMWINDOW_IID \
-{ 0xf26953de, 0xa799, 0x4a92, \
-  { 0x87, 0x49, 0x7c, 0x37, 0xe5, 0x90, 0x3f, 0x37 } }
+{ 0x71412748, 0x6368, 0x4332, \
+  { 0x82, 0x66, 0xff, 0xaa, 0x19, 0xda, 0x09, 0x7c } }
 
 class nsPIDOMWindow : public nsIDOMWindowInternal
 {
@@ -122,52 +122,28 @@ public:
 
   bool HasMutationListeners(uint32_t aMutationEventType) const
   {
-    const nsPIDOMWindow *win;
+    MOZ_ASSERT(IsInnerWindow());
 
-    if (IsOuterWindow()) {
-      win = GetCurrentInnerWindow();
+    if (!mOuterWindow) {
+      NS_ERROR("HasMutationListeners() called on orphan inner window!");
 
-      if (!win) {
-        NS_ERROR("No current inner window available!");
-
-        return false;
-      }
-    } else {
-      if (!mOuterWindow) {
-        NS_ERROR("HasMutationListeners() called on orphan inner window!");
-
-        return false;
-      }
-
-      win = this;
+      return false;
     }
 
-    return (win->mMutationBits & aMutationEventType) != 0;
+    return (mMutationBits & aMutationEventType) != 0;
   }
 
   void SetMutationListeners(uint32_t aType)
   {
-    nsPIDOMWindow *win;
+    MOZ_ASSERT(IsInnerWindow());
 
-    if (IsOuterWindow()) {
-      win = GetCurrentInnerWindow();
+    if (!mOuterWindow) {
+      NS_ERROR("HasMutationListeners() called on orphan inner window!");
 
-      if (!win) {
-        NS_ERROR("No inner window available to set mutation bits on!");
-
-        return;
-      }
-    } else {
-      if (!mOuterWindow) {
-        NS_ERROR("HasMutationListeners() called on orphan inner window!");
-
-        return;
-      }
-
-      win = this;
+      return;
     }
 
-    win->mMutationBits |= aType;
+    mMutationBits |= aType;
   }
 
   virtual void MaybeUpdateTouchState() {}
@@ -188,7 +164,7 @@ public:
     return mDoc;
   }
 
-  virtual NS_HIDDEN_(bool) IsRunningTimeout() = 0;
+  virtual bool IsRunningTimeout() = 0;
 
   // Audio API
   bool GetAudioMuted() const;
@@ -278,6 +254,7 @@ public:
 
   // Set the window up with an about:blank document with the current subject
   // principal.
+  // Outer windows only.
   virtual void SetInitialPrincipalToSubject() = 0;
 
   virtual PopupControlState PushPopupControlState(PopupControlState aState,
@@ -364,7 +341,8 @@ public:
     return !IsInnerWindow();
   }
 
-  virtual bool WouldReuseInnerWindow(nsIDocument *aNewDocument) = 0;
+  // Outer windows only.
+  virtual bool WouldReuseInnerWindow(nsIDocument* aNewDocument) = 0;
 
   /**
    * Get the docshell in this window.
@@ -424,8 +402,9 @@ public:
   virtual void EnterModalState() = 0;
   virtual void LeaveModalState() = 0;
 
+  // Outer windows only.
   virtual bool CanClose() = 0;
-  virtual nsresult ForceClose() = 0;
+  virtual void ForceClose() = 0;
 
   bool IsModalContentWindow() const
   {
@@ -465,18 +444,29 @@ public:
     return mMayHaveTouchEventListener;
   }
 
+   /**
+   * Will be called when touch caret visibility has changed. mMayHaveTouchCaret
+   * is set if that some node (this window, its document, or content in that
+   * document) has a visible touch caret.
+   */
+  void SetMayHaveTouchCaret(bool aSetValue)
+  {
+    mMayHaveTouchCaret = aSetValue;
+  }
+
+  bool MayHaveTouchCaret()
+  {
+    return mMayHaveTouchCaret;
+  }
+
   /**
    * Moves the top-level window into fullscreen mode if aIsFullScreen is true,
    * otherwise exits fullscreen. If aRequireTrust is true, this method only
    * changes window state in a context trusted for write.
+   *
+   * Outer windows only.
    */
   virtual nsresult SetFullScreenInternal(bool aIsFullScreen, bool aRequireTrust) = 0;
-
-  /**
-   * Call this to indicate that some node (this window, its document,
-   * or content in that document) has a "MozAudioAvailable" event listener.
-   */
-  virtual void SetHasAudioAvailableEventListeners() = 0;
 
   /**
    * Call this to check whether some node (this window, its document,
@@ -635,6 +625,8 @@ public:
 
   /**
    * Tell this window that there is an observer for gamepad input
+   *
+   * Inner windows only.
    */
   virtual void SetHasGamepadEventListener(bool aHasGamepad = true) = 0;
 
@@ -647,6 +639,8 @@ public:
    * |dialogArguments| back from nsWindowWatcher to nsGlobalWindow. For the
    * latter, the array is an array of length 0 whose only element is a
    * DialogArgumentsHolder representing the JS value passed to showModalDialog.
+   *
+   * Outer windows only.
    */
   virtual nsresult SetArguments(nsIArray *aArguments) = 0;
 
@@ -665,22 +659,38 @@ public:
   /**
    * Dispatch a custom event with name aEventName targeted at this window.
    * Returns whether the default action should be performed.
+   *
+   * Outer windows only.
    */
-  virtual bool DispatchCustomEvent(const char *aEventName) = 0;
+  virtual bool DispatchCustomEvent(const nsAString& aEventName) = 0;
 
   /**
-   * Notify the active inner window that the document principal may have changed
-   * and that the compartment principal needs to be updated.
+   * Call when the document principal may have changed and the compartment
+   * principal needs to be updated.
+   *
+   * Inner windows only.
    */
   virtual void RefreshCompartmentPrincipal() = 0;
 
   /**
    * Like nsIDOMWindow::Open, except that we don't navigate to the given URL.
+   *
+   * Outer windows only.
    */
   virtual nsresult
   OpenNoNavigate(const nsAString& aUrl, const nsAString& aName,
                  const nsAString& aOptions, nsIDOMWindow **_retval) = 0;
 
+  /**
+   * Fire a popup blocked event on the document.
+   */
+  virtual void
+  FirePopupBlockedEvent(nsIDocument* aDoc,
+                        nsIURI* aPopupURI,
+                        const nsAString& aPopupWindowName,
+                        const nsAString& aPopupWindowFeatures) = 0;
+
+  // Inner windows only.
   void AddAudioContext(mozilla::dom::AudioContext* aAudioContext);
   void RemoveAudioContext(mozilla::dom::AudioContext* aAudioContext);
   void MuteAudioContexts();
@@ -732,6 +742,7 @@ protected:
   virtual void UpdateParentTarget() = 0;
 
   // Helper for creating performance objects.
+  // Inner windows only.
   void CreatePerformanceObjectIfNeeded();
 
   // These two variables are special in that they're set to the same
@@ -764,6 +775,7 @@ protected:
   bool                   mIsInnerWindow;
   bool                   mMayHavePaintEventListener;
   bool                   mMayHaveTouchEventListener;
+  bool                   mMayHaveTouchCaret;
   bool                   mMayHaveMouseEnterLeaveEventListener;
   bool                   mMayHavePointerEnterLeaveEventListener;
 

@@ -23,7 +23,9 @@
 #include "mozilla/dom/NodeListBinding.h"
 #include "mozilla/Likely.h"
 #include "nsGenericHTMLElement.h"
+#include "jsfriendapi.h"
 #include <algorithm>
+#include "mozilla/dom/NodeInfoInlines.h"
 
 // Form related includes
 #include "nsIDOMHTMLFormElement.h"
@@ -84,7 +86,7 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 // QueryInterface implementation for nsBaseContentList
 NS_INTERFACE_TABLE_HEAD(nsBaseContentList)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
-  NS_INTERFACE_TABLE2(nsBaseContentList, nsINodeList, nsIDOMNodeList)
+  NS_INTERFACE_TABLE(nsBaseContentList, nsINodeList, nsIDOMNodeList)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(nsBaseContentList)
 NS_INTERFACE_MAP_END
 
@@ -134,8 +136,8 @@ nsBaseContentList::IndexOf(nsIContent* aContent)
   return IndexOf(aContent, true);
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(nsSimpleContentList, nsBaseContentList,
-                                     mRoot)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(nsSimpleContentList, nsBaseContentList,
+                                   mRoot)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(nsSimpleContentList)
 NS_INTERFACE_MAP_END_INHERITING(nsBaseContentList)
@@ -145,9 +147,9 @@ NS_IMPL_ADDREF_INHERITED(nsSimpleContentList, nsBaseContentList)
 NS_IMPL_RELEASE_INHERITED(nsSimpleContentList, nsBaseContentList)
 
 JSObject*
-nsSimpleContentList::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+nsSimpleContentList::WrapObject(JSContext *cx)
 {
-  return NodeListBinding::Wrap(cx, scope, this);
+  return NodeListBinding::Wrap(cx, this);
 }
 
 // Hashtable for storing nsContentLists
@@ -268,16 +270,16 @@ const nsCacheableFuncStringContentList::ContentListType
 #endif
 
 JSObject*
-nsCacheableFuncStringNodeList::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+nsCacheableFuncStringNodeList::WrapObject(JSContext *cx)
 {
-  return NodeListBinding::Wrap(cx, scope, this);
+  return NodeListBinding::Wrap(cx, this);
 }
 
 
 JSObject*
-nsCacheableFuncStringHTMLCollection::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+nsCacheableFuncStringHTMLCollection::WrapObject(JSContext *cx)
 {
-  return HTMLCollectionBinding::Wrap(cx, scope, this);
+  return HTMLCollectionBinding::Wrap(cx, this);
 }
 
 // Hashtable for storing nsCacheableFuncStringContentList
@@ -487,14 +489,14 @@ nsContentList::~nsContentList()
 }
 
 JSObject*
-nsContentList::WrapObject(JSContext *cx, JS::Handle<JSObject*> scope)
+nsContentList::WrapObject(JSContext *cx)
 {
-  return HTMLCollectionBinding::Wrap(cx, scope, this);
+  return HTMLCollectionBinding::Wrap(cx, this);
 }
 
-NS_IMPL_ISUPPORTS_INHERITED3(nsContentList, nsBaseContentList,
-                             nsIHTMLCollection, nsIDOMHTMLCollection,
-                             nsIMutationObserver)
+NS_IMPL_ISUPPORTS_INHERITED(nsContentList, nsBaseContentList,
+                            nsIHTMLCollection, nsIDOMHTMLCollection,
+                            nsIMutationObserver)
 
 uint32_t
 nsContentList::Length(bool aDoFlush)
@@ -529,6 +531,10 @@ nsContentList::Item(uint32_t aIndex, bool aDoFlush)
 Element*
 nsContentList::NamedItem(const nsAString& aName, bool aDoFlush)
 {
+  if (aName.IsEmpty()) {
+    return nullptr;
+  }
+
   BringSelfUpToDate(aDoFlush);
 
   uint32_t i, count = mElements.Length();
@@ -553,13 +559,26 @@ nsContentList::NamedItem(const nsAString& aName, bool aDoFlush)
 }
 
 void
-nsContentList::GetSupportedNames(nsTArray<nsString>& aNames)
+nsContentList::GetSupportedNames(unsigned aFlags, nsTArray<nsString>& aNames)
 {
+  if (!(aFlags & JSITER_HIDDEN)) {
+    return;
+  }
+
   BringSelfUpToDate(true);
 
   nsAutoTArray<nsIAtom*, 8> atoms;
   for (uint32_t i = 0; i < mElements.Length(); ++i) {
     nsIContent *content = mElements.ElementAt(i);
+    if (content->HasID()) {
+      nsIAtom* id = content->GetID();
+      MOZ_ASSERT(id != nsGkAtoms::_empty,
+                 "Empty ids don't get atomized");
+      if (!atoms.Contains(id)) {
+        atoms.AppendElement(id);
+      }
+    }
+
     nsGenericHTMLElement* el = nsGenericHTMLElement::FromContent(content);
     if (el) {
       // XXXbz should we be checking for particular tags here?  How
@@ -569,15 +588,11 @@ nsContentList::GetSupportedNames(nsTArray<nsString>& aNames)
       const nsAttrValue* val = el->GetParsedAttr(nsGkAtoms::name);
       if (val && val->Type() == nsAttrValue::eAtom) {
         nsIAtom* name = val->GetAtomValue();
+        MOZ_ASSERT(name != nsGkAtoms::_empty,
+                   "Empty names don't get atomized");
         if (!atoms.Contains(name)) {
           atoms.AppendElement(name);
         }
-      }
-    }
-    if (content->HasID()) {
-      nsIAtom* id = content->GetID();
-      if (!atoms.Contains(id)) {
-        atoms.AppendElement(id);
       }
     }
   }
@@ -846,7 +861,7 @@ nsContentList::Match(Element *aElement)
   if (!mXMLMatchAtom)
     return false;
 
-  nsINodeInfo *ni = aElement->NodeInfo();
+  mozilla::dom::NodeInfo *ni = aElement->NodeInfo();
  
   bool unknown = mMatchNameSpaceId == kNameSpaceID_Unknown;
   bool wildcard = mMatchNameSpaceId == kNameSpaceID_Wildcard;

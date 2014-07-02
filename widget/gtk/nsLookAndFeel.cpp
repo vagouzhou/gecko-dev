@@ -287,7 +287,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aColor)
     case eColorID_threedface:
     case eColorID_buttonface:
         // 3-D face color
-        aColor = sButtonBackground;
+        aColor = sFrameBackground;
         break;
 
     case eColorID_buttontext:
@@ -299,19 +299,19 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aColor)
         // 3-D highlighted edge color
     case eColorID_threedhighlight:
         // 3-D highlighted outer edge color
-        aColor = sButtonOuterLightBorder;
+        aColor = sFrameOuterLightBorder;
         break;
 
     case eColorID_threedlightshadow:
         // 3-D highlighted inner edge color
-        aColor = sButtonBackground; // always same as background in GTK code
+        aColor = sFrameBackground; // always same as background in GTK code
         break;
 
     case eColorID_buttonshadow:
         // 3-D shadow edge color
     case eColorID_threedshadow:
         // 3-D shadow inner edge color
-        aColor = sButtonInnerDarkBorder;
+        aColor = sFrameInnerDarkBorder;
         break;
 
 #if (MOZ_WIDGET_GTK == 2)
@@ -389,9 +389,7 @@ nsLookAndFeel::NativeGetColor(ColorID aID, nscolor& aColor)
         aColor = GDK_RGBA_TO_NS_RGBA(gdk_color);
         break;
     case eColorID__moz_buttonhovertext:
-        gtk_style_context_get_color(mButtonStyle, 
-                                    GTK_STATE_FLAG_PRELIGHT, &gdk_color);
-        aColor = GDK_RGBA_TO_NS_RGBA(gdk_color);
+        aColor = sButtonHoverText;
         break;
     case eColorID__moz_cellhighlight:
     case eColorID__moz_html_cellhighlight:
@@ -1032,8 +1030,14 @@ nsLookAndFeel::Init()
     GtkWidget *parent = gtk_fixed_new();
     GtkWidget *button = gtk_button_new();
     GtkWidget *label = gtk_label_new("M");
+#if (MOZ_WIDGET_GTK == 2)
     GtkWidget *combobox = gtk_combo_box_new();
     GtkWidget *comboboxLabel = gtk_label_new("M");
+    gtk_container_add(GTK_CONTAINER(combobox), comboboxLabel);
+#else
+    GtkWidget *combobox = gtk_combo_box_new_with_entry();
+    GtkWidget *comboboxLabel = gtk_bin_get_child(GTK_BIN(combobox));
+#endif
     GtkWidget *window = gtk_window_new(GTK_WINDOW_POPUP);
     GtkWidget *treeView = gtk_tree_view_new();
     GtkWidget *linkButton = gtk_link_button_new("http://example.com/");
@@ -1041,7 +1045,6 @@ nsLookAndFeel::Init()
     GtkWidget *entry = gtk_entry_new();
 
     gtk_container_add(GTK_CONTAINER(button), label);
-    gtk_container_add(GTK_CONTAINER(combobox), comboboxLabel);
     gtk_container_add(GTK_CONTAINER(parent), button);
     gtk_container_add(GTK_CONTAINER(parent), treeView);
     gtk_container_add(GTK_CONTAINER(parent), linkButton);
@@ -1118,10 +1121,10 @@ nsLookAndFeel::Init()
 
     style = gtk_widget_get_style(button);
     if (style) {
-        sButtonBackground = GDK_COLOR_TO_NS_RGB(style->bg[GTK_STATE_NORMAL]);
-        sButtonOuterLightBorder =
+        sFrameBackground = GDK_COLOR_TO_NS_RGB(style->bg[GTK_STATE_NORMAL]);
+        sFrameOuterLightBorder =
             GDK_COLOR_TO_NS_RGB(style->light[GTK_STATE_NORMAL]);
-        sButtonInnerDarkBorder =
+        sFrameInnerDarkBorder =
             GDK_COLOR_TO_NS_RGB(style->dark[GTK_STATE_NORMAL]);
     }
 #else
@@ -1129,6 +1132,8 @@ nsLookAndFeel::Init()
     style = gtk_widget_get_style_context(label);
     gtk_style_context_get_color(style, GTK_STATE_FLAG_NORMAL, &color);
     sButtonText = GDK_RGBA_TO_NS_RGBA(color);
+    gtk_style_context_get_color(style, GTK_STATE_FLAG_PRELIGHT, &color);
+    sButtonHoverText = GDK_RGBA_TO_NS_RGBA(color);
 
     // Combobox label and background colors
     style = gtk_widget_get_style_context(comboboxLabel);
@@ -1161,14 +1166,17 @@ nsLookAndFeel::Init()
     sOddCellBackground = GDK_RGBA_TO_NS_RGBA(color);
     gtk_style_context_restore(style);
 
-    style = gtk_widget_get_style_context(button);
-    gtk_style_context_get_background_color(style, GTK_STATE_FLAG_NORMAL, &color);
-    sButtonBackground = GDK_RGBA_TO_NS_RGBA(color);
+    GtkWidget *frame = gtk_frame_new(nullptr);
+    gtk_container_add(GTK_CONTAINER(parent), frame);
 
-    gtk_style_context_get_border_color(style, GTK_STATE_FLAG_PRELIGHT, &color);
-    sButtonInnerDarkBorder = GDK_RGBA_TO_NS_RGBA(color);
+    style = gtk_widget_get_style_context(frame);
+    gtk_style_context_get_background_color(style, GTK_STATE_FLAG_NORMAL, &color);
+    sFrameBackground = GDK_RGBA_TO_NS_RGBA(color);
+
+    // TODO GTK3 - update sFrameOuterLightBorder 
+    // for GTK_BORDER_STYLE_INSET/OUTSET/GROVE/RIDGE border styles (Bug 978172).
     gtk_style_context_get_border_color(style, GTK_STATE_FLAG_NORMAL, &color);
-    sButtonOuterLightBorder = GDK_RGBA_TO_NS_RGBA(color);
+    sFrameInnerDarkBorder = sFrameOuterLightBorder = GDK_RGBA_TO_NS_RGBA(color);
 #endif
     // Some themes have a unified menu bar, and support window dragging on it
     gboolean supports_menubar_drag = FALSE;

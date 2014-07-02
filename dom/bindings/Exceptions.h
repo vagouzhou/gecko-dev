@@ -14,7 +14,7 @@
 
 class nsIStackFrame;
 template <class T>
-class already_AddRefed;
+struct already_AddRefed;
 
 namespace mozilla {
 namespace dom {
@@ -29,6 +29,11 @@ ThrowExceptionObject(JSContext* aCx, Exception* aException);
 
 bool
 ThrowExceptionObject(JSContext* aCx, nsIException* aException);
+
+// Create an exception object for the given nsresult and message but
+// don't set it pending on aCx.  This never returns null.
+already_AddRefed<Exception>
+CreateException(JSContext* aCx, nsresult aRv, const char* aMessage = nullptr);
 
 already_AddRefed<nsIStackFrame>
 GetCurrentJSStack();

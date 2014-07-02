@@ -28,6 +28,7 @@
 #include "nsContentPolicyUtils.h"
 #include "nsIHttpChannel.h"
 #include "nsIHttpChannelInternal.h"
+#include "nsITimedChannel.h"
 #include "nsIScriptElement.h"
 #include "nsIDOMHTMLScriptElement.h"
 #include "nsIDocShell.h"
@@ -48,11 +49,13 @@
 #include "nsCrossSiteListenerProxy.h"
 #include "nsSandboxFlags.h"
 #include "nsContentTypeParser.h"
-#include "nsINetworkSeer.h"
+#include "nsINetworkPredictor.h"
 #include "mozilla/dom/EncodingUtils.h"
 
 #include "mozilla/CORSMode.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Telemetry.h"
+#include "mozilla/unused.h"
 
 #ifdef PR_LOGGING
 static PRLogModuleInfo* gCspPRLog;
@@ -66,6 +69,11 @@ using namespace mozilla::dom;
 //////////////////////////////////////////////////////////////
 
 class nsScriptLoadRequest MOZ_FINAL : public nsISupports {
+  ~nsScriptLoadRequest()
+  {
+    js_free(mScriptTextBuf);
+  }
+
 public:
   nsScriptLoadRequest(nsIScriptElement* aElement,
                       uint32_t aVersion,
@@ -74,6 +82,8 @@ public:
       mLoading(true),
       mIsInline(true),
       mHasSourceMapURL(false),
+      mScriptTextBuf(nullptr),
+      mScriptTextLength(0),
       mJSVersion(aVersion),
       mLineNo(1),
       mCORSMode(aCORSMode)
@@ -101,7 +111,8 @@ public:
   bool mIsInline;         // Is the script inline or loaded?
   bool mHasSourceMapURL;  // Does the HTTP header have a source map url?
   nsString mSourceMapURL; // Holds source map url for loaded scripts
-  nsString mScriptText;   // Holds script for text loaded scripts
+  jschar* mScriptTextBuf;   // Holds script text for non-inline scripts. Don't
+  size_t mScriptTextLength; // use nsString so we can give ownership to jsapi.
   uint32_t mJSVersion;
   nsCOMPtr<nsIURI> mURI;
   nsCOMPtr<nsIPrincipal> mOriginPrincipal;
@@ -124,7 +135,8 @@ nsScriptLoader::nsScriptLoader(nsIDocument *aDocument)
     mBlockerCount(0),
     mEnabled(true),
     mDeferEnabled(false),
-    mDocumentParsingDone(false)
+    mDocumentParsingDone(false),
+    mBlockingDOMContentLoaded(false)
 {
   // enable logging for CSP
 #ifdef PR_LOGGING
@@ -164,7 +176,7 @@ nsScriptLoader::~nsScriptLoader()
   }  
 }
 
-NS_IMPL_ISUPPORTS1(nsScriptLoader, nsIStreamLoaderObserver)
+NS_IMPL_ISUPPORTS(nsScriptLoader, nsIStreamLoaderObserver)
 
 // Helper method for checking if the script element is an event-handler
 // This means that it has both a for-attribute and a event-attribute.
@@ -333,8 +345,14 @@ nsScriptLoader::StartLoad(nsScriptLoadRequest *aRequest, const nsAString &aType,
   }
 
   nsCOMPtr<nsILoadContext> loadContext(do_QueryInterface(docshell));
-  mozilla::net::SeerLearn(aRequest->mURI, mDocument->GetDocumentURI(),
-      nsINetworkSeer::LEARN_LOAD_SUBRESOURCE, loadContext);
+  mozilla::net::PredictorLearn(aRequest->mURI, mDocument->GetDocumentURI(),
+      nsINetworkPredictor::LEARN_LOAD_SUBRESOURCE, loadContext);
+
+  // Set the initiator type
+  nsCOMPtr<nsITimedChannel> timedChannel(do_QueryInterface(httpChannel));
+  if (timedChannel) {
+    timedChannel->SetInitiatorType(NS_LITERAL_STRING("script"));
+  }
 
   nsCOMPtr<nsIStreamLoader> loader;
   rv = NS_NewStreamLoader(getter_AddRefs(loader), this);
@@ -414,7 +432,7 @@ ParseTypeAttribute(const nsAString& aType, JSVersion* aVersion)
   return true;
 }
 
-bool
+static bool
 CSPAllowsInlineScript(nsIScriptElement *aElement, nsIDocument *aDocument)
 {
   nsCOMPtr<nsIContentSecurityPolicy> csp;
@@ -521,6 +539,43 @@ CSPAllowsInlineScript(nsIScriptElement *aElement, nsIDocument *aDocument)
   return true;
 }
 
+static void
+AccumulateJavaScriptVersionTelemetry(nsIScriptElement* aElement,
+                                     JSVersion aVersion)
+{
+  uint32_t minorVersion;
+  switch (aVersion) {
+    case JSVERSION_DEFAULT: minorVersion = 5; break;
+    case JSVERSION_1_6:     minorVersion = 6; break;
+    case JSVERSION_1_7:     minorVersion = 7; break;
+    case JSVERSION_1_8:     minorVersion = 8; break;
+    default:                MOZ_ASSERT_UNREACHABLE("Unexpected JSVersion");
+    case JSVERSION_UNKNOWN: minorVersion = 0; break;
+  }
+
+  // Only report SpiderMonkey's nonstandard JS versions: 1.6, 1.7, and 1.8.
+  if (minorVersion < 6) {
+    return;
+  }
+
+  nsCOMPtr<nsIURI> scriptURI = aElement->GetScriptURI();
+  if (!scriptURI) {
+    return;
+  }
+
+  // We only care about web content, not chrome or add-on JS versions.
+  bool chrome = false;
+  scriptURI->SchemeIs("chrome", &chrome);
+  if (!chrome) {
+    scriptURI->SchemeIs("resource", &chrome);
+  }
+  if (chrome) {
+    return;
+  }
+
+  Telemetry::Accumulate(Telemetry::JS_MINOR_VERSION, minorVersion);
+}
+
 bool
 nsScriptLoader::ProcessScriptElement(nsIScriptElement *aElement)
 {
@@ -549,6 +604,7 @@ nsScriptLoader::ProcessScriptElement(nsIScriptElement *aElement)
   aElement->GetScriptType(type);
   if (!type.IsEmpty()) {
     NS_ENSURE_TRUE(ParseTypeAttribute(type, &version), false);
+    AccumulateJavaScriptVersionTelemetry(aElement, version);
   } else {
     // no 'type=' element
     // "language" is a deprecated attribute of HTML, so we check it only for
@@ -656,7 +712,7 @@ nsScriptLoader::ProcessScriptElement(nsIScriptElement *aElement)
       NS_ASSERTION(mDocument->GetCurrentContentSink() ||
                    aElement->GetParserCreated() == FROM_PARSER_XSLT,
           "Non-XSLT Defer script on a document without an active parser; bug 592366.");
-      mDeferRequests.AppendElement(request);
+      AddDeferRequest(request);
       return false;
     }
 
@@ -813,11 +869,10 @@ NotifyOffThreadScriptLoadCompletedRunnable::Run()
 static void
 OffThreadScriptLoaderCallback(void *aToken, void *aCallbackData)
 {
-  NotifyOffThreadScriptLoadCompletedRunnable* aRunnable =
-    static_cast<NotifyOffThreadScriptLoadCompletedRunnable*>(aCallbackData);
+  nsRefPtr<NotifyOffThreadScriptLoadCompletedRunnable> aRunnable =
+    dont_AddRef(static_cast<NotifyOffThreadScriptLoadCompletedRunnable*>(aCallbackData));
   aRunnable->SetToken(aToken);
   NS_DispatchToMainThread(aRunnable);
-  NS_RELEASE(aRunnable);
 }
 
 nsresult
@@ -832,29 +887,25 @@ nsScriptLoader::AttemptAsyncScriptParse(nsScriptLoadRequest* aRequest)
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIScriptContext> context = globalObject->GetScriptContext();
-  if (!context) {
+  AutoJSAPI jsapi;
+  if (!jsapi.InitWithLegacyErrorReporting(globalObject)) {
     return NS_ERROR_FAILURE;
   }
 
-  AutoPushJSContext cx(context->GetNativeContext());
+  JSContext* cx = jsapi.cx();
   JS::Rooted<JSObject*> global(cx, globalObject->GetGlobalJSObject());
-
   JS::CompileOptions options(cx);
   FillCompileOptionsForRequest(aRequest, global, &options);
 
-  if (!JS::CanCompileOffThread(cx, options, aRequest->mScriptText.Length())) {
+  if (!JS::CanCompileOffThread(cx, options, aRequest->mScriptTextLength)) {
     return NS_ERROR_FAILURE;
   }
 
-  NotifyOffThreadScriptLoadCompletedRunnable* runnable =
+  nsRefPtr<NotifyOffThreadScriptLoadCompletedRunnable> runnable =
     new NotifyOffThreadScriptLoadCompletedRunnable(aRequest, this);
 
-  // This reference will be consumed by OffThreadScriptLoaderCallback.
-  NS_ADDREF(runnable);
-
-  if (!JS::CompileOffThread(cx, global, options,
-                            aRequest->mScriptText.get(), aRequest->mScriptText.Length(),
+  if (!JS::CompileOffThread(cx, options,
+                            aRequest->mScriptTextBuf, aRequest->mScriptTextLength,
                             OffThreadScriptLoaderCallback,
                             static_cast<void*>(runnable))) {
     return NS_ERROR_OUT_OF_MEMORY;
@@ -862,6 +913,7 @@ nsScriptLoader::AttemptAsyncScriptParse(nsScriptLoadRequest* aRequest)
 
   mDocument->BlockOnload();
 
+  unused << runnable.forget();
   return NS_OK;
 }
 
@@ -878,8 +930,11 @@ nsScriptLoader::ProcessRequest(nsScriptLoadRequest* aRequest, void **aOffThreadT
   }
 
   NS_ENSURE_ARG(aRequest);
-  nsAFlatString* script;
   nsAutoString textData;
+  const jschar* scriptBuf = nullptr;
+  size_t scriptLength = 0;
+  JS::SourceBufferHolder::Ownership giveScriptOwnership =
+    JS::SourceBufferHolder::NoOwnership;
 
   nsCOMPtr<nsIDocument> doc;
 
@@ -891,13 +946,22 @@ nsScriptLoader::ProcessRequest(nsScriptLoadRequest* aRequest, void **aOffThreadT
     // copies.
     aRequest->mElement->GetScriptText(textData);
 
-    script = &textData;
+    scriptBuf = textData.get();
+    scriptLength = textData.Length();
+    giveScriptOwnership = JS::SourceBufferHolder::NoOwnership;
   }
   else {
-    script = &aRequest->mScriptText;
+    scriptBuf = aRequest->mScriptTextBuf;
+    scriptLength = aRequest->mScriptTextLength;
+
+    giveScriptOwnership = JS::SourceBufferHolder::GiveOwnership;
+    aRequest->mScriptTextBuf = nullptr;
+    aRequest->mScriptTextLength = 0;
 
     doc = scriptElem->OwnerDoc();
   }
+
+  JS::SourceBufferHolder srcBuf(scriptBuf, scriptLength, giveScriptOwnership);
 
   nsCOMPtr<nsIScriptElement> oldParserInsertedScript;
   uint32_t parserCreated = aRequest->mElement->GetParserCreated();
@@ -910,7 +974,8 @@ nsScriptLoader::ProcessRequest(nsScriptLoadRequest* aRequest, void **aOffThreadT
 
   // The window may have gone away by this point, in which case there's no point
   // in trying to run the script.
-  nsPIDOMWindow *pwin = mDocument->GetInnerWindow();
+  nsCOMPtr<nsIDocument> master = mDocument->MasterDocument();
+  nsPIDOMWindow *pwin = master->GetInnerWindow();
   bool runScript = !!pwin;
   if (runScript) {
     nsContentUtils::DispatchTrustedEvent(scriptElem->OwnerDoc(),
@@ -920,7 +985,7 @@ nsScriptLoader::ProcessRequest(nsScriptLoadRequest* aRequest, void **aOffThreadT
   }
 
   // Inner window could have gone away after firing beforescriptexecute
-  pwin = mDocument->GetInnerWindow();
+  pwin = master->GetInnerWindow();
   if (!pwin) {
     runScript = false;
   }
@@ -931,7 +996,7 @@ nsScriptLoader::ProcessRequest(nsScriptLoadRequest* aRequest, void **aOffThreadT
       doc->BeginEvaluatingExternalScript();
     }
     aRequest->mElement->BeginEvaluating();
-    rv = EvaluateScript(aRequest, *script, aOffThreadToken);
+    rv = EvaluateScript(aRequest, srcBuf, aOffThreadToken);
     aRequest->mElement->EndEvaluating();
     if (doc) {
       doc->EndEvaluatingExternalScript();
@@ -982,7 +1047,8 @@ nsScriptLoader::FireScriptEvaluated(nsresult aResult,
 already_AddRefed<nsIScriptGlobalObject>
 nsScriptLoader::GetScriptGlobalObject()
 {
-  nsPIDOMWindow *pwin = mDocument->GetInnerWindow();
+  nsCOMPtr<nsIDocument> master = mDocument->MasterDocument();
+  nsPIDOMWindow *pwin = master->GetInnerWindow();
   if (!pwin) {
     return nullptr;
   }
@@ -1027,8 +1093,9 @@ nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
   // compartments with it... and in particular, it will compile in the
   // compartment of aScopeChain, so we want to wrap into that compartment as
   // well.
-  if (NS_SUCCEEDED(nsContentUtils::WrapNative(cx, aScopeChain,
-                                              aRequest->mElement, &elementVal,
+  JSAutoCompartment ac(cx, aScopeChain);
+  if (NS_SUCCEEDED(nsContentUtils::WrapNative(cx, aRequest->mElement,
+                                              &elementVal,
                                               /* aAllowWrapping = */ true))) {
     MOZ_ASSERT(elementVal.isObject());
     aOptions->setElement(&elementVal.toObject());
@@ -1037,11 +1104,9 @@ nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
 
 nsresult
 nsScriptLoader::EvaluateScript(nsScriptLoadRequest* aRequest,
-                               const nsAFlatString& aScript,
+                               JS::SourceBufferHolder& aSrcBuf,
                                void** aOffThreadToken)
 {
-  nsresult rv = NS_OK;
-
   // We need a document to evaluate scripts.
   if (!mDocument) {
     return NS_ERROR_FAILURE;
@@ -1070,6 +1135,11 @@ nsScriptLoader::EvaluateScript(nsScriptLoadRequest* aRequest,
     return NS_ERROR_FAILURE;
   }
 
+  JSVersion version = JSVersion(aRequest->mJSVersion);
+  if (version == JSVERSION_UNKNOWN) {
+    return NS_OK;
+  }
+
   // New script entry point required, due to the "Create a script" sub-step of
   // http://www.whatwg.org/specs/web-apps/current-work/#execute-the-script-block
   AutoEntryScript entryScript(globalObject, true, context->GetNativeContext());
@@ -1078,22 +1148,27 @@ nsScriptLoader::EvaluateScript(nsScriptLoadRequest* aRequest,
 
   bool oldProcessingScriptTag = context->GetProcessingScriptTag();
   context->SetProcessingScriptTag(true);
+  nsresult rv;
+  {
+    // Update our current script.
+    AutoCurrentScriptUpdater scriptUpdater(this, aRequest->mElement);
+    Maybe<AutoCurrentScriptUpdater> masterScriptUpdater;
+    nsCOMPtr<nsIDocument> master = mDocument->MasterDocument();
+    if (master != mDocument) {
+      // If this script belongs to an import document, it will be
+      // executed in the context of the master document. During the
+      // execution currentScript of the master should refer to this
+      // script. So let's update the mCurrentScript of the ScriptLoader
+      // of the master document too.
+      masterScriptUpdater.construct(master->ScriptLoader(),
+                                    aRequest->mElement);
+    }
 
-  // Update our current script.
-  nsCOMPtr<nsIScriptElement> oldCurrent = mCurrentScript;
-  mCurrentScript = aRequest->mElement;
-
-  JSVersion version = JSVersion(aRequest->mJSVersion);
-  if (version != JSVERSION_UNKNOWN) {
     JS::CompileOptions options(entryScript.cx());
     FillCompileOptionsForRequest(aRequest, global, &options);
-    nsJSUtils::EvaluateOptions evalOptions;
-    rv = nsJSUtils::EvaluateString(entryScript.cx(), aScript, global, options,
-                                   evalOptions, nullptr, aOffThreadToken);
+    rv = nsJSUtils::EvaluateString(entryScript.cx(), aSrcBuf, global, options,
+                                   aOffThreadToken);
   }
-
-  // Put the old script back in case it wants to do anything else.
-  mCurrentScript = oldCurrent;
 
   context->SetProcessingScriptTag(oldProcessingScriptTag);
   return rv;
@@ -1171,6 +1246,9 @@ nsScriptLoader::ProcessPendingRequests()
       !mParserBlockingRequest && mAsyncRequests.IsEmpty() &&
       mNonAsyncExternalScriptInsertedRequests.IsEmpty() &&
       mXSLTRequests.IsEmpty() && mDeferRequests.IsEmpty()) {
+    if (MaybeRemovedDeferRequests()) {
+      return ProcessPendingRequests();
+    }
     // No more pending scripts; time to unblock onload.
     // OK to unblock onload synchronously here, since callers must be
     // prepared for the world changing anyway.
@@ -1213,21 +1291,21 @@ DetectByteOrderMark(const unsigned char* aBytes, int32_t aLen, nsCString& oChars
     if (aLen >= 3 && 0xBB == aBytes[1] && 0xBF == aBytes[2]) {
       // EF BB BF
       // Win2K UTF-8 BOM
-      oCharset.Assign("UTF-8");
+      oCharset.AssignLiteral("UTF-8");
     }
     break;
   case 0xFE:
     if (0xFF == aBytes[1]) {
       // FE FF
       // UTF-16, big-endian
-      oCharset.Assign("UTF-16BE");
+      oCharset.AssignLiteral("UTF-16BE");
     }
     break;
   case 0xFF:
     if (0xFE == aBytes[1]) {
       // FF FE
       // UTF-16, little-endian
-      oCharset.Assign("UTF-16LE");
+      oCharset.AssignLiteral("UTF-16LE");
     }
     break;
   }
@@ -1237,10 +1315,12 @@ DetectByteOrderMark(const unsigned char* aBytes, int32_t aLen, nsCString& oChars
 /* static */ nsresult
 nsScriptLoader::ConvertToUTF16(nsIChannel* aChannel, const uint8_t* aData,
                                uint32_t aLength, const nsAString& aHintCharset,
-                               nsIDocument* aDocument, nsString& aString)
+                               nsIDocument* aDocument,
+                               jschar*& aBufOut, size_t& aLengthOut)
 {
   if (!aLength) {
-    aString.Truncate();
+    aBufOut = nullptr;
+    aLengthOut = 0;
     return NS_OK;
   }
 
@@ -1293,17 +1373,23 @@ nsScriptLoader::ConvertToUTF16(nsIChannel* aChannel, const uint8_t* aData,
                                  aLength, &unicodeLength);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  if (!aString.SetLength(unicodeLength, fallible_t())) {
+  aBufOut = static_cast<jschar*>(js_malloc(unicodeLength * sizeof(jschar)));
+  if (!aBufOut) {
+    aLengthOut = 0;
     return NS_ERROR_OUT_OF_MEMORY;
   }
-
-  char16_t *ustr = aString.BeginWriting();
+  aLengthOut = unicodeLength;
 
   rv = unicodeDecoder->Convert(reinterpret_cast<const char*>(aData),
-                               (int32_t *) &aLength, ustr,
+                               (int32_t *) &aLength, aBufOut,
                                &unicodeLength);
   MOZ_ASSERT(NS_SUCCEEDED(rv));
-  aString.SetLength(unicodeLength);
+  aLengthOut = unicodeLength;
+  if (NS_FAILED(rv)) {
+    js_free(aBufOut);
+    aBufOut = nullptr;
+    aLengthOut = 0;
+  }
   return rv;
 }
 
@@ -1334,12 +1420,16 @@ nsScriptLoader::OnStreamComplete(nsIStreamLoader* aLoader,
     } else {
       mPreloads.RemoveElement(request, PreloadRequestComparator());
     }
+    rv = NS_OK;
+  } else {
+    NS_Free(const_cast<uint8_t *>(aString));
+    rv = NS_SUCCESS_ADOPTED_DATA;
   }
 
   // Process our request and/or any pending ones
   ProcessPendingRequests();
 
-  return NS_OK;
+  return rv;
 }
 
 void
@@ -1413,7 +1503,7 @@ nsScriptLoader::PrepareLoadedRequest(nsScriptLoadRequest* aRequest,
       hintCharset = mPreloads[i].mCharset;
     }
     rv = ConvertToUTF16(channel, aString, aStringLen, hintCharset, mDocument,
-                        aRequest->mScriptText);
+                        aRequest->mScriptTextBuf, aRequest->mScriptTextLength);
 
     NS_ENSURE_SUCCESS(rv, rv);
   }
@@ -1483,4 +1573,28 @@ nsScriptLoader::PreloadURI(nsIURI *aURI, const nsAString &aCharset,
   PreloadInfo *pi = mPreloads.AppendElement();
   pi->mRequest = request;
   pi->mCharset = aCharset;
+}
+
+void
+nsScriptLoader::AddDeferRequest(nsScriptLoadRequest* aRequest)
+{
+  mDeferRequests.AppendElement(aRequest);
+  if (mDeferEnabled && mDeferRequests.Length() == 1 && mDocument &&
+      !mBlockingDOMContentLoaded) {
+    MOZ_ASSERT(mDocument->GetReadyStateEnum() == nsIDocument::READYSTATE_LOADING);
+    mBlockingDOMContentLoaded = true;
+    mDocument->BlockDOMContentLoaded();
+  }
+}
+
+bool
+nsScriptLoader::MaybeRemovedDeferRequests()
+{
+  if (mDeferRequests.Length() == 0 && mDocument &&
+      mBlockingDOMContentLoaded) {
+    mBlockingDOMContentLoaded = false;
+    mDocument->UnblockDOMContentLoaded();
+    return true;
+  }
+  return false;
 }

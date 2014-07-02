@@ -28,7 +28,6 @@
 #include "nsIConsoleService.h"
 
 #include <memory>
-#include "mozilla/Compression.h"
 #include "mozilla/LinkedList.h"
 #include "mozilla/Base64.h"
 #include "mozilla/SHA1.h"
@@ -42,6 +41,10 @@
 #include "nsIAsyncInputStream.h"
 #include "nsIEventTarget.h"
 #include "nsProxyRelease.h"
+
+// Undo the damage done by mozzconf.h
+#undef compress
+#include "mozilla/Compression.h"
 
 #ifdef __GNUC__
 #define PACKED_STRUCT __attribute__((packed))
@@ -77,6 +80,7 @@ public:
         : mState(NoHandshake)
     { }
 
+private:
     virtual ~LayerScopeWebSocketHandler()
     {
         if (mTransport) {
@@ -84,6 +88,7 @@ public:
         }
     }
 
+public:
     void OpenStream(nsISocketTransport* aTransport) {
         MOZ_ASSERT(aTransport);
 
@@ -220,7 +225,9 @@ private:
             return false;
         }
 
-        if (!(version.Equals("7") || version.Equals("8") || version.Equals("13"))) {
+        if (!(version.EqualsLiteral("7") ||
+              version.EqualsLiteral("8") ||
+              version.EqualsLiteral("13"))) {
             return false;
         }
 
@@ -240,10 +247,10 @@ private:
         Base64Encode(newString, res);
 
         nsCString response("HTTP/1.1 101 Switching Protocols\r\n");
-        response.Append("Upgrade: websocket\r\n");
-        response.Append("Connection: Upgrade\r\n");
+        response.AppendLiteral("Upgrade: websocket\r\n");
+        response.AppendLiteral("Connection: Upgrade\r\n");
         response.Append(nsCString("Sec-WebSocket-Accept: ") + res + nsCString("\r\n"));
-        response.Append("Sec-WebSocket-Protocol: binary\r\n\r\n");
+        response.AppendLiteral("Sec-WebSocket-Protocol: binary\r\n\r\n");
         uint32_t written = 0;
         uint32_t size = response.Length();
         while (written < size) {
@@ -266,7 +273,7 @@ private:
     SocketStateType mState;
 };
 
-NS_IMPL_ISUPPORTS1(LayerScopeWebSocketHandler, nsIInputStreamCallback);
+NS_IMPL_ISUPPORTS(LayerScopeWebSocketHandler, nsIInputStreamCallback);
 
 class LayerScopeWebSocketManager {
 public:
@@ -504,6 +511,7 @@ class DebugGLColorData : public DebugGLData {
 public:
     DebugGLColorData(void* layerRef, const gfxRGBA& color, int width, int height)
         : DebugGLData(DebugGLData::ColorData),
+          mLayerRef(layerRef),
           mColor(color.Packed()),
           mSize(width, height)
     { }
@@ -545,12 +553,13 @@ CheckSender()
 
 class DebugListener : public nsIServerSocketListener
 {
+    virtual ~DebugListener() { }
+
 public:
 
     NS_DECL_THREADSAFE_ISUPPORTS
 
     DebugListener() { }
-    virtual ~DebugListener() { }
 
     /* nsIServerSocketListener */
 
@@ -572,21 +581,21 @@ public:
     }
 };
 
-NS_IMPL_ISUPPORTS1(DebugListener, nsIServerSocketListener);
+NS_IMPL_ISUPPORTS(DebugListener, nsIServerSocketListener);
 
 
 class DebugDataSender : public nsIRunnable
 {
+    virtual ~DebugDataSender() {
+        Cleanup();
+    }
+
 public:
 
     NS_DECL_THREADSAFE_ISUPPORTS
 
     DebugDataSender() {
         mList = new LinkedList<DebugGLData>();
-    }
-
-    virtual ~DebugDataSender() {
-        Cleanup();
     }
 
     void Append(DebugGLData *d) {
@@ -632,7 +641,7 @@ protected:
     LinkedList<DebugGLData> *mList;
 };
 
-NS_IMPL_ISUPPORTS1(DebugDataSender, nsIRunnable);
+NS_IMPL_ISUPPORTS(DebugDataSender, nsIRunnable);
 
 void
 LayerScope::CreateServerSocket()
@@ -775,20 +784,20 @@ LayerScope::SendEffectChain(GLContext* aGLContext,
 
     const Effect* primaryEffect = aEffectChain.mPrimaryEffect;
     switch (primaryEffect->mType) {
-    case EFFECT_RGB:
+    case EffectTypes::RGB:
     {
         const TexturedEffect* texturedEffect =
             static_cast<const TexturedEffect*>(primaryEffect);
         SendTexturedEffect(aGLContext, aEffectChain.mLayerRef, texturedEffect);
     }
     break;
-    case EFFECT_YCBCR:
+    case EffectTypes::YCBCR:
     {
         const EffectYCbCr* yCbCrEffect =
             static_cast<const EffectYCbCr*>(primaryEffect);
         SendYCbCrEffect(aGLContext, aEffectChain.mLayerRef, yCbCrEffect);
     }
-    case EFFECT_SOLID_COLOR:
+    case EffectTypes::SOLID_COLOR:
     {
         const EffectSolidColor* solidColorEffect =
             static_cast<const EffectSolidColor*>(primaryEffect);
@@ -799,13 +808,13 @@ LayerScope::SendEffectChain(GLContext* aGLContext,
         SendColor(aEffectChain.mLayerRef, color, aWidth, aHeight);
     }
     break;
-    case EFFECT_COMPONENT_ALPHA:
-    case EFFECT_RENDER_TARGET:
+    case EffectTypes::COMPONENT_ALPHA:
+    case EffectTypes::RENDER_TARGET:
     default:
         break;
     }
 
-    //const Effect* secondaryEffect = aEffectChain.mSecondaryEffects[EFFECT_MASK];
+    //const Effect* secondaryEffect = aEffectChain.mSecondaryEffects[EffectTypes::MASK];
     // TODO:
 }
 

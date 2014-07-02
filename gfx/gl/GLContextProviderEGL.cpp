@@ -100,7 +100,6 @@ public:
 #include "gfxUtils.h"
 #include "gfxFailure.h"
 #include "gfxASurface.h"
-#include "gfxImageSurface.h"
 #include "gfxPlatform.h"
 #include "GLContextProvider.h"
 #include "GLLibraryEGL.h"
@@ -234,6 +233,7 @@ GLContextEGL::GLContextEGL(
     , mIsDoubleBuffered(false)
     , mCanBindToTexture(false)
     , mShareWithEGLImage(false)
+    , mOwnsContext(true)
 {
     // any EGL contexts will always be GLESv2
     SetProfileVersion(ContextProfile::OpenGLES, 200);
@@ -246,7 +246,7 @@ GLContextEGL::GLContextEGL(
         mHwc = HwcComposer2D::GetInstance();
         MOZ_ASSERT(!mHwc->Initialized());
 
-        if (mHwc->Init(EGL_DISPLAY(), mSurface)) {
+        if (mHwc->Init(EGL_DISPLAY(), mSurface, this)) {
             NS_WARNING("HWComposer initialization failed!");
             mHwc = nullptr;
         }
@@ -258,11 +258,29 @@ GLContextEGL::~GLContextEGL()
 {
     MarkDestroyed();
 
+    // Wrapped context should not destroy eglContext/Surface
+    if (!mOwnsContext) {
+        return;
+    }
+
 #ifdef DEBUG
     printf_stderr("Destroying context %p surface %p on display %p\n", mContext, mSurface, EGL_DISPLAY());
 #endif
 
     sEGLLibrary.fDestroyContext(EGL_DISPLAY(), mContext);
+    sEGLLibrary.UnsetCachedCurrentContext();
+
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION < 17
+    if (!mIsOffscreen) {
+      // In ICS, SurfaceFlinger's DisplayHardware::fini() does not destroy the EGLSurface associated with the
+      // native framebuffer. Destroying it causes crashes in the ICS emulator
+      // EGL implementation, specifically because the egl_window_surface_t dtor
+      // calls nativeWindow->cancelBuffer and FramebufferNativeWindow does not initialize
+      // the cancelBuffer function pointer, see bug 986836
+      return;
+    }
+#endif
+
     mozilla::gl::DestroySurface(mSurface);
 }
 
@@ -364,7 +382,18 @@ GLContextEGL::MakeCurrentImpl(bool aForce) {
     // Assume that EGL has the same problem as WGL does,
     // where MakeCurrent with an already-current context is
     // still expensive.
-    if (aForce || sEGLLibrary.fGetCurrentContext() != mContext) {
+    bool hasDifferentContext = false;
+    if (sEGLLibrary.CachedCurrentContext() != mContext) {
+        // even if the cached context doesn't match the current one
+        // might still
+        if (sEGLLibrary.fGetCurrentContext() != mContext) {
+            hasDifferentContext = true;
+        } else {
+            sEGLLibrary.SetCachedCurrentContext(mContext);
+        }
+    }
+
+    if (aForce || hasDifferentContext) {
         EGLSurface surface = mSurfaceOverride != EGL_NO_SURFACE
                               ? mSurfaceOverride
                               : mSurface;
@@ -374,8 +403,8 @@ GLContextEGL::MakeCurrentImpl(bool aForce) {
         succeeded = sEGLLibrary.fMakeCurrent(EGL_DISPLAY(),
                                               surface, surface,
                                               mContext);
-        int eglError = sEGLLibrary.fGetError();
         if (!succeeded) {
+            int eglError = sEGLLibrary.fGetError();
             if (eglError == LOCAL_EGL_CONTEXT_LOST) {
                 mContextLost = true;
                 NS_WARNING("EGL context has been lost.");
@@ -385,7 +414,11 @@ GLContextEGL::MakeCurrentImpl(bool aForce) {
                 printf_stderr("EGL Error: 0x%04x\n", eglError);
 #endif
             }
+        } else {
+            sEGLLibrary.SetCachedCurrentContext(mContext);
         }
+    } else {
+        MOZ_ASSERT(sEGLLibrary.CachedCurrentContextMatches());
     }
 
     return succeeded;
@@ -398,6 +431,9 @@ GLContextEGL::IsCurrent() {
 
 bool
 GLContextEGL::RenewSurface() {
+    if (!mOwnsContext) {
+        return false;
+    }
 #ifndef MOZ_WIDGET_ANDROID
     MOZ_CRASH("unimplemented");
     // to support this on non-Android platforms, need to keep track of the nsIWidget that
@@ -418,7 +454,9 @@ GLContextEGL::RenewSurface() {
 
 void
 GLContextEGL::ReleaseSurface() {
-    DestroySurface(mSurface);
+    if (mOwnsContext) {
+        DestroySurface(mSurface);
+    }
     mSurface = EGL_NO_SURFACE;
 }
 
@@ -668,6 +706,31 @@ CreateConfig(EGLConfig* aConfig)
     } else {
         return true;
     }
+}
+
+already_AddRefed<GLContext>
+GLContextProviderEGL::CreateWrappingExisting(void* aContext, void* aSurface)
+{
+    if (!sEGLLibrary.EnsureInitialized()) {
+        MOZ_CRASH("Failed to load EGL library!\n");
+        return nullptr;
+    }
+
+    if (aContext && aSurface) {
+        SurfaceCaps caps = SurfaceCaps::Any();
+        EGLConfig config = EGL_NO_CONFIG;
+        nsRefPtr<GLContextEGL> glContext =
+            new GLContextEGL(caps,
+                             nullptr, false,
+                             config, (EGLSurface)aSurface, (EGLContext)aContext);
+
+        glContext->SetIsDoubleBuffered(true);
+        glContext->mOwnsContext = false;
+
+        return glContext.forget();
+    }
+
+    return nullptr;
 }
 
 already_AddRefed<GLContext>

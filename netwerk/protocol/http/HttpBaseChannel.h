@@ -19,6 +19,7 @@
 #include "nsIHttpChannel.h"
 #include "nsHttpHandler.h"
 #include "nsIHttpChannelInternal.h"
+#include "nsIRedirectHistory.h"
 #include "nsIUploadChannel.h"
 #include "nsIUploadChannel2.h"
 #include "nsIProgressEventSink.h"
@@ -34,6 +35,7 @@
 #include "nsThreadUtils.h"
 #include "PrivateBrowsingChannel.h"
 #include "mozilla/net/DNS.h"
+#include "nsITimedChannel.h"
 #include "nsISecurityConsoleMessage.h"
 
 extern PRLogModuleInfo *gHttpLog;
@@ -52,21 +54,27 @@ class HttpBaseChannel : public nsHashPropertyBag
                       , public nsIEncodedChannel
                       , public nsIHttpChannel
                       , public nsIHttpChannelInternal
+                      , public nsIRedirectHistory
                       , public nsIUploadChannel
                       , public nsIUploadChannel2
                       , public nsISupportsPriority
                       , public nsIResumableChannel
                       , public nsITraceableChannel
                       , public PrivateBrowsingChannel<HttpBaseChannel>
+                      , public nsITimedChannel
 {
+protected:
+  virtual ~HttpBaseChannel();
+
 public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIUPLOADCHANNEL
   NS_DECL_NSIUPLOADCHANNEL2
   NS_DECL_NSITRACEABLECHANNEL
+  NS_DECL_NSITIMEDCHANNEL
+  NS_DECL_NSIREDIRECTHISTORY
 
   HttpBaseChannel();
-  virtual ~HttpBaseChannel();
 
   virtual nsresult Init(nsIURI *aURI, uint32_t aCaps, nsProxyInfo *aProxyInfo,
                         uint32_t aProxyResolveFlags,
@@ -122,6 +130,8 @@ public:
   NS_IMETHOD VisitResponseHeaders(nsIHttpHeaderVisitor *visitor);
   NS_IMETHOD GetAllowPipelining(bool *value);
   NS_IMETHOD SetAllowPipelining(bool value);
+  NS_IMETHOD GetAllowSTS(bool *value);
+  NS_IMETHOD SetAllowSTS(bool value);
   NS_IMETHOD GetRedirectionLimit(uint32_t *value);
   NS_IMETHOD SetRedirectionLimit(uint32_t value);
   NS_IMETHOD IsNoStoreResponse(bool *value);
@@ -158,6 +168,8 @@ public:
   NS_IMETHOD TakeAllSecurityMessages(nsCOMArray<nsISecurityConsoleMessage> &aMessages);
   NS_IMETHOD GetResponseTimeoutEnabled(bool *aEnable);
   NS_IMETHOD SetResponseTimeoutEnabled(bool aEnable);
+  NS_IMETHOD AddRedirect(nsIPrincipal *aRedirect);
+  NS_IMETHOD ForcePending(bool aForcePending);
 
   inline void CleanRedirectCacheChainIfNecessary()
   {
@@ -180,9 +192,10 @@ public:
         NS_DECL_NSIUTF8STRINGENUMERATOR
 
         nsContentEncodings(nsIHttpChannel* aChannel, const char* aEncodingHeader);
-        virtual ~nsContentEncodings();
 
     private:
+        virtual ~nsContentEncodings();
+
         nsresult PrepareForNext(void);
 
         // We do not own the buffer.  The channel owns it.
@@ -212,7 +225,7 @@ public: /* Necko internal use only... */
                                            nsHttpRequestHead::ParsedMethodType method);
 
 protected:
-    nsCOMArray<nsISecurityConsoleMessage> mSecurityConsoleMessages;
+  nsCOMArray<nsISecurityConsoleMessage> mSecurityConsoleMessages;
 
   // Handle notifying listener, removing from loadgroup if request failed.
   void     DoNotifyListener();
@@ -242,6 +255,15 @@ protected:
                                   NS_GET_TEMPLATE_IID(T),
                                   getter_AddRefs(aResult));
   }
+
+  // Redirect tracking
+  // Checks whether or not aURI and mOriginalURI share the same domain.
+  bool SameOriginWithOriginalUri(nsIURI *aURI);
+
+  // GetPrincipal
+  // Returns the channel principal. If requireAppId is true, then returns
+  // null if the principal has unknown appId.
+  nsIPrincipal *GetPrincipal(bool requireAppId);
 
   friend class PrivateBrowsingChannel<HttpBaseChannel>;
 
@@ -293,6 +315,7 @@ protected:
   uint32_t                          mRequestObserversCalled     : 1;
   uint32_t                          mResponseHeadersModified    : 1;
   uint32_t                          mAllowPipelining            : 1;
+  uint32_t                          mAllowSTS                   : 1;
   uint32_t                          mForceAllowThirdPartyCookie : 1;
   uint32_t                          mUploadStreamHasHeaders     : 1;
   uint32_t                          mInheritApplicationCache    : 1;
@@ -306,12 +329,16 @@ protected:
   uint32_t                          mLoadAsBlocking             : 1;
   uint32_t                          mLoadUnblocked              : 1;
   uint32_t                          mResponseTimeoutEnabled     : 1;
+  // A flag that should be false only if a cross-domain redirect occurred
+  uint32_t                          mAllRedirectsSameOrigin     : 1;
 
   // Current suspension depth for this channel object
   uint32_t                          mSuspendCount;
 
   nsCOMPtr<nsIURI>                  mAPIRedirectToURI;
   nsAutoPtr<nsTArray<nsCString> >   mRedirectedCachekeys;
+  // Redirects added by previous channels.
+  nsCOMArray<nsIPrincipal>          mRedirects;
 
   uint32_t                          mProxyResolveFlags;
   nsCOMPtr<nsIURI>                  mProxyURI;
@@ -320,6 +347,32 @@ protected:
   nsAutoPtr<nsString>               mContentDispositionFilename;
 
   nsRefPtr<nsHttpHandler>           mHttpHandler;  // keep gHttpHandler alive
+
+  // Performance tracking
+  // The initiator type (for this resource) - how was the resource referenced in
+  // the HTML file.
+  nsString                          mInitiatorType;
+  // Number of redirects that has occurred.
+  int16_t                           mRedirectCount;
+  // A time value equal to the starting time of the fetch that initiates the
+  // redirect.
+  mozilla::TimeStamp                mRedirectStartTimeStamp;
+  // A time value equal to the time immediately after receiving the last byte of
+  // the response of the last redirect.
+  mozilla::TimeStamp                mRedirectEndTimeStamp;
+
+  PRTime                            mChannelCreationTime;
+  TimeStamp                         mChannelCreationTimestamp;
+  TimeStamp                         mAsyncOpenTime;
+  TimeStamp                         mCacheReadStart;
+  TimeStamp                         mCacheReadEnd;
+  // copied from the transaction before we null out mTransaction
+  // so that the timing can still be queried from OnStopRequest
+  TimingStruct                      mTransactionTimings;
+
+  nsCOMPtr<nsIPrincipal>            mPrincipal;
+
+  bool                              mForcePending;
 };
 
 // Share some code while working around C++'s absurd inability to handle casting
@@ -362,7 +415,6 @@ nsresult HttpAsyncAborter<T>::AsyncAbort(nsresult status)
          ("HttpAsyncAborter::AsyncAbort [this=%p status=%x]\n", mThis, status));
 
   mThis->mStatus = status;
-  mThis->mIsPending = false;
 
   // if this fails?  Callers ignore our return value anyway....
   return AsyncCall(&T::HandleAsyncAbort);

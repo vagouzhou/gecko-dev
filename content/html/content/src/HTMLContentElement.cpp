@@ -21,7 +21,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Content)
 
 using namespace mozilla::dom;
 
-HTMLContentElement::HTMLContentElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLContentElement::HTMLContentElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo), mValidSelector(true), mIsInsertionPoint(false)
 {
   SetIsDOMBinding();
@@ -31,9 +31,9 @@ HTMLContentElement::~HTMLContentElement()
 {
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_1(HTMLContentElement,
-                                     nsGenericHTMLElement,
-                                     mMatchedNodes)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLContentElement,
+                                   nsGenericHTMLElement,
+                                   mMatchedNodes)
 
 NS_IMPL_ADDREF_INHERITED(HTMLContentElement, Element)
 NS_IMPL_RELEASE_INHERITED(HTMLContentElement, Element)
@@ -44,9 +44,9 @@ NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLElement)
 NS_IMPL_ELEMENT_CLONE(HTMLContentElement)
 
 JSObject*
-HTMLContentElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLContentElement::WrapNode(JSContext *aCx)
 {
-  return HTMLContentElementBinding::Wrap(aCx, aScope, this);
+  return HTMLContentElementBinding::Wrap(aCx, this);
 }
 
 nsresult
@@ -92,9 +92,8 @@ HTMLContentElement::UnbindFromTree(bool aDeep, bool aNullParent)
     if (containingShadow) {
       containingShadow->RemoveInsertionPoint(this);
 
-      // Remove all the assigned nodes now that the
-      // insertion point now that the insertion point is
-      // no longer a descendant of a ShadowRoot.
+      // Remove all the matched nodes now that the
+      // insertion point is no longer an insertion point.
       ClearMatchedNodes();
       containingShadow->SetInsertionPointChanged();
     }
@@ -106,12 +105,70 @@ HTMLContentElement::UnbindFromTree(bool aDeep, bool aNullParent)
 }
 
 void
+HTMLContentElement::AppendMatchedNode(nsIContent* aContent)
+{
+  mMatchedNodes.AppendElement(aContent);
+  nsTArray<nsIContent*>& destInsertionPoint = aContent->DestInsertionPoints();
+  destInsertionPoint.AppendElement(this);
+
+  if (mMatchedNodes.Length() == 1) {
+    // Fallback content gets dropped so we need to updated fallback
+    // content distribution.
+    UpdateFallbackDistribution();
+  }
+}
+
+void
+HTMLContentElement::UpdateFallbackDistribution()
+{
+  for (nsIContent* child = nsINode::GetFirstChild();
+       child;
+       child = child->GetNextSibling()) {
+    nsTArray<nsIContent*>& destInsertionPoint = child->DestInsertionPoints();
+    destInsertionPoint.Clear();
+    if (mMatchedNodes.IsEmpty()) {
+      destInsertionPoint.AppendElement(this);
+    }
+  }
+}
+
+void
+HTMLContentElement::RemoveMatchedNode(nsIContent* aContent)
+{
+  mMatchedNodes.RemoveElement(aContent);
+  ShadowRoot::RemoveDestInsertionPoint(this, aContent->DestInsertionPoints());
+
+  if (mMatchedNodes.IsEmpty()) {
+    // Fallback content is activated so we need to update fallback
+    // content distribution.
+    UpdateFallbackDistribution();
+  }
+}
+
+void
+HTMLContentElement::InsertMatchedNode(uint32_t aIndex, nsIContent* aContent)
+{
+  mMatchedNodes.InsertElementAt(aIndex, aContent);
+  nsTArray<nsIContent*>& destInsertionPoint = aContent->DestInsertionPoints();
+  destInsertionPoint.AppendElement(this);
+
+  if (mMatchedNodes.Length() == 1) {
+    // Fallback content gets dropped so we need to updated fallback
+    // content distribution.
+    UpdateFallbackDistribution();
+  }
+}
+
+void
 HTMLContentElement::ClearMatchedNodes()
 {
   for (uint32_t i = 0; i < mMatchedNodes.Length(); i++) {
-    mMatchedNodes[i]->SetXBLInsertionParent(nullptr);
+    ShadowRoot::RemoveDestInsertionPoint(this, mMatchedNodes[i]->DestInsertionPoints());
   }
+
   mMatchedNodes.Clear();
+
+  UpdateFallbackDistribution();
 }
 
 static bool
@@ -242,10 +299,10 @@ HTMLContentElement::GetDistributedNodes()
   return list.forget();
 }
 
-NS_IMPL_CYCLE_COLLECTION_2(DistributedContentList, mParent, mDistributedNodes)
+NS_IMPL_CYCLE_COLLECTION(DistributedContentList, mParent, mDistributedNodes)
 
 NS_INTERFACE_TABLE_HEAD(DistributedContentList)
-  NS_INTERFACE_TABLE1(DistributedContentList, nsINodeList)
+  NS_INTERFACE_TABLE(DistributedContentList, nsINodeList)
   NS_INTERFACE_TABLE_TO_MAP_SEGUE_CYCLE_COLLECTION(DistributedContentList)
 NS_INTERFACE_MAP_END
 
@@ -315,8 +372,8 @@ DistributedContentList::IndexOf(nsIContent* aContent)
 }
 
 JSObject*
-DistributedContentList::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DistributedContentList::WrapObject(JSContext* aCx)
 {
-  return NodeListBinding::Wrap(aCx, aScope, this);
+  return NodeListBinding::Wrap(aCx, this);
 }
 

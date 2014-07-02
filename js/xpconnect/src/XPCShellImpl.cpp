@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -195,7 +196,7 @@ GetLocationProperty(JSContext *cx, HandleObject obj, HandleId id, MutableHandleV
 static bool
 GetLine(JSContext *cx, char *bufp, FILE *file, const char *prompt) {
     {
-        char line[256] = { '\0' };
+        char line[4096] = { '\0' };
         fputs(prompt, gOutFile);
         fflush(gOutFile);
         if ((!fgets(line, sizeof line, file) && errno != EINTR) || feof(file))
@@ -339,13 +340,13 @@ Load(JSContext *cx, unsigned argc, jsval *vp)
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename.ptr(), 1);
-        JS::Rooted<JSScript*> script(cx, JS::Compile(cx, obj, options, file));
+        JS::Rooted<JSScript*> script(cx);
+        JS::Compile(cx, obj, options, file, &script);
         fclose(file);
         if (!script)
             return false;
 
-        JS::Rooted<JS::Value> result(cx);
-        if (!compileOnly && !JS_ExecuteScript(cx, obj, script, result.address()))
+        if (!compileOnly && !JS_ExecuteScript(cx, obj, script))
             return false;
     }
     args.rval().setUndefined();
@@ -544,7 +545,7 @@ Parent(JSContext *cx, unsigned argc, jsval *vp)
     }
 
     Value v = args[0];
-    if (JSVAL_IS_PRIMITIVE(v)) {
+    if (v.isPrimitive()) {
         JS_ReportError(cx, "Only objects have parents!");
         return false;
     }
@@ -651,18 +652,20 @@ File(JSContext *cx, unsigned argc, Value *vp)
   return true;
 }
 
-static Value sScriptedInterruptCallback = UndefinedValue();
+static Maybe<PersistentRootedValue> sScriptedInterruptCallback;
 
 static bool
 XPCShellInterruptCallback(JSContext *cx)
 {
+    MOZ_ASSERT(!sScriptedInterruptCallback.empty());
+    RootedValue callback(cx, sScriptedInterruptCallback.ref());
+
     // If no interrupt callback was set by script, no-op.
-    if (sScriptedInterruptCallback.isUndefined())
+    if (callback.isUndefined())
         return true;
 
-    JSAutoCompartment ac(cx, &sScriptedInterruptCallback.toObject());
+    JSAutoCompartment ac(cx, &callback.toObject());
     RootedValue rv(cx);
-    RootedValue callback(cx, sScriptedInterruptCallback);
     if (!JS_CallFunctionValue(cx, JS::NullPtr(), callback, JS::HandleValueArray::empty(), &rv) ||
         !rv.isBoolean())
     {
@@ -677,6 +680,8 @@ XPCShellInterruptCallback(JSContext *cx)
 static bool
 SetInterruptCallback(JSContext *cx, unsigned argc, jsval *vp)
 {
+    MOZ_ASSERT(!sScriptedInterruptCallback.empty());
+
     // Sanity-check args.
     JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
     if (args.length() != 1) {
@@ -686,7 +691,7 @@ SetInterruptCallback(JSContext *cx, unsigned argc, jsval *vp)
 
     // Allow callers to remove the interrupt callback by passing undefined.
     if (args[0].isUndefined()) {
-        sScriptedInterruptCallback = UndefinedValue();
+        sScriptedInterruptCallback.ref() = UndefinedValue();
         return true;
     }
 
@@ -696,7 +701,7 @@ SetInterruptCallback(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    sScriptedInterruptCallback = args[0];
+    sScriptedInterruptCallback.ref() = args[0];
 
     return true;
 }
@@ -799,7 +804,7 @@ env_enumerate(JSContext *cx, HandleObject obj)
 {
     static bool reflected;
     char **evp, *name, *value;
-    JSString *valstr;
+    RootedString valstr(cx);
     bool ok;
 
     if (reflected)
@@ -811,12 +816,7 @@ env_enumerate(JSContext *cx, HandleObject obj)
             continue;
         *value++ = '\0';
         valstr = JS_NewStringCopyZ(cx, value);
-        if (!valstr) {
-            ok = false;
-        } else {
-            ok = JS_DefineProperty(cx, obj, name, STRING_TO_JSVAL(valstr),
-                                   nullptr, nullptr, JSPROP_ENUMERATE);
-        }
+        ok = valstr ? JS_DefineProperty(cx, obj, name, valstr, JSPROP_ENUMERATE) : false;
         value[-1] = '=';
         if (!ok)
             return false;
@@ -827,10 +827,10 @@ env_enumerate(JSContext *cx, HandleObject obj)
 }
 
 static bool
-env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
+env_resolve(JSContext *cx, HandleObject obj, HandleId id,
             JS::MutableHandleObject objp)
 {
-    JSString *idstr, *valstr;
+    JSString *idstr;
 
     RootedValue idval(cx);
     if (!JS_IdToValue(cx, id, &idval))
@@ -844,11 +844,10 @@ env_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
         return false;
     const char *value = getenv(name.ptr());
     if (value) {
-        valstr = JS_NewStringCopyZ(cx, value);
+        RootedString valstr(cx, JS_NewStringCopyZ(cx, value));
         if (!valstr)
             return false;
-        if (!JS_DefinePropertyById(cx, obj, id, STRING_TO_JSVAL(valstr),
-                                   nullptr, nullptr, JSPROP_ENUMERATE)) {
+        if (!JS_DefinePropertyById(cx, obj, id, valstr, JSPROP_ENUMERATE)) {
             return false;
         }
         objp.set(obj);
@@ -926,9 +925,8 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
         JS::CompileOptions options(cx);
         options.setUTF8(true)
                .setFileAndLine(filename, 1);
-        script = JS::Compile(cx, obj, options, file);
-        if (script && !compileOnly)
-            (void)JS_ExecuteScript(cx, obj, script, result.address());
+        if (JS::Compile(cx, obj, options, file, &script) && !compileOnly)
+            (void)JS_ExecuteScript(cx, obj, script, &result);
         DoEndRequest(cx);
 
         return;
@@ -962,12 +960,11 @@ ProcessFile(JSContext *cx, JS::Handle<JSObject*> obj, const char *filename, FILE
         JS_ClearPendingException(cx);
         JS::CompileOptions options(cx);
         options.setFileAndLine("typein", startline);
-        script = JS_CompileScript(cx, obj, buffer, strlen(buffer), options);
-        if (script) {
+        if (JS_CompileScript(cx, obj, buffer, strlen(buffer), options, &script)) {
             JSErrorReporter older;
 
             if (!compileOnly) {
-                ok = JS_ExecuteScript(cx, obj, script, result.address());
+                ok = JS_ExecuteScript(cx, obj, script, &result);
                 if (ok && result != JSVAL_VOID) {
                     /* Suppress error reports from JS::ToString(). */
                     older = JS_SetErrorReporter(cx, nullptr);
@@ -1091,17 +1088,13 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
     argsObj = JS_NewArrayObject(cx, 0);
     if (!argsObj)
         return 1;
-    if (!JS_DefineProperty(cx, obj, "arguments", OBJECT_TO_JSVAL(argsObj),
-                           nullptr, nullptr, 0)) {
+    if (!JS_DefineProperty(cx, obj, "arguments", argsObj, 0))
         return 1;
-    }
 
     for (size_t j = 0, length = argc - i; j < length; j++) {
-        JSString *str = JS_NewStringCopyZ(cx, argv[i++]);
-        if (!str)
-            return 1;
-        if (!JS_DefineElement(cx, argsObj, j, STRING_TO_JSVAL(str),
-                              nullptr, nullptr, JSPROP_ENUMERATE)) {
+        RootedString str(cx, JS_NewStringCopyZ(cx, argv[i++]));
+        if (!str ||
+            !JS_DefineElement(cx, argsObj, j, str, JSPROP_ENUMERATE)) {
             return 1;
         }
     }
@@ -1129,7 +1122,7 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
         case 'x':
             break;
         case 'd':
-            xpc_ActivateDebugMode();
+            /* This used to try to turn on the debugger. */
             break;
         case 'f':
             if (++i == argc) {
@@ -1154,8 +1147,7 @@ ProcessArgs(JSContext *cx, JS::Handle<JSObject*> obj, char **argv, int argc, XPC
                 return usage();
             }
 
-            JS_EvaluateScript(cx, obj, argv[i], strlen(argv[i]), "-e", 1,
-                              rval.address());
+            JS_EvaluateScript(cx, obj, argv[i], strlen(argv[i]), "-e", 1, &rval);
 
             isInteractive = false;
             break;
@@ -1211,7 +1203,7 @@ public:
     TestGlobal(){}
 };
 
-NS_IMPL_ISUPPORTS2(TestGlobal, nsIXPCTestNoisy, nsIXPCScriptable)
+NS_IMPL_ISUPPORTS(TestGlobal, nsIXPCTestNoisy, nsIXPCScriptable)
 
 // The nsIXPCScriptable map declaration that will generate stubs for us...
 #define XPC_MAP_CLASSNAME           TestGlobal
@@ -1244,7 +1236,7 @@ public:
 };
 
 /* Implementation file */
-NS_IMPL_ISUPPORTS1(nsXPCFunctionThisTranslator, nsIXPCFunctionThisTranslator)
+NS_IMPL_ISUPPORTS(nsXPCFunctionThisTranslator, nsIXPCFunctionThisTranslator)
 
 nsXPCFunctionThisTranslator::nsXPCFunctionThisTranslator()
 {
@@ -1473,6 +1465,7 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
         // Override the default XPConnect interrupt callback. We could store the
         // old one and restore it before shutting down, but there's not really a
         // reason to bother.
+        sScriptedInterruptCallback.construct(rt, UndefinedValue());
         JS_SetInterruptCallback(rt, XPCShellInterruptCallback);
 
         cx = JS_NewContext(rt, 8192);
@@ -1535,8 +1528,10 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             return 1;
         }
 
+        // Make the default XPCShell global use a fresh zone (rather than the
+        // System Zone) to improve cross-zone test coverage.
         JS::CompartmentOptions options;
-        options.setZone(JS::SystemZone)
+        options.setZone(JS::FreshZone)
                .setVersion(JSVERSION_LATEST);
         nsCOMPtr<nsIXPConnectJSObjectHolder> holder;
         rv = xpc->InitClassesWithNewWrappedGlobal(cx,
@@ -1554,6 +1549,11 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
                 return 1;
             }
 
+            // Even if we're building in a configuration where source is
+            // discarded, there's no reason to do that on XPCShell, and doing so
+            // might break various automation scripts.
+            JS::CompartmentOptionsRef(glob).setDiscardSource(false);
+
             backstagePass->SetGlobalObject(glob);
 
             JSAutoCompartment ac(cx, glob);
@@ -1570,7 +1570,7 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             }
 
             JS::Rooted<JSObject*> envobj(cx);
-            envobj = JS_DefineObject(cx, glob, "environment", &env_class, nullptr, 0);
+            envobj = JS_DefineObject(cx, glob, "environment", &env_class);
             if (!envobj) {
                 JS_EndRequest(cx);
                 return 1;
@@ -1582,12 +1582,10 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
             if (GetCurrentWorkingDirectory(workingDirectory))
                 gWorkingDirectory = &workingDirectory;
 
-            JS_DefineProperty(cx, glob, "__LOCATION__", JSVAL_VOID,
-                              GetLocationProperty, nullptr, 0);
+            JS_DefineProperty(cx, glob, "__LOCATION__", JS::UndefinedHandleValue, 0,
+                              GetLocationProperty, nullptr);
 
-            JS_AddValueRoot(cx, &sScriptedInterruptCallback);
             result = ProcessArgs(cx, glob, argv, argc, &dirprovider);
-            JS_RemoveValueRoot(cx, &sScriptedInterruptCallback);
 
             JS_DropPrincipals(rt, gJSPrincipals);
             JS_SetAllNonReservedSlotsToUndefined(cx, glob);
@@ -1604,6 +1602,8 @@ XRE_XPCShellMain(int argc, char **argv, char **envp)
     // no nsCOMPtrs are allowed to be alive when you call NS_ShutdownXPCOM
     rv = NS_ShutdownXPCOM( nullptr );
     MOZ_ASSERT(NS_SUCCEEDED(rv), "NS_ShutdownXPCOM failed");
+
+    sScriptedInterruptCallback.destroyIfConstructed();
 
 #ifdef TEST_CALL_ON_WRAPPED_JS_AFTER_SHUTDOWN
     // test of late call and release (see above)
@@ -1654,21 +1654,21 @@ XPCShellDirProvider::SetPluginDir(nsIFile* pluginDir)
     mPluginDir = pluginDir;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::AddRef()
 {
     return 2;
 }
 
-NS_IMETHODIMP_(nsrefcnt)
+NS_IMETHODIMP_(MozExternalRefCountType)
 XPCShellDirProvider::Release()
 {
     return 1;
 }
 
-NS_IMPL_QUERY_INTERFACE2(XPCShellDirProvider,
-                         nsIDirectoryServiceProvider,
-                         nsIDirectoryServiceProvider2)
+NS_IMPL_QUERY_INTERFACE(XPCShellDirProvider,
+                        nsIDirectoryServiceProvider,
+                        nsIDirectoryServiceProvider2)
 
 NS_IMETHODIMP
 XPCShellDirProvider::GetFile(const char *prop, bool *persistent,

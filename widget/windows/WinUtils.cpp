@@ -7,6 +7,7 @@
 #include "WinUtils.h"
 
 #include "gfxPlatform.h"
+#include "gfxUtils.h"
 #include "nsWindow.h"
 #include "nsWindowDefs.h"
 #include "KeyboardLayout.h"
@@ -59,13 +60,13 @@ using namespace mozilla::gfx;
 namespace mozilla {
 namespace widget {
 
-NS_IMPL_ISUPPORTS1(myDownloadObserver, nsIDownloadObserver)
+NS_IMPL_ISUPPORTS(myDownloadObserver, nsIDownloadObserver)
 #ifdef MOZ_PLACES
-NS_IMPL_ISUPPORTS1(AsyncFaviconDataReady, nsIFaviconDataCallback)
+NS_IMPL_ISUPPORTS(AsyncFaviconDataReady, nsIFaviconDataCallback)
 #endif
-NS_IMPL_ISUPPORTS1(AsyncEncodeAndWriteIcon, nsIRunnable)
-NS_IMPL_ISUPPORTS1(AsyncDeleteIconFromDisk, nsIRunnable)
-NS_IMPL_ISUPPORTS1(AsyncDeleteAllFaviconsFromDisk, nsIRunnable)
+NS_IMPL_ISUPPORTS(AsyncEncodeAndWriteIcon, nsIRunnable)
+NS_IMPL_ISUPPORTS(AsyncDeleteIconFromDisk, nsIRunnable)
+NS_IMPL_ISUPPORTS(AsyncDeleteAllFaviconsFromDisk, nsIRunnable)
 
 
 const char FaviconHelper::kJumpListCacheDir[] = "jumpListCache";
@@ -208,6 +209,14 @@ WinUtils::LogToPhysFactor()
     HDC hdc = ::GetDC(nullptr);
     double result = ::GetDeviceCaps(hdc, LOGPIXELSY) / 96.0;
     ::ReleaseDC(nullptr, hdc);
+
+    if (result == 0) {
+      // Bug 1012487 - This can occur when the Screen DC is used off the
+      // main thread on windows. For now just assume a 100% DPI for this
+      // drawing call.
+      // XXX - fixme!
+      result = 1.0;
+    }
     return result;
   }
 }
@@ -268,6 +277,28 @@ WinUtils::GetMessage(LPMSG aMsg, HWND aWnd, UINT aFirstMessage,
   }
 #endif // #ifdef NS_ENABLE_TSF
   return ::GetMessageW(aMsg, aWnd, aFirstMessage, aLastMessage);
+}
+
+/* static */
+void
+WinUtils::WaitForMessage()
+{
+  DWORD result = ::MsgWaitForMultipleObjectsEx(0, NULL, INFINITE, QS_ALLINPUT,
+                                               MWMO_INPUTAVAILABLE);
+  NS_WARN_IF_FALSE(result != WAIT_FAILED, "Wait failed");
+
+  // This idiom is taken from the Chromium ipc code, see
+  // ipc/chromium/src/base/message+puimp_win.cpp:270.
+  // The intent is to avoid a busy wait when MsgWaitForMultipleObjectsEx
+  // returns quickly but PeekMessage would not return a message.
+  if (result == WAIT_OBJECT_0) {
+    MSG msg = {0};
+    DWORD queue_status = ::GetQueueStatus(QS_MOUSE);
+    if (HIWORD(queue_status) & QS_MOUSE &&
+        !PeekMessage(&msg, NULL, WM_MOUSEFIRST, WM_MOUSELAST, PM_NOREMOVE)) {
+      ::WaitMessage();
+    }
+  }
 }
 
 /* static */
@@ -683,7 +714,7 @@ nsresult AsyncFaviconDataReady::OnFaviconDataNotAvailable(void)
   rv = NS_NewChannel(getter_AddRefs(channel), mozIconURI);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsCOMPtr<myDownloadObserver> downloadObserver = new myDownloadObserver;
+  nsCOMPtr<nsIDownloadObserver> downloadObserver = new myDownloadObserver;
   nsCOMPtr<nsIStreamListener> listener;
   rv = NS_NewDownloader(getter_AddRefs(listener), downloadObserver, icoFile);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -723,20 +754,14 @@ AsyncFaviconDataReady::OnComplete(nsIURI *aFaviconURI,
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Decode the image from the format it was returned to us in (probably PNG)
-  nsAutoCString mimeTypeOfInputData;
-  mimeTypeOfInputData.AssignLiteral("image/vnd.microsoft.icon");
   nsCOMPtr<imgIContainer> container;
   nsCOMPtr<imgITools> imgtool = do_CreateInstance("@mozilla.org/image/tools;1");
   rv = imgtool->DecodeImageData(stream, aMimeType,
                                 getter_AddRefs(container));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  nsRefPtr<gfxASurface> imgFrame =
-    container->GetFrame(imgIContainer::FRAME_FIRST, 0);
-  NS_ENSURE_TRUE(imgFrame, NS_ERROR_FAILURE);
-
   RefPtr<SourceSurface> surface =
-    gfxPlatform::GetPlatform()->GetSourceSurfaceForSurface(nullptr, imgFrame);
+    container->GetFrame(imgIContainer::FRAME_FIRST, 0);
   NS_ENSURE_TRUE(surface, NS_ERROR_FAILURE);
 
   RefPtr<DataSourceSurface> dataSurface;
@@ -770,13 +795,17 @@ AsyncFaviconDataReady::OnComplete(nsIURI *aFaviconURI,
 
     dataSurface->Unmap();
   } else {
-    size.width = GetSystemMetrics(SM_CXSMICON);
-    size.height = GetSystemMetrics(SM_CYSMICON);
-    if (!size.width || !size.height) {
-      size.width = 16;
-      size.height = 16;
-    }
+    // By using the input image surface's size, we may end up encoding
+    // to a different size than a 16x16 (or bigger for higher DPI) ICO, but
+    // Windows will resize appropriately for us. If we want to encode ourselves
+    // one day because we like our resizing better, we'd have to manually
+    // resize the image here and use GetSystemMetrics w/ SM_CXSMICON and
+    // SM_CYSMICON. We don't support resizing images asynchronously at the
+    // moment anyway so getting the DPI aware icon size won't help.
+    size.width = surface->GetSize().width;
+    size.height = surface->GetSize().height;
     dataSurface = surface->GetDataSurface();
+    NS_ENSURE_TRUE(dataSurface, NS_ERROR_FAILURE);
   }
 
   // Allocate a new buffer that we own and can use out of line in
@@ -823,70 +852,48 @@ NS_IMETHODIMP AsyncEncodeAndWriteIcon::Run()
 {
   NS_PRECONDITION(!NS_IsMainThread(), "Should not be called on the main thread.");
 
-  // Get the recommended icon width and height, or if failure to obtain 
-  // these settings, fall back to 16x16 ICOs.  These values can be different
-  // if the user has a different DPI setting other than 100%.
-  // Windows would scale the 16x16 icon themselves, but it's better
-  // we let our ICO encoder do it.
-  nsCOMPtr<nsIInputStream> iconStream;
-  nsRefPtr<imgIEncoder> encoder =
-    do_CreateInstance("@mozilla.org/image/encoder;2?"
-                      "type=image/vnd.microsoft.icon");
-  NS_ENSURE_TRUE(encoder, NS_ERROR_FAILURE);
-  nsresult rv = encoder->InitFromData(mBuffer, mBufferLength,
-                                      mWidth, mHeight,
-                                      mStride,
-                                      imgIEncoder::INPUT_FORMAT_HOSTARGB,
-                                      EmptyString());
-  NS_ENSURE_SUCCESS(rv, rv);
-  CallQueryInterface(encoder.get(), getter_AddRefs(iconStream));
-  if (!iconStream) {
-    return NS_ERROR_FAILURE;
+  RefPtr<DrawTarget> dt =
+    gfxPlatform::GetPlatform()->ScreenReferenceDrawTarget();
+  RefPtr<SourceSurface> surface =
+    dt->CreateSourceSurfaceFromData(mBuffer, IntSize(mWidth, mHeight), mStride,
+                                    SurfaceFormat::B8G8R8A8);
+
+  FILE* file = fopen(NS_ConvertUTF16toUTF8(mIconPath).get(), "wb");
+  if (!file) {
+    // Maybe the directory doesn't exist; try creating it, then fopen again.
+    nsresult rv = NS_ERROR_FAILURE;
+    nsCOMPtr<nsIFile> comFile = do_CreateInstance("@mozilla.org/file/local;1");
+    if (comFile) {
+      //NS_ConvertUTF8toUTF16 utf16path(mIconPath);
+      rv = comFile->InitWithPath(mIconPath);
+      if (NS_SUCCEEDED(rv)) {
+        nsCOMPtr<nsIFile> dirPath;
+        comFile->GetParent(getter_AddRefs(dirPath));
+        if (dirPath) {
+          rv = dirPath->Create(nsIFile::DIRECTORY_TYPE, 0777);
+          if (NS_SUCCEEDED(rv) || rv == NS_ERROR_FILE_ALREADY_EXISTS) {
+            file = fopen(NS_ConvertUTF16toUTF8(mIconPath).get(), "wb");
+            if (!file) {
+              rv = NS_ERROR_FAILURE;
+            }
+          }
+        }
+      }
+    }
+    if (!file) {
+      return rv;
+    }
   }
-
+  nsresult rv =
+    gfxUtils::EncodeSourceSurface(surface,
+                                  NS_LITERAL_CSTRING("image/vnd.microsoft.icon"),
+                                  EmptyString(),
+                                  gfxUtils::eBinaryEncode,
+                                  file);
+  fclose(file);
   NS_ENSURE_SUCCESS(rv, rv);
-  nsCOMPtr<nsIFile> icoFile
-    = do_CreateInstance("@mozilla.org/file/local;1");
-  NS_ENSURE_TRUE(icoFile, NS_ERROR_FAILURE);
-  rv = icoFile->InitWithPath(mIconPath);
-
-  // Try to create the directory if it's not there yet
-  nsCOMPtr<nsIFile> dirPath;
-  icoFile->GetParent(getter_AddRefs(dirPath));
-  rv = (dirPath->Create(nsIFile::DIRECTORY_TYPE, 0777));
-  if (NS_FAILED(rv) && rv != NS_ERROR_FILE_ALREADY_EXISTS) {
-    return rv;
-  }
-
-  // Setup the output stream for the ICO file on disk
-  nsCOMPtr<nsIOutputStream> outputStream;
-  rv = NS_NewLocalFileOutputStream(getter_AddRefs(outputStream), icoFile);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  // Obtain the ICO buffer size from the re-encoded ICO stream
-  uint64_t bufSize64;
-  rv = iconStream->Available(&bufSize64);
-  NS_ENSURE_SUCCESS(rv, rv);
-  NS_ENSURE_TRUE(bufSize64 <= UINT32_MAX, NS_ERROR_FILE_TOO_BIG);
-
-  uint32_t bufSize = (uint32_t)bufSize64;
-
-  // Setup a buffered output stream from the stream object
-  // so that we can simply use WriteFrom with the stream object
-  nsCOMPtr<nsIOutputStream> bufferedOutputStream;
-  rv = NS_NewBufferedOutputStream(getter_AddRefs(bufferedOutputStream),
-                                  outputStream, bufSize);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  // Write out the icon stream to disk and make sure we wrote everything
-  uint32_t wrote;
-  rv = bufferedOutputStream->WriteFrom(iconStream, bufSize, &wrote);
-  NS_ASSERTION(bufSize == wrote, 
-              "Icon wrote size should be equal to requested write size");
 
   // Cleanup
-  bufferedOutputStream->Close();
-  outputStream->Close();
   if (mURLShortcut) {
     SendMessage(HWND_BROADCAST, WM_SETTINGCHANGE, SPI_SETNONCLIENTMETRICS, 0);
   }
@@ -933,8 +940,13 @@ AsyncDeleteIconFromDisk::~AsyncDeleteIconFromDisk()
 {
 }
 
-AsyncDeleteAllFaviconsFromDisk::AsyncDeleteAllFaviconsFromDisk()
+AsyncDeleteAllFaviconsFromDisk::
+  AsyncDeleteAllFaviconsFromDisk(bool aIgnoreRecent)
+  : mIgnoreRecent(aIgnoreRecent)
 {
+  // We can't call FaviconHelper::GetICOCacheSecondsTimeout() on non-main
+  // threads, as it reads a pref, so cache its value here.
+  mIcoNoDeleteSeconds = FaviconHelper::GetICOCacheSecondsTimeout() + 600;
 }
 
 NS_IMETHODIMP AsyncDeleteAllFaviconsFromDisk::Run()
@@ -971,6 +983,22 @@ NS_IMETHODIMP AsyncDeleteAllFaviconsFromDisk::Run()
       bool exists;
       if (NS_FAILED(currFile->Exists(&exists)) || !exists)
         continue;
+
+      if (mIgnoreRecent) {
+        // Check to make sure the icon wasn't just recently created.
+        // If it was created recently, don't delete it yet.
+        int64_t fileModTime = 0;
+        rv = currFile->GetLastModifiedTime(&fileModTime);
+        fileModTime /= PR_MSEC_PER_SEC;
+        // If the icon is older than the regeneration time (+ 10 min to be
+        // safe), then it's old and we can get rid of it.
+        // This code is only hit directly after a regeneration.
+        int64_t nowTime = PR_Now() / int64_t(PR_USEC_PER_SEC);
+        if (NS_FAILED(rv) ||
+          (nowTime - fileModTime) < mIcoNoDeleteSeconds) {
+          continue;
+        }
+      }
 
       // We found an ICO file that exists, so we should remove it
       currFile->Remove(false);
@@ -1100,7 +1128,7 @@ nsresult FaviconHelper::GetOutputIconPath(nsCOMPtr<nsIURI> aFaviconPageURI,
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Append the icon extension
-  inputURIHash.Append(".ico");
+  inputURIHash.AppendLiteral(".ico");
   rv = aICOFile->AppendNative(inputURIHash);
 
   return rv;

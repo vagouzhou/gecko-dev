@@ -11,6 +11,7 @@
 <!ENTITY  bookmarks_title "Bookmarks">
 <!ENTITY  history_title "History">
 <!ENTITY  reading_list_title "Reading List">
+<!ENTITY  recent_tabs_title "Recent Tabs">
 
 <!ENTITY  switch_to_tab "Switch to tab">
 
@@ -43,8 +44,8 @@
 
 <!ENTITY history_today_section "Today">
 <!ENTITY history_yesterday_section "Yesterday">
-<!ENTITY history_week_section "7 days ago">
-<!ENTITY history_older_section "Older than 7 days">
+<!ENTITY history_week_section2 "Last Week">
+<!ENTITY history_older_section2 "Last Month">
 
 <!ENTITY go "Go">
 <!ENTITY search "Search">
@@ -54,6 +55,7 @@
 <!ENTITY back "Back">
 <!ENTITY stop "Stop">
 <!ENTITY site_security "Site Security">
+<!ENTITY edit_mode_cancel "Cancel">
 
 <!ENTITY close_tab "Close Tab">
 <!ENTITY one_tab "1 tab">
@@ -61,17 +63,35 @@
      We can't use android plural forms, sadly. See bug #753859. -->
 <!ENTITY num_tabs2 "&formatD; tabs">
 <!ENTITY new_tab_opened "New tab opened">
+<!ENTITY new_private_tab_opened "New private tab opened">
+<!-- Localization note (switch_button_message): This string should be as short
+     as possible because it's shown as a label in a toast.  Ideally, this string
+     is upper-case, to match Google and Android's convention. -->
+<!ENTITY switch_button_message "SWITCH">
 
 <!ENTITY settings "Settings">
 <!ENTITY settings_title "Settings">
 <!ENTITY pref_category_advanced "Advanced">
 <!ENTITY pref_category_customize "Customize">
+
+<!-- Localization note (pref_category_language) : This is the preferences
+     section in which the user picks the locale in which to display Firefox
+     UI. The locale includes both language and region concepts. -->
+<!ENTITY pref_category_language "Language">
+<!ENTITY pref_browser_locale "Browser language">
+
+<!-- Localization note (locale_system_default) : This string indicates that
+     Firefox will use the locale currently selected in Android's settings
+     to display browser chrome. -->
+<!ENTITY locale_system_default "System default">
+
 <!ENTITY pref_category_search3 "Search">
 <!ENTITY pref_category_search_summary "Customize your search providers">
 <!ENTITY pref_category_display "Display">
 <!ENTITY pref_category_privacy_short "Privacy">
 <!ENTITY pref_category_vendor "&vendorShortName;">
 <!ENTITY pref_category_datareporting "Data choices">
+<!ENTITY pref_learn_more "Learn more">
 <!ENTITY pref_category_installed_search_engines "Installed search engines">
 <!ENTITY pref_category_add_search_providers "Add more search providers">
 <!ENTITY pref_category_search_restore_defaults "Restore search engines">
@@ -85,13 +105,11 @@
 <!ENTITY pref_search_hint "TIP: Add any website to your list of search providers by long-pressing on its search field and then tapping the &formatI; icon.">
 <!ENTITY pref_category_devtools "Developer tools">
 <!ENTITY pref_developer_remotedebugging "Remote debugging">
-<!ENTITY pref_developer_remotedebugging_docs "Learn more">
 <!ENTITY pref_remember_signons "Remember passwords">
 
 <!ENTITY pref_category_home "Home">
 <!ENTITY pref_category_home_summary "Customize your homepage">
 <!ENTITY pref_category_home_panels "Panels">
-<!ENTITY pref_home_add_panel "Add panel">
 <!ENTITY home_add_panel_title "Add new panel">
 <!ENTITY home_add_panel_empty "Sorry, we couldn\'t find any panels for you to add.">
 <!-- Localization note (home_add_panel_installed):
@@ -102,12 +120,15 @@
 <!ENTITY pref_home_updates "Automatic updates">
 <!ENTITY pref_home_updates_enabled "Enabled">
 <!ENTITY pref_home_updates_wifi "Only over Wi-Fi">
+<!ENTITY pref_home_suggested_sites "Show site suggestions">
+<!ENTITY pref_home_suggested_sites_summary "Display shortcuts to sites on your homepage that we think you might find interesting">
 
 <!-- Localization note: These are shown in the left sidebar on tablets -->
 <!ENTITY pref_header_customize "Customize">
 <!ENTITY pref_header_display "Display">
 <!ENTITY pref_header_privacy_short "Privacy">
 <!ENTITY pref_header_help "Help">
+<!ENTITY pref_header_language "Language">
 <!ENTITY pref_header_vendor "&vendorShortName;">
 <!ENTITY pref_header_devtools "Developer tools">
 
@@ -156,14 +177,14 @@ size. -->
 <!ENTITY pref_sync "Sync">
 <!ENTITY pref_search_suggestions "Show search suggestions">
 <!ENTITY pref_import_android "Import from Android">
-<!ENTITY pref_private_data_history "Browsing &amp; download history">
+<!ENTITY pref_private_data_history2 "Browsing history">
 <!ENTITY pref_private_data_formdata "Form &amp; search history">
 <!ENTITY pref_private_data_cookies2 "Cookies &amp; active logins">
 <!ENTITY pref_private_data_passwords "Saved passwords">
 <!ENTITY pref_private_data_cache "Cache">
 <!ENTITY pref_private_data_offlineApps "Offline website data">
 <!ENTITY pref_private_data_siteSettings2 "Site settings">
-<!ENTITY pref_private_data_downloadFiles "Downloaded files">
+<!ENTITY pref_private_data_downloadFiles2 "Downloads">
 
 
 <!ENTITY pref_about_firefox "About &brandShortName;">
@@ -178,6 +199,9 @@ size. -->
 
 <!ENTITY pref_panels_show "Show">
 <!ENTITY pref_panels_hide "Hide">
+<!ENTITY pref_panels_reorder "Change order">
+<!ENTITY pref_panels_move_up "Move up">
+<!ENTITY pref_panels_move_down "Move down">
 
 <!ENTITY datareporting_notification_title "&brandShortName; stats &amp; data">
 <!ENTITY datareporting_notification_action_long "Choose what information to share">
@@ -201,8 +225,8 @@ size. -->
 <!-- Localization note (datareporting_crashreporter_title_short) : This string matches
      (crashReporterSection.label) in en-US/chrome/browser/preferences/advanced.dtd.-->
 <!ENTITY datareporting_crashreporter_title_short "Crash Reporter">
-<!ENTITY datareporting_wifi_title "&vendorShortName; location services">
-<!ENTITY datareporting_wifi_summary "Help improve geolocation services for the Open Web by letting &brandShortName; collect and send anonymous cellular tower data">
+<!ENTITY datareporting_wifi_title2 "&vendorShortName; Location Service">
+<!ENTITY datareporting_wifi_geolocation_summary "Receives Wi-Fi and cellular location data when running in the background and shares it with &vendorShortName; to improve our geolocation service">
 
 <!-- Localization note (pref_update_autodownload2) : This should mention downloading
      specifically, since the pref only prevents automatic downloads and not the
@@ -211,6 +235,9 @@ size. -->
 <!ENTITY pref_update_autodownload_wifi "Only over Wi-Fi">
 <!ENTITY pref_update_autodownload_never "Never">
 <!ENTITY pref_update_autodownload_always "Always">
+
+<!-- Localization note (help_menu) : This string is used in the main menu-->
+<!ENTITY help_menu "Help">
 
 <!ENTITY quit "Quit">
 
@@ -230,6 +257,7 @@ size. -->
 <!ENTITY new_tab "New Tab">
 <!ENTITY new_private_tab "New Private Tab">
 <!ENTITY close_all_tabs "Close All Tabs">
+<!ENTITY close_private_tabs "Close Private Tabs">
 <!ENTITY tabs_normal "Tabs">
 <!ENTITY tabs_private "Private">
 <!ENTITY tabs_synced "Synced">
@@ -275,7 +303,10 @@ size. -->
      whether or not the dynamic toolbar is enabled. -->
 <!ENTITY pref_scroll_title_bar "Scroll title bar">
 
-<!ENTITY history_removed "Page removed">
+<!-- Localization note (page_removed): This string appears in a toast message when
+     any page is removed frome about:home. This includes pages that are in history,
+     bookmarks, or reading list. -->
+<!ENTITY page_removed "Page removed">
 
 <!ENTITY bookmark_edit_title "Edit Bookmark">
 <!ENTITY bookmark_edit_name "Name">
@@ -290,7 +321,6 @@ size. -->
 <!ENTITY site_settings_no_settings  "There are no settings to clear.">
 
 <!ENTITY reading_list_added "Page added to your Reading List">
-<!ENTITY reading_list_removed "Page removed from your Reading List">
 <!ENTITY reading_list_failed "Failed to add page to your Reading List">
 <!ENTITY reading_list_duplicate "Page already in your Reading List">
 
@@ -317,11 +347,13 @@ size. -->
 <!ENTITY home_top_sites_add "Add a site">
 
 <!ENTITY home_history_title "History">
+<!ENTITY home_clear_history_button "Clear browsing history">
+<!ENTITY home_clear_history_confirm "Are you sure you want to clear your history?">
 <!ENTITY home_bookmarks_empty "Bookmarks you save show up here.">
+<!ENTITY home_closed_tabs_title "Recently closed tabs">
 <!ENTITY home_last_tabs_title "Tabs from last time">
-<!ENTITY home_last_tabs_open "Open all tabs from last time">
 <!ENTITY home_last_tabs_empty "Your recent tabs show up here.">
-<!ENTITY home_most_recent_title "Most recent">
+<!ENTITY home_open_all "Open all">
 <!ENTITY home_most_recent_empty "Websites you visited most recently show up here.">
 <!ENTITY home_reading_list_empty "Articles you save for later show up here.">
 <!-- Localization note (home_reading_list_hint): The "TIP" string is synonymous to "hint", "clue", etc. This string is displayed
@@ -340,6 +372,10 @@ size. -->
 <!-- Localization note (home_move_up_to_filter): The variable is replaced by the name of the
      previous location in the navigation, such as the previous folder -->
 <!ENTITY home_move_up_to_filter "Up to &formatS;">
+
+<!ENTITY private_browsing_title "Private Browsing">
+<!ENTITY private_tabs_panel_empty_desc "Your private tabs will show up here. While we don\'t keep any of your browsing history or cookies, bookmarks and files that you download will still be saved on your device.">
+<!ENTITY private_tabs_panel_learn_more "Want to learn more?">
 
 <!ENTITY pin_site_dialog_hint "Enter a search keyword">
 
@@ -430,3 +466,11 @@ just addresses the organization to follow, e.g. "This site is run by " -->
      They are never shown to users -->
 <!ENTITY actionbar_menu "Menu">
 <!ENTITY actionbar_done "Done">
+
+<!-- Localization note (remote_tabs_last_synced): the variable is replaced by a
+     "relative time span string" produced by Android.  This string describes the
+     time the tabs were last synced relative to the current time; examples
+     include "42 minutes ago", "4 days ago", "last week", etc. The subject of
+     "Last synced" is one of the user's other Sync clients, typically Firefox on
+     their desktop or laptop.-->
+<!ENTITY remote_tabs_last_synced "Last synced: &formatS;">

@@ -82,7 +82,7 @@ import mozinfo
 _cleanup_encoding_re = re.compile(u'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\\\\]')
 def _cleanup_encoding_repl(m):
     c = m.group(0)
-    return '\\\\' if c == '\\' else '\\x{:02X}'.format(ord(c))
+    return '\\\\' if c == '\\' else '\\x{0:02X}'.format(ord(c))
 def cleanup_encoding(s):
     """S is either a byte or unicode string.  Either way it may
        contain control characters, unpaired surrogates, reserved code
@@ -232,11 +232,13 @@ class XPCShellTestThread(Thread):
 
         return proc.communicate()
 
-    def launchProcess(self, cmd, stdout, stderr, env, cwd):
+    def launchProcess(self, cmd, stdout, stderr, env, cwd, timeout=None):
         """
           Simple wrapper to launch a process.
           On a remote system, this is more complex and we need to overload this function.
         """
+        # timeout is needed by remote and b2g xpcshell to extend the
+        # devicemanager.shell() timeout. It is not used in this function.
         if HAVE_PSUTIL:
             popen_func = psutil.Popen
         else:
@@ -358,8 +360,10 @@ class XPCShellTestThread(Thread):
 
                 yield path
 
-        return (list(sanitize_list(test_object['head'], 'head')),
-                list(sanitize_list(test_object['tail'], 'tail')))
+        headlist = test_object['head'] if 'head' in test_object else ''
+        taillist = test_object['tail'] if 'tail' in test_object else ''
+        return (list(sanitize_list(headlist, 'head')),
+                list(sanitize_list(taillist, 'tail')))
 
     def buildXpcsCmd(self, testdir):
         """
@@ -621,7 +625,7 @@ class XPCShellTestThread(Thread):
 
             startTime = time.time()
             proc = self.launchProcess(completeCmd,
-                stdout=self.pStdout, stderr=self.pStderr, env=self.env, cwd=test_dir)
+                stdout=self.pStdout, stderr=self.pStderr, env=self.env, cwd=test_dir, timeout=testTimeoutInterval)
 
             if self.interactive:
                 self.log.info("TEST-INFO | %s | Process ID: %d" % (name, proc.pid))
@@ -857,6 +861,8 @@ class XPCShellTests(object):
         # Capturing backtraces is very slow on some platforms, and it's
         # disabled by automation.py too
         self.env["NS_TRACE_MALLOC_DISABLE_STACKS"] = "1"
+        # Don't permit remote connections.
+        self.env["MOZ_DISABLE_NONLOCAL_CONNECTIONS"] = "1"
 
     def buildEnvironment(self):
         """
@@ -885,7 +891,7 @@ class XPCShellTests(object):
                 self.env["ASAN_SYMBOLIZER_PATH"] = llvmsym
                 self.log.info("INFO | runxpcshelltests.py | ASan using symbolizer at %s", llvmsym)
             else:
-                self.log.info("INFO | runxpcshelltests.py | ASan symbolizer binary not found: %s", llvmsym)
+                self.log.info("TEST-UNEXPECTED-FAIL | runxpcshelltests.py | Failed to find ASan symbolizer at %s", llvmsym)
 
         return self.env
 

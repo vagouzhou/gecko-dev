@@ -169,9 +169,9 @@ DataTransfer::Constructor(const GlobalObject& aGlobal,
 }
 
 JSObject*
-DataTransfer::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+DataTransfer::WrapObject(JSContext* aCx)
 {
-  return DataTransferBinding::Wrap(aCx, aScope, this);
+  return DataTransferBinding::Wrap(aCx, this);
 }
 
 NS_IMETHODIMP
@@ -305,7 +305,7 @@ DataTransfer::GetFiles(ErrorResult& aRv)
       if (!file)
         continue;
 
-      nsRefPtr<nsDOMFileFile> domFile = new nsDOMFileFile(file);
+      nsRefPtr<DOMFile> domFile = DOMFile::CreateFromFile(file);
 
       if (!mFiles->Append(domFile)) {
         aRv.Throw(NS_ERROR_FAILURE);
@@ -594,9 +594,7 @@ DataTransfer::MozGetDataAt(const nsAString& aFormat, uint32_t aIndex,
       (mEventType != NS_DRAGDROP_DROP && mEventType != NS_DRAGDROP_DRAGDROP &&
        mEventType != NS_PASTE &&
        !nsContentUtils::IsCallerChrome())) {
-    nsresult rv = NS_OK;
-    principal = GetCurrentPrincipal(&rv);
-    NS_ENSURE_SUCCESS(rv, rv);
+    principal = nsContentUtils::SubjectPrincipal();
   }
 
   uint32_t count = item.Length();
@@ -625,9 +623,9 @@ DataTransfer::MozGetDataAt(const nsAString& aFormat, uint32_t aIndex,
           MOZ_ASSERT(sp, "This cannot fail on the main thread.");
           nsIPrincipal* dataPrincipal = sp->GetPrincipal();
           NS_ENSURE_TRUE(dataPrincipal, NS_ERROR_DOM_SECURITY_ERR);
-          NS_ENSURE_TRUE(principal || (principal = GetCurrentPrincipal(&rv)),
-                         NS_ERROR_DOM_SECURITY_ERR);
-          NS_ENSURE_SUCCESS(rv, rv);
+          if (!principal) {
+            principal = nsContentUtils::SubjectPrincipal();
+          }
           bool equals = false;
           NS_ENSURE_TRUE(NS_SUCCEEDED(principal->Equals(dataPrincipal, &equals)) && equals,
                          NS_ERROR_DOM_SECURITY_ERR);
@@ -642,28 +640,27 @@ DataTransfer::MozGetDataAt(const nsAString& aFormat, uint32_t aIndex,
   return NS_OK;
 }
 
-JS::Value
+void
 DataTransfer::MozGetDataAt(JSContext* aCx, const nsAString& aFormat,
-                           uint32_t aIndex, mozilla::ErrorResult& aRv)
+                           uint32_t aIndex,
+                           JS::MutableHandle<JS::Value> aRetval,
+                           mozilla::ErrorResult& aRv)
 {
   nsCOMPtr<nsIVariant> data;
   aRv = MozGetDataAt(aFormat, aIndex, getter_AddRefs(data));
   if (aRv.Failed()) {
-    return JS::UndefinedValue();
+    return;
   }
 
   if (!data) {
-    return JS::NullValue();
+    return;
   }
 
   JS::Rooted<JS::Value> result(aCx);
-  JS::Rooted<JSObject*> scope(aCx, GetWrapper());
-  if (!VariantToJsval(aCx, scope, data, &result)) {
+  if (!VariantToJsval(aCx, data, aRetval)) {
     aRv = NS_ERROR_FAILURE;
-    return JS::UndefinedValue();
+    return;
   }
-
-  return result;
 }
 
 NS_IMETHODIMP
@@ -698,11 +695,8 @@ DataTransfer::MozSetDataAt(const nsAString& aFormat, nsIVariant* aData,
     return NS_ERROR_DOM_SECURITY_ERR;
   }
 
-  nsresult rv = NS_OK;
-  nsIPrincipal* principal = GetCurrentPrincipal(&rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return SetDataWithPrincipal(aFormat, aData, aIndex, principal);
+  return SetDataWithPrincipal(aFormat, aData, aIndex,
+                              nsContentUtils::SubjectPrincipal());
 }
 
 void
@@ -755,12 +749,7 @@ DataTransfer::MozClearDataAtHelper(const nsAString& aFormat, uint32_t aIndex,
   nsAutoString format;
   GetRealFormat(aFormat, format);
 
-  nsresult rv = NS_OK;
-  nsIPrincipal* principal = GetCurrentPrincipal(&rv);
-  if (NS_FAILED(rv)) {
-    aRv = rv;
-    return;
-  }
+  nsIPrincipal* principal = nsContentUtils::SubjectPrincipal();
 
   // if the format is empty, clear all formats
   bool clearall = format.IsEmpty();
@@ -1088,21 +1077,6 @@ DataTransfer::SetDataWithPrincipal(const nsAString& aFormat,
   formatitem->mData = aData;
 
   return NS_OK;
-}
-
-nsIPrincipal*
-DataTransfer::GetCurrentPrincipal(nsresult* rv)
-{
-  nsIScriptSecurityManager* ssm = nsContentUtils::GetSecurityManager();
-
-  nsCOMPtr<nsIPrincipal> currentPrincipal;
-  *rv = ssm->GetSubjectPrincipal(getter_AddRefs(currentPrincipal));
-  NS_ENSURE_SUCCESS(*rv, nullptr);
-
-  if (!currentPrincipal)
-    ssm->GetSystemPrincipal(getter_AddRefs(currentPrincipal));
-
-  return currentPrincipal.get();
 }
 
 void

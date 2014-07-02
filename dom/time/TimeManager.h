@@ -43,12 +43,14 @@ public:
   {
     return mWindow;
   }
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  JSObject* WrapObject(JSContext* aCx);
 
   void Set(Date& aDate);
   void Set(double aTime);
 
 private:
+  ~TimeManager() {}
+
   nsCOMPtr<nsPIDOMWindow> mWindow;
 };
 

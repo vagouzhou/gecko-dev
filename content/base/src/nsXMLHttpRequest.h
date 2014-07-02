@@ -25,12 +25,12 @@
 #include "nsJSUtils.h"
 #include "nsTArray.h"
 #include "nsITimer.h"
-#include "nsDOMEventTargetHelper.h"
 #include "nsIPrincipal.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsISizeOfEventTarget.h"
 
 #include "mozilla/Assertions.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/dom/TypedArray.h"
 #include "mozilla/dom/XMLHttpRequestBinding.h"
@@ -52,6 +52,10 @@ class nsIJSID;
 
 namespace mozilla {
 
+namespace dom {
+class DOMFile;
+}
+
 // A helper for building up an ArrayBuffer object's data
 // before creating the ArrayBuffer itself.  Will do doubling
 // based reallocation, up to an optional maximum growth given.
@@ -65,6 +69,7 @@ class ArrayBufferBuilder
   uint8_t* mDataPtr;
   uint32_t mCapacity;
   uint32_t mLength;
+  void* mMapPtr;
 public:
   ArrayBufferBuilder();
   ~ArrayBufferBuilder();
@@ -89,6 +94,14 @@ public:
 
   JSObject* getArrayBuffer(JSContext* aCx);
 
+  // Memory mapping to starting position of file(aFile) in the zip
+  // package(aJarFile).
+  //
+  // The file in the zip package has to be uncompressed and the starting
+  // position of the file must be aligned according to array buffer settings
+  // in JS engine.
+  nsresult mapToFileInPackage(const nsCString& aFile, nsIFile* aJarFile);
+
 protected:
   static bool areOverlappingRegions(const uint8_t* aStart1, uint32_t aLength1,
                                     const uint8_t* aStart2, uint32_t aLength2);
@@ -96,12 +109,12 @@ protected:
 
 } // namespace mozilla
 
-class nsXHREventTarget : public nsDOMEventTargetHelper,
+class nsXHREventTarget : public mozilla::DOMEventTargetHelper,
                          public nsIXMLHttpRequestEventTarget
 {
 protected:
-  nsXHREventTarget(nsDOMEventTargetHelper* aOwner)
-    : nsDOMEventTargetHelper(aOwner)
+  nsXHREventTarget(mozilla::DOMEventTargetHelper* aOwner)
+    : mozilla::DOMEventTargetHelper(aOwner)
   {
   }
 
@@ -118,9 +131,9 @@ public:
   virtual ~nsXHREventTarget() {}
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(nsXHREventTarget,
-                                           nsDOMEventTargetHelper)
+                                           mozilla::DOMEventTargetHelper)
   NS_DECL_NSIXMLHTTPREQUESTEVENTTARGET
-  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsDOMEventTargetHelper)
+  NS_REALLY_FORWARD_NSIDOMEVENTTARGET(mozilla::DOMEventTargetHelper)
 
   IMPL_EVENT_HANDLER(loadstart)
   IMPL_EVENT_HANDLER(progress)
@@ -137,7 +150,7 @@ class nsXMLHttpRequestUpload MOZ_FINAL : public nsXHREventTarget,
                                          public nsIXMLHttpRequestUpload
 {
 public:
-  nsXMLHttpRequestUpload(nsDOMEventTargetHelper* aOwner)
+  nsXMLHttpRequestUpload(mozilla::DOMEventTargetHelper* aOwner)
     : nsXHREventTarget(aOwner)
   {
   }
@@ -147,8 +160,7 @@ public:
   NS_REALLY_FORWARD_NSIDOMEVENTTARGET(nsXHREventTarget)
   NS_DECL_NSIXMLHTTPREQUESTUPLOAD
 
-  virtual JSObject* WrapObject(JSContext *cx,
-                               JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE;
   nsISupports* GetParentObject()
   {
     return GetOwner();
@@ -182,10 +194,9 @@ public:
   nsXMLHttpRequest();
   virtual ~nsXMLHttpRequest();
 
-  virtual JSObject* WrapObject(JSContext *cx,
-                               JS::Handle<JSObject*> scope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE
   {
-    return mozilla::dom::XMLHttpRequestBinding::Wrap(cx, scope, this);
+    return mozilla::dom::XMLHttpRequestBinding::Wrap(cx, this);
   }
   nsISupports* GetParentObject()
   {
@@ -409,6 +420,8 @@ private:
     return Send(Nullable<RequestBody>(aBody));
   }
 
+  bool IsDeniedCrossSiteRequest();
+
 public:
   void Send(ErrorResult& aRv)
   {
@@ -455,6 +468,7 @@ public:
   void Abort();
 
   // response
+  void GetResponseURL(nsAString& aUrl);
   uint32_t Status();
   void GetStatusText(nsCString& aStatusText);
   void GetResponseHeader(const nsACString& aHeader, nsACString& aResult,
@@ -484,7 +498,8 @@ public:
     return XMLHttpRequestResponseType(mResponseType);
   }
   void SetResponseType(XMLHttpRequestResponseType aType, ErrorResult& aRv);
-  JS::Value GetResponse(JSContext* aCx, ErrorResult& aRv);
+  void GetResponse(JSContext* aCx, JS::MutableHandle<JS::Value> aResponse,
+                   ErrorResult& aRv);
   void GetResponseText(nsString& aResponseText, ErrorResult& aRv);
   nsIDocument* GetResponseXML(ErrorResult& aRv);
 
@@ -500,12 +515,13 @@ public:
   }
 
   // We need a GetInterface callable from JS for chrome JS
-  JS::Value GetInterface(JSContext* aCx, nsIJSID* aIID, ErrorResult& aRv);
+  void GetInterface(JSContext* aCx, nsIJSID* aIID,
+                    JS::MutableHandle<JS::Value> aRetval, ErrorResult& aRv);
 
   // This creates a trusted readystatechange event, which is not cancelable and
   // doesn't bubble.
   nsresult CreateReadystatechangeEvent(nsIDOMEvent** aDOMEvent);
-  void DispatchProgressEvent(nsDOMEventTargetHelper* aTarget,
+  void DispatchProgressEvent(mozilla::DOMEventTargetHelper* aTarget,
                              const nsAString& aType,
                              bool aLengthComputable,
                              uint64_t aLoaded, uint64_t aTotal);
@@ -600,9 +616,10 @@ protected:
     NS_DECL_NSIHTTPHEADERVISITOR
     nsHeaderVisitor(nsXMLHttpRequest* aXMLHttpRequest, nsIHttpChannel* aHttpChannel)
       : mXHR(aXMLHttpRequest), mHttpChannel(aHttpChannel) {}
-    virtual ~nsHeaderVisitor() {}
     const nsACString &Headers() { return mHeaders; }
   private:
+    virtual ~nsHeaderVisitor() {}
+
     nsCString mHeaders;
     nsXMLHttpRequest* mXHR;
     nsCOMPtr<nsIHttpChannel> mHttpChannel;
@@ -654,7 +671,7 @@ protected:
   nsCOMPtr<nsIDOMBlob> mResponseBlob;
   // Non-null only when we are able to get a os-file representation of the
   // response, i.e. when loading from a file.
-  nsRefPtr<nsDOMFile> mDOMFile;
+  nsRefPtr<mozilla::dom::DOMFile> mDOMFile;
   // We stream data to mBlobSet when response type is "blob" or "moz-blob"
   // and mDOMFile is null.
   nsAutoPtr<BlobSet> mBlobSet;
@@ -729,6 +746,7 @@ protected:
 
   mozilla::ArrayBufferBuilder mArrayBufferBuilder;
   JS::Heap<JSObject*> mResultArrayBuffer;
+  bool mIsMappedArrayBuffer;
 
   void ResetResponse();
 
@@ -781,12 +799,14 @@ class nsXMLHttpRequestXPCOMifier MOZ_FINAL : public nsIStreamListener,
   {
   }
 
+private:
   ~nsXMLHttpRequestXPCOMifier() {
     if (mXHR) {
       mXHR->mXPCOMifier = nullptr;
     }
   }
 
+public:
   NS_FORWARD_NSISTREAMLISTENER(mXHR->)
   NS_FORWARD_NSIREQUESTOBSERVER(mXHR->)
   NS_FORWARD_NSICHANNELEVENTSINK(mXHR->)
@@ -814,8 +834,9 @@ public:
   }
   nsXHRParseEndListener(nsIXMLHttpRequest* aXHR)
     : mXHR(do_GetWeakReference(aXHR)) {}
-  virtual ~nsXHRParseEndListener() {}
 private:
+  virtual ~nsXHRParseEndListener() {}
+
   nsWeakPtr mXHR;
 };
 

@@ -8,7 +8,6 @@ const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
-Cu.import("resource://gre/modules/devtools/Loader.jsm");
 Cu.import("resource:///modules/devtools/SideMenuWidget.jsm");
 Cu.import("resource:///modules/devtools/ViewHelpers.jsm");
 
@@ -17,6 +16,8 @@ const promise = Cu.import("resource://gre/modules/Promise.jsm", {}).Promise;
 const EventEmitter = require("devtools/toolkit/event-emitter");
 const {Tooltip} = require("devtools/shared/widgets/Tooltip");
 const Editor = require("devtools/sourceeditor/editor");
+const Telemetry = require("devtools/shared/telemetry");
+const telemetry = new Telemetry();
 
 // The panel's window global is an EventEmitter firing the following events:
 const EVENTS = {
@@ -84,6 +85,7 @@ let EventsHandler = {
    * Listen for events emitted by the current tab target.
    */
   initialize: function() {
+    telemetry.toolOpened("shadereditor");
     this._onHostChanged = this._onHostChanged.bind(this);
     this._onTabNavigated = this._onTabNavigated.bind(this);
     this._onProgramLinked = this._onProgramLinked.bind(this);
@@ -99,6 +101,7 @@ let EventsHandler = {
    * Remove events emitted by the current tab target.
    */
   destroy: function() {
+    telemetry.toolClosed("shadereditor");
     gToolbox.off("host-changed", this._onHostChanged);
     gTarget.off("will-navigate", this._onTabNavigated);
     gTarget.off("navigate", this._onTabNavigated);

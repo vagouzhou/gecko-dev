@@ -14,6 +14,7 @@
 namespace mozilla {
 namespace net {
 
+class ChannelEvent;
 class ChannelEventQueue;
 
 class WebSocketChannelChild : public BaseWebSocketChannel,
@@ -21,9 +22,9 @@ class WebSocketChannelChild : public BaseWebSocketChannel,
 {
  public:
   WebSocketChannelChild(bool aSecure);
-  ~WebSocketChannelChild();
 
-  NS_DECL_ISUPPORTS
+  NS_DECL_THREADSAFE_ISUPPORTS
+  NS_DECL_NSITHREADRETARGETABLEREQUEST
 
   // nsIWebSocketChannel methods BaseWebSocketChannel didn't implement for us
   //
@@ -33,12 +34,15 @@ class WebSocketChannelChild : public BaseWebSocketChannel,
   NS_IMETHOD SendMsg(const nsACString &aMsg);
   NS_IMETHOD SendBinaryMsg(const nsACString &aMsg);
   NS_IMETHOD SendBinaryStream(nsIInputStream *aStream, uint32_t aLength);
+  nsresult SendBinaryStream(OptionalInputStreamParams *aStream, uint32_t aLength);
   NS_IMETHOD GetSecurityInfo(nsISupports **aSecurityInfo);
 
   void AddIPDLReference();
   void ReleaseIPDLReference();
 
  private:
+  ~WebSocketChannelChild();
+
   bool RecvOnStart(const nsCString& aProtocol, const nsCString& aExtensions) MOZ_OVERRIDE;
   bool RecvOnStop(const nsresult& aStatusCode) MOZ_OVERRIDE;
   bool RecvOnMessageAvailable(const nsCString& aMsg) MOZ_OVERRIDE;
@@ -53,6 +57,9 @@ class WebSocketChannelChild : public BaseWebSocketChannel,
   void OnAcknowledge(const uint32_t& aSize);
   void OnServerClose(const uint16_t& aCode, const nsCString& aReason);
   void AsyncOpenFailed();  
+
+  void DispatchToTargetThread(ChannelEvent *aChannelEvent);
+  bool IsOnTargetThread();
 
   nsRefPtr<ChannelEventQueue> mEventQ;
   bool mIPCOpen;

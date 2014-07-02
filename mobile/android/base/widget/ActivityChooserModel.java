@@ -20,6 +20,11 @@
 //package android.widget;
 package org.mozilla.gecko.widget;
 
+// Mozilla: New import
+import org.mozilla.gecko.distribution.Distribution;
+import org.mozilla.gecko.GeckoProfile;
+import java.io.File;
+
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
@@ -598,8 +603,10 @@ public class ActivityChooserModel extends DataSetObservable {
         }
         mHistoricalRecordsChanged = false;
         if (!TextUtils.isEmpty(mHistoryFileName)) {
-            new PersistHistoryAsyncTask().executeOnExecutor(AsyncTask.SERIAL_EXECUTOR,
-                    new ArrayList<HistoricalRecord>(mHistoricalRecords), mHistoryFileName);
+            /**
+             * Mozilla: Converted to a normal task.execute call so that this works on < ICS phones.
+             */
+            new PersistHistoryAsyncTask().execute(new ArrayList<HistoricalRecord>(mHistoricalRecords), mHistoryFileName);
         }
     }
 
@@ -1041,15 +1048,47 @@ public class ActivityChooserModel extends DataSetObservable {
      * Command for reading the historical records from a file off the UI thread.
      */
     private void readHistoricalDataImpl() {
-        FileInputStream fis = null;
         try {
-            fis = mContext.openFileInput(mHistoryFileName);
-        } catch (FileNotFoundException fnfe) {
-            if (DEBUG) {
-                Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+            GeckoProfile profile = GeckoProfile.get(mContext);
+            File f = profile.getFile(mHistoryFileName);
+            if (!f.exists()) {
+                // Fall back to the non-profile aware file if it exists...
+                File oldFile = new File(mHistoryFileName);
+                oldFile.renameTo(f);
             }
-            return;
+            readHistoricalDataFromStream(new FileInputStream(f));
+        } catch (FileNotFoundException fnfe) {
+            final Distribution dist = Distribution.getInstance(mContext);
+            dist.addOnDistributionReadyCallback(new Runnable() {
+                @Override
+                public void run() {
+                    Log.d(LOGTAG, "Running post-distribution task: quickshare.");
+
+                    if (!dist.exists()) {
+                        return;
+                    }
+
+                    try {
+                        File distFile = dist.getDistributionFile("quickshare/" + mHistoryFileName);
+                        if (distFile == null) {
+                            if (DEBUG) {
+                                Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+                            }
+                            return;
+                        }
+                        readHistoricalDataFromStream(new FileInputStream(distFile));
+                    } catch (Exception ex) {
+                        if (DEBUG) {
+                            Log.i(LOG_TAG, "Could not open historical records file: " + mHistoryFileName);
+                        }
+                        return;
+                    }
+                }
+            });
         }
+    }
+
+    private void readHistoricalDataFromStream(FileInputStream fis) {
         try {
             XmlPullParser parser = Xml.newPullParser();
             parser.setInput(fis, null);
@@ -1097,9 +1136,9 @@ public class ActivityChooserModel extends DataSetObservable {
                 Log.i(LOG_TAG, "Read " + historicalRecords.size() + " historical records.");
             }
         } catch (XmlPullParserException xppe) {
-            Log.e(LOG_TAG, "Error reading historical recrod file: " + mHistoryFileName, xppe);
+            Log.e(LOG_TAG, "Error reading historical record file: " + mHistoryFileName, xppe);
         } catch (IOException ioe) {
-            Log.e(LOG_TAG, "Error reading historical recrod file: " + mHistoryFileName, ioe);
+            Log.e(LOG_TAG, "Error reading historical record file: " + mHistoryFileName, ioe);
         } finally {
             if (fis != null) {
                 try {
@@ -1120,14 +1159,17 @@ public class ActivityChooserModel extends DataSetObservable {
         @SuppressWarnings("unchecked")
         public Void doInBackground(Object... args) {
             List<HistoricalRecord> historicalRecords = (List<HistoricalRecord>) args[0];
-            String hostoryFileName = (String) args[1];
+            String historyFileName = (String) args[1];
 
             FileOutputStream fos = null;
 
             try {
-                fos = mContext.openFileOutput(hostoryFileName, Context.MODE_PRIVATE);
+                // Mozilla - Update the location we save files to
+                GeckoProfile profile = GeckoProfile.get(mContext);
+                File file = profile.getFile(historyFileName);
+                fos = new FileOutputStream(file);
             } catch (FileNotFoundException fnfe) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + hostoryFileName, fnfe);
+                Log.e(LOG_TAG, "Error writing historical record file: " + historyFileName, fnfe);
                 return null;
             }
 
@@ -1159,11 +1201,11 @@ public class ActivityChooserModel extends DataSetObservable {
                     Log.i(LOG_TAG, "Wrote " + recordCount + " historical records.");
                 }
             } catch (IllegalArgumentException iae) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, iae);
+                Log.e(LOG_TAG, "Error writing historical record file: " + mHistoryFileName, iae);
             } catch (IllegalStateException ise) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, ise);
+                Log.e(LOG_TAG, "Error writing historical record file: " + mHistoryFileName, ise);
             } catch (IOException ioe) {
-                Log.e(LOG_TAG, "Error writing historical recrod file: " + mHistoryFileName, ioe);
+                Log.e(LOG_TAG, "Error writing historical record file: " + mHistoryFileName, ioe);
             } finally {
                 mCanReadHistoricalData = true;
                 if (fos != null) {

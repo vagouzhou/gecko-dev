@@ -31,28 +31,54 @@ class LocalAppNotFoundError(VersionError):
             'containing the binary.')
 
 
+INI_DATA_MAPPING = (('application', 'App'), ('platform', 'Build'))
+
+
 class Version(mozlog.LoggingMixin):
 
     def __init__(self):
         self._info = {}
 
-    def get_gecko_info(self, config_path):
-        for filename, section in (('application', 'App'),
-                                  ('platform', 'Build')):
-            config = ConfigParser.RawConfigParser()
-            config_file = os.path.join(config_path, '%s.ini' % filename)
+    def get_gecko_info(self, path):
+        for type, section in INI_DATA_MAPPING:
+            config_file = os.path.join(path, "%s.ini" % type)
             if os.path.exists(config_file):
-                config.read(config_file)
-                name_map = {'CodeName': 'code_name',
-                            'SourceRepository': 'repository',
-                            'SourceStamp': 'changeset'}
-                for key in ('BuildID', 'Name', 'CodeName', 'Version',
-                            'SourceRepository', 'SourceStamp'):
-                    name = name_map.get(key, key).lower()
-                    self._info['%s_%s' % (filename, name)] = config.has_option(
-                        section, key) and config.get(section, key) or None
+                self._parse_ini_file(open(config_file), type, section)
             else:
                 self.warn('Unable to find %s' % config_file)
+
+    def _parse_ini_file(self, fp, type, section):
+        config = ConfigParser.RawConfigParser()
+        config.readfp(fp)
+        name_map = {'CodeName': 'display_name',
+                    'SourceRepository': 'repository',
+                    'SourceStamp': 'changeset'}
+        for key in ('BuildID', 'Name', 'CodeName', 'Version',
+                    'SourceRepository', 'SourceStamp'):
+            name = name_map.get(key, key).lower()
+            self._info['%s_%s' % (type, name)] = config.has_option(
+                section, key) and config.get(section, key) or None
+
+        if not self._info.get('application_display_name'):
+            self._info['application_display_name'] = \
+                self._info.get('application_name')
+
+
+class LocalFennecVersion(Version):
+
+    def __init__(self, path, **kwargs):
+        Version.__init__(self, **kwargs)
+        self.get_gecko_info(path)
+
+    def get_gecko_info(self, path):
+        archive = zipfile.ZipFile(path, 'r')
+        for type, section in INI_DATA_MAPPING:
+            filename = "%s.ini" % type
+            if filename in archive.namelist():
+                self._parse_ini_file(archive.open(filename), type,
+                                     section)
+            else:
+                self.warn('Unable to find %s' % filename)
 
 
 class LocalVersion(Version):
@@ -95,11 +121,27 @@ class B2GVersion(Version):
                     self._info['_'.join([path, 'changeset'])] = changeset
 
     def get_gaia_info(self, app_zip):
-        with app_zip.open('resources/gaia_commit.txt') as f:
-            changeset, date = f.read().splitlines()
-            self._info['gaia_changeset'] = re.match('^\w{40}$', changeset) and \
-                changeset or None
-            self._info['gaia_date'] = date
+        tempdir = tempfile.mkdtemp()
+        try:
+            gaia_commit = os.path.join(tempdir, 'gaia_commit.txt')
+            try:
+                zip_file = zipfile.ZipFile(app_zip.name)
+                with open(gaia_commit, 'w') as f:
+                    f.write(zip_file.read('resources/gaia_commit.txt'))
+            except zipfile.BadZipfile:
+                self.info('Unable to unzip application.zip, falling back to '
+                          'system unzip')
+                from subprocess import call
+                call(['unzip', '-j', app_zip.name, 'resources/gaia_commit.txt',
+                      '-d', tempdir])
+
+            with open(gaia_commit) as f:
+                changeset, date = f.read().splitlines()
+                self._info['gaia_changeset'] = re.match(
+                    '^\w{40}$', changeset) and changeset or None
+                self._info['gaia_date'] = date
+        finally:
+            mozfile.remove(tempdir)
 
 
 class LocalB2GVersion(B2GVersion):
@@ -121,19 +163,20 @@ class LocalB2GVersion(B2GVersion):
             path, 'gaia', 'profile', 'webapps',
             'settings.gaiamobile.org', 'application.zip')
         if os.path.exists(zip_path):
-            zip_file = zipfile.ZipFile(zip_path)
-            self.get_gaia_info(zip_file)
+            with open(zip_path, 'rb') as zip_file:
+                self.get_gaia_info(zip_file)
         else:
             self.warn('Error pulling gaia file')
 
 
 class RemoteB2GVersion(B2GVersion):
 
-    def __init__(self, sources=None, dm_type='adb', host=None, **kwargs):
+    def __init__(self, sources=None, dm_type='adb', host=None,
+                 device_serial=None, **kwargs):
         B2GVersion.__init__(self, sources, **kwargs)
 
         if dm_type == 'adb':
-            dm = mozdevice.DeviceManagerADB()
+            dm = mozdevice.DeviceManagerADB(deviceSerial=device_serial)
         elif dm_type == 'sut':
             if not host:
                 raise Exception('A host for SUT must be supplied.')
@@ -159,8 +202,9 @@ class RemoteB2GVersion(B2GVersion):
         for path in ['/system/b2g', '/data/local']:
             path += '/webapps/settings.gaiamobile.org/application.zip'
             if dm.fileExists(path):
-                zip_file = zipfile.ZipFile(StringIO(dm.pullFile(path)))
-                self.get_gaia_info(zip_file)
+                with tempfile.NamedTemporaryFile() as f:
+                    dm.getFile(path, f.name)
+                    self.get_gaia_info(f)
                 break
         else:
             self.warn('Error pulling gaia file')
@@ -178,24 +222,33 @@ class RemoteB2GVersion(B2GVersion):
                     self._info[desired_props[key]] = value
 
 
-def get_version(binary=None, sources=None, dm_type=None, host=None):
+def get_version(binary=None, sources=None, dm_type=None, host=None,
+                device_serial=None):
     """
-    Returns the application version information as a dict. If binary path is
-    omitted then the current directory is checked for the existance of an
-    application.ini file. If not found, then it is assumed the target
-    application is a remote Firefox OS instance.
+    Returns the application version information as a dict. You can specify
+    a path to the binary of the application or an Android APK file (to get
+    version information for Firefox for Android). If this is omitted then the
+    current directory is checked for the existance of an application.ini
+    file. If not found, then it is assumed the target application is a remote
+    Firefox OS instance.
 
-    :param binary: Path to the binary for the application
+    :param binary: Path to the binary for the application or Android APK file
     :param sources: Path to the sources.xml file (Firefox OS)
     :param dm_type: Device manager type. Must be 'adb' or 'sut' (Firefox OS)
     :param host: Host address of remote Firefox OS instance (SUT)
+    :param device_serial: Serial identifier of Firefox OS device (ADB)
     """
     try:
-        version = LocalVersion(binary)
-        if version._info.get('application_name') == 'B2G':
-            version = LocalB2GVersion(binary, sources=sources)
+        if binary and zipfile.is_zipfile(binary) and 'AndroidManifest.xml' in \
+           zipfile.ZipFile(binary, 'r').namelist():
+            version = LocalFennecVersion(binary)
+        else:
+            version = LocalVersion(binary)
+            if version._info.get('application_name') == 'B2G':
+                version = LocalB2GVersion(binary, sources=sources)
     except LocalAppNotFoundError:
-        version = RemoteB2GVersion(sources=sources, dm_type=dm_type, host=host)
+        version = RemoteB2GVersion(sources=sources, dm_type=dm_type, host=host,
+                                   device_serial=device_serial)
     return version._info
 
 
@@ -203,17 +256,21 @@ def cli(args=sys.argv[1:]):
     parser = OptionParser()
     parser.add_option('--binary',
                       dest='binary',
-                      help='path to application binary')
+                      help='path to application binary or apk')
     parser.add_option('--sources',
                       dest='sources',
                       help='path to sources.xml (Firefox OS only)')
+    parser.add_option('--device',
+                      help='serial identifier of device to target (Firefox OS '
+                           'only)')
     (options, args) = parser.parse_args(args)
 
     dm_type = os.environ.get('DM_TRANS', 'adb')
     host = os.environ.get('TEST_DEVICE')
 
     version = get_version(binary=options.binary, sources=options.sources,
-                          dm_type=dm_type, host=host)
+                          dm_type=dm_type, host=host,
+                          device_serial=options.device)
     for (key, value) in sorted(version.items()):
         if value:
             print '%s: %s' % (key, value)

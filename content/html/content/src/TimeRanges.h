@@ -17,6 +17,18 @@
 namespace mozilla {
 namespace dom {
 
+class TimeRanges;
+
+}
+
+template<>
+struct HasDangerousPublicDestructor<dom::TimeRanges>
+{
+  static const bool value = true;
+};
+
+namespace dom {
+
 // Implements media TimeRanges:
 // http://www.whatwg.org/specs/web-apps/current-work/multipage/video.html#timeranges
 class TimeRanges MOZ_FINAL : public nsIDOMTimeRanges
@@ -30,13 +42,16 @@ public:
 
   void Add(double aStart, double aEnd);
 
-  // Returns the end time of the last range, or -1 if no ranges added.
-  double GetFinalEndTime();
+  // Returns the start time of the first range, or -1 if no ranges exist.
+  double GetStartTime();
+
+  // Returns the end time of the last range, or -1 if no ranges exist.
+  double GetEndTime();
 
   // See http://www.whatwg.org/html/#normalized-timeranges-object
   void Normalize();
 
-  JSObject* WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope);
+  JSObject* WrapObject(JSContext* aCx);
 
   uint32_t Length() const
   {

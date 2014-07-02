@@ -18,13 +18,15 @@ namespace layers {
 
 class ISurfaceAllocator;
 
-class TextureClientPool : public RefCounted<TextureClientPool>
+class TextureClientPool MOZ_FINAL
 {
+  ~TextureClientPool();
+
 public:
-  MOZ_DECLARE_REFCOUNTED_TYPENAME(TextureClientPool)
+  NS_INLINE_DECL_REFCOUNTING(TextureClientPool)
+
   TextureClientPool(gfx::SurfaceFormat aFormat, gfx::IntSize aSize,
                     ISurfaceAllocator *aAllocator);
-  ~TextureClientPool();
 
   /**
    * Gets an allocated TextureClient of size and format that are determined
@@ -99,6 +101,9 @@ private:
 
   uint32_t mOutstandingClients;
 
+  // On b2g gonk, std::queue might be a better choice.
+  // On ICS, fence wait happens implicitly before drawing.
+  // Since JB, fence wait happens explicitly when fetching a client from the pool.
   std::stack<RefPtr<TextureClient> > mTextureClients;
   std::stack<RefPtr<TextureClient> > mTextureClientsDeferred;
   nsRefPtr<nsITimer> mTimer;

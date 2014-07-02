@@ -15,7 +15,6 @@
 #include "nsIDocumentLoaderFactory.h"
 #include "nsIDocument.h"
 #include "nsIURL.h"
-#include "nsNodeInfo.h"
 #include "nsNodeInfoManager.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsString.h"
@@ -111,8 +110,8 @@ nsContentDLF::~nsContentDLF()
 {
 }
 
-NS_IMPL_ISUPPORTS1(nsContentDLF,
-                   nsIDocumentLoaderFactory)
+NS_IMPL_ISUPPORTS(nsContentDLF,
+                  nsIDocumentLoaderFactory)
 
 bool
 MayUseXULXBL(nsIChannel* aChannel)
@@ -318,7 +317,7 @@ nsContentDLF::CreateBlankDocument(nsILoadGroup *aLoadGroup,
 
     nsNodeInfoManager *nim = blankDoc->NodeInfoManager();
 
-    nsCOMPtr<nsINodeInfo> htmlNodeInfo;
+    nsRefPtr<mozilla::dom::NodeInfo> htmlNodeInfo;
 
     // generate an html html element
     htmlNodeInfo = nim->GetNodeInfo(nsGkAtoms::html, 0, kNameSpaceID_XHTML,

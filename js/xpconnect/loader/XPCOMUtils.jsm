@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
  * vim: sw=2 ts=2 sts=2 et filetype=javascript
  * This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -223,7 +223,12 @@ this.XPCOMUtils = {
   {
     this.defineLazyGetter(aObject, aName, function XPCU_moduleLambda() {
       var temp = {};
-      Cu.import(aResource, temp);
+      try {
+        Cu.import(aResource, temp);
+      } catch (ex) {
+        Cu.reportError("Failed to load module " + aResource + ".");
+        throw ex;
+      }
       return temp[aSymbol || aName];
     });
   },
@@ -279,13 +284,13 @@ this.XPCOMUtils = {
    * Allows you to fake a relative import. Expects the global object from the
    * module that's calling us, and the relative filename that we wish to import.
    */
-  importRelative: function XPCOMUtils__importRelative(that, path) {
+  importRelative: function XPCOMUtils__importRelative(that, path, scope) {
     if (!("__URI__" in that))
       throw Error("importRelative may only be used from a JSM, and its first argument "+
                   "must be that JSM's global object (hint: use this)");
     let uri = that.__URI__;
     let i = uri.lastIndexOf("/");
-    Components.utils.import(uri.substring(0, i+1) + path, that);
+    Components.utils.import(uri.substring(0, i+1) + path, scope || that);
   },
 
   /**

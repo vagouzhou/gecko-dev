@@ -26,11 +26,12 @@ namespace dom {
 class DOMRectReadOnly : public nsISupports
                       , public nsWrapperCache
 {
+protected:
+  virtual ~DOMRectReadOnly() {}
+
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMRectReadOnly)
-
-  virtual ~DOMRectReadOnly() {}
 
   DOMRectReadOnly(nsISupports* aParent)
     : mParent(aParent)
@@ -43,8 +44,7 @@ public:
     MOZ_ASSERT(mParent);
     return mParent;
   }
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual double X() const = 0;
   virtual double Y() const = 0;
@@ -99,8 +99,7 @@ public:
   Constructor(const GlobalObject& aGlobal, double aX, double aY,
               double aWidth, double aHeight, ErrorResult& aRV);
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   void SetRect(float aX, float aY, float aWidth, float aHeight) {
     mX = aX; mY = aY; mWidth = aWidth; mHeight = aHeight;
@@ -148,6 +147,8 @@ protected:
 class DOMRectList MOZ_FINAL : public nsIDOMClientRectList,
                               public nsWrapperCache
 {
+  ~DOMRectList() {}
+
 public:
   DOMRectList(nsISupports *aParent) : mParent(aParent)
   {
@@ -159,8 +160,7 @@ public:
 
   NS_DECL_NSIDOMCLIENTRECTLIST
   
-  virtual JSObject* WrapObject(JSContext *cx,
-                               JS::Handle<JSObject*> scope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *cx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject()
   {

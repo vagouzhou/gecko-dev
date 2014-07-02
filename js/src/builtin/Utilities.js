@@ -23,19 +23,18 @@
          JSMSG_EMPTY_ARRAY_REDUCE: false, JSMSG_CANT_CONVERT_TO: false,
 */
 
-/* Utility macros */
-#define TO_INT32(x) ((x) | 0)
-#define TO_UINT32(x) ((x) >>> 0)
-#define IS_UINT32(x) ((x) >>> 0 === (x))
+#include "SelfHostingDefines.h"
 
-/* Assertions */
-#ifdef DEBUG
-#define assert(b, info) if (!(b)) AssertionFailed(info)
-#else
-#define assert(b, info)
-#endif
+// Remove unsafe builtin functions.
+Object.defineProperty = null; // See bug 988416.
 
-/* cache built-in functions before applications can change them */
+// Cache builtin functions so using them doesn't require cloning the whole object they're
+// installed on.
+//
+// WARNING: Do not make std_ references to builtin constructors (like Array and
+// Object) below. Setting `var std_Array = Array;`, for instance, would cause
+// the entire Array constructor, including its prototype and methods, to be
+// cloned into content compartments.
 var std_isFinite = isFinite;
 var std_isNaN = isNaN;
 var std_Array_indexOf = ArrayIndexOf;
@@ -56,16 +55,15 @@ var std_Function_apply = Function.prototype.apply;
 var std_Math_floor = Math.floor;
 var std_Math_max = Math.max;
 var std_Math_min = Math.min;
+var std_Math_abs = Math.abs;
 var std_Math_imul = Math.imul;
 var std_Math_log2 = Math.log2;
 var std_Number_valueOf = Number.prototype.valueOf;
 var std_Number_POSITIVE_INFINITY = Number.POSITIVE_INFINITY;
 var std_Object_create = Object.create;
-var std_Object_defineProperty = Object.defineProperty;
 var std_Object_getOwnPropertyNames = Object.getOwnPropertyNames;
 var std_Object_hasOwnProperty = Object.prototype.hasOwnProperty;
 var std_RegExp_test = RegExp.prototype.test;
-var Std_String = String;
 var std_String_fromCharCode = String.fromCharCode;
 var std_String_charCodeAt = String.prototype.charCodeAt;
 var std_String_indexOf = String.prototype.indexOf;
@@ -90,63 +88,7 @@ var std_Set_iterator = Set.prototype[std_iterator];
 var std_Map_iterator_next = Object.getPrototypeOf(Map()[std_iterator]()).next;
 var std_Set_iterator_next = Object.getPrototypeOf(Set()[std_iterator]()).next;
 
-/* Safe versions of ARRAY.push(ELEMENT) */
-#define ARRAY_PUSH(ARRAY, ELEMENT) \
-  callFunction(std_Array_push, ARRAY, ELEMENT);
-#define ARRAY_SLICE(ARRAY, ELEMENT) \
-  callFunction(std_Array_slice, ARRAY, ELEMENT);
 
-/********** Parallel JavaScript macros and so on **********/
-
-#ifdef ENABLE_PARALLEL_JS
-
-/* The mode asserts options object. */
-#define TRY_PARALLEL(MODE) \
-  ((!MODE || MODE.mode !== "seq"))
-#define ASSERT_SEQUENTIAL_IS_OK(MODE) \
-  do { if (MODE) AssertSequentialIsOK(MODE) } while(false)
-
-/**
- * The ParallelSpew intrinsic is only defined in debug mode, so define a dummy
- * if debug is not on.
- */
-#ifndef DEBUG
-#define ParallelSpew(args)
-#endif
-
-#define MAX_SLICE_SHIFT 6
-#define MAX_SLICE_SIZE 64
-#define MAX_SLICES_PER_WORKER 8
-
-/**
- * Macros to help compute the start and end indices of slices based on id. Use
- * with the object returned by ComputeSliceInfo.
- */
-#define SLICE_START(info, id) \
-    (id << info.shift)
-#define SLICE_END(info, start, length) \
-    std_Math_min(start + (1 << info.shift), length)
-#define SLICE_COUNT(info) \
-    info.statuses.length
-
-/**
- * ForkJoinGetSlice acts as identity when we are not in a parallel section, so
- * pass in the next sequential value when we are in sequential mode. The
- * reason for this odd API is because intrinsics *need* to be called during
- * ForkJoin's warmup to fill the TI info.
- */
-#define GET_SLICE(info, id) \
-    ((id = ForkJoinGetSlice(InParallelSection() ? -1 : NextSequentialSliceId(info, -1))) >= 0)
-
-#define SLICE_STATUS_DONE 1
-
-/**
- * Macro to mark a slice as completed in the info object.
- */
-#define MARK_SLICE_DONE(info, id) \
-    UnsafePutElements(info.statuses, id, SLICE_STATUS_DONE)
-
-#endif // ENABLE_PARALLEL_JS
 
 /********** List specification type **********/
 
@@ -195,34 +137,11 @@ function ToNumber(v) {
 }
 
 
-/* Spec: ECMAScript Language Specification, 5.1 edition, 9.8 and 15.2.1.1 */
-function ToString(v) {
-    assert(arguments.length > 0, "__toString");
-    return Std_String(v);
-}
-
-
 /* Spec: ECMAScript Language Specification, 5.1 edition, 9.10 */
 function CheckObjectCoercible(v) {
     if (v === undefined || v === null)
         ThrowError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
 }
-
-
-/********** Various utility functions **********/
-
-
-/** Returns true iff Type(v) is Object; see ES5 8.6. */
-function IsObject(v) {
-    // Watch out for |typeof null === "object"| as the most obvious pitfall.
-    // But also be careful of SpiderMonkey's objects that emulate undefined
-    // (i.e. |document.all|), which have bogus |typeof| behavior.  Detect
-    // these objects using strict equality, which said bogosity doesn't affect.
-    return (typeof v === "object" && v !== null) ||
-           typeof v === "function" ||
-           (typeof v === "undefined" && v !== undefined);
-}
-
 
 /********** Testing code **********/
 

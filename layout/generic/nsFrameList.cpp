@@ -4,16 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsFrameList.h"
-#include "nsIFrame.h"
+#include "nsContainerFrame.h"
 #include "nsLayoutUtils.h"
 #include "nsPresContext.h"
 #include "nsIPresShell.h"
 
-#ifdef IBMBIDI
 #include "nsGkAtoms.h"
 #include "nsILineIterator.h"
 #include "nsBidiPresUtils.h"
-#endif // IBMBIDI
 
 namespace mozilla {
 namespace layout {
@@ -138,7 +136,7 @@ nsFrameList::DestroyFrame(nsIFrame* aFrame)
 }
 
 nsFrameList::Slice
-nsFrameList::InsertFrames(nsIFrame* aParent, nsIFrame* aPrevSibling,
+nsFrameList::InsertFrames(nsContainerFrame* aParent, nsIFrame* aPrevSibling,
                           nsFrameList& aFrameList)
 {
   NS_PRECONDITION(aFrameList.NotEmpty(), "Unexpected empty list");
@@ -311,7 +309,7 @@ nsFrameList::GetLength() const
 }
 
 void
-nsFrameList::ApplySetParent(nsIFrame* aParent) const
+nsFrameList::ApplySetParent(nsContainerFrame* aParent) const
 {
   NS_ASSERTION(aParent, "null ptr");
 
@@ -344,7 +342,6 @@ nsFrameList::List(FILE* out) const
 }
 #endif
 
-#ifdef IBMBIDI
 nsIFrame*
 nsFrameList::GetPrevVisualFor(nsIFrame* aFrame) const
 {
@@ -493,7 +490,6 @@ nsFrameList::GetNextVisualFor(nsIFrame* aFrame) const
   }
   return frame;
 }
-#endif
 
 #ifdef DEBUG_FRAME_LIST
 void

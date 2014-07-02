@@ -20,8 +20,6 @@
 #include "nsRect.h"                     // for nsRect, nsIntRect
 #include "nsRegion.h"                   // for nsIntRegionRectIterator, etc
 
-class gfxASurface;
-
 // XXXTodo: rename FORM_TWIPS to FROM_APPUNITS
 #define FROM_TWIPS(_x)  ((gfxFloat)((_x)/(mP2A)))
 #define FROM_TWIPS_INT(_x)  (NSToIntRound((gfxFloat)((_x)/(mP2A))))
@@ -67,13 +65,6 @@ static int32_t FindSafeLength(const char *aString, uint32_t aLength,
 
 void
 nsRenderingContext::Init(nsDeviceContext* aContext,
-                         gfxASurface *aThebesSurface)
-{
-    Init(aContext, new gfxContext(aThebesSurface));
-}
-
-void
-nsRenderingContext::Init(nsDeviceContext* aContext,
                          gfxContext *aThebesContext)
 {
     mDeviceContext = aContext;
@@ -81,6 +72,13 @@ nsRenderingContext::Init(nsDeviceContext* aContext,
 
     mThebes->SetLineWidth(1.0);
     mP2A = mDeviceContext->AppUnitsPerDevPixel();
+}
+
+void
+nsRenderingContext::Init(nsDeviceContext* aContext,
+                         DrawTarget *aDrawTarget)
+{
+    Init(aContext, new gfxContext(aDrawTarget));
 }
 
 //

@@ -20,7 +20,7 @@ NS_IMPL_NS_NEW_HTML_ELEMENT(Style)
 namespace mozilla {
 namespace dom {
 
-HTMLStyleElement::HTMLStyleElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLStyleElement::HTMLStyleElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
 {
   AddMutationObserver(this);
@@ -48,10 +48,10 @@ NS_IMPL_RELEASE_INHERITED(HTMLStyleElement, Element)
 
 // QueryInterface implementation for HTMLStyleElement
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLStyleElement)
-  NS_INTERFACE_TABLE_INHERITED3(HTMLStyleElement,
-                                nsIDOMHTMLStyleElement,
-                                nsIStyleSheetLinkingElement,
-                                nsIMutationObserver)
+  NS_INTERFACE_TABLE_INHERITED(HTMLStyleElement,
+                               nsIDOMHTMLStyleElement,
+                               nsIStyleSheetLinkingElement,
+                               nsIMutationObserver)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLStyleElement)
@@ -69,7 +69,7 @@ HTMLStyleElement::GetMozDisabled(bool* aDisabled)
 bool
 HTMLStyleElement::Disabled()
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   return ss && ss->Disabled();
 }
 
@@ -83,7 +83,7 @@ HTMLStyleElement::SetMozDisabled(bool aDisabled)
 void
 HTMLStyleElement::SetDisabled(bool aDisabled)
 {
-  nsCSSStyleSheet* ss = GetSheet();
+  CSSStyleSheet* ss = GetSheet();
   if (ss) {
     ss->SetDisabled(aDisabled);
   }
@@ -269,9 +269,9 @@ HTMLStyleElement::GetStyleSheetInfo(nsAString& aTitle,
 }
 
 JSObject*
-HTMLStyleElement::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+HTMLStyleElement::WrapNode(JSContext *aCx)
 {
-  return HTMLStyleElementBinding::Wrap(aCx, aScope, this);
+  return HTMLStyleElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

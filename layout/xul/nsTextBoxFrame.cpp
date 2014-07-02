@@ -19,7 +19,7 @@
 #include "nsIServiceManager.h"
 #include "nsIDOMElement.h"
 #include "nsIDOMXULLabelElement.h"
-#include "nsEventStateManager.h"
+#include "mozilla/EventStateManager.h"
 #include "nsITheme.h"
 #include "nsUnicharUtils.h"
 #include "nsContentUtils.h"
@@ -36,10 +36,8 @@
 #include "nsAccessibilityService.h"
 #endif
 
-#ifdef IBMBIDI
 #include "nsBidiUtils.h"
 #include "nsBidiPresUtils.h"
-#endif // IBMBIDI
 
 using namespace mozilla;
 
@@ -109,9 +107,9 @@ nsTextBoxFrame::~nsTextBoxFrame()
 
 
 void
-nsTextBoxFrame::Init(nsIContent*      aContent,
-                     nsIFrame*        aParent,
-                     nsIFrame*        aPrevInFlow)
+nsTextBoxFrame::Init(nsIContent*       aContent,
+                     nsContainerFrame* aParent,
+                     nsIFrame*         aPrevInFlow)
 {
     nsTextBoxFrameSuper::Init(aContent, aParent, aPrevInFlow);
 
@@ -140,7 +138,7 @@ nsTextBoxFrame::AlwaysAppendAccessKey()
 
     const char* prefName = "intl.menuitems.alwaysappendaccesskeys";
     nsAdoptingString val = Preferences::GetLocalizedString(prefName);
-    gAlwaysAppendAccessKey = val.Equals(NS_LITERAL_STRING("true"));
+    gAlwaysAppendAccessKey = val.EqualsLiteral("true");
   }
   return gAlwaysAppendAccessKey;
 }
@@ -210,7 +208,7 @@ nsTextBoxFrame::UpdateAccesskey(nsWeakFrame& aWeakThis)
 
     if (!accesskey.Equals(mAccessKey)) {
         // Need to get clean mTitle.
-        mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::value, mTitle);
+        RecomputeTitle();
         mAccessKey = accesskey;
         UpdateAccessTitle();
         PresContext()->PresShell()->
@@ -260,7 +258,7 @@ nsTextBoxFrame::UpdateAttributes(nsIAtom*         aAttribute,
     }
 
     if (aAttribute == nullptr || aAttribute == nsGkAtoms::value) {
-        mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::value, mTitle);
+        RecomputeTitle();
         doUpdateTitle = true;
     }
 
@@ -499,7 +497,7 @@ nsTextBoxFrame::DrawText(nsRenderingContext& aRenderingContext,
     }
 
     nsRefPtr<nsRenderingContext> refContext =
-        PresContext()->PresShell()->GetReferenceRenderingContext();
+        PresContext()->PresShell()->CreateReferenceRenderingContext();
 
     aRenderingContext.SetFont(fontMet);
     refContext->SetFont(fontMet);
@@ -508,7 +506,6 @@ nsTextBoxFrame::DrawText(nsRenderingContext& aRenderingContext,
 
     aRenderingContext.SetColor(aOverrideColor ? *aOverrideColor : StyleColor()->mColor);
 
-#ifdef IBMBIDI
     nsresult rv = NS_ERROR_FAILURE;
 
     if (mState & NS_FRAME_IS_BIDI) {
@@ -536,9 +533,7 @@ nsTextBoxFrame::DrawText(nsRenderingContext& aRenderingContext,
                                            aTextRect.x, baseline);
       }
     }
-    if (NS_FAILED(rv) )
-#endif // IBMBIDI
-    {
+    if (NS_FAILED(rv)) {
        aRenderingContext.SetTextRunRTL(false);
 
        if (mAccessKeyInfo && mAccessKeyInfo->mAccesskeyIndex != kNotFound) {
@@ -619,11 +614,9 @@ nsTextBoxFrame::CalculateTitleForWidth(nsPresContext*      aPresContext,
 
     if (titleWidth <= aWidth) {
         mCroppedTitle = mTitle;
-#ifdef IBMBIDI
         if (HasRTLChars(mTitle)) {
             mState |= NS_FRAME_IS_BIDI;
         }
-#endif // IBMBIDI
         return titleWidth;  // fits, done.
     }
 
@@ -667,11 +660,9 @@ nsTextBoxFrame::CalculateTitleForWidth(nsPresContext*      aPresContext,
                     break;
 
                 twidth += cwidth;
-#ifdef IBMBIDI
                 if (UCS2_CHAR_IS_BIDI(ch) ) {
                   mState |= NS_FRAME_IS_BIDI;
                 }
-#endif // IBMBIDI
             }
 
             if (i == 0)
@@ -697,11 +688,9 @@ nsTextBoxFrame::CalculateTitleForWidth(nsPresContext*      aPresContext,
                     break;
 
                 twidth += cwidth;
-#ifdef IBMBIDI
                 if (UCS2_CHAR_IS_BIDI(ch) ) {
                   mState |= NS_FRAME_IS_BIDI;
                 }
-#endif // IBMBIDI
             }
 
             if (i == length-1)
@@ -743,10 +732,8 @@ nsTextBoxFrame::CalculateTitleForWidth(nsPresContext*      aPresContext,
                     break;
                 leftString.Insert(ch, leftString.Length());
 
-#ifdef IBMBIDI
                 if (UCS2_CHAR_IS_BIDI(ch))
                     mState |= NS_FRAME_IS_BIDI;
-#endif
 
                 // look at the next character on the right end
                 if (rightPos > leftPos) {
@@ -759,10 +746,8 @@ nsTextBoxFrame::CalculateTitleForWidth(nsPresContext*      aPresContext,
                         break;
                     rightString.Insert(ch, 0);
 
-#ifdef IBMBIDI
                     if (UCS2_CHAR_IS_BIDI(ch))
                         mState |= NS_FRAME_IS_BIDI;
-#endif
                 }
 
                 // look at the next two characters
@@ -884,6 +869,43 @@ nsTextBoxFrame::UpdateAccessIndex()
                 mAccessKeyInfo->mAccesskeyIndex = kNotFound;
         }
     }
+}
+
+void
+nsTextBoxFrame::RecomputeTitle()
+{
+  mContent->GetAttr(kNameSpaceID_None, nsGkAtoms::value, mTitle);
+
+  // This doesn't handle language-specific uppercasing/lowercasing
+  // rules, unlike textruns.
+  uint8_t textTransform = StyleText()->mTextTransform;
+  if (textTransform == NS_STYLE_TEXT_TRANSFORM_UPPERCASE) {
+    ToUpperCase(mTitle);
+  } else if (textTransform == NS_STYLE_TEXT_TRANSFORM_LOWERCASE) {
+    ToLowerCase(mTitle);
+  }
+  // We can't handle NS_STYLE_TEXT_TRANSFORM_CAPITALIZE because we
+  // have no clue about word boundaries here.  We also don't handle
+  // NS_STYLE_TEXT_TRANSFORM_FULLWIDTH.
+}
+
+void
+nsTextBoxFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
+{
+  if (!aOldStyleContext) {
+    // We're just being initialized
+    return;
+  }
+
+  const nsStyleText* oldTextStyle = aOldStyleContext->PeekStyleText();
+  // We should really have oldTextStyle here, since we asked for our
+  // nsStyleText during Init(), but if it's not there for some reason
+  // just assume the worst and recompute mTitle.
+  if (!oldTextStyle ||
+      oldTextStyle->mTextTransform != StyleText()->mTextTransform) {
+    RecomputeTitle();
+    UpdateAccessTitle();
+  }
 }
 
 NS_IMETHODIMP
@@ -1131,7 +1153,7 @@ nsTextBoxFrame::RegUnregAccessKey(bool aDoReg)
 
     // With a valid PresContext we can get the ESM 
     // and (un)register the access key
-    nsEventStateManager *esm = PresContext()->EventStateManager();
+    EventStateManager* esm = PresContext()->EventStateManager();
 
     uint32_t key = accessKey.First();
     if (aDoReg)

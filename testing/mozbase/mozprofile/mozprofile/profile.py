@@ -106,7 +106,7 @@ class Profile(object):
         self.webapps.update_manifests()
 
     def __del__(self):
-      self.cleanup()
+        self.cleanup()
 
     ### cleanup
 
@@ -349,7 +349,6 @@ class FirefoxProfile(Profile):
                    'toolkit.startup.max_resumed_crashes' : -1,
                    # Don't report telemetry information
                    'toolkit.telemetry.enabled' : False,
-                   'toolkit.telemetry.enabledPreRelease' : False,
                    }
 
 class MetroFirefoxProfile(Profile):
@@ -393,7 +392,6 @@ class MetroFirefoxProfile(Profile):
                    'toolkit.startup.max_resumed_crashes' : -1,
                    # Don't report telemetry information
                    'toolkit.telemetry.enabled' : False,
-                   'toolkit.telemetry.enabledPreRelease' : False,
                    }
 
 class ThunderbirdProfile(Profile):

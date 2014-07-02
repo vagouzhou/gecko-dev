@@ -3,6 +3,7 @@ package org.mozilla.gecko.tests;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.mozilla.gecko.Actions;
+import org.mozilla.gecko.home.HomePager;
 import org.mozilla.gecko.R;
 
 import android.view.View;
@@ -22,10 +23,6 @@ public class testReaderMode extends AboutHomeTest {
     static final int EVENT_CLEAR_DELAY_MS = 3000;
     static final int READER_ICON_MAX_WAIT_MS = 15000;
 
-    @Override
-    protected int getTestType() {
-        return TEST_MOCHITEST;
-    }
     public void testReaderMode() {
         blockForGeckoReady();
 
@@ -110,8 +107,8 @@ public class testReaderMode extends AboutHomeTest {
         mAsserter.ok(mSolo.waitForText("Robocop Text Page"), "Verify if the page is added to your Reading List", "The page is present in your Reading List");
 
         // Check if the page is added in History tab like a Reading List item
-        openAboutHomeTab(AboutHomeTabs.MOST_RECENT);
-        list = findListViewWithTag("most_recent");
+        openAboutHomeTab(AboutHomeTabs.HISTORY);
+        list = findListViewWithTag(HomePager.LIST_TAG_HISTORY);
         child = list.getChildAt(1);
         mAsserter.ok(child != null, "item can be retrieved", child != null ? child.toString() : "null!");
         mSolo.clickLongOnView(child);
@@ -128,7 +125,7 @@ public class testReaderMode extends AboutHomeTest {
         }
         // Verify if the page is present to your Reading List
         openAboutHomeTab(AboutHomeTabs.READING_LIST);
-        list = findListViewWithTag("reading_list");
+        list = findListViewWithTag(HomePager.LIST_TAG_READING_LIST);
         child = list.getChildAt(childNo-1);
         mAsserter.ok(child != null, "Verify if the page is present to your Reading List", "The page is present in your Reading List");
         contentEventExpecter = mActions.expectGeckoEvent("DOMContentLoaded");
@@ -147,7 +144,7 @@ public class testReaderMode extends AboutHomeTest {
 
         //Check if the Reading List is empty
         openAboutHomeTab(AboutHomeTabs.READING_LIST);
-        list = findListViewWithTag("reading_list");
+        list = findListViewWithTag(HomePager.LIST_TAG_READING_LIST);
         child = list.getChildAt(childNo-1);
         mAsserter.ok(child == null, "Verify if the Reading List is empty", "The Reading List is empty");
     }

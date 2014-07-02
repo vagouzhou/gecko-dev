@@ -233,7 +233,7 @@ NS_NewLocalStore(nsISupports* aOuter, REFNSIID aIID, void** aResult)
     return rv;
 }
 
-NS_IMPL_CYCLE_COLLECTION_1(LocalStoreImpl, mInner)
+NS_IMPL_CYCLE_COLLECTION(LocalStoreImpl, mInner)
 NS_IMPL_CYCLE_COLLECTING_ADDREF(LocalStoreImpl)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(LocalStoreImpl)
 
@@ -475,7 +475,7 @@ LocalStoreImpl::Observe(nsISupports *aSubject, const char *aTopic, const char16_
         // profile-less.
         mInner = do_CreateInstance(NS_RDF_DATASOURCE_CONTRACTID_PREFIX "in-memory-datasource");
 
-        if (!nsCRT::strcmp(NS_ConvertUTF16toUTF8(someData).get(), "shutdown-cleanse")) {
+        if (!NS_strcmp(someData, MOZ_UTF16("shutdown-cleanse"))) {
             nsCOMPtr<nsIFile> aFile;
             rv = NS_GetSpecialDirectory(NS_APP_LOCALSTORE_50_FILE, getter_AddRefs(aFile));
             if (NS_SUCCEEDED(rv))

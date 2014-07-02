@@ -82,6 +82,7 @@ included_inclnames_to_ignore = set([
     'unicode/udat.h',           # ICU
     'unicode/udatpg.h',         # ICU
     'unicode/uenum.h',          # ICU
+    'unicode/unorm.h',          # ICU
     'unicode/unum.h',           # ICU
     'unicode/ustring.h',        # ICU
     'unicode/utypes.h',         # ICU
@@ -200,7 +201,7 @@ class FileKind(object):
         if filename.endswith('.cpp'):
             return FileKind.CPP
 
-        if filename.endswith(('inlines.h', '-inl.h', 'Inlines.h')):
+        if filename.endswith(('inlines.h', '-inl.h')):
             return FileKind.INL_H
 
         if filename.endswith('.h'):
@@ -481,9 +482,9 @@ def do_file(filename, inclname, file_kind, f, all_inclnames, included_h_inclname
             error(filename, str(include1.linenum) + ':' + str(include2.linenum),
                   include1.quote() + ' should be included after ' + include2.quote())
 
-    # The #include statements in the files in assembler/ and yarr/ have all manner of implicit
+    # The #include statements in the files in assembler/ have all manner of implicit
     # ordering requirements.  Boo.  Ignore them.
-    skip_order_checking = inclname.startswith(('assembler/', 'yarr/'))
+    skip_order_checking = inclname.startswith('assembler/')
 
     # Check the extracted #include statements, both individually, and the ordering of
     # adjacent pairs that live in the same block.

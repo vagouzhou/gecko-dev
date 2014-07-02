@@ -5,6 +5,8 @@
 
 package org.mozilla.gecko.util;
 
+import org.mozilla.gecko.mozglue.RobocopTarget;
+
 import java.util.Map;
 
 import android.os.Handler;
@@ -23,8 +25,8 @@ public final class ThreadUtils {
         THROW,
     }
 
-    private static Thread sUiThread;
-    private static Thread sBackgroundThread;
+    private static volatile Thread sUiThread;
+    private static volatile Thread sBackgroundThread;
 
     private static Handler sUiHandler;
 
@@ -118,6 +120,11 @@ public final class ThreadUtils {
         assertOnThread(getUiThread(), AssertBehavior.THROW);
     }
 
+    public static void assertNotOnUiThread() {
+        assertNotOnThread(getUiThread(), AssertBehavior.THROW);
+    }
+
+    @RobocopTarget
     public static void assertOnGeckoThread() {
         assertOnThread(sGeckoThread, AssertBehavior.THROW);
     }
@@ -131,11 +138,19 @@ public final class ThreadUtils {
     }
 
     public static void assertOnThread(final Thread expectedThread, AssertBehavior behavior) {
+        assertOnThreadComparison(expectedThread, behavior, true);
+    }
+
+    public static void assertNotOnThread(final Thread expectedThread, AssertBehavior behavior) {
+        assertOnThreadComparison(expectedThread, behavior, false);
+    }
+
+    private static void assertOnThreadComparison(final Thread expectedThread, AssertBehavior behavior, boolean expected) {
         final Thread currentThread = Thread.currentThread();
         final long currentThreadId = currentThread.getId();
         final long expectedThreadId = expectedThread.getId();
 
-        if (currentThreadId == expectedThreadId) {
+        if ((currentThreadId == expectedThreadId) == expected) {
             return;
         }
 
@@ -158,6 +173,10 @@ public final class ThreadUtils {
     }
 
     public static boolean isOnBackgroundThread() {
+        if (sBackgroundThread == null) {
+            return false;
+        }
+
         return isOnThread(sBackgroundThread);
     }
 

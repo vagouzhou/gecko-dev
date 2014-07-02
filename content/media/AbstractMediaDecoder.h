@@ -80,9 +80,6 @@ public:
   // Set the media as being seekable or not.
   virtual void SetMediaSeekable(bool aMediaSeekable) = 0;
 
-  // Set the transport level as being seekable or not.
-  virtual void SetTransportSeekable(bool aTransportSeekable) = 0;
-
   virtual VideoFrameContainer* GetVideoFrameContainer() = 0;
   virtual mozilla::layers::ImageContainer* GetImageContainer() = 0;
 
@@ -115,6 +112,12 @@ public:
   // May be called by the reader to notify the decoder that the resources
   // required to begin playback have been acquired. Can be called on any thread.
   virtual void NotifyWaitingForResourcesStatusChanged() = 0;
+
+  // Called by Reader if the current audio track can be offloaded
+  virtual void SetCanOffloadAudio(bool aCanOffloadAudio) {}
+
+  // Called from HTMLMediaElement when owner document activity changes
+  virtual void SetElementVisibility(bool aIsVisible) {}
 
   // Stack based class to assist in notifying the frame statistics of
   // parsed and decoded frames. Use inside video demux & decode functions

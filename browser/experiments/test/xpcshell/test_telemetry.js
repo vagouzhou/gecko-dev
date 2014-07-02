@@ -5,17 +5,10 @@
 
 Cu.import("resource://testing-common/httpd.js");
 Cu.import("resource://gre/modules/TelemetryLog.jsm");
-Cu.import("resource://gre/modules/TelemetryPing.jsm");
-Cu.import("resource:///modules/experiments/Experiments.jsm");
+let bsp = Cu.import("resource:///modules/experiments/Experiments.jsm");
 
 
 const FILE_MANIFEST            = "experiments.manifest";
-const PREF_EXPERIMENTS_ENABLED = "experiments.enabled";
-const PREF_LOGGING_LEVEL       = "experiments.logging.level";
-const PREF_LOGGING_DUMP        = "experiments.logging.dump";
-const PREF_MANIFEST_URI        = "experiments.manifest.uri";
-const PREF_FETCHINTERVAL       = "experiments.manifest.fetchIntervalSeconds";
-
 const MANIFEST_HANDLER         = "manifests/handler";
 
 const SEC_IN_ONE_DAY  = 24 * 60 * 60;
@@ -31,25 +24,7 @@ let gPolicy              = null;
 let gManifestObject      = null;
 let gManifestHandlerURI  = null;
 
-const TLOG = {
-  // log(key, [kind, experimentId, details])
-  ACTIVATION_KEY: "EXPERIMENT_ACTIVATION",
-  ACTIVATION: {
-    ACTIVATED: "ACTIVATED",
-    INSTALL_FAILURE: "INSTALL_FAILURE",
-    REJECTED: "REJECTED",
-  },
-
-  // log(key, [kind, experimentId, optionalDetails...])
-  TERMINATION_KEY: "EXPERIMENT_TERMINATION",
-  TERMINATION: {
-    USERDISABLED: "USERDISABLED",
-    FROM_API: "FROM_API",
-    EXPIRED: "EXPIRED",
-    RECHECK: "RECHECK",
-  },
-};
-
+const TLOG = bsp.TELEMETRY_LOG;
 
 let gGlobalScope = this;
 function loadAddonManager() {
@@ -113,7 +88,8 @@ add_task(function* test_setup() {
 
   gReporter = yield getReporter("json_payload_simple");
   yield gReporter.collectMeasurements();
-  let payload = yield gReporter.getJSONPayload(true);
+  let payload = yield gReporter.getJSONPayload(false);
+  do_register_cleanup(() => gReporter._shutdown());
 
   gPolicy = new Experiments.Policy();
   let dummyTimer = { cancel: () => {}, clear: () => {} };
@@ -129,6 +105,9 @@ add_task(function* test_setup() {
 // Test basic starting and stopping of experiments.
 
 add_task(function* test_telemetryBasics() {
+  // Check TelemetryLog instead of TelemetryPing.getPayload().log because
+  // TelemetryPing gets Experiments.instance() and side-effects log entries.
+
   const OBSERVER_TOPIC = "experiments-changed";
   let observerFireCount = 0;
   let expectedLogLength = 0;
@@ -197,7 +176,8 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 0, "Experiment list should be empty.");
 
   expectedLogLength += 2;
-  let log = TelemetryPing.getPayload().log;
+  let log = TelemetryLog.entries();
+  do_print("Telemetry log: " + JSON.stringify(log));
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-2], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.REJECTED, EXPERIMENT1_ID, "startTime"]);
@@ -214,8 +194,8 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 1, "Experiment list should have 1 entry now.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
-  Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
+  log = TelemetryLog.entries();
+  Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries. Got " + log.toSource());
   checkEvent(log[log.length-1], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.ACTIVATED, EXPERIMENT1_ID]);
 
@@ -229,7 +209,7 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 1, "Experiment list should have 1 entry.");
 
   expectedLogLength += 2;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-2], TLOG.TERMINATION_KEY,
              [TLOG.TERMINATION.EXPIRED, EXPERIMENT1_ID]);
@@ -247,7 +227,7 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 1, "Experiment list should have 1 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.INSTALL_FAILURE, EXPERIMENT2_ID]);
@@ -263,25 +243,25 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 2, "Experiment list should have 2 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.ACTIVATED, EXPERIMENT2_ID]);
 
-  // Fake user-disable of an experiment.
+  // Fake user uninstall of experiment via add-on manager.
 
   now = futureDate(now, MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.disableExperiment(EXPERIMENT2_ID);
+  yield experiments.disableExperiment(TLOG.TERMINATION.ADDON_UNINSTALLED);
   list = yield experiments.getExperiments();
   Assert.equal(list.length, 2, "Experiment list should have 2 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.TERMINATION_KEY,
-             [TLOG.TERMINATION.USERDISABLED, EXPERIMENT2_ID]);
+             [TLOG.TERMINATION.ADDON_UNINSTALLED, EXPERIMENT2_ID]);
 
   // Trigger update with experiment 1a ready to start.
 
@@ -295,22 +275,22 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 3, "Experiment list should have 3 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.ACTIVATED, EXPERIMENT3_ID]);
 
-  // Trigger non-user-disable of an experiment via the API
+  // Trigger disable of an experiment via the API.
 
   now = futureDate(now, MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.disableExperiment(EXPERIMENT3_ID, false);
+  yield experiments.disableExperiment(TLOG.TERMINATION.FROM_API);
   list = yield experiments.getExperiments();
   Assert.equal(list.length, 3, "Experiment list should have 3 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.TERMINATION_KEY,
              [TLOG.TERMINATION.FROM_API, EXPERIMENT3_ID]);
@@ -327,7 +307,7 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 4, "Experiment list should have 4 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.ACTIVATION_KEY,
              [TLOG.ACTIVATION.ACTIVATED, EXPERIMENT4_ID]);
@@ -343,7 +323,7 @@ add_task(function* test_telemetryBasics() {
   Assert.equal(list.length, 4, "Experiment list should have 4 entries.");
 
   expectedLogLength += 1;
-  log = TelemetryPing.getPayload().log;
+  log = TelemetryLog.entries();
   Assert.equal(log.length, expectedLogLength, "Telemetry log should have " + expectedLogLength + " entries.");
   checkEvent(log[log.length-1], TLOG.TERMINATION_KEY,
              [TLOG.TERMINATION.RECHECK, EXPERIMENT4_ID, "os"]);
@@ -351,10 +331,5 @@ add_task(function* test_telemetryBasics() {
   // Cleanup.
 
   yield experiments.uninit();
-  yield removeCacheFile();
-});
-
-add_task(function* shutdown() {
-  yield gReporter._shutdown();
   yield removeCacheFile();
 });

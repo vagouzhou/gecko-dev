@@ -22,7 +22,9 @@
 
 #include "base/basictypes.h"
 #include "nsDebug.h"
-#include "mozilla/Preferences.h"
+#include "mozilla/layers/TextureClient.h"
+#include "CameraPreferences.h"
+#include "mozilla/RefPtr.h"
 #include "GonkCameraControl.h"
 #include "GonkNativeWindow.h"
 #include "CameraCommon.h"
@@ -48,7 +50,7 @@ GonkCameraHardware::OnNewFrame()
   if (mClosing) {
     return;
   }
-  nsRefPtr<GraphicBufferLocked> buffer = mNativeWindow->getCurrentBuffer();
+  RefPtr<TextureClient> buffer = mNativeWindow->getCurrentBuffer();
   if (!buffer) {
     DOM_CAMERA_LOGW("received null frame");
     return;
@@ -77,6 +79,10 @@ GonkCameraHardware::postData(int32_t aMsgType, const sp<IMemory>& aDataPtr, came
       }
       break;
 
+    case CAMERA_MSG_PREVIEW_METADATA:
+      OnFacesDetected(mTarget, metadata);
+      break;
+
     default:
       DOM_CAMERA_LOGE("Unhandled data callback event %d\n", aMsgType);
       break;
@@ -96,12 +102,18 @@ GonkCameraHardware::notify(int32_t aMsgType, int32_t ext1, int32_t ext2)
       OnAutoFocusComplete(mTarget, !!ext1);
       break;
 
+#if ANDROID_VERSION >= 16
+    case CAMERA_MSG_FOCUS_MOVE:
+      OnAutoFocusMoving(mTarget, !!ext1);
+      break;
+#endif
+
     case CAMERA_MSG_SHUTTER:
       OnShutter(mTarget);
       break;
 
     case CAMERA_MSG_ERROR:
-      OnError(mTarget, CameraControlListener::kErrorServiceFailed, ext1, ext2);
+      OnSystemError(mTarget, CameraControlListener::kSystemService, ext1, ext2);
       break;
 
     default:
@@ -136,7 +148,7 @@ GonkCameraHardware::Init()
   int rv = Camera::getCameraInfo(mCameraId, &info);
   if (rv != 0) {
     DOM_CAMERA_LOGE("%s: failed to get CameraInfo mCameraId %d\n", __func__, mCameraId);
-    return NS_ERROR_FAILURE;
+    return NS_ERROR_NOT_INITIALIZED;
    }
 
   mRawSensorOrientation = info.orientation;
@@ -160,18 +172,26 @@ GonkCameraHardware::Init()
   // Disable shutter sound in android CameraService because gaia camera app will play it
   mCamera->sendCommand(CAMERA_CMD_ENABLE_SHUTTER_SOUND, 0, 0);
 
-  mNativeWindow = new GonkNativeWindow();
-  mNativeWindow->setNewFrameCallback(this);
-  mCamera->setListener(this);
-
 #if defined(MOZ_WIDGET_GONK)
 
 #if ANDROID_VERSION >= 19
+  mNativeWindow = new GonkNativeWindow(GonkCameraHardware::MIN_UNDEQUEUED_BUFFERS);
   mCamera->setPreviewTarget(mNativeWindow->getBufferQueue());
-#elif (ANDROID_VERSION == 17) || (ANDROID_VERSION == 18)
+#elif ANDROID_VERSION >= 17
+  mNativeWindow = new GonkNativeWindow(GonkCameraHardware::MIN_UNDEQUEUED_BUFFERS);
   mCamera->setPreviewTexture(mNativeWindow->getBufferQueue());
 #else
+  mNativeWindow = new GonkNativeWindow();
   mCamera->setPreviewTexture(mNativeWindow);
+#endif
+  mNativeWindow->setNewFrameCallback(this);
+  mCamera->setListener(this);
+
+#if ANDROID_VERSION >= 16
+  rv = mCamera->sendCommand(CAMERA_CMD_ENABLE_FOCUS_MOVE_MSG, 1, 0);
+  if (rv != OK) {
+    NS_WARNING("Failed to send command CAMERA_CMD_ENABLE_FOCUS_MOVE_MSG");
+  }
 #endif
 
 #endif
@@ -192,8 +212,8 @@ GonkCameraHardware::Connect(mozilla::nsGonkCameraControl* aTarget, uint32_t aCam
     return nullptr;
   }
 
-  const nsAdoptingCString& test =
-    mozilla::Preferences::GetCString("camera.control.test.enabled");
+  nsCString test;
+  CameraPreferences::GetPref("camera.control.test.enabled", test);
   sp<GonkCameraHardware> cameraHardware;
   if (test.EqualsASCII("hardware")) {
     NS_WARNING("Using test Gonk hardware layer");
@@ -273,11 +293,43 @@ GonkCameraHardware::AutoFocus()
   return mCamera->autoFocus();
 }
 
-void
+int
 GonkCameraHardware::CancelAutoFocus()
 {
   DOM_CAMERA_LOGI("%s\n", __func__);
-  mCamera->cancelAutoFocus();
+  return mCamera->cancelAutoFocus();
+}
+
+int
+GonkCameraHardware::StartFaceDetection()
+{
+  DOM_CAMERA_LOGI("%s\n", __func__);
+  int rv = INVALID_OPERATION;
+
+#if ANDROID_VERSION >= 15
+  rv = mCamera->sendCommand(CAMERA_CMD_START_FACE_DETECTION, CAMERA_FACE_DETECTION_HW, 0);
+#endif
+  if (rv != OK) {
+    DOM_CAMERA_LOGE("Start face detection failed with status %d", rv);
+  }
+
+  return rv;
+}
+
+int
+GonkCameraHardware::StopFaceDetection()
+{
+  DOM_CAMERA_LOGI("%s\n", __func__);
+  int rv = INVALID_OPERATION;
+
+#if ANDROID_VERSION >= 15
+  rv = mCamera->sendCommand(CAMERA_CMD_STOP_FACE_DETECTION, 0, 0);
+#endif
+  if (rv != OK) {
+    DOM_CAMERA_LOGE("Stop face detection failed with status %d", rv);
+  }
+
+  return rv;
 }
 
 int

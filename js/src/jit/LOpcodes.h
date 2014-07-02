@@ -24,16 +24,16 @@
     _(TableSwitchV)                 \
     _(Goto)                         \
     _(NewArray)                     \
+    _(ArraySplice)                  \
     _(NewObject)                    \
-    _(NewSlots)                     \
     _(NewDeclEnvObject)             \
     _(NewCallObject)                \
+    _(NewSingletonCallObject)       \
     _(NewStringObject)              \
     _(NewPar)                       \
     _(NewDenseArrayPar)             \
     _(NewCallObjectPar)             \
     _(NewDerivedTypedObject)        \
-    _(AbortPar)                     \
     _(InitElem)                     \
     _(InitElemGetterSetter)         \
     _(MutateProto)                  \
@@ -48,6 +48,7 @@
     _(CallNative)                   \
     _(ApplyArgsGeneric)             \
     _(Bail)                         \
+    _(Unreachable)                  \
     _(GetDynamicName)               \
     _(FilterArgumentsOrEvalS)       \
     _(FilterArgumentsOrEvalV)       \
@@ -63,6 +64,7 @@
     _(SetArgumentsObjectArg)        \
     _(ReturnFromCtor)               \
     _(ComputeThis)                  \
+    _(LoadArrowThis)                \
     _(BitNotI)                      \
     _(BitNotV)                      \
     _(BitOpI)                       \
@@ -145,7 +147,7 @@
     _(BooleanToString)              \
     _(IntToString)                  \
     _(DoubleToString)               \
-    _(PrimitiveToString)            \
+    _(ValueToString)                \
     _(Start)                        \
     _(OsrEntry)                     \
     _(OsrValue)                     \
@@ -158,9 +160,9 @@
     _(RegExpReplace)                \
     _(StringReplace)                \
     _(Lambda)                       \
+    _(LambdaArrow)                  \
     _(LambdaForSingleton)           \
     _(LambdaPar)                    \
-    _(ImplicitThis)                 \
     _(Slots)                        \
     _(Elements)                     \
     _(ConvertElementsToDoubles)     \
@@ -170,6 +172,7 @@
     _(StoreSlotV)                   \
     _(StoreSlotT)                   \
     _(GuardShape)                   \
+    _(GuardShapePolymorphic)        \
     _(GuardObjectType)              \
     _(GuardObjectIdentity)          \
     _(GuardClass)                   \
@@ -230,7 +233,7 @@
     _(CallInitElementArray)         \
     _(CallSetProperty)              \
     _(CallDeleteProperty)           \
-    _(CallDeleteElement)           \
+    _(CallDeleteElement)            \
     _(SetPropertyCacheV)            \
     _(SetPropertyCacheT)            \
     _(SetElementCacheV)             \
@@ -246,7 +249,9 @@
     _(SetArrayLength)               \
     _(TypedArrayLength)             \
     _(TypedArrayElements)           \
+    _(TypedObjectProto)             \
     _(TypedObjectElements)          \
+    _(SetTypedObjectOffset)         \
     _(StringLength)                 \
     _(ArgumentsLength)              \
     _(GetFrameArgument)             \
@@ -260,6 +265,8 @@
     _(ToIdV)                        \
     _(Floor)                        \
     _(FloorF)                       \
+    _(Ceil)                         \
+    _(CeilF)                        \
     _(Round)                        \
     _(RoundF)                       \
     _(In)                           \
@@ -269,14 +276,15 @@
     _(CallInstanceOf)               \
     _(InterruptCheck)               \
     _(InterruptCheckImplicit)       \
-    _(FunctionBoundary)             \
+    _(ProfilerStackOp)              \
     _(GetDOMProperty)               \
     _(GetDOMMember)                 \
     _(SetDOMProperty)               \
     _(CallDOMNative)                \
     _(IsCallable)                   \
+    _(IsObject)                     \
     _(HaveSameClass)                \
-    _(HasClass)                      \
+    _(HasClass)                     \
     _(AsmJSLoadHeap)                \
     _(AsmJSStoreHeap)               \
     _(AsmJSLoadGlobalVar)           \
@@ -287,7 +295,6 @@
     _(AsmJSVoidReturn)              \
     _(AsmJSPassStackArg)            \
     _(AsmJSCall)                    \
-    _(AsmJSCheckOverRecursed)       \
     _(InterruptCheckPar)            \
     _(RecompileCheck)               \
     _(AssertRangeI)                 \
@@ -301,6 +308,10 @@
 # include "jit/x64/LOpcodes-x64.h"
 #elif defined(JS_CODEGEN_ARM)
 # include "jit/arm/LOpcodes-arm.h"
+#elif defined(JS_CODEGEN_MIPS)
+# include "jit/mips/LOpcodes-mips.h"
+#else
+# error "Unknown architecture!"
 #endif
 
 #define LIR_OPCODE_LIST(_)          \

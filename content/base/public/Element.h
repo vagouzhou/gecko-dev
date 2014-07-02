@@ -15,7 +15,7 @@
 
 #include "mozilla/dom/FragmentOrElement.h" // for base class
 #include "nsChangeHint.h"                  // for enum
-#include "nsEventStates.h"                 // for member
+#include "mozilla/EventStates.h"           // for member
 #include "mozilla/dom/DirectionalityUtils.h"
 #include "nsIDOMElement.h"
 #include "nsILinkHandler.h"
@@ -42,16 +42,15 @@ class nsIFrame;
 class nsIDOMMozNamedAttrMap;
 class nsIDOMCSSStyleDeclaration;
 class nsIURI;
-class nsINodeInfo;
 class nsIControllers;
 class nsEventChainVisitor;
 class nsIScrollableFrame;
 class nsAttrValueOrString;
 class ContentUnbinder;
 class nsContentList;
+class nsDOMSettableTokenList;
 class nsDOMTokenList;
 struct nsRect;
-class nsEventStateManager;
 class nsFocusManager;
 class nsGlobalWindow;
 class nsICSSDeclaration;
@@ -106,6 +105,7 @@ class EventChainPostVisitor;
 class EventChainPreVisitor;
 class EventChainVisitor;
 class EventListenerManager;
+class EventStateManager;
 
 namespace dom {
 
@@ -113,17 +113,18 @@ class Link;
 class UndoManager;
 class DOMRect;
 class DOMRectList;
+class DestinationInsertionPointList;
 
 // IID for the dom::Element interface
 #define NS_ELEMENT_IID \
-{ 0xf7c18f0f, 0xa8fd, 0x4a95, \
-  { 0x91, 0x72, 0xd3, 0xa7, 0x4a, 0xb8, 0xc4, 0xbe } }
+{ 0xd123f791, 0x124a, 0x43f3, \
+  { 0x84, 0xe3, 0x55, 0x81, 0x0b, 0x6c, 0xf3, 0x08 } }
 
 class Element : public FragmentOrElement
 {
 public:
 #ifdef MOZILLA_INTERNAL_API
-  Element(already_AddRefed<nsINodeInfo>& aNodeInfo) :
+  Element(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo) :
     FragmentOrElement(aNodeInfo),
     mState(NS_EVENT_STATE_MOZ_READONLY)
   {
@@ -138,10 +139,11 @@ public:
   NS_IMETHOD QueryInterface(REFNSIID aIID, void** aInstancePtr);
 
   /**
-   * Method to get the full state of this element.  See nsEventStates.h for
-   * the possible bits that could be set here.
+   * Method to get the full state of this element.  See mozilla/EventStates.h
+   * for the possible bits that could be set here.
    */
-  nsEventStates State() const {
+  EventStates State() const
+  {
     // mState is maintained by having whoever might have changed it
     // call UpdateState() or one of the other mState mutators.
     return mState;
@@ -162,7 +164,7 @@ public:
   /**
    * Method to update mState with link state information.  This does not notify.
    */
-  void UpdateLinkState(nsEventStates aState);
+  void UpdateLinkState(EventStates aState);
 
   /**
    * Returns true if this element is either a full-screen element or an
@@ -177,7 +179,8 @@ public:
    * The style state of this element. This is the real state of the element
    * with any style locks applied for pseudo-class inspecting.
    */
-  nsEventStates StyleState() const {
+  EventStates StyleState() const
+  {
     if (!HasLockedStyleStates()) {
       return mState;
     }
@@ -187,17 +190,17 @@ public:
   /**
    * The style state locks applied to this element.
    */
-  nsEventStates LockedStyleStates() const;
+  EventStates LockedStyleStates() const;
 
   /**
    * Add a style state lock on this element.
    */
-  void LockStyleStates(nsEventStates aStates);
+  void LockStyleStates(EventStates aStates);
 
   /**
    * Remove a style state lock on this element.
    */
-  void UnlockStyleStates(nsEventStates aStates);
+  void UnlockStyleStates(EventStates aStates);
 
   /**
    * Clear all style state locks on this element.
@@ -275,13 +278,6 @@ public:
   virtual nsChangeHint GetAttributeChangeHint(const nsIAtom* aAttribute,
                                               int32_t aModType) const;
 
-  /**
-   * Returns an atom holding the name of the "class" attribute on this
-   * content node (if applicable).  Returns null if there is no
-   * "class" attribute for this type of content node.
-   */
-  virtual nsIAtom *GetClassAttributeName() const;
-
   inline Directionality GetDirectionality() const {
     if (HasFlag(NODE_HAS_DIRECTION_RTL)) {
       return eDir_RTL;
@@ -346,10 +342,10 @@ protected:
   /**
    * Method to get the _intrinsic_ content state of this element.  This is the
    * state that is independent of the element's presentation.  To get the full
-   * content state, use State().  See nsEventStates.h for
+   * content state, use State().  See mozilla/EventStates.h for
    * the possible bits that could be set here.
    */
-  virtual nsEventStates IntrinsicState() const;
+  virtual EventStates IntrinsicState() const;
 
   /**
    * Method to add state bits.  This should be called from subclass
@@ -357,7 +353,8 @@ protected:
    * time and other places where we don't want to notify a state
    * change.
    */
-  void AddStatesSilently(nsEventStates aStates) {
+  void AddStatesSilently(EventStates aStates)
+  {
     mState |= aStates;
   }
 
@@ -367,38 +364,41 @@ protected:
    * time and other places where we don't want to notify a state
    * change.
    */
-  void RemoveStatesSilently(nsEventStates aStates) {
+  void RemoveStatesSilently(EventStates aStates)
+  {
     mState &= ~aStates;
   }
 
 private:
   // Need to allow the ESM, nsGlobalWindow, and the focus manager to
   // set our state
-  friend class ::nsEventStateManager;
+  friend class mozilla::EventStateManager;
   friend class ::nsGlobalWindow;
   friend class ::nsFocusManager;
 
   // Also need to allow Link to call UpdateLinkState.
   friend class Link;
 
-  void NotifyStateChange(nsEventStates aStates);
+  void NotifyStateChange(EventStates aStates);
 
-  void NotifyStyleStateChange(nsEventStates aStates);
+  void NotifyStyleStateChange(EventStates aStates);
 
   // Style state computed from element's state and style locks.
-  nsEventStates StyleStateFromLocks() const;
+  EventStates StyleStateFromLocks() const;
 
 protected:
   // Methods for the ESM to manage state bits.  These will handle
   // setting up script blockers when they notify, so no need to do it
   // in the callers unless desired.
-  virtual void AddStates(nsEventStates aStates) {
+  virtual void AddStates(EventStates aStates)
+  {
     NS_PRECONDITION(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
                     "Should only be adding ESM-managed states here");
     AddStatesSilently(aStates);
     NotifyStateChange(aStates);
   }
-  virtual void RemoveStates(nsEventStates aStates) {
+  virtual void RemoveStates(EventStates aStates)
+  {
     NS_PRECONDITION(!aStates.HasAtLeastOneOfStates(INTRINSIC_STATES),
                     "Should only be removing ESM-managed states here");
     RemoveStatesSilently(aStates);
@@ -423,7 +423,7 @@ public:
    * @param aStr the unparsed attribute string
    * @return the node info. May be nullptr.
    */
-  already_AddRefed<nsINodeInfo>
+  already_AddRefed<mozilla::dom::NodeInfo>
   GetExistingAttrNameFromQName(const nsAString& aStr) const;
 
   nsresult SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
@@ -519,6 +519,8 @@ public:
     return FindAttributeDependence(aAttribute, aMaps, N);
   }
 
+  static nsIAtom*** HTMLSVGPropertiesToTraverseAndUnlink();
+
 private:
   void DescribeAttribute(uint32_t index, nsAString& aOutDescription) const;
 
@@ -577,8 +579,20 @@ public:
   {
     SetAttr(kNameSpaceID_None, nsGkAtoms::id, aId, true);
   }
+  void GetClassName(nsAString& aClassName)
+  {
+    GetAttr(kNameSpaceID_None, nsGkAtoms::_class, aClassName);
+  }
+  void GetClassName(DOMString& aClassName)
+  {
+    GetAttr(kNameSpaceID_None, nsGkAtoms::_class, aClassName);
+  }
+  void SetClassName(const nsAString& aClassName)
+  {
+    SetAttr(kNameSpaceID_None, nsGkAtoms::_class, aClassName, true);
+  }
 
-  nsDOMTokenList* GetClassList();
+  nsDOMTokenList* ClassList();
   nsDOMAttributeMap* Attributes()
   {
     nsDOMSlots* slots = DOMSlots();
@@ -626,6 +640,32 @@ public:
     GetElementsByClassName(const nsAString& aClassNames);
   bool MozMatchesSelector(const nsAString& aSelector,
                           ErrorResult& aError);
+  void SetPointerCapture(int32_t aPointerId, ErrorResult& aError)
+  {
+    bool activeState = false;
+    if (!nsIPresShell::GetPointerInfo(aPointerId, activeState)) {
+      aError.Throw(NS_ERROR_DOM_INVALID_POINTER_ERR);
+      return;
+    }
+    if (!activeState) {
+      return;
+    }
+    nsIPresShell::SetPointerCapturingContent(aPointerId, this);
+  }
+  void ReleasePointerCapture(int32_t aPointerId, ErrorResult& aError)
+  {
+    bool activeState = false;
+    if (!nsIPresShell::GetPointerInfo(aPointerId, activeState)) {
+      aError.Throw(NS_ERROR_DOM_INVALID_POINTER_ERR);
+      return;
+    }
+
+    // Ignoring ReleasePointerCapture call on incorrect element (on element
+    // that didn't have capture before).
+    if (nsIPresShell::GetPointerCapturingContent(aPointerId) == this) {
+      nsIPresShell::ReleasePointerCapturingContent(aPointerId, this);
+    }
+  }
   void SetCapture(bool aRetargetToElement)
   {
     // If there is already an active capture, ignore this request. This would
@@ -658,6 +698,7 @@ public:
   already_AddRefed<DOMRect> GetBoundingClientRect();
 
   already_AddRefed<ShadowRoot> CreateShadowRoot(ErrorResult& aError);
+  already_AddRefed<DestinationInsertionPointList> GetDestinationInsertionPoints();
 
   void ScrollIntoView()
   {
@@ -825,8 +866,6 @@ public:
     const nsAttrValue* mValue;
   };
 
-  // Be careful when using this method. This does *NOT* handle
-  // XUL prototypes. You may want to use GetAttrInfo.
   const nsAttrValue* GetParsedAttr(nsIAtom* aAttr) const
   {
     return mAttrsAndChildren.GetAttr(aAttr);
@@ -858,7 +897,7 @@ public:
    */
   virtual nsAttrInfo GetAttrInfo(int32_t aNamespaceID, nsIAtom* aName) const;
 
-  virtual void NodeInfoChanged(nsINodeInfo* aOldNodeInfo)
+  virtual void NodeInfoChanged(mozilla::dom::NodeInfo* aOldNodeInfo)
   {
   }
 
@@ -894,8 +933,7 @@ public:
                            nsIDOMHTMLCollection** aResult);
   void GetClassList(nsISupports** aClassList);
 
-  virtual JSObject* WrapObject(JSContext *aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_FINAL MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext *aCx) MOZ_FINAL MOZ_OVERRIDE;
 
   /**
    * Locate an nsIEditor rooted at this content node, if there is one.
@@ -910,7 +948,7 @@ public:
    * @param aAttr    name of attribute.
    * @param aValue   Boolean value of attribute.
    */
-  NS_HIDDEN_(bool) GetBoolAttr(nsIAtom* aAttr) const
+  bool GetBoolAttr(nsIAtom* aAttr) const
   {
     return HasAttr(kNameSpaceID_None, aAttr);
   }
@@ -923,7 +961,7 @@ public:
    * @param aAttr    name of attribute.
    * @param aValue   Boolean value of attribute.
    */
-  NS_HIDDEN_(nsresult) SetBoolAttr(nsIAtom* aAttr, bool aValue);
+  nsresult SetBoolAttr(nsIAtom* aAttr, bool aValue);
 
   /**
    * Retrieve the ratio of font-size-inflated text font size to computed font
@@ -1085,15 +1123,14 @@ protected:
   Attr* GetAttributeNodeNSInternal(const nsAString& aNamespaceURI,
                                    const nsAString& aLocalName);
 
-  inline void RegisterFreezableElement();
-  inline void UnregisterFreezableElement();
+  inline void RegisterActivityObserver();
+  inline void UnregisterActivityObserver();
 
   /**
    * Add/remove this element to the documents id cache
    */
   void AddToIdTable(nsIAtom* aId);
-  void RemoveFromIdTable(); // checks HasID() and uses DoGetID()
-  void RemoveFromIdTable(nsIAtom* aId);
+  void RemoveFromIdTable();
 
   /**
    * Functions to carry out event default actions for links of all types
@@ -1133,6 +1170,10 @@ protected:
    */
   virtual void GetLinkTarget(nsAString& aTarget);
 
+  nsDOMSettableTokenList* GetTokenList(nsIAtom* aAtom);
+  void GetTokenList(nsIAtom* aAtom, nsIVariant** aResult);
+  nsresult SetTokenList(nsIAtom* aAtom, nsIVariant* aValue);
+
 private:
   /**
    * Get this element's client area rect in app units.
@@ -1144,7 +1185,31 @@ private:
                                      bool aFlushLayout = true);
 
   // Data members
-  nsEventStates mState;
+  EventStates mState;
+};
+
+class DestinationInsertionPointList : public nsINodeList
+{
+public:
+  DestinationInsertionPointList(Element* aElement);
+
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_CLASS(DestinationInsertionPointList)
+
+  // nsIDOMNodeList
+  NS_DECL_NSIDOMNODELIST
+
+  // nsINodeList
+  virtual nsIContent* Item(uint32_t aIndex);
+  virtual int32_t IndexOf(nsIContent* aContent);
+  virtual nsINode* GetParentObject() { return mParent; }
+  virtual uint32_t Length() const;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
+protected:
+  virtual ~DestinationInsertionPointList();
+
+  nsRefPtr<Element> mParent;
+  nsCOMArray<nsIContent> mDestinationPoints;
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(Element, NS_ELEMENT_IID)
@@ -1212,11 +1277,11 @@ inline bool nsINode::HasAttributes() const
  */
 #define NS_IMPL_ELEMENT_CLONE(_elementName)                                 \
 nsresult                                                                    \
-_elementName::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const        \
+_elementName::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const \
 {                                                                           \
   *aResult = nullptr;                                                       \
-  already_AddRefed<nsINodeInfo> ni =                                        \
-    nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();                              \
+  already_AddRefed<mozilla::dom::NodeInfo> ni =                             \
+    nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();                   \
   _elementName *it = new _elementName(ni);                                  \
   if (!it) {                                                                \
     return NS_ERROR_OUT_OF_MEMORY;                                          \
@@ -1233,11 +1298,11 @@ _elementName::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const        \
 
 #define NS_IMPL_ELEMENT_CLONE_WITH_INIT(_elementName)                       \
 nsresult                                                                    \
-_elementName::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const        \
+_elementName::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const \
 {                                                                           \
   *aResult = nullptr;                                                       \
-  already_AddRefed<nsINodeInfo> ni =                                        \
-    nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();                              \
+  already_AddRefed<mozilla::dom::NodeInfo> ni =                             \
+    nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();                   \
   _elementName *it = new _elementName(ni);                                  \
   if (!it) {                                                                \
     return NS_ERROR_OUT_OF_MEMORY;                                          \
@@ -1299,6 +1364,26 @@ typedef mozilla::dom::Element Element;                                        \
 NS_IMETHOD GetTagName(nsAString& aTagName) MOZ_FINAL                          \
 {                                                                             \
   Element::GetTagName(aTagName);                                              \
+  return NS_OK;                                                               \
+}                                                                             \
+NS_IMETHOD GetId(nsAString& aId) MOZ_FINAL                                    \
+{                                                                             \
+  Element::GetId(aId);                                                        \
+  return NS_OK;                                                               \
+}                                                                             \
+NS_IMETHOD SetId(const nsAString& aId) MOZ_FINAL                              \
+{                                                                             \
+  Element::SetId(aId);                                                        \
+  return NS_OK;                                                               \
+}                                                                             \
+NS_IMETHOD GetClassName(nsAString& aClassName) MOZ_FINAL                      \
+{                                                                             \
+  Element::GetClassName(aClassName);                                          \
+  return NS_OK;                                                               \
+}                                                                             \
+NS_IMETHOD SetClassName(const nsAString& aClassName) MOZ_FINAL                \
+{                                                                             \
+  Element::SetClassName(aClassName);                                          \
   return NS_OK;                                                               \
 }                                                                             \
 NS_IMETHOD GetClassList(nsISupports** aClassList) MOZ_FINAL                   \

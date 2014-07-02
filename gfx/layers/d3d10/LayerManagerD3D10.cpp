@@ -31,12 +31,11 @@
 #include "DXGI1_2.h"
 #endif
 
-using namespace std;
-using namespace mozilla::dom;
-using namespace mozilla::gfx;
-
 namespace mozilla {
 namespace layers {
+
+using namespace std;
+using namespace mozilla::gfx;
 
 struct Vertex
 {
@@ -49,8 +48,6 @@ static const GUID sDeviceAttachments =
 // {716AEDB1-C9C3-4B4D-8332-6F65D44AF6A8}
 static const GUID sLayerManagerCount = 
 { 0x716aedb1, 0xc9c3, 0x4b4d, { 0x83, 0x32, 0x6f, 0x65, 0xd4, 0x4a, 0xf6, 0xa8 } };
-
-cairo_user_data_key_t gKeyD3D10Texture;
 
 LayerManagerD3D10::LayerManagerD3D10(nsIWidget *aWidget)
   : mWidget(aWidget)
@@ -437,18 +434,13 @@ LayerManagerD3D10::CreateReadbackLayer()
   return layer.forget();
 }
 
-static void ReleaseTexture(void *texture)
+TemporaryRef<DrawTarget>
+LayerManagerD3D10::CreateOptimalDrawTarget(const IntSize &aSize,
+                                           SurfaceFormat aFormat)
 {
-  static_cast<ID3D10Texture2D*>(texture)->Release();
-}
-
-already_AddRefed<gfxASurface>
-LayerManagerD3D10::CreateOptimalSurface(const IntSize &aSize,
-                                        gfxImageFormat aFormat)
-{
-  if ((aFormat != gfxImageFormat::RGB24 &&
-       aFormat != gfxImageFormat::ARGB32)) {
-    return LayerManager::CreateOptimalSurface(aSize, aFormat);
+  if ((aFormat != SurfaceFormat::B8G8R8X8 &&
+       aFormat != SurfaceFormat::B8G8R8A8)) {
+    return LayerManager::CreateOptimalDrawTarget(aSize, aFormat);
   }
 
   nsRefPtr<ID3D10Texture2D> texture;
@@ -460,30 +452,25 @@ LayerManagerD3D10::CreateOptimalSurface(const IntSize &aSize,
   HRESULT hr = device()->CreateTexture2D(&desc, nullptr, getter_AddRefs(texture));
 
   if (FAILED(hr)) {
-    NS_WARNING("Failed to create new texture for CreateOptimalSurface!");
-    return LayerManager::CreateOptimalSurface(aSize, aFormat);
+    NS_WARNING("Failed to create new texture for CreateOptimalDrawTarget!");
+    return LayerManager::CreateOptimalDrawTarget(aSize, aFormat);
   }
 
-  nsRefPtr<gfxD2DSurface> surface =
-    new gfxD2DSurface(texture, aFormat == gfxImageFormat::RGB24 ?
-      gfxContentType::COLOR : gfxContentType::COLOR_ALPHA);
+  RefPtr<DrawTarget> dt =
+    Factory::CreateDrawTargetForD3D10Texture(texture, aFormat);
 
-  if (!surface || surface->CairoStatus()) {
-    return LayerManager::CreateOptimalSurface(aSize, aFormat);
+  if (!dt) {
+    return LayerManager::CreateOptimalDrawTarget(aSize, aFormat);
   }
 
-  surface->SetData(&gKeyD3D10Texture,
-                   texture.forget().take(),
-                   ReleaseTexture);
-
-  return surface.forget();
+  return dt;
 }
 
 
-already_AddRefed<gfxASurface>
-LayerManagerD3D10::CreateOptimalMaskSurface(const IntSize &aSize)
+TemporaryRef<DrawTarget>
+LayerManagerD3D10::CreateOptimalMaskDrawTarget(const IntSize &aSize)
 {
-  return CreateOptimalSurface(aSize, gfxImageFormat::ARGB32);
+  return CreateOptimalDrawTarget(aSize, SurfaceFormat::B8G8R8A8);
 }
 
 
@@ -505,7 +492,7 @@ LayerManagerD3D10::CreateDrawTarget(const IntSize &aSize,
   HRESULT hr = device()->CreateTexture2D(&desc, nullptr, getter_AddRefs(texture));
 
   if (FAILED(hr)) {
-    NS_WARNING("Failed to create new texture for CreateOptimalSurface!");
+    NS_WARNING("Failed to create new texture for CreateOptimalDrawTarget!");
     return LayerManager::CreateDrawTarget(aSize, aFormat);
   }
 

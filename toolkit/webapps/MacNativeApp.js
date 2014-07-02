@@ -30,6 +30,13 @@ function NativeApp(aApp, aManifest, aCategories, aRegistryDir) {
 
 NativeApp.prototype = {
   __proto__: CommonNativeApp.prototype,
+  /*
+   * The _rootInstallDir property is the path of the directory where we install
+   * apps. In production code, it's "/Applications". In tests, it's
+   * "~/Applications" because on build machines we don't have enough privileges
+   * to write to the global "/Applications" directory.
+   */
+  _rootInstallDir: LOCAL_APP_DIR,
 
   /**
    * Creates a native installation of the web app in the OS
@@ -50,16 +57,16 @@ NativeApp.prototype = {
 
     this._setData(aManifest);
 
-    let localAppDir = getFile(LOCAL_APP_DIR);
+    let localAppDir = getFile(this._rootInstallDir);
     if (!localAppDir.isWritable()) {
       throw("Not enough privileges to install apps");
     }
- 
-    let destinationName = yield getAvailableFileName([ LOCAL_APP_DIR ],
+
+    let destinationName = yield getAvailableFileName([ this._rootInstallDir ],
                                                      this.appNameAsFilename,
                                                      ".app");
 
-    let installDir = OS.Path.join(LOCAL_APP_DIR, destinationName);
+    let installDir = OS.Path.join(this._rootInstallDir, destinationName);
 
     let dir = getFile(TMP_DIR, this.appNameAsFilename + ".app");
     dir.createUnique(Ci.nsIFile.DIRECTORY_TYPE, PERMS_DIRECTORY);
@@ -231,7 +238,7 @@ NativeApp.prototype = {
                  getService(Ci.nsIINIParserFactory).
                  createINIParser(applicationINI).
                  QueryInterface(Ci.nsIINIParserWriter);
-    writer.setString("Webapp", "Name", this.appName);
+    writer.setString("Webapp", "Name", this.appLocalizedName);
     writer.setString("Webapp", "Profile", this.uniqueName);
     writer.writeFile();
     applicationINI.permissions = PERMS_FILE;
@@ -244,7 +251,7 @@ NativeApp.prototype = {
     <key>CFBundleDevelopmentRegion</key>\n\
     <string>English</string>\n\
     <key>CFBundleDisplayName</key>\n\
-    <string>' + escapeXML(this.appName) + '</string>\n\
+    <string>' + escapeXML(this.appLocalizedName) + '</string>\n\
     <key>CFBundleExecutable</key>\n\
     <string>webapprt</string>\n\
     <key>CFBundleIconFile</key>\n\
@@ -254,7 +261,7 @@ NativeApp.prototype = {
     <key>CFBundleInfoDictionaryVersion</key>\n\
     <string>6.0</string>\n\
     <key>CFBundleName</key>\n\
-    <string>' + escapeXML(this.appName) + '</string>\n\
+    <string>' + escapeXML(this.appLocalizedName) + '</string>\n\
     <key>CFBundlePackageType</key>\n\
     <string>APPL</string>\n\
     <key>CFBundleVersion</key>\n\
@@ -284,12 +291,23 @@ NativeApp.prototype = {
   _processIcon: function(aMimeType, aIcon, aDir) {
     let deferred = Promise.defer();
 
+    let tmpIconPath = OS.Path.join(aDir, this.iconFile);
+
     function conversionDone(aSubject, aTopic) {
-      if (aTopic == "process-finished") {
-        deferred.resolve();
-      } else {
+      if (aTopic != "process-finished") {
         deferred.reject("Failure converting icon, exit code: " + aSubject.exitValue);
+        return;
       }
+
+      // SIPS silently fails to convert the icon, so we need to verify if the
+      // icon was successfully converted.
+      OS.File.exists(tmpIconPath).then((aExists) => {
+        if (aExists) {
+          deferred.resolve();
+        } else {
+          deferred.reject("Failure converting icon, unrecognized image format");
+        }
+      });
     }
 
     let process = Cc["@mozilla.org/process/util;1"].
@@ -299,7 +317,7 @@ NativeApp.prototype = {
     process.init(sipsFile);
     process.runAsync(["-s", "format", "icns",
                       aIcon.path,
-                      "--out", OS.Path.join(aDir, this.iconFile),
+                      "--out", tmpIconPath,
                       "-z", "128", "128"],
                       9, conversionDone);
 

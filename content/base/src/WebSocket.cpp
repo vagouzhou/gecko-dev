@@ -10,13 +10,14 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 #include "js/OldDebugAPI.h"
+#include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/dom/ScriptSettings.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIDOMWindow.h"
 #include "nsIDocument.h"
 #include "nsXPCOM.h"
 #include "nsIXPConnect.h"
 #include "nsContentUtils.h"
-#include "nsCxPusher.h"
 #include "nsError.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIURL.h"
@@ -28,7 +29,7 @@
 #include "nsIPrompt.h"
 #include "nsIStringBundle.h"
 #include "nsIConsoleService.h"
-#include "nsIDOMCloseEvent.h"
+#include "mozilla/dom/CloseEvent.h"
 #include "nsICryptoHash.h"
 #include "nsJSUtils.h"
 #include "nsIScriptError.h"
@@ -39,10 +40,8 @@
 #include "nsContentPolicyUtils.h"
 #include "nsDOMFile.h"
 #include "nsWrapperCacheInlines.h"
-#include "nsDOMEventTargetHelper.h"
 #include "nsIObserverService.h"
 #include "nsIWebSocketChannel.h"
-#include "GeneratedEvents.h"
 
 namespace mozilla {
 namespace dom {
@@ -330,7 +329,7 @@ WebSocket::ScheduleConnectionCloseEvents(nsISupports* aContext,
                                          nsresult aStatusCode,
                                          bool sync)
 {
-  NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
+  MOZ_ASSERT(NS_IsMainThread());
 
   // no-op if some other code has already initiated close event
   if (!mOnCloseScheduled) {
@@ -351,8 +350,7 @@ WebSocket::ScheduleConnectionCloseEvents(nsISupports* aContext,
     if (sync) {
       DispatchConnectionCloseEvents();
     } else {
-      NS_DispatchToMainThread(new CallDispatchConnectionCloseEvents(this),
-                              NS_DISPATCH_NORMAL);
+      NS_DispatchToCurrentThread(new CallDispatchConnectionCloseEvents(this));
     }
   }
 
@@ -441,7 +439,7 @@ WebSocket::GetInterface(const nsIID& aIID, void** aResult)
 ////////////////////////////////////////////////////////////////////////////////
 
 WebSocket::WebSocket(nsPIDOMWindow* aOwnerWindow)
-: nsDOMEventTargetHelper(aOwnerWindow),
+: DOMEventTargetHelper(aOwnerWindow),
   mKeepingAlive(false),
   mCheckMustKeepAlive(true),
   mOnCloseScheduled(false),
@@ -471,9 +469,9 @@ WebSocket::~WebSocket()
 }
 
 JSObject*
-WebSocket::WrapObject(JSContext* cx, JS::Handle<JSObject*> scope)
+WebSocket::WrapObject(JSContext* cx)
 {
-  return WebSocketBinding::Wrap(cx, scope, this);
+  return WebSocketBinding::Wrap(cx, this);
 }
 
 //---------------------------------------------------------------------------
@@ -560,7 +558,7 @@ WebSocket::Constructor(const GlobalObject& aGlobal,
   }
 
   nsRefPtr<WebSocket> webSocket = new WebSocket(ownerWindow);
-  nsresult rv = webSocket->Init(aGlobal.GetContext(), principal,
+  nsresult rv = webSocket->Init(aGlobal.Context(), principal,
                                 aUrl, protocolArray);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
@@ -595,18 +593,18 @@ NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_BEGIN(WebSocket)
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_THIS_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WebSocket,
-                                               nsDOMEventTargetHelper)
+                                               DOMEventTargetHelper)
 NS_IMPL_CYCLE_COLLECTION_TRACE_END
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WebSocket,
-                                                  nsDOMEventTargetHelper)
+                                                  DOMEventTargetHelper)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mURI)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mChannel)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WebSocket,
-                                                nsDOMEventTargetHelper)
+                                                DOMEventTargetHelper)
   tmp->Disconnect();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mPrincipal)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mURI)
@@ -619,15 +617,15 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(WebSocket)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
   NS_INTERFACE_MAP_ENTRY(nsIRequest)
-NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
+NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-NS_IMPL_ADDREF_INHERITED(WebSocket, nsDOMEventTargetHelper)
-NS_IMPL_RELEASE_INHERITED(WebSocket, nsDOMEventTargetHelper)
+NS_IMPL_ADDREF_INHERITED(WebSocket, DOMEventTargetHelper)
+NS_IMPL_RELEASE_INHERITED(WebSocket, DOMEventTargetHelper)
 
 void
 WebSocket::DisconnectFromOwner()
 {
-  nsDOMEventTargetHelper::DisconnectFromOwner();
+  DOMEventTargetHelper::DisconnectFromOwner();
   CloseConnection(nsIWebSocketChannel::CLOSE_GOING_AWAY);
   DontKeepAliveAnyMore();
 }
@@ -704,7 +702,7 @@ WebSocket::Init(JSContext* aCx,
     }
 
     if (!mRequestedProtocolList.IsEmpty()) {
-      mRequestedProtocolList.Append(NS_LITERAL_CSTRING(", "));
+      mRequestedProtocolList.AppendLiteral(", ");
     }
 
     AppendUTF16toUTF8(aProtocolArray[index], mRequestedProtocolList);
@@ -866,15 +864,11 @@ WebSocket::CreateAndDispatchMessageEvent(const nsACString& aData,
   if (NS_FAILED(rv))
     return NS_OK;
 
-  // Get the JSContext
-  nsCOMPtr<nsIScriptGlobalObject> sgo = do_QueryInterface(GetOwner());
-  NS_ENSURE_TRUE(sgo, NS_ERROR_FAILURE);
-
-  nsIScriptContext* scriptContext = sgo->GetContext();
-  NS_ENSURE_TRUE(scriptContext, NS_ERROR_FAILURE);
-
-  AutoPushJSContext cx(scriptContext->GetNativeContext());
-  NS_ENSURE_TRUE(cx, NS_ERROR_FAILURE);
+  AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.Init(GetOwner()))) {
+    return NS_ERROR_FAILURE;
+  }
+  JSContext* cx = jsapi.cx();
 
   // Create appropriate JS object for message
   JS::Rooted<JS::Value> jsData(cx);
@@ -933,19 +927,15 @@ WebSocket::CreateAndDispatchCloseEvent(bool aWasClean,
     return NS_OK;
   }
 
-  // create an event that uses the CloseEvent interface,
-  // which does not bubble, is not cancelable, and has no default action
+  CloseEventInit init;
+  init.mBubbles = false;
+  init.mCancelable = false;
+  init.mWasClean = aWasClean;
+  init.mCode = aCode;
+  init.mReason = aReason;
 
-  nsCOMPtr<nsIDOMEvent> event;
-  rv = NS_NewDOMCloseEvent(getter_AddRefs(event), this, nullptr, nullptr);
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  nsCOMPtr<nsIDOMCloseEvent> closeEvent = do_QueryInterface(event);
-  rv = closeEvent->InitCloseEvent(NS_LITERAL_STRING("close"),
-                                  false, false,
-                                  aWasClean, aCode, aReason);
-  NS_ENSURE_SUCCESS(rv, rv);
-
+  nsRefPtr<CloseEvent> event =
+    CloseEvent::Constructor(this, NS_LITERAL_STRING("close"), init);
   event->SetTrusted(true);
 
   return DispatchDOMEvent(nullptr, event, nullptr, nullptr);
@@ -993,7 +983,7 @@ WebSocket::ParseURL(const nsString& aURL)
   nsAutoCString filePath;
   rv = parsedURL->GetFilePath(filePath);
   if (filePath.IsEmpty()) {
-    filePath.AssignLiteral("/");
+    filePath.Assign('/');
   }
   NS_ENSURE_SUCCESS(rv, NS_ERROR_DOM_SYNTAX_ERR);
 
@@ -1019,7 +1009,7 @@ WebSocket::ParseURL(const nsString& aURL)
 
   mResource = filePath;
   if (!query.IsEmpty()) {
-    mResource.AppendLiteral("?");
+    mResource.Append('?');
     mResource.Append(query);
   }
   uint32_t length = mResource.Length();
@@ -1213,7 +1203,10 @@ WebSocket::Send(const ArrayBuffer& aData,
 {
   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
 
-  MOZ_ASSERT(sizeof(*aData.Data()) == 1);
+  aData.ComputeLengthAndData();
+
+  static_assert(sizeof(*aData.Data()) == 1, "byte-sized data required");
+
   uint32_t len = aData.Length();
   char* data = reinterpret_cast<char*>(aData.Data());
 
@@ -1227,7 +1220,10 @@ WebSocket::Send(const ArrayBufferView& aData,
 {
   NS_ABORT_IF_FALSE(NS_IsMainThread(), "Not running on main thread");
 
-  MOZ_ASSERT(sizeof(*aData.Data()) == 1);
+  aData.ComputeLengthAndData();
+
+  static_assert(sizeof(*aData.Data()) == 1, "byte-sized data required");
+
   uint32_t len = aData.Length();
   char* data = reinterpret_cast<char*>(aData.Data());
 

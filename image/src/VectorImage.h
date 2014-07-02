@@ -36,7 +36,6 @@ public:
   NS_DECL_IMGICONTAINER
 
   // (no public constructor - use ImageFactory)
-  virtual ~VectorImage();
 
   // Methods inherited from Image
   nsresult Init(const char* aMimeType,
@@ -47,6 +46,8 @@ public:
   virtual size_t HeapSizeOfDecodedWithComputedFallback(mozilla::MallocSizeOf aMallocSizeOf) const;
   virtual size_t NonHeapSizeOfDecoded() const;
   virtual size_t OutOfProcessSizeOfDecoded() const;
+
+  virtual size_t HeapSizeOfVectorImageDocument(nsACString* aDocURL = nullptr) const MOZ_OVERRIDE;
 
   virtual nsresult OnImageDataAvailable(nsIRequest* aRequest,
                                         nsISupports* aContext,
@@ -79,6 +80,7 @@ public:
 protected:
   VectorImage(imgStatusTracker* aStatusTracker = nullptr,
               ImageURL* aURI = nullptr);
+  virtual ~VectorImage();
 
   virtual nsresult StartAnimation();
   virtual nsresult StopAnimation();

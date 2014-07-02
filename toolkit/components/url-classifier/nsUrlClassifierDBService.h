@@ -13,6 +13,7 @@
 #include "nsIObserver.h"
 #include "nsUrlClassifierPrefixSet.h"
 #include "nsIUrlClassifierHashCompleter.h"
+#include "nsIUrlListManager.h"
 #include "nsIUrlClassifierDBService.h"
 #include "nsIURIClassifier.h"
 #include "nsToolkitCompsCID.h"
@@ -81,6 +82,9 @@ private:
   // Check if the key is on a known-clean host.
   nsresult CheckClean(const nsACString &lookupKey,
                       bool *clean);
+
+  // Read everything into mGethashTables and mDisallowCompletionTables
+  nsresult ReadTablesFromPrefs();
 
   nsRefPtr<nsUrlClassifierDBServiceWorker> mWorker;
   nsCOMPtr<nsIUrlClassifierDBServiceWorker> mWorkerProxy;

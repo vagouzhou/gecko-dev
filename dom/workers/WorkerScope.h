@@ -7,7 +7,7 @@
 #define mozilla_dom_workerscope_h__
 
 #include "Workers.h"
-#include "nsDOMEventTargetHelper.h"
+#include "mozilla/DOMEventTargetHelper.h"
 
 namespace mozilla {
 namespace dom {
@@ -24,7 +24,7 @@ class WorkerPrivate;
 class WorkerLocation;
 class WorkerNavigator;
 
-class WorkerGlobalScope : public nsDOMEventTargetHelper,
+class WorkerGlobalScope : public DOMEventTargetHelper,
                           public nsIGlobalObject
 {
   nsRefPtr<Console> mConsole;
@@ -39,7 +39,7 @@ protected:
 
 public:
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   virtual JSObject*
   WrapGlobalObject(JSContext* aCx) = 0;
@@ -52,7 +52,7 @@ public:
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(WorkerGlobalScope,
-                                                         nsDOMEventTargetHelper)
+                                                         DOMEventTargetHelper)
 
   already_AddRefed<WorkerGlobalScope>
   Self()
@@ -154,11 +154,58 @@ public:
   virtual JSObject*
   WrapGlobalObject(JSContext* aCx) MOZ_OVERRIDE;
 
-  void GetName(DOMString& aName) const {
+  void GetName(DOMString& aName) const
+  {
     aName.AsAString() = NS_ConvertUTF8toUTF16(mName);
   }
 
   IMPL_EVENT_HANDLER(connect)
+};
+
+class ServiceWorkerGlobalScope MOZ_FINAL : public WorkerGlobalScope
+{
+  const nsString mScope;
+  ~ServiceWorkerGlobalScope() { }
+
+public:
+  ServiceWorkerGlobalScope(WorkerPrivate* aWorkerPrivate, const nsACString& aScope);
+
+  static bool
+  Visible(JSContext* aCx, JSObject* aObj);
+
+  virtual JSObject*
+  WrapGlobalObject(JSContext* aCx) MOZ_OVERRIDE;
+
+  void
+  GetScope(DOMString& aScope) const
+  {
+    aScope.AsAString() = mScope;
+  }
+
+  void
+  Close() const
+  {
+    // no-op close.
+  }
+
+  void
+  Update()
+  {
+    // FIXME(nsm): Bug 982728
+  }
+
+  void
+  Unregister()
+  {
+    // FIXME(nsm): Bug 982728
+  }
+
+  IMPL_EVENT_HANDLER(activate)
+  IMPL_EVENT_HANDLER(beforeevicted)
+  IMPL_EVENT_HANDLER(evicted)
+  IMPL_EVENT_HANDLER(fetch)
+  IMPL_EVENT_HANDLER(install)
+  IMPL_EVENT_HANDLER(message)
 };
 
 JSObject*

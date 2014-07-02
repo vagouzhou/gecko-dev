@@ -1,4 +1,4 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+   /* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,14 +8,16 @@
 #include "ImageEncoder.h"
 #include "jsapi.h"
 #include "jsfriendapi.h"
-#include "gfxImageSurface.h"
 #include "Layers.h"
 #include "mozilla/Base64.h"
 #include "mozilla/CheckedInt.h"
 #include "mozilla/dom/CanvasRenderingContext2D.h"
 #include "mozilla/dom/HTMLCanvasElementBinding.h"
 #include "mozilla/dom/UnionTypes.h"
+#include "mozilla/dom/MouseEvent.h"
+#include "mozilla/EventDispatcher.h"
 #include "mozilla/gfx/Rect.h"
+#include "mozilla/MouseEvents.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Telemetry.h"
 #include "nsAttrValueInlines.h"
@@ -23,12 +25,12 @@
 #include "nsDisplayList.h"
 #include "nsDOMFile.h"
 #include "nsDOMJSUtils.h"
-#include "nsFrameManager.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsITimer.h"
 #include "nsIWritablePropertyBag2.h"
 #include "nsIXPConnect.h"
 #include "nsJSUtils.h"
+#include "nsLayoutUtils.h"
 #include "nsMathUtils.h"
 #include "nsNetUtil.h"
 #include "nsStreamUtils.h"
@@ -39,6 +41,7 @@
 #endif
 
 using namespace mozilla::layers;
+using namespace mozilla::gfx;
 
 NS_IMPL_NS_NEW_HTML_ELEMENT(Canvas)
 
@@ -52,8 +55,8 @@ HTMLImageOrCanvasOrVideoElement;
 namespace mozilla {
 namespace dom {
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_3(HTMLCanvasPrintState, mCanvas,
-                                        mContext, mCallback)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(HTMLCanvasPrintState, mCanvas,
+                                      mContext, mCallback)
 
 NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(HTMLCanvasPrintState, AddRef)
 NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(HTMLCanvasPrintState, Release)
@@ -72,9 +75,9 @@ HTMLCanvasPrintState::~HTMLCanvasPrintState()
 }
 
 /* virtual */ JSObject*
-HTMLCanvasPrintState::WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLCanvasPrintState::WrapObject(JSContext* aCx)
 {
-  return MozCanvasPrintStateBinding::Wrap(aCx, aScope, this);
+  return MozCanvasPrintStateBinding::Wrap(aCx, this);
 }
 
 nsISupports*
@@ -112,7 +115,7 @@ HTMLCanvasPrintState::NotifyDone()
 
 // ---------------------------------------------------------------------------
 
-HTMLCanvasElement::HTMLCanvasElement(already_AddRefed<nsINodeInfo>& aNodeInfo)
+HTMLCanvasElement::HTMLCanvasElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo),
     mWriteOnly(false)
 {
@@ -123,25 +126,23 @@ HTMLCanvasElement::~HTMLCanvasElement()
   ResetPrintCallback();
 }
 
-NS_IMPL_CYCLE_COLLECTION_INHERITED_4(HTMLCanvasElement, nsGenericHTMLElement,
-                                     mCurrentContext, mPrintCallback,
-                                     mPrintState, mOriginalCanvas)
+NS_IMPL_CYCLE_COLLECTION_INHERITED(HTMLCanvasElement, nsGenericHTMLElement,
+                                   mCurrentContext, mPrintCallback,
+                                   mPrintState, mOriginalCanvas)
 
 NS_IMPL_ADDREF_INHERITED(HTMLCanvasElement, Element)
 NS_IMPL_RELEASE_INHERITED(HTMLCanvasElement, Element)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(HTMLCanvasElement)
-  NS_INTERFACE_TABLE_INHERITED2(HTMLCanvasElement,
-                                nsIDOMHTMLCanvasElement,
-                                nsICanvasElementExternal)
+  NS_INTERFACE_TABLE_INHERITED(HTMLCanvasElement, nsIDOMHTMLCanvasElement)
 NS_INTERFACE_TABLE_TAIL_INHERITING(nsGenericHTMLElement)
 
 NS_IMPL_ELEMENT_CLONE(HTMLCanvasElement)
 
 /* virtual */ JSObject*
-HTMLCanvasElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLCanvasElement::WrapNode(JSContext* aCx)
 {
-  return HTMLCanvasElementBinding::Wrap(aCx, aScope, this);
+  return HTMLCanvasElementBinding::Wrap(aCx, this);
 }
 
 nsIntSize
@@ -288,6 +289,27 @@ HTMLCanvasElement::CopyInnerTo(Element* aDest)
     }
   }
   return rv;
+}
+
+nsresult HTMLCanvasElement::PreHandleEvent(EventChainPreVisitor& aVisitor)
+{
+  if (aVisitor.mEvent->eventStructType == NS_MOUSE_EVENT) {
+    WidgetMouseEventBase* evt = (WidgetMouseEventBase*)aVisitor.mEvent;
+    if (mCurrentContext) {
+      nsIFrame *frame = GetPrimaryFrame();
+      if (!frame)
+        return NS_OK;
+      nsPoint ptInRoot = nsLayoutUtils::GetEventCoordinatesRelativeTo(evt, frame);
+      nsRect paddingRect = frame->GetContentRectRelativeToSelf();
+      Point hitpoint;
+      hitpoint.x = (ptInRoot.x - paddingRect.x) / AppUnitsPerCSSPixel();
+      hitpoint.y = (ptInRoot.y - paddingRect.y) / AppUnitsPerCSSPixel();
+
+      evt->region = mCurrentContext->GetHitRegion(hitpoint);
+      aVisitor.mCanHandle = true;
+    }
+  }
+  return nsGenericHTMLElement::PreHandleEvent(aVisitor);
 }
 
 nsChangeHint
@@ -521,15 +543,14 @@ HTMLCanvasElement::ToBlob(JSContext* aCx,
   }
 #endif
 
-  nsCOMPtr<nsIScriptContext> scriptContext =
-    GetScriptContextFromJSContext(nsContentUtils::GetCurrentJSContext());
-
   uint8_t* imageBuffer = nullptr;
   int32_t format = 0;
   if (mCurrentContext) {
     mCurrentContext->GetImageBuffer(&imageBuffer, &format);
   }
 
+  nsCOMPtr<nsIGlobalObject> global = OwnerDoc()->GetScopeObject();
+  MOZ_ASSERT(global);
   aRv = ImageEncoder::ExtractDataAsync(type,
                                        params,
                                        usingCustomParseOptions,
@@ -537,7 +558,7 @@ HTMLCanvasElement::ToBlob(JSContext* aCx,
                                        format,
                                        GetSize(),
                                        mCurrentContext,
-                                       scriptContext,
+                                       global,
                                        aCallback);
 }
 
@@ -592,8 +613,9 @@ HTMLCanvasElement::MozGetAsFileImpl(const nsAString& aName,
   }
 
   // The DOMFile takes ownership of the buffer
-  nsRefPtr<nsDOMMemoryFile> file =
-    new nsDOMMemoryFile(imgData, (uint32_t)imgSize, aName, type);
+  nsRefPtr<DOMFile> file =
+    DOMFile::CreateMemoryFile(imgData, (uint32_t)imgSize, aName, type,
+                              PR_Now());
 
   file.forget(aResult);
   return NS_OK;
@@ -747,7 +769,7 @@ HTMLCanvasElement::MozGetIPCContext(const nsAString& aContextId,
   }
 
   // We only support 2d shmem contexts for now.
-  if (!aContextId.Equals(NS_LITERAL_STRING("2d")))
+  if (!aContextId.EqualsLiteral("2d"))
     return NS_ERROR_INVALID_ARG;
 
   if (mCurrentContextId.IsEmpty()) {
@@ -935,19 +957,13 @@ HTMLCanvasElement::MarkContextClean()
   mCurrentContext->MarkContextClean();
 }
 
-NS_IMETHODIMP_(nsIntSize)
-HTMLCanvasElement::GetSizeExternal()
-{
-  return GetWidthHeight();
-}
-
-NS_IMETHODIMP
-HTMLCanvasElement::RenderContextsExternal(gfxContext *aContext, GraphicsFilter aFilter, uint32_t aFlags)
+TemporaryRef<SourceSurface>
+HTMLCanvasElement::GetSurfaceSnapshot(bool* aPremultAlpha)
 {
   if (!mCurrentContext)
-    return NS_OK;
+    return nullptr;
 
-  return mCurrentContext->Render(aContext, aFilter, aFlags);
+  return mCurrentContext->GetSurfaceSnapshot(aPremultAlpha);
 }
 
 } // namespace dom

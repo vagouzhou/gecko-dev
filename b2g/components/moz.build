@@ -4,20 +4,23 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-TEST_DIRS += ['test']
+DIRS += ['test']
 
 EXTRA_COMPONENTS += [
     'ActivitiesGlue.js',
     'AlertsService.js',
     'B2GAboutRedirector.js',
-    'ContentHandler.js',
     'ContentPermissionPrompt.js',
     'FilePicker.js',
     'HelperAppDialog.js',
+    'InterAppCommUIGlue.js',
     'MailtoProtocolHandler.js',
+    'MobileIdentityUIGlue.js',
+    'OMAContentHandler.js',
     'PaymentGlue.js',
     'ProcessGlobal.js',
     'SmsProtocolHandler.js',
+    'SystemMessageGlue.js',
     'TelProtocolHandler.js',
     'WebappsUpdateTimer.js',
     'YoutubeProtocolHandler.js',
@@ -25,6 +28,7 @@ EXTRA_COMPONENTS += [
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'gonk':
     EXTRA_COMPONENTS += [
+      'OopCommandLine.js',
       'SimulatorScreen.js'
     ]
 
@@ -40,8 +44,12 @@ if CONFIG['MOZ_UPDATER']:
     ]
 
 EXTRA_JS_MODULES += [
+    'AlertsHelper.jsm',
+    'AppFrames.jsm',
+    'ContentRequestHelper.jsm',
     'ErrorPage.jsm',
     'SignInToWebsite.jsm',
+    'SystemAppProxy.jsm',
     'TelURIParser.jsm',
     'WebappsUpdater.jsm',
 ]

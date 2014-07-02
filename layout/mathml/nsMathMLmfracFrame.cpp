@@ -222,8 +222,12 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
   GetRuleThickness(aRenderingContext, fm, defaultRuleThickness);
   GetAxisHeight(aRenderingContext, fm, axisHeight);
 
-  nsEmbellishData coreData;
-  GetEmbellishDataFrom(mEmbellishData.coreFrame, coreData);
+  bool outermostEmbellished = false;
+  if (mEmbellishData.coreFrame) {
+    nsEmbellishData parentData;
+    GetEmbellishDataFrom(GetParent(), parentData);
+    outermostEmbellished = parentData.coreFrame != mEmbellishData.coreFrame;
+  }
 
   // see if the linethickness attribute is there 
   nsAutoString value;
@@ -237,16 +241,22 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
 
   if (!mIsBevelled) {
     mLineRect.height = mLineThickness;
-    
-    // by default, leave at least one-pixel padding at either end, or use
-    // lspace & rspace that may come from <mo> if we are an embellished
-    // container (we fetch values from the core since they may use units that
-    // depend on style data, and style changes could have occurred in the
-    // core since our last visit there)
-    nscoord leftSpace = std::max(onePixel, StyleVisibility()->mDirection ?
-                               coreData.trailingSpace : coreData.leadingSpace);
-    nscoord rightSpace = std::max(onePixel, StyleVisibility()->mDirection ?
-                                coreData.leadingSpace : coreData.trailingSpace);
+
+    // by default, leave at least one-pixel padding at either end, and add
+    // lspace & rspace that may come from <mo> if we are an outermost
+    // embellished container (we fetch values from the core since they may use
+    // units that depend on style data, and style changes could have occurred
+    // in the core since our last visit there)
+    nscoord leftSpace = onePixel;
+    nscoord rightSpace = onePixel;
+    if (outermostEmbellished) {
+      nsEmbellishData coreData;
+      GetEmbellishDataFrom(mEmbellishData.coreFrame, coreData);
+      leftSpace += StyleVisibility()->mDirection ?
+                     coreData.trailingSpace : coreData.leadingSpace;
+      rightSpace += StyleVisibility()->mDirection ?
+                      coreData.leadingSpace : coreData.trailingSpace;
+    }
 
     //////////////////
     // Get shifts
@@ -356,14 +366,14 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
     mBoundingMetrics.descent = bmDen.descent + denShift;
     mBoundingMetrics.width = width;
 
-    aDesiredSize.SetTopAscent(sizeNum.TopAscent() + numShift);
-    aDesiredSize.Height() = aDesiredSize.TopAscent() +
-      sizeDen.Height() - sizeDen.TopAscent() + denShift;
+    aDesiredSize.SetBlockStartAscent(sizeNum.BlockStartAscent() + numShift);
+    aDesiredSize.Height() = aDesiredSize.BlockStartAscent() +
+      sizeDen.Height() - sizeDen.BlockStartAscent() + denShift;
     aDesiredSize.Width() = mBoundingMetrics.width;
     aDesiredSize.mBoundingMetrics = mBoundingMetrics;
 
     mReference.x = 0;
-    mReference.y = aDesiredSize.TopAscent();
+    mReference.y = aDesiredSize.BlockStartAscent();
 
     if (aPlaceOrigin) {
       nscoord dy;
@@ -374,7 +384,7 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
       dy = aDesiredSize.Height() - sizeDen.Height();
       FinishReflowChild(frameDen, presContext, sizeDen, nullptr, dxDen, dy, 0);
       // place the fraction bar - dy is top of bar
-      dy = aDesiredSize.TopAscent() - (axisHeight + actualRuleThickness/2);
+      dy = aDesiredSize.BlockStartAscent() - (axisHeight + actualRuleThickness/2);
       mLineRect.SetRect(leftSpace, dy, width - (leftSpace + rightSpace),
                         actualRuleThickness);
     }
@@ -393,8 +403,14 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
     nscoord slashMinHeight = slashRatio *
       std::min(2 * mLineThickness, slashMaxWidthConstant);
 
-    nscoord leadingSpace = std::max(padding, coreData.leadingSpace);
-    nscoord trailingSpace = std::max(padding, coreData.trailingSpace);
+    nscoord leadingSpace = padding;
+    nscoord trailingSpace = padding;
+    if (outermostEmbellished) {
+      nsEmbellishData coreData;
+      GetEmbellishDataFrom(mEmbellishData.coreFrame, coreData);
+      leadingSpace += coreData.leadingSpace;
+      trailingSpace += coreData.trailingSpace;
+    }
     nscoord delta;
     
     //           ___________
@@ -467,14 +483,14 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
       trailingSpace;
 
     // Set aDesiredSize
-    aDesiredSize.SetTopAscent(mBoundingMetrics.ascent + padding);
+    aDesiredSize.SetBlockStartAscent(mBoundingMetrics.ascent + padding);
     aDesiredSize.Height() =
       mBoundingMetrics.ascent + mBoundingMetrics.descent + 2 * padding;
     aDesiredSize.Width() = mBoundingMetrics.width;
     aDesiredSize.mBoundingMetrics = mBoundingMetrics;
 
     mReference.x = 0;
-    mReference.y = aDesiredSize.TopAscent();
+    mReference.y = aDesiredSize.BlockStartAscent();
     
     if (aPlaceOrigin) {
       nscoord dx, dy;
@@ -482,20 +498,20 @@ nsMathMLmfracFrame::PlaceInternal(nsRenderingContext& aRenderingContext,
       // place numerator
       dx = MirrorIfRTL(aDesiredSize.Width(), sizeNum.Width(),
                        leadingSpace);
-      dy = aDesiredSize.TopAscent() - numShift - sizeNum.TopAscent();
+      dy = aDesiredSize.BlockStartAscent() - numShift - sizeNum.BlockStartAscent();
       FinishReflowChild(frameNum, presContext, sizeNum, nullptr, dx, dy, 0);
 
       // place the fraction bar
       dx = MirrorIfRTL(aDesiredSize.Width(), mLineRect.width,
                        leadingSpace + bmNum.width);
-      dy = aDesiredSize.TopAscent() - mBoundingMetrics.ascent;
+      dy = aDesiredSize.BlockStartAscent() - mBoundingMetrics.ascent;
       mLineRect.SetRect(dx, dy,
                         mLineRect.width, aDesiredSize.Height() - 2 * padding);
 
       // place denominator
       dx = MirrorIfRTL(aDesiredSize.Width(), sizeDen.Width(),
                        leadingSpace + bmNum.width + mLineRect.width);
-      dy = aDesiredSize.TopAscent() + denShift - sizeDen.TopAscent();
+      dy = aDesiredSize.BlockStartAscent() + denShift - sizeDen.BlockStartAscent();
       FinishReflowChild(frameDen, presContext, sizeDen, nullptr, dx, dy, 0);
     }
 

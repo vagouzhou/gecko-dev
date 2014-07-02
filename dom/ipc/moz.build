@@ -4,8 +4,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-if CONFIG['MOZ_WIDGET_TOOLKIT'] != 'cocoa':
-    TEST_DIRS += ['tests']
+TEST_DIRS += ['tests']
 
 EXPORTS += [
     'nsICachedFileDescriptorListener.h',
@@ -18,12 +17,18 @@ EXPORTS.mozilla.dom.ipc += [
 ]
 
 EXPORTS.mozilla.dom += [
+    'ContentBridgeChild.h',
+    'ContentBridgeParent.h',
     'ContentChild.h',
     'ContentParent.h',
     'ContentProcess.h',
     'CrashReporterChild.h',
     'CrashReporterParent.h',
+    'FileDescriptorSetChild.h',
+    'FileDescriptorSetParent.h',
     'FilePickerParent.h',
+    'nsIContentChild.h',
+    'nsIContentParent.h',
     'PermissionMessageUtils.h',
     'StructuredCloneUtils.h',
     'TabChild.h',
@@ -41,10 +46,16 @@ EXPORTS.mozilla += [
 UNIFIED_SOURCES += [
     'AppProcessChecker.cpp',
     'ColorPickerParent.cpp',
+    'ContentBridgeChild.cpp',
+    'ContentBridgeParent.cpp',
     'ContentParent.cpp',
     'ContentProcess.cpp',
     'CrashReporterParent.cpp',
+    'FileDescriptorSetChild.cpp',
+    'FileDescriptorSetParent.cpp',
     'FilePickerParent.cpp',
+    'nsIContentChild.cpp',
+    'nsIContentParent.cpp',
     'PermissionMessageUtils.cpp',
     'PreallocatedProcessManager.cpp',
     'ProcessPriorityManager.cpp',
@@ -72,10 +83,13 @@ IPDL_SOURCES += [
     'PBrowser.ipdl',
     'PColorPicker.ipdl',
     'PContent.ipdl',
+    'PContentBridge.ipdl',
     'PContentPermission.ipdlh',
     'PContentPermissionRequest.ipdl',
     'PCrashReporter.ipdl',
+    'PCycleCollectWithLogs.ipdl',
     'PDocumentRenderer.ipdl',
+    'PFileDescriptorSet.ipdl',
     'PFilePicker.ipdl',
     'PMemoryReportRequest.ipdl',
     'PTabContext.ipdlh',
@@ -98,7 +112,6 @@ LOCAL_INCLUDES += [
     '/dom/bluetooth',
     '/dom/bluetooth/ipc',
     '/dom/devicestorage',
-    '/dom/events',
     '/dom/filesystem',
     '/dom/fmradio/ipc',
     '/dom/indexedDB',
@@ -126,7 +139,9 @@ for var in ('MOZ_PERMISSIONS', 'MOZ_CHILD_PERMISSIONS'):
         DEFINES[var] = True
 
 if CONFIG['ENABLE_TESTS']:
-    DEFINES['ENABLE_TESTS'] = 1
+    LOCAL_INCLUDES += [
+      'ipc/glue',
+    ]
 
 JAR_MANIFESTS += ['jar.mn']
 

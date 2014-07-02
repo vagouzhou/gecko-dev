@@ -12,11 +12,11 @@
 #include "nsPIDOMWindow.h"
 
 #include "mozilla/CondVar.h"
+#include "mozilla/DOMEventTargetHelper.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/dom/BindingDeclarations.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsDataHashtable.h"
-#include "nsDOMEventTargetHelper.h"
 #include "nsHashKeys.h"
 #include "nsRefPtrHashtable.h"
 #include "nsString.h"
@@ -39,7 +39,7 @@ class nsITimer;
 class nsIURI;
 
 namespace JS {
-class RuntimeStats;
+struct RuntimeStats;
 }
 
 namespace mozilla {
@@ -61,6 +61,13 @@ class WorkerControlRunnable;
 class WorkerGlobalScope;
 class WorkerPrivate;
 class WorkerRunnable;
+
+enum WorkerType
+{
+  WorkerTypeDedicated,
+  WorkerTypeShared,
+  WorkerTypeService
+};
 
 // SharedMutex is a small wrapper around an (internal) reference-counted Mutex
 // object. It exists to avoid changing a lot of code to use Mutex* instead of
@@ -112,7 +119,7 @@ public:
 };
 
 template <class Derived>
-class WorkerPrivateParent : public nsDOMEventTargetHelper
+class WorkerPrivateParent : public DOMEventTargetHelper
 {
   class SynchronizeAndResumeRunnable;
 
@@ -194,12 +201,6 @@ public:
     }
   };
 
-  enum WorkerType
-  {
-    WorkerTypeDedicated,
-    WorkerTypeShared
-  };
-
 protected:
   typedef mozilla::ErrorResult ErrorResult;
 
@@ -241,6 +242,7 @@ private:
   bool mIsChromeWorker;
   bool mMainThreadObjectsForgotten;
   WorkerType mWorkerType;
+  TimeStamp mCreationTimeStamp;
 
 protected:
   // The worker is owned by its thread, which is represented here.  This is set
@@ -285,11 +287,11 @@ private:
 
 public:
   virtual JSObject*
-  WrapObject(JSContext* aCx, JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(WorkerPrivateParent,
-                                                         nsDOMEventTargetHelper)
+                                                         DOMEventTargetHelper)
 
   void
   ClearSelfRef()
@@ -508,6 +510,11 @@ public:
     return mLoadInfo.mResolvedScriptURI;
   }
 
+  TimeStamp CreationTimeStamp() const
+  {
+    return mCreationTimeStamp;
+  }
+
   nsIPrincipal*
   GetPrincipal() const
   {
@@ -632,7 +639,7 @@ public:
   }
 
   // The ability to be a chrome worker is orthogonal to the type of
-  // worker [Dedicated|Shared].
+  // worker [Dedicated|Shared|Service].
   bool
   IsChromeWorker() const
   {
@@ -649,6 +656,12 @@ public:
   IsSharedWorker() const
   {
     return mWorkerType == WorkerTypeShared;
+  }
+
+  bool
+  IsServiceWorker() const
+  {
+    return mWorkerType == WorkerTypeService;
   }
 
   const nsCString&
@@ -772,6 +785,7 @@ class WorkerPrivate : public WorkerPrivateParent<WorkerPrivate>
   bool mCancelAllPendingRunnables;
   bool mPeriodicGCTimerRunning;
   bool mIdleGCTimerRunning;
+  bool mWorkerScriptExecutedSuccessfully;
 
 #ifdef DEBUG
   PRThread* mPRThread;
@@ -792,6 +806,11 @@ public:
   Constructor(const GlobalObject& aGlobal, const nsAString& aScriptURL,
               bool aIsChromeWorker, WorkerType aWorkerType,
               const nsACString& aSharedWorkerName,
+              LoadInfo* aLoadInfo, ErrorResult& aRv);
+
+  static already_AddRefed<WorkerPrivate>
+  Constructor(JSContext* aCx, const nsAString& aScriptURL, bool aIsChromeWorker,
+              WorkerType aWorkerType, const nsACString& aSharedWorkerName,
               LoadInfo* aLoadInfo, ErrorResult& aRv);
 
   static bool
@@ -929,7 +948,7 @@ public:
   ScheduleDeletion(WorkerRanOrNot aRanOrNot);
 
   bool
-  BlockAndCollectRuntimeStats(JS::RuntimeStats* aRtStats);
+  BlockAndCollectRuntimeStats(JS::RuntimeStats* aRtStats, bool aAnonymize);
 
 #ifdef JS_GC_ZEAL
   void
@@ -1049,6 +1068,23 @@ public:
 #else
   { }
 #endif
+
+  void
+  SetWorkerScriptExecutedSuccessfully()
+  {
+    AssertIsOnWorkerThread();
+    // Should only be called once!
+    MOZ_ASSERT(!mWorkerScriptExecutedSuccessfully);
+    mWorkerScriptExecutedSuccessfully = true;
+  }
+
+  // Only valid after CompileScriptRunnable has finished running!
+  bool
+  WorkerScriptExecutedSuccessfully() const
+  {
+    AssertIsOnWorkerThread();
+    return mWorkerScriptExecutedSuccessfully;
+  }
 
 private:
   WorkerPrivate(JSContext* aCx, WorkerPrivate* aParent,

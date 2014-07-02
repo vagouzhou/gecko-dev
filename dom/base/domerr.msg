@@ -30,6 +30,7 @@ DOM4_MSG_DEF(QuotaExceededError, "The quota has been exceeded.", NS_ERROR_DOM_QU
 DOM4_MSG_DEF(TimeoutError, "The operation timed out.", NS_ERROR_DOM_TIMEOUT_ERR)
 DOM4_MSG_DEF(InvalidNodeTypeError, "The supplied node is incorrect or has an incorrect ancestor for this operation.", NS_ERROR_DOM_INVALID_NODE_TYPE_ERR)
 DOM4_MSG_DEF(DataCloneError, "The object could not be cloned.", NS_ERROR_DOM_DATA_CLONE_ERR)
+DOM4_MSG_DEF(InvalidPointerId, "Invalid pointer id.", NS_ERROR_DOM_INVALID_POINTER_ERR)
 
 /* XXX Should be JavaScript native TypeError */
 DOM4_MSG_DEF(TypeError, "The method parameter is missing or invalid.", NS_ERROR_TYPE_ERR)
@@ -39,6 +40,11 @@ DOM4_MSG_DEF(RangeError, "The method parameter is out of valid range.", NS_ERROR
 DOM4_MSG_DEF(EncodingError, "The given encoding is not supported.", NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR)
 DOM4_MSG_DEF(EncodingError, "The encoding must be utf-8, utf-16, or utf-16be.", NS_ERROR_DOM_ENCODING_NOT_UTF_ERR)
 DOM4_MSG_DEF(EncodingError, "The decoder failed to convert.", NS_ERROR_DOM_ENCODING_DECODE_ERR)
+
+/* WebCrypto API errors from http://www.w3.org/TR/WebCryptoAPI/ */
+DOM4_MSG_DEF(UnknownError, "The operation failed for an unknown transient reason", NS_ERROR_DOM_UNKNOWN_ERR)
+DOM4_MSG_DEF(DataError, "Data provided to an operation does not meet requirements", NS_ERROR_DOM_DATA_ERR)
+DOM4_MSG_DEF(OperationError, "The operation failed for an operation-specific reason", NS_ERROR_DOM_OPERATION_ERR)
 
 /* SVG DOM errors from http://www.w3.org/TR/SVG11/svgdom.html */
 
@@ -122,10 +128,11 @@ DOM_MSG_DEF(NS_ERROR_FACTORY_NO_SIGNATURE_SUPPORT  , "Factory does not support s
 DOM_MSG_DEF(NS_ERROR_FACTORY_EXISTS                , "Factory already exists")
 
 DOM4_MSG_DEF(UnknownError, "The operation failed for reasons unrelated to the file storage itself and not covered by any other error code.", NS_ERROR_DOM_FILEHANDLE_UNKNOWN_ERR)
-DOM4_MSG_DEF(LockedFileInactiveError, "A request was placed against a locked file which is currently not active, or which is finished.", NS_ERROR_DOM_FILEHANDLE_LOCKEDFILE_INACTIVE_ERR)
-DOM4_MSG_DEF(ReadOnlyError, "A mutation operation was attempted in a READ_ONLY locked file.", NS_ERROR_DOM_FILEHANDLE_READ_ONLY_ERR)
+DOM4_MSG_DEF(FileHandleInactiveError, "A request was placed against a file handle which is currently not active, or which is finished.", NS_ERROR_DOM_FILEHANDLE_INACTIVE_ERR)
+DOM4_MSG_DEF(ReadOnlyError, "A mutation operation was attempted in a READ_ONLY file handle.", NS_ERROR_DOM_FILEHANDLE_READ_ONLY_ERR)
 
 DOM4_MSG_DEF(InvalidStateError, "A mutation operation was attempted on a file storage that did not allow mutations.", NS_ERROR_DOM_FILEHANDLE_NOT_ALLOWED_ERR)
-DOM4_MSG_DEF(AbortError, "A request was aborted, for example through a call to LockedFile.abort.", NS_ERROR_DOM_FILEHANDLE_ABORT_ERR)
+DOM4_MSG_DEF(AbortError, "A request was aborted, for example through a call to FileHandle.abort.", NS_ERROR_DOM_FILEHANDLE_ABORT_ERR)
+DOM4_MSG_DEF(QuotaExceededError, "The current file handle exceeded its quota limitations.", NS_ERROR_DOM_FILEHANDLE_QUOTA_ERR)
 
 DOM_MSG_DEF(NS_ERROR_DOM_JS_EXCEPTION, "A callback threw an exception")

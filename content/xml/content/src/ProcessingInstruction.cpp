@@ -8,6 +8,7 @@
 #include "mozilla/dom/ProcessingInstruction.h"
 #include "mozilla/dom/ProcessingInstructionBinding.h"
 #include "mozilla/dom/XMLStylesheetProcessingInstruction.h"
+#include "mozilla/IntegerPrintfMacros.h"
 #include "nsContentUtils.h"
 
 already_AddRefed<mozilla::dom::ProcessingInstruction>
@@ -29,7 +30,7 @@ NS_NewXMLProcessingInstruction(nsNodeInfoManager *aNodeInfoManager,
     return pi.forget();
   }
 
-  nsCOMPtr<nsINodeInfo> ni;
+  nsRefPtr<mozilla::dom::NodeInfo> ni;
   ni = aNodeInfoManager->GetNodeInfo(nsGkAtoms::processingInstructionTagName,
                                      nullptr, kNameSpaceID_None,
                                      nsIDOMNode::PROCESSING_INSTRUCTION_NODE,
@@ -44,7 +45,7 @@ NS_NewXMLProcessingInstruction(nsNodeInfoManager *aNodeInfoManager,
 namespace mozilla {
 namespace dom {
 
-ProcessingInstruction::ProcessingInstruction(already_AddRefed<nsINodeInfo>&& aNodeInfo,
+ProcessingInstruction::ProcessingInstruction(already_AddRefed<mozilla::dom::NodeInfo>&& aNodeInfo,
                                              const nsAString& aData)
   : nsGenericDOMDataNode(Move(aNodeInfo))
 {
@@ -61,14 +62,14 @@ ProcessingInstruction::~ProcessingInstruction()
 {
 }
 
-NS_IMPL_ISUPPORTS_INHERITED3(ProcessingInstruction, nsGenericDOMDataNode,
-                             nsIDOMNode, nsIDOMCharacterData,
-                             nsIDOMProcessingInstruction)
+NS_IMPL_ISUPPORTS_INHERITED(ProcessingInstruction, nsGenericDOMDataNode,
+                            nsIDOMNode, nsIDOMCharacterData,
+                            nsIDOMProcessingInstruction)
 
 JSObject*
-ProcessingInstruction::WrapNode(JSContext *aCx, JS::Handle<JSObject*> aScope)
+ProcessingInstruction::WrapNode(JSContext *aCx)
 {
-  return ProcessingInstructionBinding::Wrap(aCx, aScope, this);
+  return ProcessingInstructionBinding::Wrap(aCx, this);
 }
 
 NS_IMETHODIMP
@@ -95,12 +96,12 @@ ProcessingInstruction::IsNodeOfType(uint32_t aFlags) const
 }
 
 nsGenericDOMDataNode*
-ProcessingInstruction::CloneDataNode(nsINodeInfo *aNodeInfo,
+ProcessingInstruction::CloneDataNode(mozilla::dom::NodeInfo *aNodeInfo,
                                      bool aCloneText) const
 {
   nsAutoString data;
   nsGenericDOMDataNode::GetData(data);
-  nsCOMPtr<nsINodeInfo> ni = aNodeInfo;
+  nsRefPtr<mozilla::dom::NodeInfo> ni = aNodeInfo;
   return new ProcessingInstruction(ni.forget(), data);
 }
 
@@ -111,7 +112,7 @@ ProcessingInstruction::List(FILE* out, int32_t aIndent) const
   int32_t index;
   for (index = aIndent; --index >= 0; ) fputs("  ", out);
 
-  fprintf(out, "Processing instruction refcount=%d<", mRefCnt.get());
+  fprintf(out, "Processing instruction refcount=%" PRIuPTR "<", mRefCnt.get());
 
   nsAutoString tmp;
   ToCString(tmp, 0, mText.GetLength());

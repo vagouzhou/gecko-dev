@@ -44,7 +44,6 @@
 #include "nsHtml5Parser.h"
 #include "nsHtml5Atoms.h"
 #include "nsHtml5TreeOperation.h"
-#include "nsHtml5PendingNotification.h"
 #include "nsHtml5StateSnapshot.h"
 #include "nsHtml5StackNode.h"
 #include "nsHtml5TreeOpExecutor.h"
@@ -395,7 +394,6 @@ nsHtml5TreeBuilder::characters(const char16_t* buf, int32_t start, int32_t lengt
               case NS_HTML5TREE_BUILDER_IN_FRAMESET: {
                 if (start < i) {
                   accumulateCharacters(buf, start, i - start);
-                  start = i;
                 }
                 errNonSpaceInFrameset();
                 start = i + 1;
@@ -404,7 +402,6 @@ nsHtml5TreeBuilder::characters(const char16_t* buf, int32_t start, int32_t lengt
               case NS_HTML5TREE_BUILDER_AFTER_FRAMESET: {
                 if (start < i) {
                   accumulateCharacters(buf, start, i - start);
-                  start = i;
                 }
                 errNonSpaceAfterFrameset();
                 start = i + 1;
@@ -417,9 +414,11 @@ nsHtml5TreeBuilder::characters(const char16_t* buf, int32_t start, int32_t lengt
                 continue;
               }
               case NS_HTML5TREE_BUILDER_AFTER_AFTER_FRAMESET: {
+                if (start < i) {
+                  accumulateCharacters(buf, start, i - start);
+                }
                 errNonSpaceInTrailer();
-                mode = NS_HTML5TREE_BUILDER_IN_FRAMESET;
-                i--;
+                start = i + 1;
                 continue;
               }
             }
@@ -1323,7 +1322,7 @@ nsHtml5TreeBuilder::startTag(nsHtml5ElementName* elementName, nsHtml5HtmlAttribu
               attributes = nullptr;
               NS_HTML5_BREAK(starttagloop);
             }
-            case NS_HTML5TREE_BUILDER_RT_OR_RP: {
+            case NS_HTML5TREE_BUILDER_RB_OR_RP_OR_RTC: {
               eltPos = findLastInScope(nsHtml5Atoms::ruby);
               if (eltPos != NS_HTML5TREE_BUILDER_NOT_FOUND_ON_STACK) {
                 generateImpliedEndTags();
@@ -1333,6 +1332,24 @@ nsHtml5TreeBuilder::startTag(nsHtml5ElementName* elementName, nsHtml5HtmlAttribu
                   errStartTagSeenWithoutRuby(name);
                 } else {
                   errUnclosedChildrenInRuby();
+                }
+              }
+              appendToCurrentNodeAndPushElementMayFoster(elementName, attributes);
+              attributes = nullptr;
+              NS_HTML5_BREAK(starttagloop);
+            }
+            case NS_HTML5TREE_BUILDER_RT: {
+              eltPos = findLastInScope(nsHtml5Atoms::ruby);
+              if (eltPos != NS_HTML5TREE_BUILDER_NOT_FOUND_ON_STACK) {
+                generateImpliedEndTagsExceptFor(nsHtml5Atoms::rtc);
+              }
+              if (eltPos != currentPtr) {
+                if (!isCurrent(nsHtml5Atoms::rtc)) {
+                  if (eltPos != NS_HTML5TREE_BUILDER_NOT_FOUND_ON_STACK) {
+                    errStartTagSeenWithoutRuby(name);
+                  } else {
+                    errUnclosedChildrenInRuby();
+                  }
                 }
               }
               appendToCurrentNodeAndPushElementMayFoster(elementName, attributes);
@@ -2449,7 +2466,8 @@ nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName)
                   case NS_HTML5TREE_BUILDER_OPTGROUP:
                   case NS_HTML5TREE_BUILDER_OPTION:
                   case NS_HTML5TREE_BUILDER_P:
-                  case NS_HTML5TREE_BUILDER_RT_OR_RP:
+                  case NS_HTML5TREE_BUILDER_RB_OR_RP_OR_RTC:
+                  case NS_HTML5TREE_BUILDER_RT:
                   case NS_HTML5TREE_BUILDER_TD_OR_TH:
                   case NS_HTML5TREE_BUILDER_TBODY_OR_THEAD_OR_TFOOT: {
                     break;
@@ -2477,6 +2495,8 @@ nsHtml5TreeBuilder::endTag(nsHtml5ElementName* elementName)
                   case NS_HTML5TREE_BUILDER_DD_OR_DT:
                   case NS_HTML5TREE_BUILDER_LI:
                   case NS_HTML5TREE_BUILDER_P:
+                  case NS_HTML5TREE_BUILDER_RB_OR_RP_OR_RTC:
+                  case NS_HTML5TREE_BUILDER_RT:
                   case NS_HTML5TREE_BUILDER_TBODY_OR_THEAD_OR_TFOOT:
                   case NS_HTML5TREE_BUILDER_TD_OR_TH:
                   case NS_HTML5TREE_BUILDER_BODY:
@@ -3116,7 +3136,8 @@ nsHtml5TreeBuilder::generateImpliedEndTagsExceptFor(nsIAtom* name)
       case NS_HTML5TREE_BUILDER_DD_OR_DT:
       case NS_HTML5TREE_BUILDER_OPTION:
       case NS_HTML5TREE_BUILDER_OPTGROUP:
-      case NS_HTML5TREE_BUILDER_RT_OR_RP: {
+      case NS_HTML5TREE_BUILDER_RB_OR_RP_OR_RTC:
+      case NS_HTML5TREE_BUILDER_RT: {
         if (node->ns == kNameSpaceID_XHTML && node->name == name) {
           return;
         }
@@ -3140,7 +3161,8 @@ nsHtml5TreeBuilder::generateImpliedEndTags()
       case NS_HTML5TREE_BUILDER_DD_OR_DT:
       case NS_HTML5TREE_BUILDER_OPTION:
       case NS_HTML5TREE_BUILDER_OPTGROUP:
-      case NS_HTML5TREE_BUILDER_RT_OR_RP: {
+      case NS_HTML5TREE_BUILDER_RB_OR_RP_OR_RTC:
+      case NS_HTML5TREE_BUILDER_RT: {
         pop();
         continue;
       }

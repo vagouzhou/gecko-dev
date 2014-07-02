@@ -156,7 +156,7 @@ protected:
 
 
 HTMLMenuItemElement::HTMLMenuItemElement(
-  already_AddRefed<nsINodeInfo>& aNodeInfo, FromParser aFromParser)
+  already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo, FromParser aFromParser)
   : nsGenericHTMLElement(aNodeInfo),
     mType(kMenuItemDefaultType->value),
     mParserCreating(false),
@@ -172,15 +172,15 @@ HTMLMenuItemElement::~HTMLMenuItemElement()
 }
 
 
-NS_IMPL_ISUPPORTS_INHERITED1(HTMLMenuItemElement, nsGenericHTMLElement,
-                             nsIDOMHTMLMenuItemElement)
+NS_IMPL_ISUPPORTS_INHERITED(HTMLMenuItemElement, nsGenericHTMLElement,
+                            nsIDOMHTMLMenuItemElement)
 
 //NS_IMPL_ELEMENT_CLONE(HTMLMenuItemElement)
 nsresult
-HTMLMenuItemElement::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
+HTMLMenuItemElement::Clone(mozilla::dom::NodeInfo *aNodeInfo, nsINode **aResult) const
 {
   *aResult = nullptr;
-  already_AddRefed<nsINodeInfo> ni = nsCOMPtr<nsINodeInfo>(aNodeInfo).forget();
+  already_AddRefed<mozilla::dom::NodeInfo> ni = nsRefPtr<mozilla::dom::NodeInfo>(aNodeInfo).forget();
   nsRefPtr<HTMLMenuItemElement> it =
     new HTMLMenuItemElement(ni, NOT_FROM_PARSER);
   nsresult rv = const_cast<HTMLMenuItemElement*>(this)->CopyInnerTo(it);
@@ -485,9 +485,9 @@ HTMLMenuItemElement::InitChecked()
 }
 
 JSObject*
-HTMLMenuItemElement::WrapNode(JSContext* aCx, JS::Handle<JSObject*> aScope)
+HTMLMenuItemElement::WrapNode(JSContext* aCx)
 {
-  return HTMLMenuItemElementBinding::Wrap(aCx, aScope, this);
+  return HTMLMenuItemElementBinding::Wrap(aCx, this);
 }
 
 } // namespace dom

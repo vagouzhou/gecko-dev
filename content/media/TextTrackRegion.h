@@ -35,8 +35,7 @@ public:
            Preferences::GetBool("media.webvtt.regions.enabled");
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   nsISupports* GetParentObject() const
   {
@@ -149,6 +148,8 @@ public:
   }
 
 private:
+  ~TextTrackRegion() {}
+
   nsCOMPtr<nsISupports> mParent;
   double mWidth;
   long mLines;

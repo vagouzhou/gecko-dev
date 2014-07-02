@@ -12,10 +12,10 @@
 #include "nsIDOMDocument.h"
 #include "nsIDOMDataTransfer.h"
 #include "nsCOMPtr.h"
+#include "nsRect.h"
 #include "nsPoint.h"
 #include "mozilla/RefPtr.h"
-
-#include "gfxImageSurface.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
 
 // translucency level for drag images
 #define DRAG_TRANSLUCENCY 0.65
@@ -45,7 +45,6 @@ public:
   typedef mozilla::gfx::SourceSurface SourceSurface;
 
   nsBaseDragService();
-  virtual ~nsBaseDragService();
 
   //nsISupports
   NS_DECL_ISUPPORTS
@@ -59,6 +58,7 @@ public:
   uint16_t GetInputSource() { return mInputSource; }
 
 protected:
+  virtual ~nsBaseDragService();
 
   /**
    * Draw the drag image, if any, to a surface and return it. The drag image
@@ -95,7 +95,7 @@ protected:
    */
   nsresult DrawDragForImage(nsPresContext* aPresContext,
                             nsIImageLoadingContent* aImageLoader,
-                            nsICanvasElementExternal* aCanvas,
+                            mozilla::dom::HTMLCanvasElement* aCanvas,
                             int32_t aScreenX, int32_t aScreenY,
                             nsIntRect* aScreenDragRect,
                             mozilla::RefPtr<SourceSurface>* aSurface);

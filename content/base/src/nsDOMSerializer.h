@@ -19,7 +19,6 @@ class nsDOMSerializer MOZ_FINAL : public nsIDOMSerializer,
 {
 public:
   nsDOMSerializer();
-  virtual ~nsDOMSerializer();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(nsDOMSerializer)
@@ -49,13 +48,14 @@ public:
     return mOwner;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE
   {
-    return mozilla::dom::XMLSerializerBinding::Wrap(aCx, aScope, this);
+    return mozilla::dom::XMLSerializerBinding::Wrap(aCx, this);
   }
 
 private:
+  virtual ~nsDOMSerializer();
+
   nsDOMSerializer(nsISupports* aOwner) : mOwner(aOwner)
   {
     MOZ_ASSERT(aOwner);

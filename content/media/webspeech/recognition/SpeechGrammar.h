@@ -26,15 +26,13 @@ class SpeechGrammar MOZ_FINAL : public nsISupports,
 {
 public:
   SpeechGrammar(nsISupports* aParent);
-  ~SpeechGrammar();
 
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(SpeechGrammar)
 
   nsISupports* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   static SpeechGrammar* Constructor(const GlobalObject& aGlobal,
                                     ErrorResult& aRv);
@@ -48,6 +46,8 @@ public:
   void SetWeight(float aArg, ErrorResult& aRv);
 
 private:
+  ~SpeechGrammar();
+
   nsCOMPtr<nsISupports> mParent;
 };
 

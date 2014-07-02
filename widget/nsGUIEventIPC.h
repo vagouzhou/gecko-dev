@@ -49,6 +49,7 @@ struct ParamTraits<mozilla::WidgetEvent>
     WriteParam(aMsg, aParam.message);
     WriteParam(aMsg, aParam.refPoint);
     WriteParam(aMsg, aParam.time);
+    WriteParam(aMsg, aParam.timeStamp);
     WriteParam(aMsg, aParam.mFlags);
   }
 
@@ -59,6 +60,7 @@ struct ParamTraits<mozilla::WidgetEvent>
                ReadParam(aMsg, aIter, &aResult->message) &&
                ReadParam(aMsg, aIter, &aResult->refPoint) &&
                ReadParam(aMsg, aIter, &aResult->time) &&
+               ReadParam(aMsg, aIter, &aResult->timeStamp) &&
                ReadParam(aMsg, aIter, &aResult->mFlags);
     aResult->eventStructType = static_cast<nsEventStructType>(eventStructType);
     return ret;
@@ -260,7 +262,7 @@ struct ParamTraits<mozilla::WidgetTouchEvent>
 
   static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
   {
-    uint32_t numTouches;
+    size_t numTouches;
     if (!ReadParam(aMsg, aIter,
                    static_cast<mozilla::WidgetInputEvent*>(aResult)) ||
         !ReadParam(aMsg, aIter, &numTouches)) {
@@ -297,7 +299,9 @@ struct ParamTraits<mozilla::WidgetKeyboardEvent>
   {
     WriteParam(aMsg, static_cast<mozilla::WidgetInputEvent>(aParam));
     WriteParam(aMsg, static_cast<uint32_t>(aParam.mKeyNameIndex));
+    WriteParam(aMsg, static_cast<uint32_t>(aParam.mCodeNameIndex));
     WriteParam(aMsg, aParam.mKeyValue);
+    WriteParam(aMsg, aParam.mCodeValue);
     WriteParam(aMsg, aParam.keyCode);
     WriteParam(aMsg, aParam.charCode);
     WriteParam(aMsg, aParam.isChar);
@@ -310,11 +314,13 @@ struct ParamTraits<mozilla::WidgetKeyboardEvent>
 
   static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
   {
-    uint32_t keyNameIndex = 0;
+    uint32_t keyNameIndex = 0, codeNameIndex = 0;
     if (ReadParam(aMsg, aIter,
                   static_cast<mozilla::WidgetInputEvent*>(aResult)) &&
         ReadParam(aMsg, aIter, &keyNameIndex) &&
+        ReadParam(aMsg, aIter, &codeNameIndex) &&
         ReadParam(aMsg, aIter, &aResult->mKeyValue) &&
+        ReadParam(aMsg, aIter, &aResult->mCodeValue) &&
         ReadParam(aMsg, aIter, &aResult->keyCode) &&
         ReadParam(aMsg, aIter, &aResult->charCode) &&
         ReadParam(aMsg, aIter, &aResult->isChar) &&
@@ -323,6 +329,8 @@ struct ParamTraits<mozilla::WidgetKeyboardEvent>
         ReadParam(aMsg, aIter, &aResult->mUniqueId))
     {
       aResult->mKeyNameIndex = static_cast<mozilla::KeyNameIndex>(keyNameIndex);
+      aResult->mCodeNameIndex =
+        static_cast<mozilla::CodeNameIndex>(codeNameIndex);
       aResult->mNativeKeyEvent = nullptr;
       return true;
     }
@@ -484,6 +492,7 @@ struct ParamTraits<mozilla::WidgetQueryContentEvent>
   {
     WriteParam(aMsg, static_cast<mozilla::WidgetGUIEvent>(aParam));
     WriteParam(aMsg, aParam.mSucceeded);
+    WriteParam(aMsg, aParam.mUseNativeLineBreak);
     WriteParam(aMsg, aParam.mInput.mOffset);
     WriteParam(aMsg, aParam.mInput.mLength);
     WriteParam(aMsg, aParam.mReply.mOffset);
@@ -500,6 +509,7 @@ struct ParamTraits<mozilla::WidgetQueryContentEvent>
     return ReadParam(aMsg, aIter,
                      static_cast<mozilla::WidgetGUIEvent*>(aResult)) &&
            ReadParam(aMsg, aIter, &aResult->mSucceeded) &&
+           ReadParam(aMsg, aIter, &aResult->mUseNativeLineBreak) &&
            ReadParam(aMsg, aIter, &aResult->mInput.mOffset) &&
            ReadParam(aMsg, aIter, &aResult->mInput.mLength) &&
            ReadParam(aMsg, aIter, &aResult->mReply.mOffset) &&
@@ -525,6 +535,7 @@ struct ParamTraits<mozilla::WidgetSelectionEvent>
     WriteParam(aMsg, aParam.mReversed);
     WriteParam(aMsg, aParam.mExpandToClusterBoundary);
     WriteParam(aMsg, aParam.mSucceeded);
+    WriteParam(aMsg, aParam.mUseNativeLineBreak);
   }
 
   static bool Read(const Message* aMsg, void** aIter, paramType* aResult)
@@ -536,7 +547,8 @@ struct ParamTraits<mozilla::WidgetSelectionEvent>
            ReadParam(aMsg, aIter, &aResult->mLength) &&
            ReadParam(aMsg, aIter, &aResult->mReversed) &&
            ReadParam(aMsg, aIter, &aResult->mExpandToClusterBoundary) &&
-           ReadParam(aMsg, aIter, &aResult->mSucceeded);
+           ReadParam(aMsg, aIter, &aResult->mSucceeded) &&
+           ReadParam(aMsg, aIter, &aResult->mUseNativeLineBreak);
   }
 };
 

@@ -22,7 +22,7 @@
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat, etc
 #include "mozilla/layers/CompositorTypes.h"  // for TextureFlags
 #include "mozilla/layers/LayersSurfaces.h"  // for SurfaceDescriptor
-#include "mozilla/layers/TextureHost.h"  // for DeprecatedTextureHost, etc
+#include "mozilla/layers/TextureHost.h"  // for TextureHost, etc
 #include "mozilla/mozalloc.h"           // for operator delete, etc
 #include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
@@ -36,7 +36,6 @@
 #endif
 #endif
 
-class gfxImageSurface;
 class gfxReusableSurfaceWrapper;
 class nsIntRegion;
 struct nsIntPoint;
@@ -53,7 +52,7 @@ namespace layers {
 
 class Compositor;
 class CompositorOGL;
-class TextureImageDeprecatedTextureHostOGL;
+class TextureImageTextureSourceOGL;
 
 /**
  * CompositableBackendSpecificData implementation for the Gonk OpenGL backend.
@@ -75,9 +74,12 @@ public:
   GLuint GetTexture();
   void DeleteTextureIfPresent();
   gl::GLContext* gl() const;
+  void BindEGLImage(GLuint aTarget, EGLImage aImage);
+  void ClearBoundEGLImage(EGLImage aImage);
 protected:
   RefPtr<CompositorOGL> mCompositor;
   GLuint mTexture;
+  EGLImage mBoundEGLImage;
 };
 
 inline void ApplyFilterToBoundTexture(gl::GLContext* aGL,
@@ -131,7 +133,7 @@ public:
 
   virtual gfx::Matrix4x4 GetTextureTransform() { return gfx::Matrix4x4(); }
 
-  virtual TextureImageDeprecatedTextureHostOGL* AsTextureImageDeprecatedTextureHost() { return nullptr; }
+  virtual TextureImageTextureSourceOGL* AsTextureImageTextureSource() { return nullptr; }
 
   void SetFilter(gl::GLContext* aGL, gfx::Filter aFilter)
   {
@@ -157,7 +159,7 @@ private:
 class TextureHostOGL
 {
 public:
-#if MOZ_WIDGET_GONK && ANDROID_VERSION >= 17
+#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
 
   /**
    * Store a fence that will signal when the current buffer is no longer being read.
@@ -169,8 +171,27 @@ public:
    * Return a releaseFence's Fence and clear a reference to the Fence.
    */
   virtual android::sp<android::Fence> GetAndResetReleaseFence();
+
+  virtual void SetAcquireFence(const android::sp<android::Fence>& aAcquireFence);
+
+  /**
+   * Return a acquireFence's Fence and clear a reference to the Fence.
+   */
+  virtual android::sp<android::Fence> GetAndResetAcquireFence();
+
+  virtual void WaitAcquireFenceSyncComplete();
+
 protected:
   android::sp<android::Fence> mReleaseFence;
+
+  android::sp<android::Fence> mAcquireFence;
+
+  /**
+   * Hold previous ReleaseFence to prevent Fence delivery failure via gecko IPC.
+   * Fence is a kernel object and its lifetime is managed by a reference count.
+   * Until the Fence is delivered to client side, need to hold Fence on host side.
+   */
+  android::sp<android::Fence> mPrevReleaseFence;
 #endif
 };
 
@@ -178,18 +199,18 @@ protected:
  * A TextureSource backed by a TextureImage.
  *
  * Depending on the underlying TextureImage, may support texture tiling, so
- * make sure to check AsTileIterator() and use the texture accordingly.
+ * make sure to check AsBigImageIterator() and use the texture accordingly.
  *
  * This TextureSource can be used without a TextureHost and manage it's own
  * GL texture(s).
  */
 class TextureImageTextureSourceOGL : public DataTextureSource
                                    , public TextureSourceOGL
-                                   , public TileIterator
+                                   , public BigImageIterator
 {
 public:
   TextureImageTextureSourceOGL(gl::GLContext* aGL,
-                               TextureFlags aFlags = TEXTURE_FLAGS_DEFAULT)
+                               TextureFlags aFlags = TextureFlags::DEFAULT)
     : mGL(aGL)
     , mFlags(aFlags)
     , mIterating(false)
@@ -200,6 +221,15 @@ public:
   virtual bool Update(gfx::DataSourceSurface* aSurface,
                       nsIntRegion* aDestRegion = nullptr,
                       gfx::IntPoint* aSrcOffset = nullptr) MOZ_OVERRIDE;
+
+  void EnsureBuffer(const nsIntSize& aSize,
+                            gfxContentType aContentType);
+
+  void CopyTo(const nsIntRect& aSourceRect,
+                      DataTextureSource* aDest,
+                      const nsIntRect& aDestRect);
+
+  virtual TextureImageTextureSourceOGL* AsTextureImageTextureSource() { return this; }
 
   // TextureSource
 
@@ -226,17 +256,17 @@ public:
     return mTexImage->GetWrapMode();
   }
 
-  // TileIterator
+  // BigImageIterator
 
-  virtual TileIterator* AsTileIterator() MOZ_OVERRIDE { return this; }
+  virtual BigImageIterator* AsBigImageIterator() MOZ_OVERRIDE { return this; }
 
-  virtual void BeginTileIteration() MOZ_OVERRIDE
+  virtual void BeginBigImageIteration() MOZ_OVERRIDE
   {
-    mTexImage->BeginTileIteration();
+    mTexImage->BeginBigImageIteration();
     mIterating = true;
   }
 
-  virtual void EndTileIteration() MOZ_OVERRIDE
+  virtual void EndBigImageIteration() MOZ_OVERRIDE
   {
     mIterating = false;
   }
@@ -299,7 +329,7 @@ public:
   virtual GLenum GetWrapMode() const MOZ_OVERRIDE { return mWrapMode; }
 
   // SharedTextureSource doesn't own any gl texture
-  virtual void DeallocateDeviceData() {}
+  virtual void DeallocateDeviceData() MOZ_OVERRIDE {}
 
   void DetachSharedHandle();
 
@@ -370,36 +400,30 @@ protected:
 };
 
 /**
- * A texture source meant for use with StreamTextureHostOGL.
+ * A texture source meant for use with SharedTextureHostOGL.
  *
- * It does not own any texture, we get texture from SurfaceStream.
+ * It does not own any GL texture, and attaches its shared handle to one of
+ * the compositor's temporary textures when binding.
+ *
+ * The shared texture handle is owned by the TextureHost.
  */
-class StreamTextureSourceOGL : public NewTextureSource
-                             , public TextureSourceOGL
+class GLTextureSource : public NewTextureSource
+                      , public TextureSourceOGL
 {
 public:
-  StreamTextureSourceOGL(CompositorOGL* aCompositor,
-                         gfx::SurfaceStream* aStream)
-    : mCompositor(aCompositor)
-    , mStream(aStream)
-    , mTextureHandle(0)
-    , mTextureTarget(LOCAL_GL_TEXTURE_2D)
-    , mUploadTexture(0)
-    , mFormat(gfx::SurfaceFormat::UNKNOWN)
-  {
-    MOZ_COUNT_CTOR(StreamTextureSourceOGL);
-  }
+  typedef gl::SharedTextureShareType SharedTextureShareType;
 
-  ~StreamTextureSourceOGL()
-  {
-    MOZ_COUNT_DTOR(StreamTextureSourceOGL);
-  }
+  GLTextureSource(CompositorOGL* aCompositor,
+                  GLuint aTex,
+                  gfx::SurfaceFormat aFormat,
+                  GLenum aTarget,
+                  gfx::IntSize aSize);
 
-  virtual TextureSourceOGL* AsSourceOGL() { return this; }
+  virtual TextureSourceOGL* AsSourceOGL() MOZ_OVERRIDE { return this; }
 
   virtual void BindTexture(GLenum activetex, gfx::Filter aFilter) MOZ_OVERRIDE;
 
-  virtual bool IsValid() const MOZ_OVERRIDE { return !!gl(); }
+  virtual bool IsValid() const MOZ_OVERRIDE;
 
   virtual gfx::IntSize GetSize() const MOZ_OVERRIDE { return mSize; }
 
@@ -409,249 +433,18 @@ public:
 
   virtual GLenum GetWrapMode() const MOZ_OVERRIDE { return LOCAL_GL_CLAMP_TO_EDGE; }
 
-  virtual void DeallocateDeviceData();
-
-  bool RetrieveTextureFromStream();
-
-  virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
-
-protected:
-  gl::GLContext* gl() const;
-
-  CompositorOGL* mCompositor;
-  gfx::SurfaceStream* mStream;
-  GLuint mTextureHandle;
-  GLenum mTextureTarget;
-  GLuint mUploadTexture;
-  gfx::IntSize mSize;
-  gfx::SurfaceFormat mFormat;
-};
-
-/**
- * A TextureHost for shared SurfaceStream
- */
-class StreamTextureHostOGL : public TextureHost
-{
-public:
-  StreamTextureHostOGL(TextureFlags aFlags,
-                       const SurfaceStreamDescriptor& aDesc);
-
-  virtual ~StreamTextureHostOGL();
-
-  // SharedTextureHostOGL doesn't own any GL texture
   virtual void DeallocateDeviceData() MOZ_OVERRIDE {}
 
   virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
 
-  virtual bool Lock() MOZ_OVERRIDE;
-
-  virtual void Unlock() MOZ_OVERRIDE;
-
-  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE;
-
-  virtual NewTextureSource* GetTextureSources() MOZ_OVERRIDE
-  {
-    return mTextureSource;
-  }
-
-  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE
-  {
-    return nullptr; // XXX - implement this (for MOZ_DUMP_PAINTING)
-  }
-
-  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE;
-
-#ifdef MOZ_LAYERS_HAVE_LOG
-  virtual const char* Name() { return "StreamTextureHostOGL"; }
-#endif
+  gl::GLContext* gl() const;
 
 protected:
+  const gfx::IntSize mSize;
   CompositorOGL* mCompositor;
-  gfx::SurfaceStream* mStream;
-  RefPtr<StreamTextureSourceOGL> mTextureSource;
-};
-
-/**
- * DeprecatedTextureHost implementation using a TextureImage as the underlying texture.
- */
-class TextureImageDeprecatedTextureHostOGL : public DeprecatedTextureHost
-                                           , public TextureSourceOGL
-                                           , public TileIterator
-{
-public:
-  TextureImageDeprecatedTextureHostOGL(gl::TextureImage* aTexImage = nullptr)
-    : mTexture(aTexImage)
-    , mGL(nullptr)
-    , mIterating(false)
-  {
-    MOZ_COUNT_CTOR(TextureImageDeprecatedTextureHostOGL);
-  }
-
-  ~TextureImageDeprecatedTextureHostOGL();
-
-  TextureSourceOGL* AsSourceOGL() MOZ_OVERRIDE
-  {
-    return this;
-  }
-
-  virtual TextureImageDeprecatedTextureHostOGL* AsTextureImageDeprecatedTextureHost() MOZ_OVERRIDE
-  {
-    return this;
-  }
-
-  // This is a hack that is here to not break on-main-thread ThebesLayerBuffer
-  // please do not use it anywhere else, use SetCompositor instead.
-  void SetGLContext(gl::GLContext* aGL)
-  {
-    mGL = aGL;
-  }
-
-  // DeprecatedTextureHost
-
-  void UpdateImpl(const SurfaceDescriptor& aImage,
-                  nsIntRegion* aRegion = nullptr,
-                  nsIntPoint* aOffset = nullptr) MOZ_OVERRIDE;
-
-  virtual void SetCompositor(Compositor* aCompositor) MOZ_OVERRIDE;
-
-  virtual void EnsureBuffer(const nsIntSize& aSize, gfxContentType aType) MOZ_OVERRIDE;
-
-  virtual void CopyTo(const nsIntRect& aSourceRect,
-                      DeprecatedTextureHost *aDest,
-                      const nsIntRect& aDestRect) MOZ_OVERRIDE;
-
-  bool IsValid() const MOZ_OVERRIDE
-  {
-    return !!mTexture;
-  }
-
-  virtual bool Lock() MOZ_OVERRIDE;
-
-  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
-
-  // textureSource
-  void BindTexture(GLenum aTextureUnit, gfx::Filter aFilter) MOZ_OVERRIDE
-  {
-    mTexture->BindTexture(aTextureUnit);
-  }
-
-  gfx::IntSize GetSize() const MOZ_OVERRIDE;
-
-  GLenum GetWrapMode() const MOZ_OVERRIDE
-  {
-    return mTexture->GetWrapMode();
-  }
-
-  gl::TextureImage* GetTextureImage()
-  {
-    return mTexture;
-  }
-
-  void SetTextureImage(gl::TextureImage* aImage)
-  {
-    mTexture = aImage;
-  }
-
-  // TileIterator
-
-  TileIterator* AsTileIterator() MOZ_OVERRIDE
-  {
-    return this;
-  }
-
-  void BeginTileIteration() MOZ_OVERRIDE
-  {
-    mTexture->BeginTileIteration();
-    mIterating = true;
-  }
-
-  void EndTileIteration() MOZ_OVERRIDE
-  {
-    mIterating = false;
-  }
-
-  nsIntRect GetTileRect() MOZ_OVERRIDE;
-
-  size_t GetTileCount() MOZ_OVERRIDE
-  {
-    return mTexture->GetTileCount();
-  }
-
-  bool NextTile() MOZ_OVERRIDE
-  {
-    return mTexture->NextTile();
-  }
-
-  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE
-  {
-    return DeprecatedTextureHost::GetFormat();
-  }
-
-  virtual const char* Name() { return "TextureImageDeprecatedTextureHostOGL"; }
-
-protected:
-  nsRefPtr<gl::TextureImage> mTexture;
-  gl::GLContext* mGL;
-  bool mIterating;
-};
-
-class TiledDeprecatedTextureHostOGL : public DeprecatedTextureHost
-                          , public TextureSourceOGL
-{
-public:
-  TiledDeprecatedTextureHostOGL()
-    : mTextureHandle(0)
-    , mGL(nullptr)
-  {}
-  ~TiledDeprecatedTextureHostOGL();
-
-  virtual void SetCompositor(Compositor* aCompositor);
-
-  // have to pass the size in here (every time) because of DrawQuad API :-(
-  virtual void Update(gfxReusableSurfaceWrapper* aReusableSurface, TextureFlags aFlags, const gfx::IntSize& aSize) MOZ_OVERRIDE;
-  virtual bool Lock() MOZ_OVERRIDE;
-  virtual void Unlock() MOZ_OVERRIDE {}
-
-  virtual gfx::SurfaceFormat GetFormat() const MOZ_OVERRIDE
-  {
-    return DeprecatedTextureHost::GetFormat();
-  }
-
-  virtual TextureSourceOGL* AsSourceOGL() MOZ_OVERRIDE { return this; }
-  virtual bool IsValid() const MOZ_OVERRIDE { return true; }
-  virtual GLenum GetWrapMode() const MOZ_OVERRIDE { return LOCAL_GL_CLAMP_TO_EDGE; }
-  virtual void BindTexture(GLenum aTextureUnit, gfx::Filter aFilter);
-  virtual gfx::IntSize GetSize() const MOZ_OVERRIDE
-  {
-    return mSize;
-  }
-
-  virtual void SwapTexturesImpl(const SurfaceDescriptor& aImage,
-                                nsIntRegion* aRegion = nullptr)
-  { MOZ_ASSERT(false, "Tiles should not use this path"); }
-
-  virtual TemporaryRef<gfx::DataSourceSurface> GetAsSurface() MOZ_OVERRIDE;
-
-  virtual const char* Name() { return "TiledDeprecatedTextureHostOGL"; }
-
-protected:
-  void DeleteTextures();
-
-  virtual uint64_t GetIdentifier() const MOZ_OVERRIDE {
-    return static_cast<uint64_t>(mTextureHandle);
-  }
-
-private:
-  GLenum GetTileType()
-  {
-    // Deduce the type that was assigned in GetFormatAndTileForImageFormat
-    return mGLFormat == LOCAL_GL_RGB ? LOCAL_GL_UNSIGNED_SHORT_5_6_5 : LOCAL_GL_UNSIGNED_BYTE;
-  }
-
-  gfx::IntSize mSize;
-  GLuint mTextureHandle;
-  GLenum mGLFormat;
-  nsRefPtr<gl::GLContext> mGL;
+  const GLuint mTex;
+  const gfx::SurfaceFormat mFormat;
+  const GLenum mTextureTarget;
 };
 
 } // namespace

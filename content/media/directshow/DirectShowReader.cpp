@@ -211,10 +211,6 @@ DirectShowReader::ReadMetadata(MediaInfo* aInfo,
 
   DWORD seekCaps = 0;
   hr = mMediaSeeking->GetCapabilities(&seekCaps);
-  bool canSeek = ((AM_SEEKING_CanSeekAbsolute & seekCaps) == AM_SEEKING_CanSeekAbsolute);
-  if (!canSeek) {
-    mDecoder->SetMediaSeekable(false);
-  }
 
   int64_t duration = mMP3FrameParser.GetDuration();
   if (SUCCEEDED(hr)) {
@@ -230,6 +226,15 @@ DirectShowReader::ReadMetadata(MediaInfo* aInfo,
       mBytesPerSample);
 
   return NS_OK;
+}
+
+bool
+DirectShowReader::IsMediaSeekable()
+{
+  DWORD seekCaps = 0;
+  HRESULT hr = mMediaSeeking->GetCapabilities(&seekCaps);
+  return ((AM_SEEKING_CanSeekAbsolute & seekCaps) ==
+          AM_SEEKING_CanSeekAbsolute);
 }
 
 inline float
@@ -390,7 +395,7 @@ DirectShowReader::Seek(int64_t aTargetUs,
   hr = mControl->Run();
   NS_ENSURE_TRUE(SUCCEEDED(hr), NS_ERROR_FAILURE);
 
-  return DecodeToTarget(aTargetUs);
+  return NS_OK;
 }
 
 void

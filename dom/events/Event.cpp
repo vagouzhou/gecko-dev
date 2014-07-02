@@ -8,6 +8,8 @@
 #include "ipc/IPCMessageUtils.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/ContentEvents.h"
+#include "mozilla/DOMEventTargetHelper.h"
+#include "mozilla/EventStateManager.h"
 #include "mozilla/InternalMutationEvent.h"
 #include "mozilla/MiscEvents.h"
 #include "mozilla/MouseEvents.h"
@@ -17,9 +19,7 @@
 #include "nsContentUtils.h"
 #include "nsCOMPtr.h"
 #include "nsDeviceContext.h"
-#include "nsDOMEventTargetHelper.h"
 #include "nsError.h"
-#include "nsEventStateManager.h"
 #include "nsGlobalWindow.h"
 #include "nsIFrame.h"
 #include "nsIContent.h"
@@ -28,7 +28,9 @@
 #include "nsIScrollableFrame.h"
 #include "nsJSEnvironment.h"
 #include "nsLayoutUtils.h"
+#include "nsPerformance.h"
 #include "nsPIWindowRoot.h"
+#include "WorkerPrivate.h"
 
 namespace mozilla {
 namespace dom {
@@ -38,6 +40,9 @@ extern bool IsCurrentThreadRunningChromeWorker();
 } // namespace workers
 
 static char *sPopupAllowedEvents;
+
+static bool sReturnHighResTimeStamp = false;
+static bool sReturnHighResTimeStampIsSet = false;
 
 Event::Event(EventTarget* aOwner,
              nsPresContext* aPresContext,
@@ -61,6 +66,13 @@ Event::ConstructorInit(EventTarget* aOwner,
   mIsMainThreadEvent = mOwner || NS_IsMainThread();
   if (mIsMainThreadEvent) {
     nsJSContext::LikelyShortLivingObjectCreated();
+  }
+
+  if (mIsMainThreadEvent && !sReturnHighResTimeStampIsSet) {
+    Preferences::AddBoolVarCache(&sReturnHighResTimeStamp,
+                                 "dom.event.highrestimestamp.enabled",
+                                 sReturnHighResTimeStamp);
+    sReturnHighResTimeStampIsSet = true;
   }
 
   mPrivateDataDuplicated = false;
@@ -421,7 +433,7 @@ Event::GetCancelable(bool* aCancelable)
 NS_IMETHODIMP
 Event::GetTimeStamp(uint64_t* aTimeStamp)
 {
-  *aTimeStamp = TimeStamp();
+  *aTimeStamp = mEvent->time;
   return NS_OK;
 }
 
@@ -511,6 +523,7 @@ void
 Event::SetEventType(const nsAString& aEventTypeArg)
 {
   if (mIsMainThreadEvent) {
+    mEvent->typeString.Truncate();
     mEvent->userType =
       nsContentUtils::GetEventIdAndAtom(aEventTypeArg, mEvent->eventStructType,
                                         &(mEvent->message));
@@ -653,7 +666,7 @@ Event::GetEventPopupControlState(WidgetEvent* aEvent)
     // For these following events only allow popups if they're
     // triggered while handling user input. See
     // nsPresShell::HandleEventInternal() for details.
-    if (nsEventStateManager::IsHandlingUserInput()) {
+    if (EventStateManager::IsHandlingUserInput()) {
       switch(aEvent->message) {
       case NS_FORM_SELECTED :
         if (PopupAllowedForEvent("select")) {
@@ -668,13 +681,13 @@ Event::GetEventPopupControlState(WidgetEvent* aEvent)
       }
     }
     break;
-  case NS_GUI_EVENT :
+  case NS_EDITOR_INPUT_EVENT :
     // For this following event only allow popups if it's triggered
     // while handling user input. See
     // nsPresShell::HandleEventInternal() for details.
-    if (nsEventStateManager::IsHandlingUserInput()) {
+    if (EventStateManager::IsHandlingUserInput()) {
       switch(aEvent->message) {
-      case NS_FORM_INPUT :
+      case NS_EDITOR_INPUT:
         if (PopupAllowedForEvent("input")) {
           abuse = openControlled;
         }
@@ -686,7 +699,7 @@ Event::GetEventPopupControlState(WidgetEvent* aEvent)
     // For this following event only allow popups if it's triggered
     // while handling user input. See
     // nsPresShell::HandleEventInternal() for details.
-    if (nsEventStateManager::IsHandlingUserInput()) {
+    if (EventStateManager::IsHandlingUserInput()) {
       switch(aEvent->message) {
       case NS_FORM_CHANGE :
         if (PopupAllowedForEvent("change")) {
@@ -778,7 +791,7 @@ Event::GetEventPopupControlState(WidgetEvent* aEvent)
     // For these following events only allow popups if they're
     // triggered while handling user input. See
     // nsPresShell::HandleEventInternal() for details.
-    if (nsEventStateManager::IsHandlingUserInput()) {
+    if (EventStateManager::IsHandlingUserInput()) {
       switch(aEvent->message) {
       case NS_FORM_SUBMIT :
         if (PopupAllowedForEvent("submit")) {
@@ -829,8 +842,8 @@ Event::GetScreenCoords(nsPresContext* aPresContext,
                        WidgetEvent* aEvent,
                        LayoutDeviceIntPoint aPoint)
 {
-  if (nsEventStateManager::sIsPointerLocked) {
-    return nsEventStateManager::sLastScreenPoint;
+  if (EventStateManager::sIsPointerLocked) {
+    return EventStateManager::sLastScreenPoint;
   }
 
   if (!aEvent || 
@@ -885,8 +898,8 @@ Event::GetClientCoords(nsPresContext* aPresContext,
                        LayoutDeviceIntPoint aPoint,
                        CSSIntPoint aDefaultPoint)
 {
-  if (nsEventStateManager::sIsPointerLocked) {
-    return nsEventStateManager::sLastClientPoint;
+  if (EventStateManager::sIsPointerLocked) {
+    return EventStateManager::sLastClientPoint;
   }
 
   if (!aEvent ||
@@ -927,7 +940,7 @@ Event::GetEventName(uint32_t aEventType)
   switch(aEventType) {
 #define ID_TO_EVENT(name_, _id, _type, _struct) \
   case _id: return #name_;
-#include "nsEventNameList.h"
+#include "mozilla/EventNameList.h"
 #undef ID_TO_EVENT
   default:
     break;
@@ -956,6 +969,44 @@ Event::DefaultPrevented(JSContext* aCx) const
   // i.e., preventDefault() has been called by chrome, return true only when
   // this is called by chrome.
   return mEvent->mFlags.mDefaultPreventedByContent || IsChrome(aCx);
+}
+
+double
+Event::TimeStamp() const
+{
+  if (!sReturnHighResTimeStamp) {
+    return static_cast<double>(mEvent->time);
+  }
+
+  if (mEvent->timeStamp.IsNull()) {
+    return 0.0;
+  }
+
+  if (mIsMainThreadEvent) {
+    if (NS_WARN_IF(!mOwner)) {
+      return 0.0;
+    }
+
+    nsPerformance* perf = mOwner->GetPerformance();
+    if (NS_WARN_IF(!perf)) {
+      return 0.0;
+    }
+
+    return perf->GetDOMTiming()->TimeStampToDOMHighRes(mEvent->timeStamp);
+  }
+
+  // For dedicated workers, we should make times relative to the navigation
+  // start of the document that created the worker. We currently don't have
+  // that information handy so for now we treat shared workers and dedicated
+  // workers alike and make times relative to the worker creation time. We can
+  // fix this when we implement WorkerPerformance.
+  workers::WorkerPrivate* workerPrivate =
+    workers::GetCurrentThreadWorkerPrivate();
+  MOZ_ASSERT(workerPrivate);
+
+  TimeDuration duration =
+    mEvent->timeStamp - workerPrivate->CreationTimeStamp();
+  return duration.ToMilliseconds();
 }
 
 bool
@@ -1056,7 +1107,7 @@ Event::SetOwner(mozilla::dom::EventTarget* aOwner)
     return;
   }
 
-  nsCOMPtr<nsDOMEventTargetHelper> eth = do_QueryInterface(aOwner);
+  nsCOMPtr<DOMEventTargetHelper> eth = do_QueryInterface(aOwner);
   if (eth) {
     mOwner = eth->GetOwner();
     return;

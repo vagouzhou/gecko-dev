@@ -1,7 +1,6 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- * vim: set ts=8 sts=4 et sw=4 tw=99:
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* vim: set ts=8 sts=4 et sw=4 tw=99: */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -30,7 +29,6 @@ XPCCallContext::XPCCallContext(XPCContext::LangType callerLanguage,
         mXPCContext(nullptr),
         mJSContext(cx),
         mCallerLanguage(callerLanguage),
-        mFlattenedJSObject(cx),
         mWrapper(nullptr),
         mTearOff(nullptr),
         mName(cx)
@@ -78,14 +76,10 @@ XPCCallContext::XPCCallContext(XPCContext::LangType callerLanguage,
         }
     }
     if (mWrapper) {
-        mFlattenedJSObject = mWrapper->GetFlatJSObject();
-
         if (mTearOff)
             mScriptableInfo = nullptr;
         else
             mScriptableInfo = mWrapper->GetScriptableInfo();
-    } else {
-        MOZ_ASSERT(!mFlattenedJSObject, "What object do we have?");
     }
 
     if (!JSID_IS_VOID(name))
@@ -259,15 +253,6 @@ XPCCallContext::GetCalleeMethodIndex(uint16_t *aCalleeMethodIndex)
     return NS_OK;
 }
 
-/* readonly attribute nsIXPConnectWrappedNative CalleeWrapper; */
-NS_IMETHODIMP
-XPCCallContext::GetCalleeWrapper(nsIXPConnectWrappedNative * *aCalleeWrapper)
-{
-    nsCOMPtr<nsIXPConnectWrappedNative> rval = mWrapper;
-    rval.forget(aCalleeWrapper);
-    return NS_OK;
-}
-
 /* readonly attribute XPCNativeInterface CalleeInterface; */
 NS_IMETHODIMP
 XPCCallContext::GetCalleeInterface(nsIInterfaceInfo * *aCalleeInterface)
@@ -378,7 +363,7 @@ XPCCallContext::UnwrapThisIfAllowed(HandleObject obj, HandleObject fun, unsigned
     // XPC_WN_GetterSetter does.
     bool set = argc && argc != NO_ARGS && member->IsWritableAttribute();
     js::Wrapper::Action act = set ? js::Wrapper::SET : js::Wrapper::GET;
-    js::Wrapper *handler = js::Wrapper::wrapperHandler(obj);
+    const js::Wrapper *handler = js::Wrapper::wrapperHandler(obj);
     bool ignored;
     JS::Rooted<jsid> id(mJSContext, member->GetName());
     if (!handler->enter(mJSContext, obj, id, act, &ignored))

@@ -13,6 +13,8 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/BrowserElementPromptService.jsm");
 
+let kLongestReturnedString = 128;
+
 // Event whitelisted for bubbling.
 let whitelistedEvents = [
   Ci.nsIDOMKeyEvent.DOM_VK_ESCAPE,   // Back button.
@@ -84,7 +86,6 @@ function getErrorClass(errorCode) {
 
   switch (NSPRCode) {
     case SEC_ERROR_UNKNOWN_ISSUER:
-    case SEC_ERROR_CA_CERT_INVALID:
     case SEC_ERROR_UNTRUSTED_ISSUER:
     case SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE:
     case SEC_ERROR_UNTRUSTED_CERT:
@@ -696,7 +697,8 @@ BrowserElementChild.prototype = {
   _getSystemCtxMenuData: function(elem) {
     if ((elem instanceof Ci.nsIDOMHTMLAnchorElement && elem.href) ||
         (elem instanceof Ci.nsIDOMHTMLAreaElement && elem.href)) {
-      return {uri: elem.href};
+      return {uri: elem.href,
+              text: elem.textContent.substring(0, kLongestReturnedString)};
     }
     if (elem instanceof Ci.nsIImageLoadingContent && elem.currentURI) {
       return {uri: elem.currentURI.spec};

@@ -26,21 +26,20 @@ public:
 
   SVGAnimatedRect(nsSVGViewBox* aVal, nsSVGElement* aSVGElement);
 
-  virtual ~SVGAnimatedRect();
-
   nsSVGElement* GetParentObject() const
   {
     return mSVGElement;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   already_AddRefed<SVGIRect> GetBaseVal();
 
   already_AddRefed<SVGIRect> GetAnimVal();
 
 private:
+  virtual ~SVGAnimatedRect();
+
   nsSVGViewBox* mVal; // kept alive because it belongs to content
   nsRefPtr<nsSVGElement> mSVGElement;
 };

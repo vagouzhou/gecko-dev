@@ -31,7 +31,6 @@ class nsIDOMWindow;
 class nsIDOMDataChannel;
 
 namespace test {
-using namespace mozilla::dom;
 
 class AFakePCObserver : public nsSupportsWeakReference
 {
@@ -78,10 +77,8 @@ public:
   virtual NS_IMETHODIMP OnSetRemoteDescriptionSuccess(ER&) = 0;
   virtual NS_IMETHODIMP OnSetLocalDescriptionError(uint32_t code, const char *msg, ER&) = 0;
   virtual NS_IMETHODIMP OnSetRemoteDescriptionError(uint32_t code, const char *msg, ER&) = 0;
-  virtual NS_IMETHODIMP NotifyConnection(ER&) = 0;
-  virtual NS_IMETHODIMP NotifyClosedConnection(ER&) = 0;
   virtual NS_IMETHODIMP NotifyDataChannel(nsIDOMDataChannel *channel, ER&) = 0;
-  virtual NS_IMETHODIMP OnStateChange(PCObserverStateType state_type, ER&,
+  virtual NS_IMETHODIMP OnStateChange(mozilla::dom::PCObserverStateType state_type, ER&,
                                       void* = nullptr) = 0;
   virtual NS_IMETHODIMP OnAddStream(nsIDOMMediaStream *stream, ER&) = 0;
   virtual NS_IMETHODIMP OnRemoveStream(ER&) = 0;

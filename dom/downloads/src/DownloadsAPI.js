@@ -7,6 +7,7 @@
 const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cu = Components.utils;
+const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -16,6 +17,9 @@ Cu.import("resource://gre/modules/DownloadsIPC.jsm");
 XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
                                    "@mozilla.org/childprocessmessagemanager;1",
                                    "nsIMessageSender");
+XPCOMUtils.defineLazyServiceGetter(this, "volumeService",
+                                   "@mozilla.org/telephony/volume-service;1",
+                                    "nsIVolumeService");
 
 function debug(aStr) {
 #ifdef MOZ_DEBUG
@@ -206,6 +210,8 @@ function DOMDownloadImpl() {
   this.currentBytes = 0;
   this.url = null;
   this.path = null;
+  this.storageName = null;
+  this.storagePath = null;
   this.contentType = null;
 
   /* fields that require getters/setters */
@@ -307,19 +313,88 @@ DOMDownloadImpl.prototype = {
       return;
     }
 
-    let props = ["totalBytes", "currentBytes", "url", "path", "state",
-                 "contentType", "startTime"];
+    let props = ["totalBytes", "currentBytes", "url", "path", "storageName",
+                 "storagePath", "state", "contentType", "startTime"];
     let changed = false;
+    let changedProps = {};
 
     props.forEach((prop) => {
       if (aDownload[prop] && (aDownload[prop] != this[prop])) {
         this[prop] = aDownload[prop];
-        changed = true;
+        changedProps[prop] = changed = true;
       }
     });
 
+    // When the path changes, we should update the storage name and
+    // storage path used for our downloaded file in case our download
+    // was re-targetted to a different storage and/or filename.
+    if (changedProps["path"]) {
+      let storages = this._window.navigator.getDeviceStorages("sdcard");
+      let preferredStorageName;
+      // Use the first one or the default storage. Just like jsdownloads picks
+      // the default / preferred download directory.
+      storages.forEach((aStorage) => {
+        if (aStorage.default || !preferredStorageName) {
+          preferredStorageName = aStorage.storageName;
+        }
+      });
+      // Now get the path for this storage area.
+      let volume;
+      if (preferredStorageName) {
+        let volume = volumeService.getVolumeByName(preferredStorageName);
+        if (volume) {
+          // Finally, create the relative path of the file that can be used
+          // later on to retrieve the file via DeviceStorage. Our path
+          // needs to omit the starting '/'.
+          this.storageName = preferredStorageName;
+          this.storagePath =
+            this.path.substring(this.path.indexOf(volume.mountPoint) +
+                                volume.mountPoint.length + 1);
+        }
+      }
+    }
+
     if (aDownload.error) {
-      this.error = new this._window.DOMError("DownloadError", aDownload.error);
+      //
+      // When we get a generic error failure back from the js downloads api
+      // we will verify the status of device storage to see if we can't provide
+      // a better error result value.
+      //
+      // XXX If these checks expand further, consider moving them into their
+      // own function.
+      //
+      let result = aDownload.error.result;
+      let storage = this._window.navigator.getDeviceStorage("sdcard");
+
+      // If we don't have access to device storage we'll opt out of these
+      // extra checks as they are all dependent on the state of the storage.
+      if (result == Cr.NS_ERROR_FAILURE && storage) {
+        // We will delay sending the notification until we've inferred which
+        // error is really happening.
+        changed = false;
+        debug("Attempting to infer error via device storage sanity checks.");
+        // Get device storage and request availability status.
+        let available = storage.available();
+        available.onsuccess = (function() {
+          debug("Storage Status = '" + available.result + "'");
+          let inferredError = result;
+          switch (available.result) {
+            case "unavailable":
+              inferredError = Cr.NS_ERROR_FILE_NOT_FOUND;
+              break;
+            case "shared":
+              inferredError = Cr.NS_ERROR_FILE_ACCESS_DENIED;
+              break;
+          }
+          this._updateWithError(aDownload, inferredError);
+        }).bind(this);
+        available.onerror = (function() {
+          this._updateWithError(aDownload, result);
+        }).bind(this);
+      }
+
+      this.error =
+        new this._window.DOMError("DownloadError", result);
     } else {
       this.error = null;
     }
@@ -329,6 +404,16 @@ DOMDownloadImpl.prototype = {
       return;
     }
 
+    this._sendStateChange();
+  },
+
+  _updateWithError: function(aDownload, aError) {
+    this.error =
+      new this._window.DOMError("DownloadError", aError);
+    this._sendStateChange();
+  },
+
+  _sendStateChange: function() {
     // __DOM_IMPL__ may not be available at first update.
     if (this.__DOM_IMPL__) {
       let event = new this._window.DownloadEvent("statechange", {

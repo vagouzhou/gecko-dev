@@ -35,8 +35,7 @@ public:
     return mContext;
   }
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   uint32_t DataLength() const
   {
@@ -48,7 +47,12 @@ public:
     return mCoefficients;
   }
 
+  size_t SizeOfExcludingThisIfNotShared(MallocSizeOf aMallocSizeOf) const;
+  size_t SizeOfIncludingThisIfNotShared(MallocSizeOf aMallocSizeOf) const;
+
 private:
+  ~PeriodicWave() {}
+
   nsRefPtr<AudioContext> mContext;
   nsRefPtr<ThreadSharedFloatArrayBufferList> mCoefficients;
   uint32_t mLength;

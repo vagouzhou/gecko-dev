@@ -29,15 +29,12 @@ class SpeechSynthesisVoice MOZ_FINAL : public nsISupports,
 public:
   SpeechSynthesisVoice(nsISupports* aParent, const nsAString& aUri);
 
-  virtual ~SpeechSynthesisVoice();
-
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(SpeechSynthesisVoice)
 
   nsISupports* GetParentObject() const;
 
-  virtual JSObject* WrapObject(JSContext* aCx,
-                               JS::Handle<JSObject*> aScope) MOZ_OVERRIDE;
+  virtual JSObject* WrapObject(JSContext* aCx) MOZ_OVERRIDE;
 
   void GetVoiceURI(nsString& aRetval) const;
 
@@ -50,6 +47,7 @@ public:
   bool Default() const;
 
 private:
+  virtual ~SpeechSynthesisVoice();
 
   nsCOMPtr<nsISupports> mParent;
 

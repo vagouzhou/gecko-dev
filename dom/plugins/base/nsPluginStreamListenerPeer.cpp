@@ -39,7 +39,6 @@ class nsPluginByteRangeStreamListener
 {
 public:
   nsPluginByteRangeStreamListener(nsIWeakReference* aWeakPtr);
-  virtual ~nsPluginByteRangeStreamListener();
 
   NS_DECL_ISUPPORTS
   NS_DECL_NSIREQUESTOBSERVER
@@ -47,15 +46,17 @@ public:
   NS_DECL_NSIINTERFACEREQUESTOR
 
 private:
+  virtual ~nsPluginByteRangeStreamListener();
+
   nsCOMPtr<nsIStreamListener> mStreamConverter;
   nsWeakPtr mWeakPtrPluginStreamListenerPeer;
   bool mRemoveMagicNumber;
 };
 
-NS_IMPL_ISUPPORTS3(nsPluginByteRangeStreamListener,
-                   nsIRequestObserver,
-                   nsIStreamListener,
-                   nsIInterfaceRequestor)
+NS_IMPL_ISUPPORTS(nsPluginByteRangeStreamListener,
+                  nsIRequestObserver,
+                  nsIStreamListener,
+                  nsIInterfaceRequestor)
 
 nsPluginByteRangeStreamListener::nsPluginByteRangeStreamListener(nsIWeakReference* aWeakPtr)
 {
@@ -245,13 +246,13 @@ nsPluginByteRangeStreamListener::GetInterface(const nsIID& aIID, void** result)
 
 // nsPluginStreamListenerPeer
 
-NS_IMPL_ISUPPORTS6(nsPluginStreamListenerPeer,
-                   nsIStreamListener,
-                   nsIRequestObserver,
-                   nsIHttpHeaderVisitor,
-                   nsISupportsWeakReference,
-                   nsIInterfaceRequestor,
-                   nsIChannelEventSink)
+NS_IMPL_ISUPPORTS(nsPluginStreamListenerPeer,
+                  nsIStreamListener,
+                  nsIRequestObserver,
+                  nsIHttpHeaderVisitor,
+                  nsISupportsWeakReference,
+                  nsIInterfaceRequestor,
+                  nsIChannelEventSink)
 
 nsPluginStreamListenerPeer::nsPluginStreamListenerPeer()
 {
@@ -420,7 +421,8 @@ nsPluginStreamListenerPeer::OnStartRequest(nsIRequest *request,
                                            nsISupports* aContext)
 {
   nsresult rv = NS_OK;
-  PROFILER_LABEL("nsPluginStreamListenerPeer", "OnStartRequest");
+  PROFILER_LABEL("nsPluginStreamListenerPeer", "OnStartRequest",
+    js::ProfileEntry::Category::OTHER);
 
   if (mRequests.IndexOfObject(GetBaseRequest(request)) == -1) {
     NS_ASSERTION(mRequests.Count() == 0,
@@ -608,10 +610,10 @@ nsPluginStreamListenerPeer::MakeByteRangeString(NPByteRange* aRangeList, nsACStr
 
     // XXX needs to be fixed for negative offsets
     string.AppendInt(range->offset);
-    string.Append("-");
+    string.Append('-');
     string.AppendInt(range->offset + range->length - 1);
     if (range->next)
-      string += ",";
+      string.Append(',');
 
     requestCnt++;
   }
@@ -1200,7 +1202,6 @@ public:
   }
 
   ChannelRedirectProxyCallback() {}
-  virtual ~ChannelRedirectProxyCallback() {}
 
   NS_DECL_ISUPPORTS
 
@@ -1215,13 +1216,15 @@ public:
   }
 
 private:
+  virtual ~ChannelRedirectProxyCallback() {}
+
   nsWeakPtr mWeakListener;
   nsCOMPtr<nsIAsyncVerifyRedirectCallback> mParent;
   nsCOMPtr<nsIChannel> mOldChannel;
   nsCOMPtr<nsIChannel> mNewChannel;
 };
 
-NS_IMPL_ISUPPORTS1(ChannelRedirectProxyCallback, nsIAsyncVerifyRedirectCallback)
+NS_IMPL_ISUPPORTS(ChannelRedirectProxyCallback, nsIAsyncVerifyRedirectCallback)
 
 
 NS_IMETHODIMP

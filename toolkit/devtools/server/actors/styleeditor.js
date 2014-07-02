@@ -12,7 +12,7 @@ Cu.import("resource://gre/modules/NetUtil.jsm");
 Cu.import("resource://gre/modules/FileUtils.jsm");
 Cu.import("resource://gre/modules/devtools/SourceMap.jsm");
 
-const promise = require("sdk/core/promise");
+const {Promise: promise} = Cu.import("resource://gre/modules/Promise.jsm", {});
 const events = require("sdk/event/core");
 const protocol = require("devtools/server/protocol");
 const {Arg, Option, method, RetVal, types} = protocol;
@@ -351,10 +351,10 @@ let OldStyleSheetActor = protocol.ActorClass({
     // if this sheet has an @import, then it's rules are loaded async
     let ownerNode = this.rawSheet.ownerNode;
     if (ownerNode) {
-      let onSheetLoaded = function(event) {
+      let onSheetLoaded = (event) => {
         ownerNode.removeEventListener("load", onSheetLoaded, false);
         this._notifyPropertyChanged("ruleCount");
-      }.bind(this);
+      };
 
       ownerNode.addEventListener("load", onSheetLoaded, false);
     }
