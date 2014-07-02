@@ -1097,12 +1097,12 @@ public:
                                           mLoopbackVideoDevice));
       {
           ScopedDeletePtr<SourceSet> s (GetSources(backend, mConstraints.mVideom,
-                                                   &MediaEngine::EnumerateScreenDevices));
+          &MediaEngine::EnumerateScreenDevices));
           final->MoveElementsFrom(*s);
       }
       {
           ScopedDeletePtr<SourceSet> s (GetSources(backend, mConstraints.mVideom,
-                                                   &MediaEngine::EnumerateApplicationDevices));
+          &MediaEngine::EnumerateApplicationDevices));
           final->MoveElementsFrom(*s);
       }
     {

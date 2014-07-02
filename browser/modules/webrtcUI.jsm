@@ -72,7 +72,7 @@ function handleRequest(aSubject, aTopic, aData) {
     constraints,
     function (devices) {
       prompt(contentWindow, aSubject.callID, constraints.audio,
-             constraints.video || constraints.picture, devices,constraints.videom,constraints.audiom);
+             constraints.video || constraints.picture, devices, secure, constraints.video, constraints.audio);
     },
     function (error) {
       // bug 827146 -- In the future, the UI should catch NO_DEVICES_FOUND
@@ -119,7 +119,9 @@ function prompt(aContentWindow, aCallID, aAudioRequested, aVideoRequested, aDevi
     }
   }
 
-    let mozMediaSourceMandatory = videom.mandatory.mozMediaSource;
+    let mozMediaSourceMandatory = "";
+    if(videom != null && videom.mandatory != null)
+        mozMediaSourceMandatory = videom.mandatory.mozMediaSource;
 
   let requestType;
 
