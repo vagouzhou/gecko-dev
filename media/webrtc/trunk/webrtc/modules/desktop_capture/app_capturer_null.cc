@@ -26,7 +26,7 @@ namespace webrtc {
 			// AppCapturer interface.
 			//AppCapturer Interfaces
 			virtual bool GetAppList(AppList* apps) OVERRIDE;
-			virtual bool SelectApp(ProcessId id) OVERRIDE;
+			virtual bool SelectApp(ProcessId processId) OVERRIDE;
 			virtual bool BringAppToFront()	OVERRIDE;
 
 			// DesktopCapturer interface.
@@ -50,7 +50,7 @@ namespace webrtc {
 			// Not implemented yet.
 			return false;
 		}
-		bool SelectApp(ProcessId id) {
+		bool SelectApp(ProcessId processId) {
 			// Not implemented yet.
 			return false;
 		}

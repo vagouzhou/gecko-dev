@@ -92,7 +92,7 @@ namespace webrtc{
     void DesktopApplication::setProcessId(const ProcessId processId){
         processId_ = processId;
     }
-    void DesktopApplication::setProcessPathName(char* appPathNameUTF8){
+    void DesktopApplication::setProcessPathName(const char* appPathNameUTF8){
         if(appPathNameUTF8==NULL) return;
         
         if(processPathNameUTF8_){
@@ -106,7 +106,7 @@ namespace webrtc{
         memcpy(processPathNameUTF8_,appPathNameUTF8,strlen(appPathNameUTF8));
     }
 
-    void DesktopApplication::setUniqueIdName(char* appUniqueIdUTF8){
+    void DesktopApplication::setUniqueIdName(const char* appUniqueIdUTF8){
         if(appUniqueIdUTF8==NULL) return;
         
         if(processPathNameUTF8_){
@@ -114,13 +114,13 @@ namespace webrtc{
             processPathNameUTF8_ = NULL;
         }
         int nBufLen = strlen(appUniqueIdUTF8)+1;
-        processPathNameUTF8_ = new char[nBufLen];
-        memset(processPathNameUTF8_,0,nBufLen);
+        processUniqueIdUTF8_ = new char[nBufLen];
+        memset(processUniqueIdUTF8_,0,nBufLen);
         
-        memcpy(processPathNameUTF8_,appUniqueIdUTF8,strlen(appUniqueIdUTF8));
+        memcpy(processUniqueIdUTF8_,appUniqueIdUTF8,strlen(appUniqueIdUTF8));
     }
 
-    void DesktopApplication::setProcessAppName(char* appNameUTF8){
+    void DesktopApplication::setProcessAppName(const char* appNameUTF8){
         if(appNameUTF8==NULL) return;
         
         if(applicationNameUTF8_){
@@ -143,7 +143,7 @@ namespace webrtc{
         return processPathNameUTF8_;
     }
     char*  DesktopApplication::getUniqueIdName(){
-        return applicationNameUTF8_;
+        return processUniqueIdUTF8_;
     }
     char*  DesktopApplication::getProcessAppName(){
         return applicationNameUTF8_;

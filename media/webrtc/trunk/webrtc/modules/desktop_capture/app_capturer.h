@@ -42,7 +42,7 @@ namespace webrtc {
 
 		//AppCapturer Interfaces
 		virtual bool GetAppList(AppList* apps) = 0;
-		virtual bool SelectApp(ProcessId id) = 0;
+		virtual bool SelectApp(ProcessId processId) = 0;
 		virtual bool BringAppToFront() {
 			return true;
 		}

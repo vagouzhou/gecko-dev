@@ -245,7 +245,7 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,const bool bIsApp){
         AppCapturer *pAppCapturer =AppCapturer::Create();
         if(pAppCapturer==nullptr) return -1;
         
-        ProcessId processid = 0;//uniqueId
+        ProcessId processid = atoi(uniqueId);//uniqueId
         pAppCapturer->SelectApp(processid);
         
         //desktop_capturer_.reset(pAppCapturer);
