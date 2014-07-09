@@ -34,9 +34,9 @@ namespace webrtc {
             ~DesktopApplication();
         
             void setProcessId(const ProcessId processId);
-            void setProcessPathName(char* appPathNameUTF8);
-            void setUniqueIdName(char* appUniqueIdUTF8);
-            void setProcessAppName(char* appNameUTF8);
+            void setProcessPathName(const char* appPathNameUTF8);
+            void setUniqueIdName(const char* appUniqueIdUTF8);
+            void setProcessAppName(const char* appNameUTF8);
         
             ProcessId getProcessId();
             char*  getProcessPathName();
