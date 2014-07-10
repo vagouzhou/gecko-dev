@@ -11,44 +11,64 @@
 #include "webrtc/modules/desktop_capture/win/desktop_device_info_win.h"
 
 namespace webrtc{
-
+    
 #define MULTI_MONITOR_NO_SUPPORT 1
     
-DesktopDeviceInfo * DesktopDeviceInfoImpl::Create()
-{
-    DesktopDeviceInfoWin * pDesktopDeviceInfo = new DesktopDeviceInfoWin();
-    if(pDesktopDeviceInfo && pDesktopDeviceInfo->Init()!=0){
-        delete pDesktopDeviceInfo;
-        pDesktopDeviceInfo = NULL;
+    DesktopDeviceInfo * DesktopDeviceInfoImpl::Create()
+    {
+        DesktopDeviceInfoWin * pDesktopDeviceInfo = new DesktopDeviceInfoWin();
+        if(pDesktopDeviceInfo && pDesktopDeviceInfo->Init()!=0){
+            delete pDesktopDeviceInfo;
+            pDesktopDeviceInfo = NULL;
+        }
+        return pDesktopDeviceInfo;
     }
-    return pDesktopDeviceInfo;
-}
-
-DesktopDeviceInfoWin::DesktopDeviceInfoWin()
-{
     
-}
-DesktopDeviceInfoWin::~DesktopDeviceInfoWin()
-{
-    
-}
-    
-int32_t DesktopDeviceInfoWin::Init()
-{
-    
-#ifdef MULTI_MONITOR_NO_SUPPORT
-    DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
-    if(pDesktopDeviceInfo){
-        pDesktopDeviceInfo->setScreenId(0);
-        pDesktopDeviceInfo->setDeivceName("Primary Monitor");
-        pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#1");
+    DesktopDeviceInfoWin::DesktopDeviceInfoWin()
+    {
         
-        desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
     }
-#endif
-    //
+    DesktopDeviceInfoWin::~DesktopDeviceInfoWin()
+    {
+        
+    }
     
-    return 0;
-}
+    int32_t DesktopDeviceInfoWin::Refresh()
+    {
+        
+        //Clean up sources first
+        CleanUp();
+        
+        //List display
+#ifdef MULTI_MONITOR_NO_SUPPORT
+        DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
+        if(pDesktopDeviceInfo){
+            pDesktopDeviceInfo->setScreenId(kFullDesktopScreenId);
+            pDesktopDeviceInfo->setDeivceName("Screen");
+            pDesktopDeviceInfo->setUniqueIdName("\\screen\\all");
+            
+            desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
+        }
+#else
+        /*
+         int nCountScreen = 0;
+         
+         for(int i=0;i<nCountScreen;i++){
+         DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
+         if(pDesktopDeviceInfo){
+         pDesktopDeviceInfo->setScreenId(0);
+         pDesktopDeviceInfo->setDeivceName("Monitor Name: XXX");
+         pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#x");
+         
+         desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
+         }
+         }
+         */
+#endif
+        
+        //List all running applicatones exclude background process.
+        
+        return 0;
+    }
     
 } //namespace webrtc
