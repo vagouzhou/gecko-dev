@@ -165,6 +165,56 @@ namespace webrtc{
     }
     DesktopDeviceInfoImpl::~DesktopDeviceInfoImpl()
     {
+        CleanUp();
+    
+    }
+    int32_t DesktopDeviceInfoImpl::Init()
+    {
+        //
+        return Refresh();
+    }
+    
+    int32_t DesktopDeviceInfoImpl::getDisplayDeviceCount()
+    {
+        Refresh();
+        return desktop_display_list_.size();
+    }
+    
+    int32_t DesktopDeviceInfoImpl::getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice)
+    {
+        if(nIndex<0 || nIndex>=desktop_display_list_.size())
+            return -1;
+        
+        std::map<intptr_t,DesktopDisplayDevice*>::iterator iter = desktop_display_list_.begin();
+        std::advance (iter,nIndex);
+        DesktopDisplayDevice * pDesktopDisplayDevice = iter->second;
+        if(pDesktopDisplayDevice)
+            desktopDisplayDevice = (*pDesktopDisplayDevice);
+        
+        return 0;
+    }
+
+    int32_t DesktopDeviceInfoImpl::getApplicationCount()
+    {
+        Refresh();
+        return desktop_application_list_.size();
+    }
+
+    int32_t DesktopDeviceInfoImpl::getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication)
+    {
+        if(nIndex<0 || nIndex>=desktop_application_list_.size())
+            return -1;
+        
+        std::map<intptr_t,DesktopApplication*>::iterator iter = desktop_application_list_.begin();
+        std::advance (iter,nIndex);
+        DesktopApplication * pDesktopApplication = iter->second;
+        if(pDesktopApplication)
+            desktopApplication = (*pDesktopApplication);        
+
+        return 0;
+    }
+    void DesktopDeviceInfoImpl::CleanUp()
+    {   
         //
         std::map<intptr_t,DesktopDisplayDevice*>::iterator iterDevice;
         for(iterDevice=desktop_display_list_.begin();iterDevice!=desktop_display_list_.end();iterDevice++){
@@ -186,45 +236,5 @@ namespace webrtc{
             iterApp->second = NULL;
         }
         desktop_application_list_.clear();
-    
     }
-    
-    int32_t DesktopDeviceInfoImpl::getDisplayDeviceCount()
-    {
-        return desktop_display_list_.size();
-    }
-    
-    int32_t DesktopDeviceInfoImpl::getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice)
-    {
-        if(nIndex<0 || nIndex>=desktop_display_list_.size())
-            return -1;
-        
-        std::map<intptr_t,DesktopDisplayDevice*>::iterator iter = desktop_display_list_.begin();
-        std::advance (iter,nIndex);
-        DesktopDisplayDevice * pDesktopDisplayDevice = iter->second;
-        if(pDesktopDisplayDevice)
-            desktopDisplayDevice = (*pDesktopDisplayDevice);
-        
-        return 0;
-    }
-
-    int32_t DesktopDeviceInfoImpl::getApplicationCount()
-    {
-        return desktop_application_list_.size();
-    }
-
-    int32_t DesktopDeviceInfoImpl::getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication)
-    {
-        if(nIndex<0 || nIndex>=desktop_application_list_.size())
-            return -1;
-        
-        std::map<intptr_t,DesktopApplication*>::iterator iter = desktop_application_list_.begin();
-        std::advance (iter,nIndex);
-        DesktopApplication * pDesktopApplication = iter->second;
-        if(pDesktopApplication)
-            desktopApplication = (*pDesktopApplication);        
-
-        return 0;
-    }
-
 }

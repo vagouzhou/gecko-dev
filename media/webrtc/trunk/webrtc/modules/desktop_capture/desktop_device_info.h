@@ -59,9 +59,14 @@ namespace webrtc {
         virtual ~DesktopDeviceInfo(){};
         
         //
-        virtual int32_t Init() =0 ;
+        virtual int32_t Init() = 0;
+        virtual int32_t Refresh() = 0;
+        
+        //
         virtual int32_t getDisplayDeviceCount()=0;
         virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice)=0;
+        
+        //
         virtual int32_t getApplicationCount()=0;
         virtual int32_t getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication)=0;
     };
@@ -73,12 +78,15 @@ namespace webrtc {
         DesktopDeviceInfoImpl();
         ~DesktopDeviceInfoImpl();
         
+        virtual int32_t Init();
         virtual int32_t getDisplayDeviceCount();
         virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice);
         virtual int32_t getApplicationCount();
         virtual int32_t getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication);
         
         static DesktopDeviceInfo * Create();
+    protected:
+        void CleanUp();
     protected:
         DesktopDisplayDeviceList desktop_display_list_;
         DesktopApplicationList desktop_application_list_;

@@ -11,7 +11,7 @@ namespace webrtc {
         ~DesktopDeviceInfoMac();
         
         //DesktopDeviceInfo Interfaces
-        virtual int32_t Init();
+        virtual int32_t Refresh();
     protected:
     };
 }// namespace webrtc

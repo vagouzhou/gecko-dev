@@ -4,34 +4,53 @@
 namespace webrtc {
     
 #define MULTI_MONITOR_NO_SUPPORT 1
-DesktopDeviceInfo * DesktopDeviceInfoImpl::Create()
-{
-    DesktopDeviceInfoMac * pDesktopDeviceInfo = new DesktopDeviceInfoMac();
-    if(pDesktopDeviceInfo && pDesktopDeviceInfo->Init()!=0){
-        delete pDesktopDeviceInfo;
-        pDesktopDeviceInfo = NULL;
-    }
-    return pDesktopDeviceInfo;
-}
-DesktopDeviceInfoMac::DesktopDeviceInfoMac()
-{
-    
-}
-DesktopDeviceInfoMac::~DesktopDeviceInfoMac()
-{
-    
-}    
-int32_t DesktopDeviceInfoMac::Init()
+    DesktopDeviceInfo * DesktopDeviceInfoImpl::Create()
     {
+        DesktopDeviceInfoMac * pDesktopDeviceInfo = new DesktopDeviceInfoMac();
+        if(pDesktopDeviceInfo && pDesktopDeviceInfo->Init()!=0){
+            delete pDesktopDeviceInfo;
+            pDesktopDeviceInfo = NULL;
+        }
+        return pDesktopDeviceInfo;
+    }
+    DesktopDeviceInfoMac::DesktopDeviceInfoMac()
+    {
+        
+    }
+    DesktopDeviceInfoMac::~DesktopDeviceInfoMac()
+    {
+        
+    }
+    int32_t DesktopDeviceInfoMac::Refresh()
+    {
+        //Clean up sources first
+        CleanUp();
+        
+        //List display
 #ifdef MULTI_MONITOR_NO_SUPPORT
         DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
         if(pDesktopDeviceInfo){
-            pDesktopDeviceInfo->setScreenId(0);
-            pDesktopDeviceInfo->setDeivceName("Primary Monitor");
-            pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#1");
+            pDesktopDeviceInfo->setScreenId(kFullDesktopScreenId);
+            pDesktopDeviceInfo->setDeivceName("Screen");
+            pDesktopDeviceInfo->setUniqueIdName("\\screen\\all");
             
             desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
         }
+#else
+        /*
+         int nCountScreen = 0;
+         
+         for(int i=0;i<nCountScreen;i++){
+         DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
+         if(pDesktopDeviceInfo){
+         pDesktopDeviceInfo->setScreenId(0);
+         pDesktopDeviceInfo->setDeivceName("Monitor Name: XXX");
+         pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#x");
+         
+         desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
+         }
+         }
+         */
 #endif
         
         //List all running applicatones exclude background process.
@@ -95,9 +114,6 @@ int32_t DesktopDeviceInfoMac::Init()
                 
             }
         }
-        
-        
-        
         return 0;
     }
     
