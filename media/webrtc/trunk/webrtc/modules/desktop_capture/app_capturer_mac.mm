@@ -107,8 +107,14 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
 	
 	
     //Filter out windows not belong to current selected process
-	CGWindowID* captureWindowList = new CGWindowID[windowCount];
-    memset(captureWindowList,0,sizeof(CGWindowID)*(windowCount));
+#if defined(__LP64__)
+    #define CaptureWindowID int64_t
+#else
+    #define CaptureWindowID CGWindowID
+#endif
+    
+	CaptureWindowID* captureWindowList = new CaptureWindowID[windowCount];
+    memset(captureWindowList,0,sizeof(CaptureWindowID)*(windowCount));
 	int captureWindowListCount = 0;
     int i = 0;
 	for(i = 0; i <windowCount; i++ ) //from back to front
@@ -147,6 +153,7 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
 
     
     //Debug for capture raw data
+    /*
     {
         static int iFile =0;
         if(iFile>=200)iFile = 0;
@@ -158,6 +165,7 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
         CGImageDestinationFinalize(destination);
         CFRelease(destination);
     }
+     */
     
     //Wrapper raw data into DesktopFrame
     if (!app_image) {
