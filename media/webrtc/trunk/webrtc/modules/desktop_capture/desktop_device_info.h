@@ -13,8 +13,8 @@ namespace webrtc {
             ~DesktopDisplayDevice();
         
             void setScreenId(const ScreenId screenId);
-            void setDeivceName(char* deviceNameUTF8);
-            void setUniqueIdName(char* deviceUniqueIdUTF8);
+            void setDeivceName(const char* deviceNameUTF8);
+            void setUniqueIdName(const char* deviceUniqueIdUTF8);
         
             ScreenId    getScreenId();
             char*   getDeivceName();
