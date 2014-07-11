@@ -26,7 +26,7 @@ namespace webrtc{
     {
         screenId_ = screenId;
     }
-    void DesktopDisplayDevice::setDeivceName(char* deviceNameUTF8)
+    void DesktopDisplayDevice::setDeivceName(const char* deviceNameUTF8)
     {
         if(deviceNameUTF8==NULL) return;
         
@@ -40,7 +40,7 @@ namespace webrtc{
         
         memcpy(deviceNameUTF8_,deviceNameUTF8,strlen(deviceNameUTF8));
     }
-    void DesktopDisplayDevice::setUniqueIdName(char* deviceUniqueIdUTF8)
+    void DesktopDisplayDevice::setUniqueIdName(const char* deviceUniqueIdUTF8)
     {
         if(deviceUniqueIdUTF8==NULL) return;
         

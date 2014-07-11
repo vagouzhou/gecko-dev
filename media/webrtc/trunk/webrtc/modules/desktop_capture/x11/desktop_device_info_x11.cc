@@ -27,12 +27,15 @@ namespace webrtc{
         
         //List display
 #ifdef MULTI_MONITOR_NO_SUPPORT
+        
         DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
         if(pDesktopDeviceInfo){
             pDesktopDeviceInfo->setScreenId(kFullDesktopScreenId);
-            pDesktopDeviceInfo->setDeivceName("Screen");
-            pDesktopDeviceInfo->setUniqueIdName("\\screen\\all");
+            pDesktopDeviceInfo->setDeivceName("All Monitors");
             
+            std::ostringstream sUniqueIdName;
+            sUniqueIdName<<kFullDesktopScreenId;
+            pDesktopDeviceInfo->setUniqueIdName(sUniqueIdName.str().c_str());
             desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
         }
 #else

@@ -257,7 +257,7 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,const bool bIsApp){
         ScreenCapturer *pScreenCapturer = ScreenCapturer::Create();
         if(pScreenCapturer==nullptr) return -1;
         
-        ScreenId screenid = webrtc::kFullDesktopScreenId;//uniqueId
+        ScreenId screenid = atoi(uniqueId);//webrtc::kFullDesktopScreenId;//uniqueId
         pScreenCapturer->SelectScreen(screenid);        
         pScreenCapturer->SetMouseShapeObserver(this);
         
