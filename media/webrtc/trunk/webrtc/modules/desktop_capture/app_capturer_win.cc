@@ -20,22 +20,6 @@
 namespace webrtc {
 
 	namespace {
-
-		std::string Utf16ToUtf8(const WCHAR* str) {
-			int len_utf8 = WideCharToMultiByte(CP_UTF8, 0, str, -1,
-				NULL, 0, NULL, NULL);
-			if (len_utf8 <= 0)
-				return std::string();
-			std::string result(len_utf8, '\0');
-			int rv = WideCharToMultiByte(CP_UTF8, 0, str, -1,
-				&*(result.begin()), len_utf8, NULL, NULL);
-			if (rv != len_utf8)
-				assert(false);
-
-			return result;
-		}
-
-
 		class AppCapturerWin : public AppCapturer {
 		public:
 			AppCapturerWin();
