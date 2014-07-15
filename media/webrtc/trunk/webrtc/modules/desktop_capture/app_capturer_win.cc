@@ -37,21 +37,30 @@ namespace webrtc {
 			// DesktopCapturer interface.
 			virtual void Start(Callback* callback) OVERRIDE;
 			virtual void Capture(const DesktopRegion& region) OVERRIDE;
-
+			struct WindowItem{
+				HWND hWnd;
+				RECT rcWindow;
+				bool bSizeChanged;
+			};
 			struct EnumWindowsLPARAM {
 				ProcessId process_id;
-				std::vector<HWND> vecWindows;
+				std::vector<WindowItem> vecWindows;
 			};
 			static BOOL CALLBACK EnumWindowsProc(HWND handle, LPARAM lParam);
+		protected:
+			void CaptureByWebRTC(const DesktopRegion& region);
+			void CaptureBySample(const DesktopRegion& region);
+			void CaptureByMagnifier(const DesktopRegion& region);
 		private:
 			Callback* callback_;
 			ProcessId processId_;
+
+			std::vector<WindowItem> vec_previous_windows_;
 
 			//DesktopRect rcDesktop_;
 			//HDC memDcCapture_;
 			//HBITMAP bmpCapture_;
 
-		private:
 			bool IsAeroEnabled();
 			// dwmapi.dll is used to determine if desktop compositing is enabled.
 			HMODULE dwmapi_library_;
@@ -110,6 +119,11 @@ namespace webrtc {
 
 			callback_ = callback;
 		}
+
+		void AppCapturerWin::Capture(const DesktopRegion& region) {
+			CaptureByWebRTC(region);
+		}
+		
 		BOOL CALLBACK AppCapturerWin::EnumWindowsProc(HWND handle, LPARAM lParam)
 		{
 			EnumWindowsLPARAM * pEnumWindowsLPARAM = (EnumWindowsLPARAM *)lParam;
@@ -119,16 +133,39 @@ namespace webrtc {
 			GetWindowThreadProcessId( handle, &procId );
 			if(procId==pEnumWindowsLPARAM->process_id)
 			{
-				pEnumWindowsLPARAM->vecWindows.push_back(handle);
+				WindowItem window_item;
+				window_item.hWnd = handle;
+
+				if(!::IsWindowVisible(handle)
+					|| ::IsIconic(handle)) 
+					return TRUE;
+
+				GetWindowRect(handle, &window_item.rcWindow);
+				window_item.bSizeChanged = true;
+				pEnumWindowsLPARAM->vecWindows.push_back(window_item);
 			}
 			return TRUE;
 		}
-		void AppCapturerWin::Capture(const DesktopRegion& region) {
+		//Application Capturer by refer WebRTC Window Capture
+		void AppCapturerWin::CaptureByWebRTC(const DesktopRegion& region) {
 
 			//List Windows of selected application
 			EnumWindowsLPARAM lParamEnumWindows;
 			lParamEnumWindows.process_id = processId_;
 			::EnumWindows(EnumWindowsProc,(LPARAM)&lParamEnumWindows);
+
+			for(std::vector<WindowItem>::reverse_iterator itItem=lParamEnumWindows.vecWindows.rbegin();itItem!=lParamEnumWindows.vecWindows.rend();itItem++)
+			{
+				for(std::vector<WindowItem>::reverse_iterator itItemPrevious=vec_previous_windows_.rbegin();itItemPrevious!=vec_previous_windows_.rend();itItemPrevious++)
+				{
+					WindowItem window_item = *itItem;
+					WindowItem window_item_prev = *itItemPrevious;
+					if(window_item_prev.hWnd == window_item.hWnd 
+						&& (window_item.rcWindow.right - window_item.rcWindow.left) == (window_item_prev.rcWindow.right - window_item_prev.rcWindow.left) 
+						&& (window_item.rcWindow.bottom - window_item.rcWindow.top) == (window_item_prev.rcWindow.bottom - window_item_prev.rcWindow.top)  )
+						itItem->bSizeChanged = false;
+				}
+			}
 
 			//Prepare capture dc context
 			DesktopRect rcDesktop_(DesktopRect::MakeXYWH(
@@ -148,20 +185,23 @@ namespace webrtc {
 
 			BOOL bCaptureAppResult =  false;
 			//Capture and Combine all windows into memDcCapture_
-			for(std::vector<HWND>::iterator itItem=lParamEnumWindows.vecWindows.begin();itItem!=lParamEnumWindows.vecWindows.end();itItem++)
+			for(std::vector<WindowItem>::reverse_iterator itItem=lParamEnumWindows.vecWindows.rbegin();itItem!=lParamEnumWindows.vecWindows.rend();itItem++)
 			{
-				HWND hWndCapturer = *itItem;
-				if(!::IsWindow(hWndCapturer) || IsIconic(hWndCapturer)) continue;
+				WindowItem window_item = *itItem;
+				HWND hWndCapturer = window_item.hWnd;
+				if(!::IsWindow(hWndCapturer) 
+					|| !::IsWindowVisible(hWndCapturer)
+					|| ::IsIconic(hWndCapturer)) continue;
 
 				//
 				HDC memDcWin = NULL;
 				HBITMAP bmpOriginWin = NULL;
-				HDC dcWin = NULL;
-				RECT rcWin={0};
+				HDC dcWin =  NULL;
+				RECT rcWin= window_item.rcWindow ;
 				bool bCaptureResult = false;
 				scoped_ptr<DesktopFrameWin> frame;
 				do{
-					if (!GetWindowRect(hWndCapturer, &rcWin)) {
+					if (rcWin.left == rcWin.right || rcWin.top == rcWin.bottom) {
 						break;
 					}
 
@@ -179,7 +219,7 @@ namespace webrtc {
 					memDcWin = CreateCompatibleDC(dcWin);
 					bmpOriginWin = (HBITMAP)SelectObject(memDcWin, frame->bitmap());
 
-					if (!IsAeroEnabled()) {
+					if (!IsAeroEnabled() || window_item.bSizeChanged ) {
 						bCaptureResult = PrintWindow(hWndCapturer, memDcWin, 0);
 					}
 
@@ -207,6 +247,7 @@ namespace webrtc {
 					ReleaseDC(hWndCapturer, dcWin);
 
 			}
+			vec_previous_windows_ = lParamEnumWindows.vecWindows;
 
 			//Clean resource
 			if(memDcCapture_){
@@ -217,7 +258,15 @@ namespace webrtc {
 			//trigger event 
 			if(bCaptureAppResult)
 				callback_->OnCaptureCompleted(frameCapture.release());
+		}
 
+		//Application Capturer by sample and region
+		void AppCapturerWin::CaptureBySample(const DesktopRegion& region){
+
+		}
+
+		//Application Capturer by system magnifier
+		void AppCapturerWin::CaptureByMagnifier(const DesktopRegion& region){
 
 		}
 
