@@ -75,6 +75,8 @@
         "x11/x_server_pixel_buffer.h",
 		"x11/desktop_device_info_x11.h",
 		"x11/desktop_device_info_x11.cc",
+		"x11/shared_x_util.h",
+		"x11/shared_x_util.cc",
 		"app_capturer_x11.cc",
           ],
           'link_settings': {

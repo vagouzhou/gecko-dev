@@ -27,11 +27,12 @@
 #include "webrtc/system_wrappers/interface/logging.h"
 #include "webrtc/system_wrappers/interface/scoped_ptr.h"
 #include "webrtc/system_wrappers/interface/scoped_refptr.h"
+#include "webrtc/modules/desktop_capture/x11/shared_x_util.h"
 
 namespace webrtc {
 
 namespace {
-
+/*
 // Convenience wrapper for XGetWindowProperty() results.
 template <class PropertyType>
 class XWindowProperty {
@@ -84,7 +85,7 @@ class XWindowProperty {
 
   DISALLOW_COPY_AND_ASSIGN(XWindowProperty);
 };
-
+*/
 class WindowCapturerLinux : public WindowCapturer,
                             public SharedXDisplay::XEventHandler {
  public:
