@@ -33,6 +33,15 @@ namespace webrtc {
 
 	namespace {
 
+		typedef struct {
+			short x1, x2, y1, y2;
+		} Box, BOX, BoxRec, *BoxPtr;
+		typedef struct _XRegion {
+			long size;
+			long numRects;
+			BOX *rects;
+			BOX extents;
+		} REGION;
 
 		class AppCapturerLinux : public AppCapturer
 									,public SharedXDisplay::XEventHandler{
@@ -57,8 +66,11 @@ namespace webrtc {
 			bool initXServerPixBuffer();
 			::Window getCurrentRootWindow();
 			bool updateRegions();
-			void captureWebRTC(const DesktopRegion& region);
-			void captureSample(const DesktopRegion& region);
+
+			DesktopFrame* captureWebRTC(const DesktopRegion& region);
+			DesktopFrame* captureSample(const DesktopRegion& region);
+
+			void fillDesktopFrameRegionWithColor(DesktopFrame* pDesktopFrame,Region rgn, uint32_t color);
 
 		private:
 			Callback* callback_;
@@ -74,13 +86,15 @@ namespace webrtc {
 
 			::Window root_window_;
 			DISALLOW_COPY_AND_ASSIGN(AppCapturerLinux);
+			bool use_sample_mode_;
 		};
 
 		AppCapturerLinux::AppCapturerLinux(const DesktopCaptureOptions& options)
 			: callback_(NULL),
 		      x_display_(options.x_display()),
 		      root_window_(DefaultRootWindow(display())),
-		      selected_process_(0) {
+		      selected_process_(0),
+		      use_sample_mode_(1) {
 			int event_base, error_base, major_version, minor_version;
 			  if (XCompositeQueryExtension(display(), &event_base, &error_base) &&
 			      XCompositeQueryVersion(display(), &major_version, &minor_version) &&
@@ -133,9 +147,15 @@ namespace webrtc {
 			callback_ = callback;
 		}
 		void AppCapturerLinux::Capture(const DesktopRegion& region) {
-			return captureWebRTC(region);
+			DesktopFrame*  frame = NULL;
+			if(use_sample_mode_)
+				frame = captureSample(region);
+			else
+				frame = captureWebRTC(region);
+			callback_->OnCaptureCompleted(frame);
+			return ;
 		}
-		void AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
+		DesktopFrame* AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
 			x_display_->ProcessPendingXEvents();
 
 			  if (!has_composite_extension_) {
@@ -143,8 +163,7 @@ namespace webrtc {
 			    // visible on screen and not covered by any other window. This is not
 			    // something we want so instead, just bail out.
 			    LOG(LS_INFO) << "No Xcomposite extension detected.";
-			    callback_->OnCaptureCompleted(NULL);
-			    return;
+			    return NULL;
 			  }
 
 			  DesktopFrame* frame =
@@ -154,23 +173,47 @@ namespace webrtc {
 			  x_server_pixel_buffer_.CaptureRect(DesktopRect::MakeSize(frame->size()),
 			                                     frame);
 
-			  callback_->OnCaptureCompleted(frame);
+			  return frame;
 		}
 
-		void AppCapturerLinux::captureSample(const DesktopRegion& region) {
-			//Capture screen
+		DesktopFrame* AppCapturerLinux::captureSample(const DesktopRegion& region) {
+			//Capture screen >> set root window as capture window
+			DesktopFrame* frame = captureWebRTC(region);
+			if(frame){
+				//calculate app visual/foreground region
+				updateRegions();
 
-			//calculate app visual/foreground region
+				//fill background with black
+				fillDesktopFrameRegionWithColor(frame,rgn_background_,0x000000FF);
 
-			//fill background
+				//fill visual
+				//do nothing
 
-			//fill visual
+				//fill foreground with yellow
+				fillDesktopFrameRegionWithColor(frame,rgn_mask_,0x00FFFFFF);
 
-			//fill foreground
+			}
 
-			//event
+			return frame;
 		}
 
+		void AppCapturerLinux::fillDesktopFrameRegionWithColor(DesktopFrame* pDesktopFrame,Region rgn, uint32_t color){
+			if(!pDesktopFrame) return;
+			if(XEmptyRegion(rgn)) return;
+
+			REGION * st_rgn = (REGION *)rgn;
+			if(st_rgn && st_rgn->numRects >0) {
+				for(short i=0;i<st_rgn->numRects;i++){
+					for(short j=st_rgn->rects[i].y1;j<st_rgn->rects[i].y2;j++){
+					    uint32_t* dst_pos = reinterpret_cast<uint32_t*>(pDesktopFrame->data() + pDesktopFrame->stride() * j);
+						for(short k=st_rgn->rects[i].x1;k<st_rgn->rects[i].x2;k++){
+							dst_pos[k] = color;
+						}
+					}
+				}
+			}
+
+		}
 		bool AppCapturerLinux::HandleXEvent(const XEvent& event) {
 		  if (event.type == ConfigureNotify) {
 		    XConfigureEvent xce = event.xconfigure;
@@ -193,6 +236,10 @@ namespace webrtc {
 		}
 
 		::Window AppCapturerLinux::getCurrentRootWindow(){
+
+			if(use_sample_mode_)
+				return DefaultRootWindow(display());
+
 			::Window window;
 
 			WindowUtilX11 window_util_x11(x_display_);
@@ -229,7 +276,7 @@ namespace webrtc {
 				if (children)
 					XFree(children);
 			}
-			root_window_ = window;//DefaultRootWindow(display());
+			root_window_ = window;
 			return window;
 		}
 
@@ -317,7 +364,12 @@ namespace webrtc {
 						XSubtractRegion(rgn_mask_,win_rgn,rgn_mask_);
 					}
 					else{
-						XUnionRegion(win_rgn,rgn_mask_,rgn_mask_);
+						Region win_rgn_intersect = XCreateRegion();
+						XIntersectRegion(win_rgn,rgn_visual_,win_rgn_intersect);
+						XUnionRegion(win_rgn_intersect,rgn_mask_,rgn_mask_);
+						if(win_rgn_intersect)
+							XDestroyRegion(win_rgn_intersect);
+
 						XSubtractRegion(rgn_visual_,win_rgn,rgn_visual_);
 					}
 					if(win_rgn)
