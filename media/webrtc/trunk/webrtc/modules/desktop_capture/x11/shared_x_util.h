@@ -98,6 +98,7 @@ public:
 	  bool GetWindowTitle(::Window window, std::string* title);
 	  bool BringWindowToFront(::Window window);
 	  int GetWindowProcessID(::Window window);
+	  int32_t GetWindowStatus(::Window window);
 
 protected:
 	Display* display() { return x_display_->display(); }

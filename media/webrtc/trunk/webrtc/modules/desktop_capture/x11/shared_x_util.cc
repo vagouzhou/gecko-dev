@@ -90,25 +90,33 @@ bool WindowUtilX11::GetWindowTitle(::Window window, std::string* title){
 	  XTextProperty window_name;
 	  window_name.value = NULL;
 	  if (window) {
-	    status = XGetWMName(display(), window, &window_name);
-	    if (status && window_name.value && window_name.nitems) {
-	      int cnt;
-	      char **list = NULL;
-	      status = Xutf8TextPropertyToTextList(display(), &window_name, &list,
-	                                           &cnt);
-	      if (status >= Success && cnt && *list) {
-	        if (cnt > 1) {
-	          LOG(LS_INFO) << "Window has " << cnt
-	                       << " text properties, only using the first one.";
-	        }
-	        *title = *list;
-	        result = true;
-	      }
-	      if (list)
-	        XFreeStringList(list);
-	    }
-	    if (window_name.value)
-	      XFree(window_name.value);
+		char * pWinName = NULL;
+		if(XFetchName(display(), window, &pWinName)){
+			*title = pWinName;
+			XFree(pWinName);
+			result = true;
+		}
+		else{
+			status = XGetWMName(display(), window, &window_name);
+			if (status && window_name.value && window_name.nitems) {
+			  int cnt;
+			  char **list = NULL;
+			  status = Xutf8TextPropertyToTextList(display(), &window_name, &list,
+												   &cnt);
+			  if (status >= Success && cnt && *list) {
+				if (cnt > 1) {
+				  LOG(LS_INFO) << "Window has " << cnt
+							   << " text properties, only using the first one.";
+				}
+				*title = *list;
+				result = true;
+			  }
+			  if (list)
+				XFreeStringList(list);
+			}
+			if (window_name.value)
+			  XFree(window_name.value);
+		  }
 	  }
 	  return result;
 }
@@ -166,8 +174,17 @@ int WindowUtilX11::GetWindowProcessID(::Window window){
 	// Get _NET_WM_PID property of the window.
 	  XWindowProperty<uint32_t> process_id(display(), window, process_atom_);
 
-	  // WM_STATE is considered to be set to WithdrawnState when it missing.
 	  return process_id.is_valid() ? *process_id.data() : 0;
+}
+
+int32_t WindowUtilX11::GetWindowStatus(::Window window){
+	// Get WM_STATE property of the window.
+	  XWindowProperty<uint32_t> window_state(display(), window, wm_state_atom_);
+
+	  // WM_STATE is considered to be set to -1 when it missing.
+	  int32_t state = window_state.is_valid() ?
+	      *window_state.data() : -1;
+	  return state;
 }
 
 }//namespace webrtc
