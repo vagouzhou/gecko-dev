@@ -87,33 +87,37 @@ namespace webrtc{
               ::Window app_window =children[num_children - 1 - i];//window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);
 
               if (!app_window
-            		  || window_util_x11.IsDesktopElement(app_window))
+            		  || window_util_x11.IsDesktopElement(app_window)
+            		  || window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
             	  continue;
 
               //filter
 
               //
-              //Add one application
-				DesktopApplication *pDesktopApplication = new DesktopApplication;
-				if(pDesktopApplication){
-					unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
-					//process id
-					pDesktopApplication->setProcessId(processId);
 
-					//process path name
-					char szFilePathName[256]={0};
-					pDesktopApplication->setProcessPathName(szFilePathName);
+				unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
+				if(processId!=0){
+						//Add one application
+						DesktopApplication *pDesktopApplication = new DesktopApplication;
+						if(pDesktopApplication){
+						//process id
+						pDesktopApplication->setProcessId(processId);
 
-					//application name
-					std::string strAppName="";
-					window_util_x11.GetWindowTitle(app_window, &strAppName);
-					pDesktopApplication->setProcessAppName(strAppName.c_str());
+						//process path name
+						char szFilePathName[256]={0};
+						pDesktopApplication->setProcessPathName(szFilePathName);
 
-					//setUniqueIdName
-					std::ostringstream s;
-					s<<processId;
-					pDesktopApplication->setUniqueIdName(s.str().c_str());
-					desktop_application_list_[processId] = pDesktopApplication;
+						//application name
+						std::string strAppName="";
+						window_util_x11.GetWindowTitle(app_window, &strAppName);
+						pDesktopApplication->setProcessAppName(strAppName.c_str());
+
+						//setUniqueIdName
+						std::ostringstream s;
+						s<<processId;
+						pDesktopApplication->setUniqueIdName(s.str().c_str());
+						desktop_application_list_[processId] = pDesktopApplication;
+					}
 				}
 
             }
