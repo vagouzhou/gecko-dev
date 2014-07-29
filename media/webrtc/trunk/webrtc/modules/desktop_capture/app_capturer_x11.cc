@@ -56,6 +56,7 @@ namespace webrtc {
 			Display* display() { return x_display_->display(); }
 			bool initXServerPixBuffer();
 			::Window getCurrentRootWindow();
+			bool updateRegions();
 			void captureWebRTC(const DesktopRegion& region);
 			void captureSample(const DesktopRegion& region);
 
@@ -66,6 +67,10 @@ namespace webrtc {
 
 			scoped_refptr<SharedXDisplay> x_display_;
 			bool has_composite_extension_;
+
+			Region rgn_mask_;
+			Region rgn_visual_;
+			Region rgn_background_;
 
 			::Window root_window_;
 			DISALLOW_COPY_AND_ASSIGN(AppCapturerLinux);
@@ -87,11 +92,19 @@ namespace webrtc {
 			  }
 
 			  x_display_->AddEventHandler(ConfigureNotify, this);
+
+			  rgn_mask_ = XCreateRegion();
+			  rgn_visual_ = XCreateRegion();
+			  rgn_background_ = XCreateRegion();
 		}
 
 		AppCapturerLinux::~AppCapturerLinux() {
 			x_server_pixel_buffer_.Release();
 			x_display_->RemoveEventHandler(ConfigureNotify, this);
+
+			if (rgn_mask_) XDestroyRegion(rgn_mask_);
+			if (rgn_visual_) XDestroyRegion(rgn_visual_);
+			if (rgn_background_) XDestroyRegion(rgn_background_);
 		}
 
 		// AppCapturer interface.
@@ -187,9 +200,10 @@ namespace webrtc {
 			for (int screen = 0; screen < num_screens; ++screen) {
 				::Window root_window = XRootWindow(display(), screen);
 				::Window parent;
+				::Window root_return;
 				::Window *children;
 				unsigned int num_children;
-				int status = XQueryTree(display(), root_window, &root_window, &parent,
+				int status = XQueryTree(display(), root_window, &root_return, &parent,
 										&children, &num_children);
 				if (status == 0) {
 					LOG(LS_ERROR) << "Failed to query for child windows for screen "
@@ -198,8 +212,7 @@ namespace webrtc {
 				}
 
 				for (unsigned int i = 0; i < num_children; ++i) {
-					// Iterate in reverse order to return windows from front to back.
-					::Window app_window =children[num_children - 1 - i];//window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);
+					::Window app_window =children[i];
 
 					if (!app_window
 						|| window_util_x11.IsDesktopElement(app_window)
@@ -216,8 +229,107 @@ namespace webrtc {
 				if (children)
 					XFree(children);
 			}
-			root_window_ = DefaultRootWindow(display());
+			root_window_ = window;//DefaultRootWindow(display());
 			return window;
+		}
+
+		bool AppCapturerLinux::updateRegions(){
+
+			WindowUtilX11 window_util_x11(x_display_);
+			int num_screens = XScreenCount(display());
+			for (int screen = 0; screen < num_screens; ++screen) {
+				int nScreenCX = DisplayWidth (display(), screen);
+				int nScreenCY = DisplayHeight (display(), screen);
+
+			    XRectangle  screen_rect;
+			    screen_rect.x =0;
+			    screen_rect.y =0;
+			    screen_rect.width = nScreenCX;
+			    screen_rect.height = nScreenCY;
+
+			    XUnionRectWithRegion(&screen_rect, rgn_background_, rgn_background_);
+			    XXorRegion(rgn_mask_, rgn_mask_, rgn_mask_);
+			    XXorRegion(rgn_visual_, rgn_visual_, rgn_visual_);
+
+				::Window root_window = XRootWindow(display(), screen);
+				::Window parent;
+				::Window root_return;
+				::Window *children;
+				unsigned int num_children;
+				int status = XQueryTree(display(), root_window, &root_return, &parent,
+										&children, &num_children);
+				if (status == 0) {
+					LOG(LS_ERROR) << "Failed to query for child windows for screen "
+					<< screen;
+					continue;
+				}
+
+				for (unsigned int i = 0; i < num_children; ++i) {
+					::Window app_window =children[i];
+
+					if (!app_window
+						|| window_util_x11.IsDesktopElement(app_window)
+						|| window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
+					continue;
+
+					//
+					XWindowAttributes win_info;
+					if (!XGetWindowAttributes(display(), app_window, &win_info)){
+						continue;
+					}
+					if (win_info.c_class != InputOutput || win_info.map_state != IsViewable){
+						continue;
+					}
+
+					int absx,absy;
+					::Window temp_win;
+					if (!XTranslateCoordinates(display(),app_window,root_return, 0,0,&absx,&absy,&temp_win)){
+						continue;
+					}
+					if (absx < 0){
+						win_info.width += absx;
+						absx = 0;
+					}
+					else if((absx+win_info.width)>nScreenCX){
+						win_info.width= nScreenCX - absx;
+					}
+					if (absy < 0){
+						win_info.height += absy;
+						absy = 0;
+					}
+					else if((absy + win_info.height)>nScreenCY){
+						win_info.height = nScreenCY - absy;
+					}
+					if(win_info.width<=0 || win_info.height <=0 )
+						continue;
+					Region win_rgn = XCreateRegion();
+					XRectangle  win_rect;
+					win_rect.x =absx;
+					win_rect.y =absy;
+					win_rect.width = win_info.width;
+					win_rect.height = win_info.height;
+					XUnionRectWithRegion(&win_rect, win_rgn, win_rgn);
+
+
+					unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
+					if(processId!=0 && processId==selected_process_){
+						XUnionRegion(win_rgn,rgn_visual_,rgn_visual_);
+						XSubtractRegion(rgn_mask_,win_rgn,rgn_mask_);
+					}
+					else{
+						XUnionRegion(win_rgn,rgn_mask_,rgn_mask_);
+						XSubtractRegion(rgn_visual_,win_rgn,rgn_visual_);
+					}
+					if(win_rgn)
+						XDestroyRegion(win_rgn);
+				}
+
+				if (children)
+					XFree(children);
+			}
+
+			XSubtractRegion(rgn_background_,rgn_visual_,rgn_background_);
+			return true;
 		}
 
 	}  // namespace
