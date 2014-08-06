@@ -99,7 +99,7 @@ public:
 	  bool BringWindowToFront(::Window window);
 	  int GetWindowProcessID(::Window window);
 	  int32_t GetWindowStatus(::Window window);
-
+	  bool GetWindowRect(::Window window, XRectangle &rcWindow);
 protected:
 	Display* display() { return x_display_->display(); }
 	scoped_refptr<SharedXDisplay> x_display_;
