@@ -91,7 +91,7 @@ namespace webrtc{
             		  || window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
             	  continue;
 
-              //filter
+              //what application want to filter out ?
 
               //
 

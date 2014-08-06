@@ -187,4 +187,55 @@ int32_t WindowUtilX11::GetWindowStatus(::Window window){
 	  return state;
 }
 
+
+bool WindowUtilX11::GetWindowRect(::Window window, XRectangle & rcWindow){
+	//reset
+	rcWindow.x = rcWindow.y = rcWindow.width =  rcWindow.height =0;
+
+	//get window info
+	XWindowAttributes win_info;
+	if (!XGetWindowAttributes(display(), window, &win_info)){
+		return false;
+	}
+
+	int absx,absy;
+	::Window temp_win;
+	::Window root_win = DefaultRootWindow(display());
+	if (!XTranslateCoordinates(display(),window,root_win, 0,0,&absx,&absy,&temp_win)){
+		return false;
+	}
+
+	//Adjust to limit in screen
+	XRectangle  screen_rect;
+	int nScreenCX = DisplayWidth (display(), DefaultScreen(display()) );
+	int nScreenCY = DisplayHeight (display(), DefaultScreen(display()) );
+	screen_rect.x =0;
+	screen_rect.y =0;
+	screen_rect.width = nScreenCX;
+	screen_rect.height = nScreenCY;
+
+	if (absx < 0){
+		win_info.width += absx;
+		absx = 0;
+	}
+	else if((absx+win_info.width)>nScreenCX){
+		win_info.width= nScreenCX - absx;
+	}
+	if (absy < 0){
+		win_info.height += absy;
+		absy = 0;
+	}
+	else if((absy + win_info.height)>nScreenCY){
+		win_info.height = nScreenCY - absy;
+	}
+
+	//data setting
+	rcWindow.x =absx;
+	rcWindow.y =absy;
+	rcWindow.width = win_info.width;
+	rcWindow.height = win_info.height;
+
+	return true;
+}
+
 }//namespace webrtc

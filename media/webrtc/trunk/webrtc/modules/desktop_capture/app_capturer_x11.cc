@@ -9,6 +9,8 @@
 */
 #include "webrtc/modules/desktop_capture/window_capturer.h"
 #include "webrtc/modules/desktop_capture/app_capturer.h"
+#include "webrtc/modules/desktop_capture/screen_capturer.h"
+#include "webrtc/modules/desktop_capture/shared_desktop_frame.h"
 
 #include <assert.h>
 #include <string.h>
@@ -42,9 +44,42 @@ namespace webrtc {
 			BOX *rects;
 			BOX extents;
 		} REGION;
+		class WindowsCapturerProxy : DesktopCapturer::Callback {
+		public:
+			WindowsCapturerProxy():window_capturer_(WindowCapturer::Create()){
+				window_capturer_->Start(this);
+			}
+			~WindowsCapturerProxy(){}
+			void SelectWindow(WindowId windowId)  { window_capturer_->SelectWindow(windowId); }
+			scoped_ptr<DesktopFrame>& GetFrame() { return frame_; }
+			void Capture(const DesktopRegion& region){ window_capturer_->Capture(region); }
 
-		class AppCapturerLinux : public AppCapturer
-									,public SharedXDisplay::XEventHandler{
+			// Callback interface
+			virtual SharedMemory *CreateSharedMemory(size_t) OVERRIDE { return NULL; }
+			virtual void OnCaptureCompleted(DesktopFrame *frame) OVERRIDE{frame_.reset(frame);}
+
+		private:
+			scoped_ptr<WindowCapturer> window_capturer_;
+			scoped_ptr<DesktopFrame> frame_;
+		};
+
+		class ScreenCapturerProxy: DesktopCapturer::Callback{
+		public:
+			ScreenCapturerProxy():screen_capturer_(ScreenCapturer::Create()){
+				screen_capturer_->SelectScreen(kFullDesktopScreenId);
+				screen_capturer_->Start(this);
+			}
+			void Capture(const DesktopRegion& region){ screen_capturer_->Capture(region); }
+			scoped_ptr<DesktopFrame>& GetFrame() { return frame_; }
+			// Callback interface
+			virtual SharedMemory *CreateSharedMemory(size_t) OVERRIDE { return NULL; }
+			virtual void OnCaptureCompleted(DesktopFrame *frame) OVERRIDE{frame_.reset(frame);}
+		protected:
+			scoped_ptr<ScreenCapturer> screen_capturer_;
+			scoped_ptr<DesktopFrame> frame_;
+		};
+
+		class AppCapturerLinux : public AppCapturer{
 		public:
 			AppCapturerLinux(const DesktopCaptureOptions& options);
 			virtual ~AppCapturerLinux();
@@ -58,63 +93,46 @@ namespace webrtc {
 			virtual void Start(Callback* callback) OVERRIDE;
 			virtual void Capture(const DesktopRegion& region) OVERRIDE;
 
-			// SharedXDisplay::XEventHandler interface.
-			virtual bool HandleXEvent(const XEvent& event) OVERRIDE;
-
 		protected:
 			Display* display() { return x_display_->display(); }
-			bool initXServerPixBuffer();
 			::Window getCurrentRootWindow();
 			bool updateRegions();
+			//Debug
+			void printRegion(Region rgn);
+			void printWindow(::Window window);
 
-			DesktopFrame* captureWebRTC(const DesktopRegion& region);
-			DesktopFrame* captureSample(const DesktopRegion& region);
+			void captureWebRTC(const DesktopRegion& region);
+			void captureSample(const DesktopRegion& region);
 
 			void fillDesktopFrameRegionWithColor(DesktopFrame* pDesktopFrame,Region rgn, uint32_t color);
 
 		private:
 			Callback* callback_;
 			ProcessId selected_process_;
-			XServerPixelBuffer x_server_pixel_buffer_;
 
-			scoped_refptr<SharedXDisplay> x_display_;
-			bool has_composite_extension_;
-
+			//Sample Mode
+			ScreenCapturerProxy screen_capturer_proxy_;
 			Region rgn_mask_;
 			Region rgn_visual_;
 			Region rgn_background_;
 
-			::Window root_window_;
+			//WebRtc Window mode
+			WindowsCapturerProxy window_capturer_proxy_;
+
+			scoped_refptr<SharedXDisplay> x_display_;
 			DISALLOW_COPY_AND_ASSIGN(AppCapturerLinux);
-			bool use_sample_mode_;
 		};
 
 		AppCapturerLinux::AppCapturerLinux(const DesktopCaptureOptions& options)
 			: callback_(NULL),
 		      x_display_(options.x_display()),
-		      root_window_(DefaultRootWindow(display())),
-		      selected_process_(0),
-		      use_sample_mode_(1) {
-			int event_base, error_base, major_version, minor_version;
-			  if (XCompositeQueryExtension(display(), &event_base, &error_base) &&
-			      XCompositeQueryVersion(display(), &major_version, &minor_version) &&
-			      // XCompositeNameWindowPixmap() requires version 0.2
-			      (major_version > 0 || minor_version >= 2)) {
-			    has_composite_extension_ = true;
-			  } else {
-			    LOG(LS_INFO) << "Xcomposite extension not available or too old.";
-			  }
-
-			  x_display_->AddEventHandler(ConfigureNotify, this);
-
+		      selected_process_(0){
 			  rgn_mask_ = XCreateRegion();
 			  rgn_visual_ = XCreateRegion();
 			  rgn_background_ = XCreateRegion();
 		}
 
 		AppCapturerLinux::~AppCapturerLinux() {
-			x_server_pixel_buffer_.Release();
-			x_display_->RemoveEventHandler(ConfigureNotify, this);
 
 			if (rgn_mask_) XDestroyRegion(rgn_mask_);
 			if (rgn_visual_) XDestroyRegion(rgn_visual_);
@@ -127,12 +145,6 @@ namespace webrtc {
 		}
 		bool AppCapturerLinux::SelectApp(ProcessId processId){
 			selected_process_ = processId;
-			getCurrentRootWindow();
-			if (!initXServerPixBuffer()){
-				selected_process_ = 0;
-				return false;
-			}
-
 			return true;
 		}
 		bool AppCapturerLinux::BringAppToFront(){
@@ -147,54 +159,42 @@ namespace webrtc {
 			callback_ = callback;
 		}
 		void AppCapturerLinux::Capture(const DesktopRegion& region) {
-			DesktopFrame*  frame = NULL;
-			if(use_sample_mode_)
-				frame = captureSample(region);
-			else
-				frame = captureWebRTC(region);
-			callback_->OnCaptureCompleted(frame);
-			return ;
+			captureSample(region);
+			//captureWebRTC(region);
+			return;
 		}
-		DesktopFrame* AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
-			x_display_->ProcessPendingXEvents();
-
-			  if (!has_composite_extension_) {
-			    // Without the Xcomposite extension we capture when the whole window is
-			    // visible on screen and not covered by any other window. This is not
-			    // something we want so instead, just bail out.
-			    LOG(LS_INFO) << "No Xcomposite extension detected.";
-			    return NULL;
-			  }
-
-			  DesktopFrame* frame =
-			      new BasicDesktopFrame(x_server_pixel_buffer_.window_size());
-
-			  x_server_pixel_buffer_.Synchronize();
-			  x_server_pixel_buffer_.CaptureRect(DesktopRect::MakeSize(frame->size()),
-			                                     frame);
-
-			  return frame;
+		void AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
+			//DesktopFrame* frame = new BasicDesktopFrame(x_server_pixel_buffer_.window_size());
+			//
+			window_capturer_proxy_.SelectWindow(getCurrentRootWindow());
+			window_capturer_proxy_.Capture(region);
+			//trigger event
+			if(callback_)
+				callback_->OnCaptureCompleted(window_capturer_proxy_.GetFrame().release());
 		}
 
-		DesktopFrame* AppCapturerLinux::captureSample(const DesktopRegion& region) {
+		void AppCapturerLinux::captureSample(const DesktopRegion& region) {
 			//Capture screen >> set root window as capture window
-			DesktopFrame* frame = captureWebRTC(region);
+			screen_capturer_proxy_.Capture(region);
+			DesktopFrame* frame = screen_capturer_proxy_.GetFrame().get();
 			if(frame){
 				//calculate app visual/foreground region
 				updateRegions();
 
 				//fill background with black
-				fillDesktopFrameRegionWithColor(frame,rgn_background_,0x000000FF);
+				fillDesktopFrameRegionWithColor(frame,rgn_background_,0xFF000000);
 
 				//fill visual
 				//do nothing
 
 				//fill foreground with yellow
-				fillDesktopFrameRegionWithColor(frame,rgn_mask_,0x00FFFFFF);
+				fillDesktopFrameRegionWithColor(frame,rgn_mask_,0xFFFFFF00);
 
 			}
 
-			return frame;
+			//trigger event
+			if(callback_)
+				callback_->OnCaptureCompleted(screen_capturer_proxy_.GetFrame().release());
 		}
 
 		void AppCapturerLinux::fillDesktopFrameRegionWithColor(DesktopFrame* pDesktopFrame,Region rgn, uint32_t color){
@@ -214,32 +214,9 @@ namespace webrtc {
 			}
 
 		}
-		bool AppCapturerLinux::HandleXEvent(const XEvent& event) {
-		  if (event.type == ConfigureNotify) {
-		    XConfigureEvent xce = event.xconfigure;
-		    if (!DesktopSize(xce.width, xce.height).equals(
-		            x_server_pixel_buffer_.window_size())) {
-		    	initXServerPixBuffer();
-		    	return true;
-		    }
-		  }
-		  return false;
-		}
-
-		bool AppCapturerLinux::initXServerPixBuffer(){
-			if (!x_server_pixel_buffer_.Init(display(), root_window_)) {
-				LOG(LS_ERROR) << "Failed to initialize pixel buffer after resizing.";
-				return false;
-			}
-
-			return true;
-		}
 
 		::Window AppCapturerLinux::getCurrentRootWindow(){
-
-			if(use_sample_mode_)
-				return DefaultRootWindow(display());
-
+			//test >> return DefaultRootWindow(display());
 			::Window window;
 
 			WindowUtilX11 window_util_x11(x_display_);
@@ -276,11 +253,79 @@ namespace webrtc {
 				if (children)
 					XFree(children);
 			}
-			root_window_ = window;
+			//root_window_= DefaultRootWindow(display());
 			return window;
 		}
 
+		void AppCapturerLinux::printRegion(Region rgn){
+			LOG(LS_INFO) << "AppCapturerLinux::printRegion";
+			REGION * st_rgn = (REGION *)rgn;
+			if(st_rgn && st_rgn->numRects >0) {
+				for(short i=0;i<st_rgn->numRects;i++){
+					LOG(LS_INFO) << "box index=" << i
+										<< "x1=" << st_rgn->rects[i].x1
+										<< "y1="<< st_rgn->rects[i].y1
+										<< "x2="<< st_rgn->rects[i].x2
+										<< "y2="<< st_rgn->rects[i].y2;
+				}
+			}
+		}
+
+		void AppCapturerLinux::printWindow(::Window window){
+
+			WindowUtilX11 window_util_x11(x_display_);
+			unsigned int processId = window_util_x11.GetWindowProcessID(window);
+			std::string strAppName="";
+			window_util_x11.GetWindowTitle(window, &strAppName);
+			int32_t nStatus =window_util_x11.GetWindowStatus(window);
+			XRectangle  win_rect;
+			window_util_x11.GetWindowRect(window,win_rect);
+
+			LOG(LS_INFO) << "AppCapturerLinux::printWindow"
+					<< "processId=" << processId
+					<< "strAppName=" << strAppName
+					<< "win_rect:" << win_rect.x <<","<< win_rect.y<<"," << win_rect.width <<","<< win_rect.height
+					<< "nStatus=" << nStatus;
+
+		}
 		bool AppCapturerLinux::updateRegions(){
+			XSubtractRegion(rgn_visual_,rgn_visual_,rgn_visual_);
+			XSubtractRegion(rgn_mask_,rgn_mask_,rgn_mask_);
+			/*
+			//test fillDesktopFrameRegionWithColor >>
+			{
+				int nScreenCX = DisplayWidth (display(), 0);
+				int nScreenCY = DisplayHeight (display(), 0);
+
+				XRectangle  screen_rect;
+				screen_rect.x =0;
+				screen_rect.y =0;
+				screen_rect.width = nScreenCX;
+				screen_rect.height = nScreenCY;
+
+				XUnionRectWithRegion(&screen_rect, rgn_background_, rgn_background_);
+
+				//test>>
+				XRectangle  rect_test;
+				rect_test.x =0;
+				rect_test.y =0;
+				rect_test.width = 500;
+				rect_test.height = 400;
+				XUnionRectWithRegion(&rect_test, rgn_visual_, rgn_visual_);
+
+
+				rect_test.x =100;
+				rect_test.y =100;
+				rect_test.width = 100;
+				rect_test.height = 100;
+				XUnionRectWithRegion(&rect_test,rgn_mask_,rgn_mask_);
+
+				XSubtractRegion(rgn_background_,rgn_visual_,rgn_background_);
+
+				return true;
+			}
+			//<< test fillDesktopFrameRegionWithColor end
+			*/
 
 			WindowUtilX11 window_util_x11(x_display_);
 			int num_screens = XScreenCount(display());
@@ -314,12 +359,14 @@ namespace webrtc {
 				for (unsigned int i = 0; i < num_children; ++i) {
 					::Window app_window =children[i];
 
+					//filter
+					/*
 					if (!app_window
 						|| window_util_x11.IsDesktopElement(app_window)
 						|| window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
 					continue;
 
-					//
+
 					XWindowAttributes win_info;
 					if (!XGetWindowAttributes(display(), app_window, &win_info)){
 						continue;
@@ -327,50 +374,43 @@ namespace webrtc {
 					if (win_info.c_class != InputOutput || win_info.map_state != IsViewable){
 						continue;
 					}
+					*/
+					//Debug for windows info
+					printWindow(app_window);
 
-					int absx,absy;
-					::Window temp_win;
-					if (!XTranslateCoordinates(display(),app_window,root_return, 0,0,&absx,&absy,&temp_win)){
-						continue;
-					}
-					if (absx < 0){
-						win_info.width += absx;
-						absx = 0;
-					}
-					else if((absx+win_info.width)>nScreenCX){
-						win_info.width= nScreenCX - absx;
-					}
-					if (absy < 0){
-						win_info.height += absy;
-						absy = 0;
-					}
-					else if((absy + win_info.height)>nScreenCY){
-						win_info.height = nScreenCY - absy;
-					}
-					if(win_info.width<=0 || win_info.height <=0 )
-						continue;
+					//Get window region
 					Region win_rgn = XCreateRegion();
 					XRectangle  win_rect;
-					win_rect.x =absx;
-					win_rect.y =absy;
-					win_rect.width = win_info.width;
-					win_rect.height = win_info.height;
+					window_util_x11.GetWindowRect(app_window,win_rect);
 					XUnionRectWithRegion(&win_rect, win_rgn, win_rgn);
+					if(win_rect.width <=0 || win_rect.height <=0) continue;
 
-
+					//update rgn_visual_ , rgn_mask_,
 					unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
 					if(processId!=0 && processId==selected_process_){
-						XUnionRegion(win_rgn,rgn_visual_,rgn_visual_);
+						XUnionRegion(rgn_visual_,win_rgn,rgn_visual_);
 						XSubtractRegion(rgn_mask_,win_rgn,rgn_mask_);
+
+						printRegion(rgn_mask_);
+						printRegion(rgn_visual_);
 					}
 					else{
 						Region win_rgn_intersect = XCreateRegion();
-						XIntersectRegion(win_rgn,rgn_visual_,win_rgn_intersect);
+						XIntersectRegion(rgn_visual_,win_rgn,win_rgn_intersect);
+
+						printRegion(win_rgn_intersect);
+						printRegion(rgn_mask_);
+						printRegion(rgn_visual_);
+
+						XSubtractRegion(rgn_visual_,win_rgn_intersect,rgn_visual_);
 						XUnionRegion(win_rgn_intersect,rgn_mask_,rgn_mask_);
+
+						printRegion(win_rgn_intersect);
+						printRegion(rgn_mask_);
+						printRegion(rgn_visual_);
+
 						if(win_rgn_intersect)
 							XDestroyRegion(win_rgn_intersect);
-
-						XSubtractRegion(rgn_visual_,win_rgn,rgn_visual_);
 					}
 					if(win_rgn)
 						XDestroyRegion(win_rgn);
@@ -381,6 +421,10 @@ namespace webrtc {
 			}
 
 			XSubtractRegion(rgn_background_,rgn_visual_,rgn_background_);
+			printRegion(rgn_mask_);
+			printRegion(rgn_visual_);
+			printRegion(rgn_background_);
+
 			return true;
 		}
 
