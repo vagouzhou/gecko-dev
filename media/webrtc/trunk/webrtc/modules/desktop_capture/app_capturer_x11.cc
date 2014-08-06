@@ -357,7 +357,7 @@ namespace webrtc {
 				}
 
 				for (unsigned int i = 0; i < num_children; ++i) {
-					::Window app_window =children[i];
+					::Window app_window =window_util_x11.GetApplicationWindow(children[i]);
 
 					//filter
 					/*

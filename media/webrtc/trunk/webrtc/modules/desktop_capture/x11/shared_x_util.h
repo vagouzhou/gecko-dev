@@ -100,8 +100,12 @@ public:
 	  int GetWindowProcessID(::Window window);
 	  int32_t GetWindowStatus(::Window window);
 	  bool GetWindowRect(::Window window, XRectangle &rcWindow);
+	  //Window GetClientWindow (Window winFrame);
+
 protected:
 	Display* display() { return x_display_->display(); }
+	//Window TryChildren (Window win);
+
 	scoped_refptr<SharedXDisplay> x_display_;
 	Atom wm_state_atom_;
 	Atom window_type_atom_;

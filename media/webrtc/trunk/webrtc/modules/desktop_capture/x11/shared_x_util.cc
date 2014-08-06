@@ -237,5 +237,63 @@ bool WindowUtilX11::GetWindowRect(::Window window, XRectangle & rcWindow){
 
 	return true;
 }
+/*
+Window WindowUtilX11::GetClientWindow(Window win)
+{
+    Atom Xh_type = None;
+    int Xh_format;
+    unsigned long Xh_nitems, Xh_after;
+    unsigned char *Xh_data=NULL;
+    Window Xh_inf;
 
+    if (!wm_state_atom_)
+    	return win;
+    XGetWindowProperty(display(), win, wm_state_atom_, 0, 0, False, AnyPropertyType,
+               &Xh_type, &Xh_format, &Xh_nitems, &Xh_after, &Xh_data);
+    if(Xh_data)
+        XFree(Xh_data);
+    if (Xh_type)
+    	return win;
+
+    Xh_inf = TryChildren(win);
+
+    if (!Xh_inf)
+    	Xh_inf = 0;
+
+    return Xh_inf;
+}
+
+Window WindowUtilX11::TryChildren (Window win)
+{
+    Window Xh_root, Xh_parent;
+    Window *Xh_children;
+    unsigned int Xh_nchildren;
+    unsigned int i;
+    Atom Xh_type = None;
+    int Xh_format;
+    unsigned long Xh_nitems, Xh_after;
+    unsigned char *Xh_data=NULL;
+    Window Xh_inf = 0;
+
+    if (!XQueryTree(display(), win, &Xh_root, &Xh_parent, &Xh_children, &Xh_nchildren))
+    	return 0;
+
+    for (i = 0; !Xh_inf && (i < Xh_nchildren); i++) {
+		XGetWindowProperty(display(), Xh_children[i], wm_state_atom_, 0, 0, False,
+				   AnyPropertyType, &Xh_type, &Xh_format, &Xh_nitems,
+				   &Xh_after, &Xh_data);
+		if(Xh_data)
+			XFree(Xh_data);
+		Xh_data=NULL;
+		if (Xh_type)
+			Xh_inf = Xh_children[i];
+    }
+
+    for (i = 0; !Xh_inf && (i < Xh_nchildren); i++)
+        Xh_inf = TryChildren(Xh_children[i]);
+
+    if (Xh_children) XFree((char *)Xh_children);
+    return Xh_inf;
+}
+*/
 }//namespace webrtc
