@@ -83,8 +83,7 @@ namespace webrtc{
             }
 
             for (unsigned int i = 0; i < num_children; ++i) {
-              // Iterate in reverse order to return windows from front to back.
-              ::Window app_window =children[num_children - 1 - i];//window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);
+              ::Window app_window =window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);//window_util_x11.GetClientWindow(children[i]);//
 
               if (!app_window
             		  || window_util_x11.IsDesktopElement(app_window)
