@@ -99,7 +99,8 @@ public:
 	  bool BringWindowToFront(::Window window);
 	  int GetWindowProcessID(::Window window);
 	  int32_t GetWindowStatus(::Window window);
-	  bool GetWindowRect(::Window window, XRectangle &rcWindow);
+	  bool GetWindowRect(::Window window, XRectangle &rcWindow,bool bWithFrame);
+	  bool GetWindowFrameExtends(::Window window, int32_t &left,int32_t &top,int32_t &right,int32_t &bottom);
 	  //Window GetClientWindow (Window winFrame);
 
 protected:
@@ -111,6 +112,7 @@ protected:
 	Atom window_type_atom_;
 	Atom normal_window_type_atom_;
 	Atom process_atom_;
+	Atom frame_extends_atom_;
 };
 
 

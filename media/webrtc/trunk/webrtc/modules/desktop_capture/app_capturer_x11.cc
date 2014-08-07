@@ -165,7 +165,7 @@ namespace webrtc {
 		}
 		void AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
 			//DesktopFrame* frame = new BasicDesktopFrame(x_server_pixel_buffer_.window_size());
-			//
+			//Test one window first , it don't capture title bar
 			window_capturer_proxy_.SelectWindow(getCurrentRootWindow());
 			window_capturer_proxy_.Capture(region);
 			//trigger event
@@ -236,7 +236,7 @@ namespace webrtc {
 				}
 
 				for (unsigned int i = 0; i < num_children; ++i) {
-					::Window app_window =children[i];
+					::Window app_window =window_util_x11.GetApplicationWindow(children[i]);
 
 					if (!app_window
 						|| window_util_x11.IsDesktopElement(app_window)
@@ -279,7 +279,7 @@ namespace webrtc {
 			window_util_x11.GetWindowTitle(window, &strAppName);
 			int32_t nStatus =window_util_x11.GetWindowStatus(window);
 			XRectangle  win_rect;
-			window_util_x11.GetWindowRect(window,win_rect);
+			window_util_x11.GetWindowRect(window,win_rect,true);
 
 			LOG(LS_INFO) << "AppCapturerLinux::printWindow"
 					<< "processId=" << processId
@@ -379,12 +379,12 @@ namespace webrtc {
 					printWindow(app_window);
 
 					//Get window region
-					Region win_rgn = XCreateRegion();
 					XRectangle  win_rect;
-					window_util_x11.GetWindowRect(app_window,win_rect);
-					XUnionRectWithRegion(&win_rect, win_rgn, win_rgn);
+					window_util_x11.GetWindowRect(app_window,win_rect,true);
 					if(win_rect.width <=0 || win_rect.height <=0) continue;
 
+					Region win_rgn = XCreateRegion();
+					XUnionRectWithRegion(&win_rect, win_rgn, win_rgn);
 					//update rgn_visual_ , rgn_mask_,
 					unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
 					if(processId!=0 && processId==selected_process_){

@@ -9,6 +9,7 @@ WindowUtilX11::WindowUtilX11(scoped_refptr<SharedXDisplay> x_display){
 	window_type_atom_ = XInternAtom(display(), "_NET_WM_WINDOW_TYPE", True);
 	normal_window_type_atom_ = XInternAtom(display(), "_NET_WM_WINDOW_TYPE_NORMAL", True);
 	process_atom_ = XInternAtom(display(), "_NET_WM_PID", True);
+	frame_extends_atom_ = XInternAtom(display(), "_NET_FRAME_EXTENTS", True);
 }
 WindowUtilX11::~WindowUtilX11(){
 
@@ -187,8 +188,63 @@ int32_t WindowUtilX11::GetWindowStatus(::Window window){
 	  return state;
 }
 
+bool WindowUtilX11::GetWindowFrameExtends(::Window window, int32_t &left,int32_t &top,int32_t &right,int32_t &bottom){
+	//reset it first
+	left = top = right = bottom =0;
 
-bool WindowUtilX11::GetWindowRect(::Window window, XRectangle & rcWindow){
+	Atom actual_type;
+	int actual_format;
+	unsigned long nitems;
+	unsigned long bytes_remaining;
+	unsigned char *data;
+	long *data_as_long;
+	int status;
+
+	status = XGetWindowProperty(
+							display(),
+							window,
+							frame_extends_atom_,
+							0,      // long_offset
+							4,      // long_length - we expect 4 32-bit values for _NET_FRAME_EXTENTS
+							False,  // delete
+							AnyPropertyType,
+							&actual_type,
+							&actual_format,
+							&nitems,
+							&bytes_remaining,
+							&data);
+
+	if (status == Success) {
+		if ((nitems == 4) && (bytes_remaining == 0)) {
+			data_as_long = (long *) ((void *) data);
+			left   = (int) *(data_as_long++);
+			right  = (int) *(data_as_long++);
+			top    = (int) *(data_as_long++);
+			bottom = (int) *(data_as_long++);
+			return true;
+		}
+		XFree (data);
+	}
+	return false;
+
+	//WebRTC's original XWindowProperty has some defect, it always fail to get frame_extends_atom_.
+	//it is common code , don't change it, and will fix it in future.
+	/*
+	XWindowProperty<uint32_t[4]> frame_extends_state(display(), window, frame_extends_atom_);
+	if(!frame_extends_state.is_valid())
+		return false;
+	uint32_t ** pData = (uint32_t **)frame_extends_state.data();
+
+	left 	= (*pData)[0];
+	right 	= (*pData)[1];
+	top 	= (*pData)[2];
+	bottom 	= (*pData)[3];
+
+	return true;
+	*/
+}
+
+bool WindowUtilX11::GetWindowRect(::Window window, XRectangle & rcWindow,bool bWithFrame){
 	//reset
 	rcWindow.x = rcWindow.y = rcWindow.width =  rcWindow.height =0;
 
@@ -235,6 +291,15 @@ bool WindowUtilX11::GetWindowRect(::Window window, XRectangle & rcWindow){
 	rcWindow.width = win_info.width;
 	rcWindow.height = win_info.height;
 
+	if(bWithFrame){
+		int left, right,top,bottom;
+		if(GetWindowFrameExtends(window,left,top,right,bottom)){
+			rcWindow.x -= left;
+			rcWindow.y -= top;
+			rcWindow.width += (left+right);
+			rcWindow.height += (top+bottom);
+		}
+	}
 	return true;
 }
 /*
