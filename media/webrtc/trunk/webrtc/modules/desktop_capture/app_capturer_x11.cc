@@ -95,7 +95,6 @@ namespace webrtc {
 
 		protected:
 			Display* display() { return x_display_->display(); }
-			::Window getCurrentRootWindow();
 			bool updateRegions();
 			//Debug
 			void printRegion(Region rgn);
@@ -164,13 +163,67 @@ namespace webrtc {
 			return;
 		}
 		void AppCapturerLinux::captureWebRTC(const DesktopRegion& region) {
-			//DesktopFrame* frame = new BasicDesktopFrame(x_server_pixel_buffer_.window_size());
 			//Test one window first , it don't capture title bar
-			window_capturer_proxy_.SelectWindow(getCurrentRootWindow());
-			window_capturer_proxy_.Capture(region);
+			//window_capturer_proxy_.SelectWindow(getCurrentRootWindow());
+			//window_capturer_proxy_.Capture(region);
+			//test >> return DefaultRootWindow(display());
+
+			int nScreenWidth = DisplayWidth(display(), DefaultScreen(display()));
+			int nScreenHeight = DisplayHeight(display(), DefaultScreen(display()));
+			scoped_ptr<DesktopFrame> frame(new BasicDesktopFrame(DesktopSize(nScreenWidth,nScreenHeight)));
+
+			WindowUtilX11 window_util_x11(x_display_);
+
+			::Window root_window = XRootWindow(display(), DefaultScreen(display()));
+			::Window parent;
+			::Window root_return;
+			::Window *children;
+			unsigned int num_children;
+			int status = XQueryTree(display(), root_window, &root_return, &parent,
+									&children, &num_children);
+			if (status == 0) {
+				LOG(LS_ERROR) << "Failed to query for child windows for screen "
+				<< DefaultScreen(display());
+					return;
+			}
+
+			for (unsigned int i = 0; i < num_children; ++i) {
+				::Window app_window =window_util_x11.GetApplicationWindow(children[i]);
+				if (!app_window) continue;
+
+				unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
+				if(processId!=0 && processId==selected_process_){
+					//capture
+					window_capturer_proxy_.SelectWindow(app_window);
+					window_capturer_proxy_.Capture(region);
+					DesktopFrame* frameWin = window_capturer_proxy_.GetFrame().get();
+					if(frameWin==NULL) continue;
+
+					XRectangle  win_rect;
+					window_util_x11.GetWindowRect(app_window,win_rect,false);//must be false>>current window capturer don't capture titlebar
+					if(win_rect.width <=0 || win_rect.height <=0) continue;
+
+					DesktopSize winFrameSize = frameWin->size();
+					DesktopRect target_rect = DesktopRect::MakeXYWH(win_rect.x,
+																	win_rect.y,
+																	winFrameSize.width(),
+																	winFrameSize.height());
+
+					//bitblt into background frame
+					frame->CopyPixelsFrom(*frameWin,DesktopVector(0,0),target_rect);
+
+					continue;
+				}
+
+			}
+
+			if (children)
+				XFree(children);
+
 			//trigger event
 			if(callback_)
-				callback_->OnCaptureCompleted(window_capturer_proxy_.GetFrame().release());
+				callback_->OnCaptureCompleted(frame.release());
+
 		}
 
 		void AppCapturerLinux::captureSample(const DesktopRegion& region) {
@@ -213,48 +266,6 @@ namespace webrtc {
 				}
 			}
 
-		}
-
-		::Window AppCapturerLinux::getCurrentRootWindow(){
-			//test >> return DefaultRootWindow(display());
-			::Window window;
-
-			WindowUtilX11 window_util_x11(x_display_);
-			int num_screens = XScreenCount(display());
-			for (int screen = 0; screen < num_screens; ++screen) {
-				::Window root_window = XRootWindow(display(), screen);
-				::Window parent;
-				::Window root_return;
-				::Window *children;
-				unsigned int num_children;
-				int status = XQueryTree(display(), root_window, &root_return, &parent,
-										&children, &num_children);
-				if (status == 0) {
-					LOG(LS_ERROR) << "Failed to query for child windows for screen "
-					<< screen;
-					continue;
-				}
-
-				for (unsigned int i = 0; i < num_children; ++i) {
-					::Window app_window =window_util_x11.GetApplicationWindow(children[i]);
-
-					if (!app_window
-						|| window_util_x11.IsDesktopElement(app_window)
-						|| window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
-					continue;
-
-					unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
-					if(processId!=0 && processId==selected_process_){
-						window = app_window;
-						break;
-					}
-				}
-
-				if (children)
-					XFree(children);
-			}
-			//root_window_= DefaultRootWindow(display());
-			return window;
 		}
 
 		void AppCapturerLinux::printRegion(Region rgn){
@@ -358,7 +369,7 @@ namespace webrtc {
 
 				for (unsigned int i = 0; i < num_children; ++i) {
 					::Window app_window =window_util_x11.GetApplicationWindow(children[i]);
-
+					if (!app_window) continue;
 					//filter
 					/*
 					if (!app_window
