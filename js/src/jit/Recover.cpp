@@ -8,6 +8,7 @@
 
 #include "jscntxt.h"
 #include "jsmath.h"
+#include "jsobj.h"
 #include "jsstr.h"
 
 #include "builtin/TypedObject.h"
@@ -44,7 +45,7 @@ RInstruction::readRecoverData(CompactBufferReader &reader, RInstructionStorage *
         break;
 
         RECOVER_OPCODE_LIST(MATCH_OPCODES_)
-#   undef DEFINE_OPCODES_
+#   undef MATCH_OPCODES_
 
       case Recover_Invalid:
       default:
@@ -501,7 +502,6 @@ RNot::recover(JSContext *cx, SnapshotIterator &iter) const
     RootedValue v(cx, iter.read());
     RootedValue result(cx);
 
-    MOZ_ASSERT(!v.isObject());
     result.setBoolean(!ToBoolean(v));
 
     iter.storeInstructionResult(result);
@@ -556,6 +556,28 @@ MStringLength::writeRecoverData(CompactBufferWriter &writer) const
 {
     MOZ_ASSERT(canRecoverOnBailout());
     writer.writeUnsigned(uint32_t(RInstruction::Recover_StringLength));
+    return true;
+}
+
+bool
+MArgumentsLength::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_ArgumentsLength));
+    return true;
+}
+
+RArgumentsLength::RArgumentsLength(CompactBufferReader &reader)
+{ }
+
+bool
+RArgumentsLength::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue result(cx);
+
+    result.setInt32(iter.readOuterNumActualArgs());
+
+    iter.storeInstructionResult(result);
     return true;
 }
 
@@ -676,7 +698,7 @@ RPow::recover(JSContext *cx, SnapshotIterator &iter) const
     RootedValue result(cx);
 
     MOZ_ASSERT(base.isNumber() && power.isNumber());
-    if (!js_math_pow_handle(cx, base, power, &result))
+    if (!js::math_pow_handle(cx, base, power, &result))
         return false;
 
     iter.storeInstructionResult(result);
@@ -703,7 +725,117 @@ RPowHalf::recover(JSContext *cx, SnapshotIterator &iter) const
     power.setNumber(0.5);
 
     MOZ_ASSERT(base.isNumber());
-    if (!js_math_pow_handle(cx, base, power, &result))
+    if (!js::math_pow_handle(cx, base, power, &result))
+        return false;
+
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MMinMax::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_MinMax));
+    writer.writeByte(isMax_);
+    return true;
+}
+
+RMinMax::RMinMax(CompactBufferReader &reader)
+{
+    isMax_ = reader.readByte();
+}
+
+bool
+RMinMax::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue a(cx, iter.read());
+    RootedValue b(cx, iter.read());
+    RootedValue result(cx);
+
+    if (!js::minmax_impl(cx, isMax_, a, b, &result))
+        return false;
+
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MAbs::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_Abs));
+    return true;
+}
+
+RAbs::RAbs(CompactBufferReader &reader)
+{ }
+
+bool
+RAbs::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue v(cx, iter.read());
+    RootedValue result(cx);
+
+    if (!js::math_abs_handle(cx, v, &result))
+        return false;
+
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MSqrt::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_Sqrt));
+    writer.writeByte(type() == MIRType_Float32);
+    return true;
+}
+
+RSqrt::RSqrt(CompactBufferReader &reader)
+{
+    isFloatOperation_ = reader.readByte();
+}
+
+bool
+RSqrt::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue num(cx, iter.read());
+    RootedValue result(cx);
+
+    MOZ_ASSERT(num.isNumber());
+    if (!math_sqrt_handle(cx, num, &result))
+        return false;
+
+    // MIRType_Float32 is a specialization embedding the fact that the result is
+    // rounded to a Float32.
+    if (isFloatOperation_ && !RoundFloat32(cx, result, &result))
+        return false;
+
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MAtan2::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_Atan2));
+    return true;
+}
+
+RAtan2::RAtan2(CompactBufferReader &reader)
+{ }
+
+bool
+RAtan2::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue y(cx, iter.read());
+    RootedValue x(cx, iter.read());
+    RootedValue result(cx);
+
+    if(!math_atan2_handle(cx, y, x, &result))
         return false;
 
     iter.storeInstructionResult(result);
@@ -722,6 +854,62 @@ MMathFunction::writeRecoverData(CompactBufferWriter &writer) const
         MOZ_ASSUME_UNREACHABLE("Unknown math function.");
         return false;
     }
+}
+
+bool
+MStringSplit::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_StringSplit));
+    return true;
+}
+
+RStringSplit::RStringSplit(CompactBufferReader &reader)
+{}
+
+bool
+RStringSplit::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedString str(cx, iter.read().toString());
+    RootedString sep(cx, iter.read().toString());
+    RootedTypeObject typeObj(cx, iter.read().toObject().type());
+
+    RootedValue result(cx);
+
+    JSObject *res = str_split_string(cx, typeObj, str, sep);
+    if (!res)
+        return false;
+
+    result.setObject(*res);
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MRegExpTest::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_RegExpTest));
+    return true;
+}
+
+RRegExpTest::RRegExpTest(CompactBufferReader &reader)
+{ }
+
+bool
+RRegExpTest::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedString string(cx, iter.read().toString());
+    RootedObject regexp(cx, &iter.read().toObject());
+    bool resultBool;
+
+    if (!js::regexp_test_raw(cx, regexp, string, &resultBool))
+        return false;
+
+    RootedValue result(cx);
+    result.setBoolean(resultBool);
+    iter.storeInstructionResult(result);
+    return true;
 }
 
 bool
@@ -745,12 +933,52 @@ RNewObject::recover(JSContext *cx, SnapshotIterator &iter) const
     RootedValue result(cx);
     JSObject *resultObject = nullptr;
 
+    // Use AutoEnterAnalysis to avoid invoking the object metadata callback
+    // while bailing out, which could try to walk the stack.
+    types::AutoEnterAnalysis enter(cx);
+
     // See CodeGenerator::visitNewObjectVMCall
     if (templateObjectIsClassPrototype_)
         resultObject = NewInitObjectWithClassPrototype(cx, templateObject);
     else
         resultObject = NewInitObject(cx, templateObject);
 
+    if (!resultObject)
+        return false;
+
+    result.setObject(*resultObject);
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MNewArray::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_NewArray));
+    writer.writeUnsigned(count());
+    writer.writeByte(isAllocating());
+    return true;
+}
+
+RNewArray::RNewArray(CompactBufferReader &reader)
+{
+    count_ = reader.readUnsigned();
+    isAllocating_ = reader.readByte();
+}
+
+bool
+RNewArray::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedObject templateObject(cx, &iter.read().toObject());
+    RootedValue result(cx);
+    RootedTypeObject type(cx);
+
+    // See CodeGenerator::visitNewArrayCallVM
+    if (!templateObject->hasSingletonType())
+        type = templateObject->type();
+
+    JSObject *resultObject = NewDenseArray(cx, count_, type, isAllocating_);
     if (!resultObject)
         return false;
 
@@ -777,11 +1005,84 @@ RNewDerivedTypedObject::recover(JSContext *cx, SnapshotIterator &iter) const
     Rooted<TypedObject *> owner(cx, &iter.read().toObject().as<TypedObject>());
     int32_t offset = iter.read().toInt32();
 
+    // Use AutoEnterAnalysis to avoid invoking the object metadata callback
+    // while bailing out, which could try to walk the stack.
+    types::AutoEnterAnalysis enter(cx);
+
     JSObject *obj = TypedObject::createDerived(cx, descr, owner, offset);
     if (!obj)
         return false;
 
     RootedValue result(cx, ObjectValue(*obj));
+    iter.storeInstructionResult(result);
+    return true;
+}
+
+bool
+MObjectState::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_ObjectState));
+    writer.writeUnsigned(numSlots());
+    return true;
+}
+
+RObjectState::RObjectState(CompactBufferReader &reader)
+{
+    numSlots_ = reader.readUnsigned();
+}
+
+bool
+RObjectState::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedObject object(cx, &iter.read().toObject());
+    MOZ_ASSERT(object->slotSpan() == numSlots());
+
+    RootedValue val(cx);
+    for (size_t i = 0; i < numSlots(); i++) {
+        val = iter.read();
+        object->nativeSetSlot(i, val);
+    }
+
+    val.setObject(*object);
+    iter.storeInstructionResult(val);
+    return true;
+}
+
+bool
+MArrayState::writeRecoverData(CompactBufferWriter &writer) const
+{
+    MOZ_ASSERT(canRecoverOnBailout());
+    writer.writeUnsigned(uint32_t(RInstruction::Recover_ArrayState));
+    writer.writeUnsigned(numElements());
+    return true;
+}
+
+RArrayState::RArrayState(CompactBufferReader &reader)
+{
+    numElements_ = reader.readUnsigned();
+}
+
+bool
+RArrayState::recover(JSContext *cx, SnapshotIterator &iter) const
+{
+    RootedValue result(cx);
+    JSObject *object = &iter.read().toObject();
+    uint32_t initLength = iter.read().toInt32();
+
+    object->setDenseInitializedLength(initLength);
+    for (size_t index = 0; index < numElements(); index++) {
+        Value val = iter.read();
+
+        if (index >= initLength) {
+            MOZ_ASSERT(val.isUndefined());
+            continue;
+        }
+
+        object->initDenseElement(index, val);
+    }
+
+    result.setObject(*object);
     iter.storeInstructionResult(result);
     return true;
 }

@@ -7,6 +7,7 @@
 /* Per JSRuntime object */
 
 #include "mozilla/MemoryReporting.h"
+#include "mozilla/UniquePtr.h"
 
 #include "xpcprivate.h"
 #include "xpcpublic.h"
@@ -85,6 +86,12 @@ const char* const XPCJSRuntime::mStrings[] = {
     "length",               // IDX_LENGTH
     "name",                 // IDX_NAME
     "undefined",            // IDX_UNDEFINED
+    "",                     // IDX_EMPTYSTRING
+    "fileName",             // IDX_FILENAME
+    "lineNumber",           // IDX_LINENUMBER
+    "columnNumber",         // IDX_COLUMNNUMBER
+    "stack",                // IDX_STACK
+    "message"               // IDX_MESSAGE
 };
 
 /***************************************************************************/
@@ -93,6 +100,13 @@ static mozilla::Atomic<bool> sDiscardSystemSource(false);
 
 bool
 xpc::ShouldDiscardSystemSource() { return sDiscardSystemSource; }
+
+#ifdef DEBUG
+static mozilla::Atomic<bool> sExtraWarningsForSystemJS(false);
+bool xpc::ExtraWarningsForSystemJS() { return sExtraWarningsForSystemJS; }
+#else
+bool xpc::ExtraWarningsForSystemJS() { return false; }
+#endif
 
 static void * const UNMARK_ONLY = nullptr;
 static void * const UNMARK_AND_SWEEP = (void *)1;
@@ -250,7 +264,7 @@ static uint32_t kLivingAdopters = 0;
 void
 RecordAdoptedNode(JSCompartment *c)
 {
-    CompartmentPrivate *priv = EnsureCompartmentPrivate(c);
+    CompartmentPrivate *priv = CompartmentPrivate::Get(c);
     if (!priv->adoptedNode) {
         priv->adoptedNode = true;
         ++kLivingAdopters;
@@ -260,7 +274,7 @@ RecordAdoptedNode(JSCompartment *c)
 void
 RecordDonatedNode(JSCompartment *c)
 {
-    EnsureCompartmentPrivate(c)->donatedNode = true;
+    CompartmentPrivate::Get(c)->donatedNode = true;
 }
 
 CompartmentPrivate::~CompartmentPrivate()
@@ -374,38 +388,8 @@ bool CompartmentPrivate::TryParseLocationURI(CompartmentPrivate::LocationHint aL
         // Strip current item and continue.
         chain = Substring(chain, 0, idx);
     }
-    MOZ_ASSUME_UNREACHABLE("Chain parser loop does not terminate");
-}
 
-CompartmentPrivate*
-EnsureCompartmentPrivate(JSObject *obj)
-{
-    return EnsureCompartmentPrivate(js::GetObjectCompartment(obj));
-}
-
-CompartmentPrivate*
-EnsureCompartmentPrivate(JSCompartment *c)
-{
-    CompartmentPrivate *priv = GetCompartmentPrivate(c);
-    if (priv)
-        return priv;
-    priv = new CompartmentPrivate(c);
-    JS_SetCompartmentPrivate(c, priv);
-    return priv;
-}
-
-XPCWrappedNativeScope*
-MaybeGetObjectScope(JSObject *obj)
-{
-    MOZ_ASSERT(obj);
-    JSCompartment *compartment = js::GetObjectCompartment(obj);
-
-    MOZ_ASSERT(compartment);
-    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
-    if (!priv)
-        return nullptr;
-
-    return priv->scope;
+    MOZ_CRASH("Chain parser loop does not terminate");
 }
 
 static bool
@@ -503,14 +487,14 @@ Scriptability::SetDocShellAllowsScript(bool aAllowed)
 Scriptability&
 Scriptability::Get(JSObject *aScope)
 {
-    return EnsureCompartmentPrivate(aScope)->scriptability;
+    return CompartmentPrivate::Get(aScope)->scriptability;
 }
 
 bool
 IsContentXBLScope(JSCompartment *compartment)
 {
     // We always eagerly create compartment privates for XBL scopes.
-    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    CompartmentPrivate *priv = CompartmentPrivate::Get(compartment);
     if (!priv || !priv->scope)
         return false;
     return priv->scope->IsContentXBLScope();
@@ -525,15 +509,13 @@ IsInContentXBLScope(JSObject *obj)
 bool
 IsInAddonScope(JSObject *obj)
 {
-    // We always eagerly create compartment privates for addon scopes.
-    XPCWrappedNativeScope *scope = MaybeGetObjectScope(obj);
-    return scope && scope->IsAddonScope();
+    return ObjectScope(obj)->IsAddonScope();
 }
 
 bool
 IsUniversalXPConnectEnabled(JSCompartment *compartment)
 {
-    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    CompartmentPrivate *priv = CompartmentPrivate::Get(compartment);
     if (!priv)
         return false;
     return priv->universalXPConnectEnabled;
@@ -558,7 +540,7 @@ EnableUniversalXPConnect(JSContext *cx)
     // the security wrapping code.
     if (AccessCheck::isChrome(compartment))
         return true;
-    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    CompartmentPrivate *priv = CompartmentPrivate::Get(compartment);
     if (!priv)
         return true;
     priv->universalXPConnectEnabled = true;
@@ -652,7 +634,7 @@ CompartmentDestroyedCallback(JSFreeOp *fop, JSCompartment *compartment)
 
     // Get the current compartment private into an AutoPtr (which will do the
     // cleanup for us), and null out the private (which may already be null).
-    nsAutoPtr<CompartmentPrivate> priv(GetCompartmentPrivate(compartment));
+    nsAutoPtr<CompartmentPrivate> priv(CompartmentPrivate::Get(compartment));
     JS_SetCompartmentPrivate(compartment, nullptr);
 }
 
@@ -1505,41 +1487,6 @@ XPCJSRuntime::SizeOfIncludingThis(MallocSizeOf mallocSizeOf)
     return n;
 }
 
-nsString*
-XPCJSRuntime::NewShortLivedString()
-{
-    for (uint32_t i = 0; i < XPCCCX_STRING_CACHE_SIZE; ++i) {
-        if (mScratchStrings[i].empty()) {
-            mScratchStrings[i].construct();
-            return mScratchStrings[i].addr();
-        }
-    }
-
-    // All our internal string wrappers are used, allocate a new string.
-    return new nsString();
-}
-
-void
-XPCJSRuntime::DeleteShortLivedString(nsString *string)
-{
-    if (string == &EmptyString() || string == &NullString())
-        return;
-
-    for (uint32_t i = 0; i < XPCCCX_STRING_CACHE_SIZE; ++i) {
-        if (!mScratchStrings[i].empty() &&
-            mScratchStrings[i].addr() == string) {
-            // One of our internal strings is no longer in use, mark
-            // it as such and free its data.
-            mScratchStrings[i].destroy();
-            return;
-        }
-    }
-
-    // We're done with a string that's not one of our internal
-    // strings, delete it.
-    delete string;
-}
-
 /***************************************************************************/
 
 static PLDHashOperator
@@ -1596,10 +1543,19 @@ ReloadPrefsCallback(const char *pref, void *data)
 
     sDiscardSystemSource = Preferences::GetBool(JS_OPTIONS_DOT_STR "discardSystemSource");
 
+    bool werror = Preferences::GetBool(JS_OPTIONS_DOT_STR "werror");
+
+    bool extraWarnings = Preferences::GetBool(JS_OPTIONS_DOT_STR "strict");
+#ifdef DEBUG
+    sExtraWarningsForSystemJS = Preferences::GetBool(JS_OPTIONS_DOT_STR "strict.debug");
+#endif
+
     JS::RuntimeOptionsRef(rt).setBaseline(useBaseline)
                              .setIon(useIon)
                              .setAsmJS(useAsmJS)
-                             .setNativeRegExp(useNativeRegExp);
+                             .setNativeRegExp(useNativeRegExp)
+                             .setWerror(werror)
+                             .setExtraWarnings(extraWarnings);
 
     JS_SetParallelParsingEnabled(rt, parallelParsing);
     JS_SetOffthreadIonCompilationEnabled(rt, offthreadIonCompilation);
@@ -1689,12 +1645,6 @@ XPCJSRuntime::~XPCJSRuntime()
         stack->sampleRuntime(nullptr);
 #endif
 
-#ifdef DEBUG
-    for (uint32_t i = 0; i < XPCCCX_STRING_CACHE_SIZE; ++i) {
-        MOZ_ASSERT(mScratchStrings[i].empty(), "Short lived string still in use");
-    }
-#endif
-
     Preferences::UnregisterCallback(ReloadPrefsCallback, JS_OPTIONS_DOT_STR, this);
 }
 
@@ -1716,7 +1666,7 @@ GetCompartmentName(JSCompartment *c, nsCString &name, int *anonymizeID,
         // script location, append the compartment's location to allow
         // differentiation of multiple compartments owned by the same principal
         // (e.g. components owned by the system or null principal).
-        CompartmentPrivate *compartmentPrivate = GetCompartmentPrivate(c);
+        CompartmentPrivate *compartmentPrivate = CompartmentPrivate::Get(c);
         if (compartmentPrivate) {
             const nsACString& location = compartmentPrivate->GetLocation();
             if (!location.IsEmpty() && !location.Equals(name)) {
@@ -1978,8 +1928,10 @@ ReportZoneStats(const JS::ZoneStats &zStats,
         // strings which contain "string(length=" into their own bucket.
 #       define STRING_LENGTH "string(length="
         if (FindInReadable(NS_LITERAL_CSTRING(STRING_LENGTH), notableString)) {
-            stringsNotableAboutMemoryGCHeap += info.gcHeap;
-            stringsNotableAboutMemoryMallocHeap += info.mallocHeap;
+            stringsNotableAboutMemoryGCHeap += info.gcHeapLatin1;
+            stringsNotableAboutMemoryGCHeap += info.gcHeapTwoByte;
+            stringsNotableAboutMemoryMallocHeap += info.mallocHeapLatin1;
+            stringsNotableAboutMemoryMallocHeap += info.mallocHeapTwoByte;
             continue;
         }
 
@@ -1996,16 +1948,28 @@ ReportZoneStats(const JS::ZoneStats &zStats,
                             info.length, info.numCopies, escapedString.get(),
                             truncated ? " (truncated)" : "");
 
-        if (info.gcHeap > 0) {
-            REPORT_GC_BYTES(path + NS_LITERAL_CSTRING("gc-heap"),
-                info.gcHeap,
-                "Strings. " MAYBE_INLINE);
+        if (info.gcHeapLatin1 > 0) {
+            REPORT_GC_BYTES(path + NS_LITERAL_CSTRING("gc-heap/latin1"),
+                info.gcHeapLatin1,
+                "Latin1 strings. " MAYBE_INLINE);
         }
 
-        if (info.mallocHeap > 0) {
-            REPORT_BYTES(path + NS_LITERAL_CSTRING("malloc-heap"),
-                KIND_HEAP, info.mallocHeap,
-                "Non-inline string characters. " MAYBE_OVERALLOCATED);
+        if (info.gcHeapTwoByte > 0) {
+            REPORT_GC_BYTES(path + NS_LITERAL_CSTRING("gc-heap/two-byte"),
+                info.gcHeapTwoByte,
+                "TwoByte strings. " MAYBE_INLINE);
+        }
+
+        if (info.mallocHeapLatin1 > 0) {
+            REPORT_BYTES(path + NS_LITERAL_CSTRING("malloc-heap/latin1"),
+                KIND_HEAP, info.mallocHeapLatin1,
+                "Non-inline Latin1 string characters. " MAYBE_OVERALLOCATED);
+        }
+
+        if (info.mallocHeapTwoByte > 0) {
+            REPORT_BYTES(path + NS_LITERAL_CSTRING("malloc-heap/two-byte"),
+                KIND_HEAP, info.mallocHeapTwoByte,
+                "Non-inline TwoByte string characters. " MAYBE_OVERALLOCATED);
         }
     }
 
@@ -2014,16 +1978,28 @@ ReportZoneStats(const JS::ZoneStats &zStats,
                     ? NS_LITERAL_CSTRING("strings/")
                     : NS_LITERAL_CSTRING("strings/string(<non-notable strings>)/");
 
-    if (zStats.stringInfo.gcHeap > 0) {
-        REPORT_GC_BYTES(nonNotablePath + NS_LITERAL_CSTRING("gc-heap"),
-            zStats.stringInfo.gcHeap,
-            "Strings. " MAYBE_INLINE);
+    if (zStats.stringInfo.gcHeapLatin1 > 0) {
+        REPORT_GC_BYTES(nonNotablePath + NS_LITERAL_CSTRING("gc-heap/latin1"),
+            zStats.stringInfo.gcHeapLatin1,
+            "Latin1 strings. " MAYBE_INLINE);
     }
 
-    if (zStats.stringInfo.mallocHeap > 0) {
-        REPORT_BYTES(nonNotablePath + NS_LITERAL_CSTRING("malloc-heap"),
-            KIND_HEAP, zStats.stringInfo.mallocHeap,
-            "Non-inline string characters. " MAYBE_OVERALLOCATED);
+    if (zStats.stringInfo.gcHeapTwoByte > 0) {
+        REPORT_GC_BYTES(nonNotablePath + NS_LITERAL_CSTRING("gc-heap/two-byte"),
+            zStats.stringInfo.gcHeapTwoByte,
+            "TwoByte strings. " MAYBE_INLINE);
+    }
+
+    if (zStats.stringInfo.mallocHeapLatin1 > 0) {
+        REPORT_BYTES(nonNotablePath + NS_LITERAL_CSTRING("malloc-heap/latin1"),
+            KIND_HEAP, zStats.stringInfo.mallocHeapLatin1,
+            "Non-inline Latin1 string characters. " MAYBE_OVERALLOCATED);
+    }
+
+    if (zStats.stringInfo.mallocHeapTwoByte > 0) {
+        REPORT_BYTES(nonNotablePath + NS_LITERAL_CSTRING("malloc-heap/two-byte"),
+            KIND_HEAP, zStats.stringInfo.mallocHeapTwoByte,
+            "Non-inline TwoByte string characters. " MAYBE_OVERALLOCATED);
     }
 
     if (stringsNotableAboutMemoryGCHeap > 0) {
@@ -2727,7 +2703,7 @@ class XPCJSRuntimeStats : public JS::RuntimeStats
         nsCString cName;
         GetCompartmentName(c, cName, &mAnonymizeID, /* replaceSlashes = */ true);
         if (mGetLocations) {
-            CompartmentPrivate *cp = GetCompartmentPrivate(c);
+            CompartmentPrivate *cp = CompartmentPrivate::Get(c);
             if (cp)
               cp->GetLocationURI(CompartmentPrivate::LocationHintAddon,
                                  getter_AddRefs(extras->location));
@@ -3132,21 +3108,21 @@ static const JSWrapObjectCallbacks WrapObjectCallbacks = {
 };
 
 XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
-   : CycleCollectedJSRuntime(nullptr, 32L * 1024L * 1024L),
+   : CycleCollectedJSRuntime(nullptr, JS::DefaultHeapMaxBytes, JS::DefaultNurseryBytes),
    mJSContextStack(new XPCJSContextStack(MOZ_THIS_IN_INITIALIZER_LIST())),
    mCallContext(nullptr),
    mAutoRoots(nullptr),
    mResolveName(JSID_VOID),
    mResolvingWrapper(nullptr),
-   mWrappedJSMap(JSObject2WrappedJSMap::newMap(XPC_JS_MAP_SIZE)),
-   mWrappedJSClassMap(IID2WrappedJSClassMap::newMap(XPC_JS_CLASS_MAP_SIZE)),
-   mIID2NativeInterfaceMap(IID2NativeInterfaceMap::newMap(XPC_NATIVE_INTERFACE_MAP_SIZE)),
-   mClassInfo2NativeSetMap(ClassInfo2NativeSetMap::newMap(XPC_NATIVE_SET_MAP_SIZE)),
-   mNativeSetMap(NativeSetMap::newMap(XPC_NATIVE_SET_MAP_SIZE)),
-   mThisTranslatorMap(IID2ThisTranslatorMap::newMap(XPC_THIS_TRANSLATOR_MAP_SIZE)),
-   mNativeScriptableSharedMap(XPCNativeScriptableSharedMap::newMap(XPC_NATIVE_JSCLASS_MAP_SIZE)),
-   mDyingWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DYING_NATIVE_PROTO_MAP_SIZE)),
-   mDetachedWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DETACHED_NATIVE_PROTO_MAP_SIZE)),
+   mWrappedJSMap(JSObject2WrappedJSMap::newMap(XPC_JS_MAP_LENGTH)),
+   mWrappedJSClassMap(IID2WrappedJSClassMap::newMap(XPC_JS_CLASS_MAP_LENGTH)),
+   mIID2NativeInterfaceMap(IID2NativeInterfaceMap::newMap(XPC_NATIVE_INTERFACE_MAP_LENGTH)),
+   mClassInfo2NativeSetMap(ClassInfo2NativeSetMap::newMap(XPC_NATIVE_SET_MAP_LENGTH)),
+   mNativeSetMap(NativeSetMap::newMap(XPC_NATIVE_SET_MAP_LENGTH)),
+   mThisTranslatorMap(IID2ThisTranslatorMap::newMap(XPC_THIS_TRANSLATOR_MAP_LENGTH)),
+   mNativeScriptableSharedMap(XPCNativeScriptableSharedMap::newMap(XPC_NATIVE_JSCLASS_MAP_LENGTH)),
+   mDyingWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DYING_NATIVE_PROTO_MAP_LENGTH)),
+   mDetachedWrappedNativeProtoMap(XPCWrappedNativeProtoMap::newMap(XPC_DETACHED_NATIVE_PROTO_MAP_LENGTH)),
    mGCIsRunning(false),
    mWrappedJSToReleaseArray(),
    mNativesToReleaseArray(),
@@ -3291,7 +3267,8 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     // compileAndGo mode and compiled function bodies (from
     // JS_CompileFunction*). In practice, this means content scripts and event
     // handlers.
-    js::SetSourceHook(runtime, new XPCJSSourceHook);
+    UniquePtr<XPCJSSourceHook> hook(new XPCJSSourceHook);
+    js::SetSourceHook(runtime, Move(hook));
 
     // Set up locale information and callbacks for the newly-created runtime so
     // that the various toLocaleString() methods, localeCompare(), and other
@@ -3307,12 +3284,6 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     RegisterJSMainRuntimeCompartmentsSystemDistinguishedAmount(JSMainRuntimeCompartmentsSystemDistinguishedAmount);
     RegisterJSMainRuntimeCompartmentsUserDistinguishedAmount(JSMainRuntimeCompartmentsUserDistinguishedAmount);
     mozilla::RegisterJSSizeOfTab(JSSizeOfTab);
-
-    // Install a JavaScript 'debugger' keyword handler in debug builds only
-#ifdef DEBUG
-    if (!JS_GetGlobalDebugHooks(runtime)->debuggerHandler)
-        xpc_InstallJSDebuggerKeywordHandler(runtime);
-#endif
 
     // Watch for the JS boolean options.
     ReloadPrefsCallback(nullptr, this);

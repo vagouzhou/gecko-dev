@@ -42,7 +42,7 @@ XULTreeAccessible::
   XULTreeAccessible(nsIContent* aContent, DocAccessible* aDoc,
                     nsTreeBodyFrame* aTreeFrame) :
   AccessibleWrap(aContent, aDoc),
-  mAccessibleCache(kDefaultTreeCacheSize)
+  mAccessibleCache(kDefaultTreeCacheLength)
 {
   mType = eXULTreeType;
   mGenericTypes |= eSelect;
@@ -60,6 +60,10 @@ XULTreeAccessible::
     if (autoCompletePopupElm)
       mGenericTypes |= eAutoCompletePopup;
   }
+}
+
+XULTreeAccessible::~XULTreeAccessible()
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -703,6 +707,10 @@ XULTreeItemAccessibleBase::
   mStateFlags |= eSharedNode;
 }
 
+XULTreeItemAccessibleBase::~XULTreeItemAccessibleBase()
+{
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // XULTreeItemAccessibleBase: nsISupports implementation
 
@@ -1101,6 +1109,10 @@ XULTreeItemAccessible::
 {
   mColumn = nsCoreUtils::GetFirstSensibleColumn(mTree);
   GetCellName(mColumn, mCachedName);
+}
+
+XULTreeItemAccessible::~XULTreeItemAccessible()
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////

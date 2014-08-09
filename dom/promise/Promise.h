@@ -14,6 +14,7 @@
 #include "nsCycleCollectionParticipant.h"
 #include "mozilla/dom/PromiseBinding.h"
 #include "mozilla/dom/ToJSValue.h"
+#include "mozilla/WeakPtr.h"
 #include "nsWrapperCache.h"
 #include "nsAutoPtr.h"
 #include "js/TypeDecls.h"
@@ -30,6 +31,7 @@ class DOMError;
 class PromiseCallback;
 class PromiseInit;
 class PromiseNativeHandler;
+class PromiseDebugging;
 
 class Promise;
 class PromiseReportRejectFeature : public workers::WorkerFeature
@@ -49,7 +51,8 @@ public:
 };
 
 class Promise MOZ_FINAL : public nsISupports,
-                          public nsWrapperCache
+                          public nsWrapperCache,
+                          public SupportsWeakPtr<Promise>
 {
   friend class NativePromiseCallback;
   friend class PromiseResolverMixin;
@@ -70,8 +73,14 @@ class Promise MOZ_FINAL : public nsISupports,
 public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(Promise)
+  MOZ_DECLARE_REFCOUNTED_TYPENAME(Promise)
 
-  Promise(nsIGlobalObject* aGlobal);
+  // Promise creation tries to create a JS reflector for the Promise, so is
+  // fallible.  Furthermore, we don't want to do JS-wrapping on a 0-refcount
+  // object, so we addref before doing that and return the addrefed pointer
+  // here.
+  static already_AddRefed<Promise>
+  Create(nsIGlobalObject* aGlobal, ErrorResult& aRv);
 
   typedef void (Promise::*MaybeFunc)(JSContext* aCx,
                                      JS::Handle<JS::Value> aValue);
@@ -138,10 +147,10 @@ public:
 
   already_AddRefed<Promise>
   Then(JSContext* aCx, AnyCallback* aResolveCallback,
-       AnyCallback* aRejectCallback);
+       AnyCallback* aRejectCallback, ErrorResult& aRv);
 
   already_AddRefed<Promise>
-  Catch(JSContext* aCx, AnyCallback* aRejectCallback);
+  Catch(JSContext* aCx, AnyCallback* aRejectCallback, ErrorResult& aRv);
 
   static already_AddRefed<Promise>
   All(const GlobalObject& aGlobal,
@@ -154,6 +163,12 @@ public:
   void AppendNativeHandler(PromiseNativeHandler* aRunnable);
 
 private:
+  // Do NOT call this unless you're Promise::Create.  I wish we could enforce
+  // that from inside this class too, somehow.
+  Promise(nsIGlobalObject* aGlobal);
+
+  friend class PromiseDebugging;
+
   enum PromiseState {
     Pending,
     Resolved,
@@ -216,18 +231,11 @@ private:
                       JS::Handle<JS::Value> aValue,
                       PromiseTaskSync aSync = AsyncTask);
 
-  // Helper methods for using Promises from C++
-  JSObject* GetOrCreateWrapper(JSContext* aCx);
-
   template <typename T>
   void MaybeSomething(T& aArgument, MaybeFunc aFunc) {
     ThreadsafeAutoJSContext cx;
-
-    JSObject* wrapper = GetOrCreateWrapper(cx);
-    if (!wrapper) {
-      HandleException(cx);
-      return;
-    }
+    JSObject* wrapper = GetWrapper();
+    MOZ_ASSERT(wrapper); // We preserved it!
 
     JSAutoCompartment ac(cx, wrapper);
     JS::Rooted<JS::Value> val(cx);

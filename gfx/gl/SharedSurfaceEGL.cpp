@@ -4,16 +4,14 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SharedSurfaceEGL.h"
-#include "GLContextEGL.h"
-#include "GLBlitHelper.h"
-#include "ScopedGLHelpers.h"
-#include "SharedSurfaceGL.h"
-#include "SurfaceFactory.h"
-#include "GLLibraryEGL.h"
-#include "TextureGarbageBin.h"
-#include "GLReadTexImageHelper.h"
 
-using namespace mozilla::gfx;
+#include "GLBlitHelper.h"
+#include "GLContextEGL.h"
+#include "GLLibraryEGL.h"
+#include "GLReadTexImageHelper.h"
+#include "ScopedGLHelpers.h"
+#include "SharedSurface.h"
+#include "TextureGarbageBin.h"
 
 namespace mozilla {
 namespace gl {
@@ -69,11 +67,11 @@ SharedSurface_EGLImage::SharedSurface_EGLImage(GLContext* gl,
                                                const GLFormats& formats,
                                                GLuint prodTex,
                                                EGLImage image)
-    : SharedSurface_GL(SharedSurfaceType::EGLImageShare,
-                        AttachmentType::GLTexture,
-                        gl,
-                        size,
-                        hasAlpha)
+    : SharedSurface(SharedSurfaceType::EGLImageShare,
+                    AttachmentType::GLTexture,
+                    gl,
+                    size,
+                    hasAlpha)
     , mMutex("SharedSurface_EGLImage mutex")
     , mEGL(egl)
     , mFormats(formats)
@@ -164,6 +162,30 @@ SharedSurface_EGLImage::WaitSync()
     return true;
 }
 
+bool
+SharedSurface_EGLImage::PollSync()
+{
+    MutexAutoLock lock(mMutex);
+    if (!mSync) {
+        // We must not be needed.
+        return true;
+    }
+    MOZ_ASSERT(mEGL->IsExtensionSupported(GLLibraryEGL::KHR_fence_sync));
+
+    EGLint status = 0;
+    MOZ_ALWAYS_TRUE( mEGL->fGetSyncAttrib(mEGL->Display(),
+                                         mSync,
+                                         LOCAL_EGL_SYNC_STATUS_KHR,
+                                         &status) );
+    if (status != LOCAL_EGL_SIGNALED_KHR) {
+        return false;
+    }
+
+    MOZ_ALWAYS_TRUE( mEGL->fDestroySync(mEGL->Display(), mSync) );
+    mSync = 0;
+
+    return true;
+}
 
 EGLDisplay
 SharedSurface_EGLImage::Display() const

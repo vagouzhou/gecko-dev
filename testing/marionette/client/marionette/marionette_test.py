@@ -15,7 +15,7 @@ import weakref
 import warnings
 
 from errors import (
-        ErrorCodes, MarionetteException, InstallGeckoError, TimeoutException, InvalidResponseException, 
+        ErrorCodes, MarionetteException, InstallGeckoError, TimeoutException, InvalidResponseException,
         JavascriptException, NoSuchElementException, XPathLookupException, NoSuchWindowException,
         StaleElementException, ScriptTimeoutException, ElementNotVisibleException,
         NoSuchFrameException, InvalidElementStateException, NoAlertPresentException,
@@ -23,6 +23,7 @@ from errors import (
         MoveTargetOutOfBoundsException, FrameSendNotInitializedError, FrameSendFailureError
         )
 from marionette import Marionette
+from mozlog.structured.structuredlog import get_default_logger
 
 class SkipTest(Exception):
     """
@@ -244,6 +245,13 @@ class CommonTestCase(unittest.TestCase):
                                     self.__class__.__name__,
                                     self._testMethodName)
 
+    def id(self):
+        # TBPL starring requires that the "test name" field of a failure message
+        # not differ over time. The test name to be used is passed to
+        # mozlog.structured via the test id, so this is overriden to maintain
+        # consistency.
+        return self.test_name
+
     def set_up_test_page(self, emulator, url="test.html", permissions=None):
         emulator.set_context("content")
         url = emulator.absolute_url(url)
@@ -404,19 +412,6 @@ class MarionetteJSTestCase(CommonTestCase):
         js = f.read()
         args = []
 
-        # if this is a browser_ test, prepend head.js to it
-        if os.path.basename(self.jsFile).startswith('browser_'):
-            local_head = open(os.path.join(os.path.dirname(__file__), 'tests', 'head.js'), 'r')
-            js = local_head.read() + js
-            head = open(os.path.join(os.path.dirname(self.jsFile), 'head.js'), 'r')
-            for line in head:
-                # we need a bigger timeout than the default specified by the
-                # 'real' head.js
-                if 'const kDefaultWait' in line:
-                    js += 'const kDefaultWait = 45000;\n'
-                else:
-                    js += line
-
         if os.path.basename(self.jsFile).startswith('test_'):
             head_js = self.head_js_re.search(js);
             if head_js:
@@ -503,14 +498,14 @@ setReq.onerror = function() {
                 self.assertTrue(results['failed'] > 0,
                                 "expected test failures didn't occur")
             else:
-                fails = []
+                logger = get_default_logger()
                 for failure in results['failures']:
-                    diag = "" if failure.get('diag') is None else "| %s " % failure['diag']
+                    diag = "" if failure.get('diag') is None else failure['diag']
                     name = "got false, expected true" if failure.get('name') is None else failure['name']
-                    fails.append('TEST-UNEXPECTED-FAIL | %s %s| %s' %
-                                 (os.path.basename(self.jsFile), diag, name))
+                    logger.test_status(self.test_name, name, 'FAIL',
+                                       message=diag)
                 self.assertEqual(0, results['failed'],
-                                 '%d tests failed:\n%s' % (results['failed'], '\n'.join(fails)))
+                                 '%d tests failed' % (results['failed']))
 
             self.assertTrue(results['passed'] + results['failed'] > 0,
                             'no tests run')

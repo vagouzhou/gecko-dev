@@ -968,10 +968,9 @@ nsPresContext::Init(nsDeviceContext* aDeviceContext)
 
   mAnimationManager = new nsAnimationManager(this);
 
-  // Since there are methods in nsPresContext have the same name as the
-  // classes, it is necessary to prefix them with the namespace here.
-  mRestyleManager = new mozilla::RestyleManager(this);
-
+  // Since CounterStyleManager is also the name of a method of
+  // nsPresContext, it is necessary to prefix the class with the mozilla
+  // namespace here.
   mCounterStyleManager = new mozilla::CounterStyleManager(this);
 
   if (mDocument->GetDisplayDocument()) {
@@ -1017,9 +1016,13 @@ nsPresContext::Init(nsDeviceContext* aDeviceContext)
   }
 
   // Initialise refresh tick counters for OMTA
-  mLastStyleUpdateForAllAnimations =
-    mLastUpdateThrottledAnimationStyle =
-    mLastUpdateThrottledTransitionStyle = mRefreshDriver->MostRecentRefresh();
+  mLastStyleUpdateForAllAnimations = mRefreshDriver->MostRecentRefresh();
+
+  // Initialize restyle manager after initializing the refresh driver.
+  // Since RestyleManager is also the name of a method of nsPresContext,
+  // it is necessary to prefix the class with the mozilla namespace
+  // here.
+  mRestyleManager = new mozilla::RestyleManager(this);
 
   mLangService = do_GetService(NS_LANGUAGEATOMSERVICE_CONTRACTID);
 
@@ -1513,7 +1516,7 @@ void
 nsPresContext::SetContainer(nsIDocShell* aDocShell)
 {
   if (aDocShell) {
-    mContainer = static_cast<nsDocShell*>(aDocShell)->asWeakPtr();
+    mContainer = static_cast<nsDocShell*>(aDocShell);
   } else {
     mContainer = WeakPtr<nsDocShell>();
   }
@@ -1549,32 +1552,6 @@ nsPresContext::Detach()
   if (mShell) {
     mShell->CancelInvalidatePresShellIfHidden();
   }
-}
-
-bool
-nsPresContext::ThrottledTransitionStyleIsUpToDate() const
-{
-  return
-    mLastUpdateThrottledTransitionStyle == mRefreshDriver->MostRecentRefresh();
-}
-
-void
-nsPresContext::TickLastUpdateThrottledTransitionStyle()
-{
-  mLastUpdateThrottledTransitionStyle = mRefreshDriver->MostRecentRefresh();
-}
-
-bool
-nsPresContext::ThrottledAnimationStyleIsUpToDate() const
-{
-  return
-    mLastUpdateThrottledAnimationStyle == mRefreshDriver->MostRecentRefresh();
-}
-
-void
-nsPresContext::TickLastUpdateThrottledAnimationStyle()
-{
-  mLastUpdateThrottledAnimationStyle = mRefreshDriver->MostRecentRefresh();
 }
 
 bool
@@ -1919,12 +1896,12 @@ nsPresContext::MediaFeatureValuesChanged(StyleRebuildType aShouldRebuild,
 
   mPendingViewportChange = false;
 
-  if (!nsContentUtils::IsSafeToRunScript()) {
-    NS_ABORT_IF_FALSE(mDocument->IsBeingUsedAsImage(),
-                      "How did we get here?  Are we failing to notify "
-                      "listeners that we should notify?");
+  if (mDocument->IsBeingUsedAsImage()) {
+    MOZ_ASSERT(PR_CLIST_IS_EMPTY(&mDOMMediaQueryLists));
     return;
   }
+
+  MOZ_ASSERT(nsContentUtils::IsSafeToRunScript());
 
   // Media query list listeners should be notified from a queued task
   // (in HTML5 terms), although we also want to notify them on certain
@@ -2744,7 +2721,7 @@ nsPresContext::GetPrimaryFrameFor(nsIContent* aContent)
 {
   NS_PRECONDITION(aContent, "Don't do that");
   if (GetPresShell() &&
-      GetPresShell()->GetDocument() == aContent->GetCurrentDoc()) {
+      GetPresShell()->GetDocument() == aContent->GetComposedDoc()) {
     return aContent->GetPrimaryFrame();
   }
   return nullptr;

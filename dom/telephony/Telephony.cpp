@@ -97,17 +97,18 @@ public:
 class Telephony::EnumerationAck : public nsRunnable
 {
   nsRefPtr<Telephony> mTelephony;
+  nsString mType;
 
 public:
-  EnumerationAck(Telephony* aTelephony)
-  : mTelephony(aTelephony)
+  EnumerationAck(Telephony* aTelephony, const nsAString& aType)
+  : mTelephony(aTelephony), mType(aType)
   {
     MOZ_ASSERT(mTelephony);
   }
 
   NS_IMETHOD Run()
   {
-    mTelephony->NotifyCallsChanged(nullptr);
+    mTelephony->NotifyEvent(mType);
     return NS_OK;
   }
 };
@@ -242,14 +243,17 @@ Telephony::HasDialingCall()
 
 already_AddRefed<Promise>
 Telephony::DialInternal(uint32_t aServiceId, const nsAString& aNumber,
-                        bool aEmergency)
+                        bool aEmergency, ErrorResult& aRv)
 {
   nsCOMPtr<nsIGlobalObject> global = do_QueryInterface(GetOwner());
   if (!global) {
     return nullptr;
   }
 
-  nsRefPtr<Promise> promise = new Promise(global);
+  nsRefPtr<Promise> promise = Promise::Create(global, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
 
   if (!IsValidNumber(aNumber) || !IsValidServiceId(aServiceId)) {
     promise->MaybeReject(NS_ERROR_DOM_INVALID_ACCESS_ERR);
@@ -305,6 +309,12 @@ Telephony::CreateCall(TelephonyCallId* aId, uint32_t aServiceId,
                "Should have auto-added new call!");
 
   return call.forget();
+}
+
+nsresult
+Telephony::NotifyEvent(const nsAString& aType)
+{
+  return DispatchCallEvent(aType, nullptr);
 }
 
 nsresult
@@ -371,19 +381,21 @@ NS_IMPL_ISUPPORTS(Telephony::Callback, nsITelephonyCallback)
 // Telephony WebIDL
 
 already_AddRefed<Promise>
-Telephony::Dial(const nsAString& aNumber, const Optional<uint32_t>& aServiceId)
+Telephony::Dial(const nsAString& aNumber, const Optional<uint32_t>& aServiceId,
+                ErrorResult& aRv)
 {
   uint32_t serviceId = ProvidedOrDefaultServiceId(aServiceId);
-  nsRefPtr<Promise> promise = DialInternal(serviceId, aNumber, false);
+  nsRefPtr<Promise> promise = DialInternal(serviceId, aNumber, false, aRv);
   return promise.forget();
 }
 
 already_AddRefed<Promise>
 Telephony::DialEmergency(const nsAString& aNumber,
-                         const Optional<uint32_t>& aServiceId)
+                         const Optional<uint32_t>& aServiceId,
+                         ErrorResult& aRv)
 {
   uint32_t serviceId = ProvidedOrDefaultServiceId(aServiceId);
-  nsRefPtr<Promise> promise = DialInternal(serviceId, aNumber, true);
+  nsRefPtr<Promise> promise = DialInternal(serviceId, aNumber, true, aRv);
   return promise.forget();
 }
 
@@ -488,7 +500,9 @@ Telephony::EventListenerAdded(nsIAtom* aType)
 {
   if (aType == nsGkAtoms::oncallschanged) {
     // Fire oncallschanged on the next tick if the calls array is ready.
-    EnqueueEnumerationAck();
+    EnqueueEnumerationAck(NS_LITERAL_STRING("callschanged"));
+  } else if (aType == nsGkAtoms::onready) {
+    EnqueueEnumerationAck(NS_LITERAL_STRING("ready"));
   }
 }
 
@@ -564,6 +578,10 @@ Telephony::EnumerateCallStateComplete()
   MOZ_ASSERT(!mEnumerated);
 
   mEnumerated = true;
+
+  if (NS_FAILED(NotifyEvent(NS_LITERAL_STRING("ready")))) {
+    NS_WARNING("Failed to notify ready!");
+  }
 
   if (NS_FAILED(NotifyCallsChanged(nullptr))) {
     NS_WARNING("Failed to notify calls changed!");
@@ -682,13 +700,8 @@ nsresult
 Telephony::DispatchCallEvent(const nsAString& aType,
                              TelephonyCall* aCall)
 {
-  // The call may be null in following cases:
-  //   1. callschanged when notifying enumeration being completed
-  //   2. remoteheld/remoteresumed.
-  MOZ_ASSERT(aCall ||
-             aType.EqualsLiteral("callschanged") ||
-             aType.EqualsLiteral("remoteheld") ||
-             aType.EqualsLiteral("remtoeresumed"));
+  // If it is an incoming event, the call should not be null.
+  MOZ_ASSERT(!aType.EqualsLiteral("incoming") || aCall);
 
   CallEventInit init;
   init.mBubbles = false;
@@ -701,13 +714,13 @@ Telephony::DispatchCallEvent(const nsAString& aType,
 }
 
 void
-Telephony::EnqueueEnumerationAck()
+Telephony::EnqueueEnumerationAck(const nsAString& aType)
 {
   if (!mEnumerated) {
     return;
   }
 
-  nsCOMPtr<nsIRunnable> task = new EnumerationAck(this);
+  nsCOMPtr<nsIRunnable> task = new EnumerationAck(this, aType);
   if (NS_FAILED(NS_DispatchToCurrentThread(task))) {
     NS_WARNING("Failed to dispatch to current thread!");
   }

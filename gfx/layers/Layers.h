@@ -14,7 +14,6 @@
 #include "gfxContext.h"                 // for GraphicsOperator
 #include "gfxTypes.h"
 #include "gfxColor.h"                   // for gfxRGBA
-#include "gfxMatrix.h"                  // for gfxMatrix
 #include "GraphicsFilter.h"             // for GraphicsFilter
 #include "gfxPoint.h"                   // for gfxPoint
 #include "gfxRect.h"                    // for gfxRect
@@ -59,11 +58,11 @@ class WebGLContext;
 
 namespace gl {
 class GLContext;
+class SurfaceStream;
 }
 
 namespace gfx {
 class DrawTarget;
-class SurfaceStream;
 }
 
 namespace css {
@@ -100,6 +99,10 @@ class SurfaceDescriptor;
 class Compositor;
 struct TextureFactoryIdentifier;
 struct EffectMask;
+
+namespace layerscope {
+class LayersPacket;
+}
 
 #define MOZ_LAYER_DECL_NAME(n, e)                           \
   virtual const char* Name() const { return n; }            \
@@ -213,6 +216,7 @@ public:
    * and is used for drawing into the widget.
    */
   virtual bool IsWidgetLayerManager() { return true; }
+  virtual bool IsInactiveLayerManager() { return false; }
 
   /**
    * Start a new transaction. Nested transactions are not allowed so
@@ -307,12 +311,20 @@ public:
 
   bool IsSnappingEffectiveTransforms() { return mSnapEffectiveTransforms; }
 
+
+  /**
+   * Returns true if the layer manager can't render component alpha
+   * layers, and layer building should do it's best to avoid
+   * creating them.
+   */
+  virtual bool ShouldAvoidComponentAlphaLayers() { return false; }
+
   /**
    * Returns true if this LayerManager can properly support layers with
-   * SurfaceMode::SURFACE_COMPONENT_ALPHA. This can include disabling component
-   * alpha if required.
+   * SurfaceMode::SURFACE_COMPONENT_ALPHA. LayerManagers that can't will use
+   * transparent surfaces (and lose subpixel-AA for text).
    */
-  virtual bool AreComponentAlphaLayersEnabled() { return true; }
+  virtual bool AreComponentAlphaLayersEnabled();
 
   /**
    * CONSTRUCTION PHASE ONLY
@@ -565,11 +577,13 @@ public:
    * Dump information about just this layer manager itself to aStream
    */
   void DumpSelf(std::stringstream& aStream, const char* aPrefix="");
-  void Dump() {
-    std::stringstream ss;
-    Dump(ss);
-    printf_stderr("%s", ss.str().c_str());
-  }
+  void Dump();
+
+  /**
+   * Dump information about this layer manager and its managed tree to
+   * layerscope packet.
+   */
+  void Dump(layerscope::LayersPacket* aPacket);
 
   /**
    * Log information about this layer manager and its managed tree to
@@ -659,6 +673,10 @@ protected:
   // used to implement Dump*() and Log*().
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  // Print interesting information about this into layerscope packet.
+  // Internally used to implement Dump().
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket);
+
   static void InitLog();
   static PRLogModuleInfo* sLog;
   uint64_t mId;
@@ -736,22 +754,28 @@ public:
     CONTENT_COMPONENT_ALPHA = 0x02,
 
     /**
+     * If this is set then one of the descendant layers of this one has
+     * CONTENT_COMPONENT_ALPHA set.
+     */
+    CONTENT_COMPONENT_ALPHA_DESCENDANT = 0x04,
+
+    /**
      * If this is set then this layer is part of a preserve-3d group, and should
      * be sorted with sibling layers that are also part of the same group.
      */
-    CONTENT_PRESERVE_3D = 0x04,
+    CONTENT_PRESERVE_3D = 0x08,
     /**
      * This indicates that the transform may be changed on during an empty
      * transaction where there is no possibility of redrawing the content, so the
      * implementation should be ready for that.
      */
-    CONTENT_MAY_CHANGE_TRANSFORM = 0x08,
+    CONTENT_MAY_CHANGE_TRANSFORM = 0x10,
 
     /**
      * Disable subpixel AA for this layer. This is used if the display isn't suited
      * for subpixel AA like hidpi or rotated content.
      */
-    CONTENT_DISABLE_SUBPIXEL_AA = 0x10
+    CONTENT_DISABLE_SUBPIXEL_AA = 0x20
   };
   /**
    * CONSTRUCTION PHASE ONLY
@@ -1341,6 +1365,12 @@ public:
   void DumpSelf(std::stringstream& aStream, const char* aPrefix="");
 
   /**
+   * Dump information about this layer and its child & sibling layers to
+   * layerscope packet.
+   */
+  void Dump(layerscope::LayersPacket* aPacket, const void* aParent);
+
+  /**
    * Log information about this layer manager and its managed tree to
    * the NSPR log (if enabled for "Layers").
    */
@@ -1357,6 +1387,10 @@ public:
   // an implementation that first calls the base implementation then
   // appends additional info to aTo.
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
+
+  // Just like PrintInfo, but this function dump information into layerscope packet,
+  // instead of a StringStream. It is also internally used to implement Dump();
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
 
   static bool IsLogEnabled() { return LayerManager::IsLogEnabled(); }
 
@@ -1397,6 +1431,16 @@ public:
   {
     mManager->Mutated(this);
   }
+
+  virtual int32_t GetMaxLayerSize() { return Manager()->GetMaxTextureSize(); }
+
+  /**
+   * Returns true if this layer's effective transform is not just
+   * a translation by integers, or if this layer or some ancestor layer
+   * is marked as having a transform that may change without a full layer
+   * transaction.
+   */
+  bool MayResample();
 
 protected:
   Layer(LayerManager* aManager, void* aImplData);
@@ -1445,14 +1489,6 @@ protected:
   gfx::Matrix4x4 SnapTransform(const gfx::Matrix4x4& aTransform,
                                const gfxRect& aSnapRect,
                                gfx::Matrix* aResidualTransform);
-
-  /**
-   * Returns true if this layer's effective transform is not just
-   * a translation by integers, or if this layer or some ancestor layer
-   * is marked as having a transform that may change without a full layer
-   * transaction.
-   */
-  bool MayResample();
 
   LayerManager* mManager;
   ContainerLayer* mParent;
@@ -1592,6 +1628,8 @@ protected:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
+
   /**
    * ComputeEffectiveTransforms snaps the ideal transform to get mEffectiveTransform.
    * mResidualTranslation is the translation that should be applied *before*
@@ -1717,6 +1755,17 @@ public:
     Mutated();
   }
 
+  void SetContentDescription(const std::string& aContentDescription)
+  {
+    if (mContentDescription == aContentDescription) {
+      return;
+    }
+
+    MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) ContentDescription", this));
+    mContentDescription = aContentDescription;
+    Mutated();
+  }
+
   virtual void FillSpecificAttributes(SpecificLayerAttributes& aAttrs);
 
   void SortChildrenBy3DZOrder(nsTArray<Layer*>& aArray);
@@ -1734,8 +1783,9 @@ public:
   float GetPreYScale() const { return mPreYScale; }
   float GetInheritedXScale() const { return mInheritedXScale; }
   float GetInheritedYScale() const { return mInheritedYScale; }
-  
+
   gfxRGBA GetBackgroundColor() const { return mBackgroundColor; }
+  const std::string& GetContentDescription() const { return mContentDescription; }
 
   MOZ_LAYER_DECL_NAME("ContainerLayer", TYPE_CONTAINER)
 
@@ -1811,6 +1861,8 @@ protected:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
+
   Layer* mFirstChild;
   Layer* mLastChild;
   FrameMetrics mFrameMetrics;
@@ -1826,6 +1878,10 @@ protected:
   // When multi-layer-apz (bug 967844) is implemented, this is likely to move
   // elsewhere (e.g. to Layer).
   gfxRGBA mBackgroundColor;
+  // A description of the content element corresponding to this frame.
+  // This is empty unless this ContainerLayer is scrollable and the
+  // apz.printtree pref is turned on.
+  std::string mContentDescription;
   bool mUseIntermediateSurface;
   bool mSupportsComponentAlphaChildren;
   bool mMayHaveReadbackChild;
@@ -1886,6 +1942,8 @@ protected:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
+
   nsIntRect mBounds;
   gfxRGBA mColor;
 };
@@ -1918,7 +1976,7 @@ public:
     mozilla::gl::GLContext* mGLContext; // or this, for GL.
 
     // Canvas/SkiaGL uses this
-    mozilla::gfx::SurfaceStream* mStream;
+    mozilla::gl::SurfaceStream* mStream;
 
     // ID of the texture backing the canvas layer (defaults to 0)
     uint32_t mTexID;
@@ -2045,6 +2103,8 @@ protected:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
+
   void FireDidTransactionCallback()
   {
     if (mPostTransCallback) {
@@ -2162,12 +2222,13 @@ protected:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix);
 
+  virtual void DumpPacket(layerscope::LayersPacket* aPacket, const void* aParent);
+
   Layer* mTempReferent;
   // 0 is a special value that means "no ID".
   uint64_t mId;
 };
 
-void SetAntialiasingFlags(Layer* aLayer, gfxContext* aTarget);
 void SetAntialiasingFlags(Layer* aLayer, gfx::DrawTarget* aTarget);
 
 #ifdef MOZ_DUMP_PAINTING

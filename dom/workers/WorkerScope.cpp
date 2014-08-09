@@ -53,11 +53,13 @@ NS_IMPL_CYCLE_COLLECTION_CLASS(WorkerGlobalScope)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(WorkerGlobalScope,
                                                   DOMEventTargetHelper)
   tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mConsole)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(WorkerGlobalScope,
                                                 DOMEventTargetHelper)
   tmp->mWorkerPrivate->AssertIsOnWorkerThread();
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mConsole)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN_INHERITED(WorkerGlobalScope,
@@ -80,17 +82,16 @@ WorkerGlobalScope::WrapObject(JSContext* aCx)
   MOZ_CRASH("We should never get here!");
 }
 
-already_AddRefed<Console>
+Console*
 WorkerGlobalScope::GetConsole()
 {
   mWorkerPrivate->AssertIsOnWorkerThread();
 
   if (!mConsole) {
     mConsole = new Console(nullptr);
-    MOZ_ASSERT(mConsole);
   }
 
-  return mConsole.forget();
+  return mConsole;
 }
 
 already_AddRefed<WorkerLocation>
@@ -281,14 +282,6 @@ DedicatedWorkerGlobalScope::DedicatedWorkerGlobalScope(WorkerPrivate* aWorkerPri
 {
 }
 
-/* static */ bool
-DedicatedWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
-{
-  DedicatedWorkerGlobalScope* self = nullptr;
-  nsresult rv = UNWRAP_WORKER_OBJECT(DedicatedWorkerGlobalScope, aObj, self);
-  return NS_SUCCEEDED(rv) && self;
-}
-
 JSObject*
 DedicatedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
 {
@@ -320,14 +313,6 @@ SharedWorkerGlobalScope::SharedWorkerGlobalScope(WorkerPrivate* aWorkerPrivate,
 {
 }
 
-/* static */ bool
-SharedWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
-{
-  SharedWorkerGlobalScope* self = nullptr;
-  nsresult rv = UNWRAP_WORKER_OBJECT(SharedWorkerGlobalScope, aObj, self);
-  return NS_SUCCEEDED(rv) && self;
-}
-
 JSObject*
 SharedWorkerGlobalScope::WrapGlobalObject(JSContext* aCx)
 {
@@ -347,14 +332,6 @@ ServiceWorkerGlobalScope::ServiceWorkerGlobalScope(WorkerPrivate* aWorkerPrivate
   : WorkerGlobalScope(aWorkerPrivate),
     mScope(NS_ConvertUTF8toUTF16(aScope))
 {
-}
-
-/* static */ bool
-ServiceWorkerGlobalScope::Visible(JSContext* aCx, JSObject* aObj)
-{
-  ServiceWorkerGlobalScope* self = nullptr;
-  nsresult rv = UNWRAP_WORKER_OBJECT(ServiceWorkerGlobalScope, aObj, self);
-  return NS_SUCCEEDED(rv) && self;
 }
 
 JSObject*

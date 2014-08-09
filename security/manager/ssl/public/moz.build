@@ -31,7 +31,6 @@ XPIDL_SOURCES += [
     'nsIPKCS11ModuleDB.idl',
     'nsIPKCS11Slot.idl',
     'nsIProtectedAuthThread.idl',
-    'nsIRecentBadCertsService.idl',
     'nsISSLErrorListener.idl',
     'nsISSLStatus.idl',
     'nsIStreamCipher.idl',
@@ -39,10 +38,7 @@ XPIDL_SOURCES += [
     'nsITokenPasswordDialogs.idl',
     'nsIUserCertPicker.idl',
     'nsIX509Cert.idl',
-    'nsIX509Cert2.idl',
-    'nsIX509Cert3.idl',
     'nsIX509CertDB.idl',
-    'nsIX509CertDB2.idl',
     'nsIX509CertList.idl',
     'nsIX509CertValidity.idl',
 ]

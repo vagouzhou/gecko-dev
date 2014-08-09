@@ -91,7 +91,6 @@ public:
     NS_IMETHOD GetRequestMethod(nsACString& aMethod);
 
     nsHttpChannel();
-    virtual ~nsHttpChannel();
 
     virtual nsresult Init(nsIURI *aURI, uint32_t aCaps, nsProxyInfo *aProxyInfo,
                           uint32_t aProxyResolveFlags,
@@ -161,7 +160,7 @@ public: /* internal necko use only */
     class AutoCacheWaitFlags
     {
     public:
-      AutoCacheWaitFlags(nsHttpChannel* channel)
+      explicit AutoCacheWaitFlags(nsHttpChannel* channel)
         : mChannel(channel)
         , mKeep(0)
       {
@@ -187,6 +186,9 @@ public: /* internal necko use only */
       nsHttpChannel* mChannel;
       uint32_t mKeep : 2;
     };
+
+protected:
+    virtual ~nsHttpChannel();
 
 private:
     typedef nsresult (nsHttpChannel::*nsContinueRedirectionFunc)(nsresult result);
@@ -326,7 +328,8 @@ private:
                      bool ignoreMissingPartialLen = false) const;
     nsresult MaybeSetupByteRangeRequest(int64_t partialLen, int64_t contentLength);
     nsresult SetupByteRangeRequest(int64_t partialLen);
-    nsresult OpenCacheInputStream(nsICacheEntry* cacheEntry, bool startBuffering);
+    nsresult OpenCacheInputStream(nsICacheEntry* cacheEntry, bool startBuffering,
+                                  bool checkingAppCacheEntry);
 
 private:
     nsCOMPtr<nsISupports>             mSecurityInfo;

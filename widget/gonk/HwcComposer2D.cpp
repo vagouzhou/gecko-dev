@@ -18,10 +18,9 @@
 #include <string.h>
 
 #include "libdisplay/GonkDisplay.h"
-#include "Framebuffer.h"
-#include "GLContext.h"                  // for GLContext
 #include "HwcUtils.h"
 #include "HwcComposer2D.h"
+#include "LayerScope.h"
 #include "mozilla/layers/LayerManagerComposite.h"
 #include "mozilla/layers/PLayerTransaction.h"
 #include "mozilla/layers/ShadowLayerUtilsGralloc.h"
@@ -98,8 +97,10 @@ HwcComposer2D::Init(hwc_display_t dpy, hwc_surface_t sur, gl::GLContext* aGLCont
 
     nsIntSize screenSize;
 
-    mozilla::Framebuffer::GetSize(&screenSize);
-    mScreenRect  = nsIntRect(nsIntPoint(0, 0), screenSize);
+    ANativeWindow *win = GetGonkDisplay()->GetNativeWindow();
+    win->query(win, NATIVE_WINDOW_WIDTH, &screenSize.width);
+    win->query(win, NATIVE_WINDOW_HEIGHT, &screenSize.height);
+    mScreenRect = nsIntRect(nsIntPoint(0, 0), screenSize);
 
 #if ANDROID_VERSION >= 17
     int supported = 0;
@@ -234,8 +235,7 @@ HwcComposer2D::PrepareLayerList(Layer* aLayer,
     // A 2D transform with PreservesAxisAlignedRectangles() has all the attributes
     // above
     gfxMatrix transform;
-    gfx3DMatrix transform3D;
-    gfx::To3DMatrix(aLayer->GetEffectiveTransform(), transform3D);
+    gfx3DMatrix transform3D = gfx::To3DMatrix(aLayer->GetEffectiveTransform());
 
     if (!transform3D.Is2D(&transform) || !transform.PreservesAxisAlignedRectangles()) {
         LOGD("Layer has a 3D transform or a non-square angle rotation");
@@ -807,13 +807,32 @@ HwcComposer2D::TryRender(Layer* aRoot,
         return false;
     }
 
+    // Send data to LayerScope for debugging
+    SendtoLayerScope();
+
     if (!TryHwComposition()) {
         LOGD("H/W Composition failed");
+        LayerScope::CleanLayer();
         return false;
     }
 
     LOGD("Frame rendered");
     return true;
+}
+
+void
+HwcComposer2D::SendtoLayerScope()
+{
+    if (!LayerScope::CheckSendable()) {
+        return;
+    }
+
+    const int len = mList->numHwLayers;
+    for (int i = 0; i < len; ++i) {
+        LayerComposite* layer = mHwcLayerMap[i];
+        const hwc_rect_t r = mList->hwLayers[i].displayFrame;
+        LayerScope::SendLayer(layer, r.right - r.left, r.bottom - r.top);
+    }
 }
 
 } // namespace mozilla

@@ -53,10 +53,13 @@
 #include "ipc/Nuwa.h"
 #endif
 
-using namespace mozilla;
-using namespace mozilla::gfx;
-using namespace mozilla::image;
-using namespace mozilla::layers;
+namespace mozilla {
+
+using namespace gfx;
+using namespace layers;
+
+namespace image {
+using std::ceil;
 
 // a mask for flags that will affect the decoding
 #define DECODE_FLAGS_MASK (imgIContainer::FLAG_DECODE_NO_PREMULTIPLY_ALPHA | imgIContainer::FLAG_DECODE_NO_COLORSPACE_CONVERSION)
@@ -191,7 +194,7 @@ public:
     MOZ_ASSERT(!aSrcFrame->GetIsPaletted());
     MOZ_ASSERT(aScale.width > 0 && aScale.height > 0);
 
-    weakImage = aImage->asWeakPtr();
+    weakImage = aImage;
     srcRect = aSrcFrame->GetRect();
 
     nsIntRect dstRect = srcRect;
@@ -370,9 +373,6 @@ public:
 private:
   nsAutoPtr<ScaleRequest> mScaleRequest;
 };
-
-namespace mozilla {
-namespace image {
 
 /* static */ StaticRefPtr<RasterImage::DecodePool> RasterImage::DecodePool::sSingleton;
 static nsCOMPtr<nsIThread> sScaleWorkerThread = nullptr;
@@ -1042,7 +1042,7 @@ RasterImage::GetImageContainer(LayerManager* aManager, ImageContainer **_retval)
   // We only need to be careful about holding on to the image when it is
   // discardable by the OS.
   if (CanForciblyDiscardAndRedecode()) {
-    mImageContainerCache = mImageContainer->asWeakPtr();
+    mImageContainerCache = mImageContainer;
     mImageContainer = nullptr;
   }
 
@@ -2587,6 +2587,39 @@ RasterImage::ScalingDone(ScaleRequest* request, ScaleStatus status)
   }
 }
 
+void
+RasterImage::RequestScale(imgFrame* aFrame, gfxSize aScale)
+{
+  // We can't store more than one scaled version of an image right now, so if
+  // there's more than one instance of this image, bail.
+  if (mLockCount != 1) {
+    return;
+  }
+
+  // We also can't scale if we can't lock the image data for this frame.
+  if (NS_FAILED(aFrame->LockImageData())) {
+    aFrame->UnlockImageData();
+    return;
+  }
+
+  // If we have an outstanding request, signal it to stop (if it can).
+  if (mScaleRequest) {
+    mScaleRequest->stopped = true;
+  }
+
+  nsRefPtr<ScaleRunner> runner = new ScaleRunner(this, aScale, aFrame);
+  if (runner->IsOK()) {
+    if (!sScaleWorkerThread) {
+      NS_NewNamedThread("Image Scaler", getter_AddRefs(sScaleWorkerThread));
+      ClearOnShutdown(&sScaleWorkerThread);
+    }
+
+    sScaleWorkerThread->Dispatch(runner, NS_DISPATCH_NORMAL);
+  }
+
+  aFrame->UnlockImageData();
+}
+
 bool
 RasterImage::DrawWithPreDownscaleIfNeeded(imgFrame *aFrame,
                                           gfxContext *aContext,
@@ -2600,7 +2633,9 @@ RasterImage::DrawWithPreDownscaleIfNeeded(imgFrame *aFrame,
   nsIntRect framerect = frame->GetRect();
   gfxMatrix userSpaceToImageSpace = aUserSpaceToImageSpace;
   gfxMatrix imageSpaceToUserSpace = aUserSpaceToImageSpace;
-  imageSpaceToUserSpace.Invert();
+  if (!imageSpaceToUserSpace.Invert()) {
+    return false;
+  }
   gfxSize scale = imageSpaceToUserSpace.ScaleFactors(true);
   nsIntRect subimage = aSubimage;
   RefPtr<SourceSurface> surf;
@@ -2621,8 +2656,7 @@ RasterImage::DrawWithPreDownscaleIfNeeded(imgFrame *aFrame,
       needScaleReq = !surf;
       if (surf) {
         frame = mScaleResult.frame;
-        userSpaceToImageSpace.Multiply(gfxMatrix().Scale(scale.width,
-                                                         scale.height));
+        userSpaceToImageSpace *= gfxMatrix::Scaling(scale.width, scale.height);
 
         // Since we're switching to a scaled image, we need to transform the
         // area of the subimage to draw accordingly, since imgFrame::Draw()
@@ -2636,27 +2670,8 @@ RasterImage::DrawWithPreDownscaleIfNeeded(imgFrame *aFrame,
 
     // If we're not waiting for exactly this result, and there's only one
     // instance of this image on this page, ask for a scale.
-    if (needScaleReq && mLockCount == 1) {
-      if (NS_FAILED(frame->LockImageData())) {
-        frame->UnlockImageData();
-        return false;
-      }
-
-      // If we have an outstanding request, signal it to stop (if it can).
-      if (mScaleRequest) {
-        mScaleRequest->stopped = true;
-      }
-
-      nsRefPtr<ScaleRunner> runner = new ScaleRunner(this, scale, frame);
-      if (runner->IsOK()) {
-        if (!sScaleWorkerThread) {
-          NS_NewNamedThread("Image Scaler", getter_AddRefs(sScaleWorkerThread));
-          ClearOnShutdown(&sScaleWorkerThread);
-        }
-
-        sScaleWorkerThread->Dispatch(runner, NS_DISPATCH_NORMAL);
-      }
-      frame->UnlockImageData();
+    if (needScaleReq) {
+      RequestScale(frame, scale);
     }
   }
 
@@ -3197,7 +3212,7 @@ RasterImage::DecodePool::GetEventTarget()
 
 #ifdef MOZ_NUWA_PROCESS
 
-class RIDThreadPoolListener : public nsIThreadPoolListener
+class RIDThreadPoolListener MOZ_FINAL : public nsIThreadPoolListener
 {
 public:
     NS_DECL_THREADSAFE_ISUPPORTS
@@ -3654,6 +3669,46 @@ RasterImage::FrameNeededWorker::Run()
   }
 
   return NS_OK;
+}
+
+nsIntSize
+RasterImage::OptimalImageSizeForDest(const gfxSize& aDest, uint32_t aWhichFrame,
+                                     GraphicsFilter aFilter, uint32_t aFlags)
+{
+  MOZ_ASSERT(aDest.width >= 0 || ceil(aDest.width) <= INT32_MAX ||
+             aDest.height >= 0 || ceil(aDest.height) <= INT32_MAX,
+             "Unexpected destination size");
+
+  if (mSize.IsEmpty()) {
+    return nsIntSize(0, 0);
+  }
+
+  nsIntSize destSize(ceil(aDest.width), ceil(aDest.height));
+  gfxSize scale(double(destSize.width) / mSize.width,
+                double(destSize.height) / mSize.height);
+
+  if (CanScale(aFilter, scale, aFlags)) {
+    if (mScaleResult.scale == scale) {
+      if (mScaleResult.status == SCALE_DONE) {
+        return destSize;  // We have an existing HQ scale for this size.
+      } else if (mScaleResult.status == SCALE_PENDING) {
+        return mSize;     // We're waiting for exactly this result.
+      }
+    }
+
+    // If there's only one instance of this image on this page, ask for a scale.
+    uint32_t frameIndex = aWhichFrame == FRAME_FIRST ? 0
+                                                     : GetCurrentImgFrameIndex();
+
+    imgFrame* frame = GetDrawableImgFrame(frameIndex);
+    if (frame) {
+      RequestScale(frame, scale);
+    }
+  }
+
+  // We either can't HQ scale to this size or the scaled version isn't ready
+  // yet. Use our intrinsic size for now.
+  return mSize;
 }
 
 } // namespace image

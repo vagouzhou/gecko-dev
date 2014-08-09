@@ -5,7 +5,6 @@
 #include "nsXULAppAPI.h"
 
 #include "mozilla/dom/ContentChild.h"
-#include "mozilla/dom/TabChild.h"
 #include "mozilla/Telemetry.h"
 
 #include "nsISettingsService.h"
@@ -24,7 +23,6 @@
 #include "mozilla/unused.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "PCOMContentPermissionRequestChild.h"
 #include "mozilla/dom/PermissionMessageUtils.h"
 
 class nsIPrincipal;
@@ -60,7 +58,6 @@ class nsGeolocationRequest
  : public nsIContentPermissionRequest
  , public nsITimerCallback
  , public nsIGeolocationUpdate
- , public PCOMContentPermissionRequestChild
 {
  public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
@@ -85,14 +82,10 @@ class nsGeolocationRequest
   void NotifyErrorAndShutdown(uint16_t);
   nsIPrincipal* GetPrincipal();
 
-  virtual bool Recv__delete__(const bool& allow,
-                              const InfallibleTArray<PermissionChoice>& choices) MOZ_OVERRIDE;
-  virtual void IPDLRelease() MOZ_OVERRIDE { Release(); }
-
   bool IsWatch() { return mIsWatchPositionRequest; }
   int32_t WatchId() { return mWatchId; }
  private:
-  ~nsGeolocationRequest();
+  virtual ~nsGeolocationRequest();
 
   bool mIsWatchPositionRequest;
 
@@ -169,21 +162,22 @@ NS_IMPL_ISUPPORTS(GeolocationSettingsCallback, nsISettingsServiceCallback)
 class RequestPromptEvent : public nsRunnable
 {
 public:
-  RequestPromptEvent(nsGeolocationRequest* request)
-    : mRequest(request)
+  RequestPromptEvent(nsGeolocationRequest* aRequest, nsWeakPtr aWindow)
+    : mRequest(aRequest)
+    , mWindow(aWindow)
   {
   }
 
-  NS_IMETHOD Run() {
-    nsCOMPtr<nsIContentPermissionPrompt> prompt = do_CreateInstance(NS_CONTENT_PERMISSION_PROMPT_CONTRACTID);
-    if (prompt) {
-      prompt->Prompt(mRequest);
-    }
+  NS_IMETHOD Run()
+  {
+    nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mWindow);
+    nsContentPermissionUtils::AskPermission(mRequest, window);
     return NS_OK;
   }
 
 private:
   nsRefPtr<nsGeolocationRequest> mRequest;
+  nsWeakPtr mWindow;
 };
 
 class RequestAllowEvent : public nsRunnable
@@ -384,10 +378,10 @@ NS_IMETHODIMP
 nsGeolocationRequest::GetTypes(nsIArray** aTypes)
 {
   nsTArray<nsString> emptyOptions;
-  return CreatePermissionArray(NS_LITERAL_CSTRING("geolocation"),
-                               NS_LITERAL_CSTRING("unused"),
-                               emptyOptions,
-                               aTypes);
+  return nsContentPermissionUtils::CreatePermissionArray(NS_LITERAL_CSTRING("geolocation"),
+                                                         NS_LITERAL_CSTRING("unused"),
+                                                         emptyOptions,
+                                                         aTypes);
 }
 
 NS_IMETHODIMP
@@ -431,32 +425,28 @@ nsGeolocationRequest::Allow(JS::HandleValue aChoices)
     return NS_OK;
   }
 
-  nsCOMPtr<nsIDOMGeoPosition> lastPosition = gs->GetCachedPosition();
-  DOMTimeStamp cachedPositionTime;
-  if (lastPosition) {
-    lastPosition->GetTimestamp(&cachedPositionTime);
-  }
-
-  // check to see if we can use a cached value
-  // if the user has specified a maximumAge, return a cached value.
-
-  uint32_t maximumAge = 0;
-  if (mOptions) {
-    if (mOptions->mMaximumAge > 0) {
-      maximumAge = mOptions->mMaximumAge;
+  bool canUseCache = false;
+  CachedPositionAndAccuracy lastPosition = gs->GetCachedPosition();
+  if (lastPosition.position) {
+    DOMTimeStamp cachedPositionTime_ms;
+    lastPosition.position->GetTimestamp(&cachedPositionTime_ms);
+    // check to see if we can use a cached value
+    // if the user has specified a maximumAge, return a cached value.
+    if (mOptions && mOptions->mMaximumAge > 0) {
+      uint32_t maximumAge_ms = mOptions->mMaximumAge;
+      bool isCachedWithinRequestedAccuracy = WantsHighAccuracy() <= lastPosition.isHighAccuracy;
+      bool isCachedWithinRequestedTime =
+        DOMTimeStamp(PR_Now() / PR_USEC_PER_MSEC - maximumAge_ms) <= cachedPositionTime_ms;
+      canUseCache = isCachedWithinRequestedAccuracy && isCachedWithinRequestedTime;
     }
   }
+
   gs->UpdateAccuracy(WantsHighAccuracy());
-
-  bool canUseCache = lastPosition && maximumAge > 0 &&
-    (PRTime(PR_Now() / PR_USEC_PER_MSEC) - maximumAge <=
-    PRTime(cachedPositionTime));
-
   if (canUseCache) {
     // okay, we can return a cached position
     // getCurrentPosition requests serviced by the cache
     // will now be owned by the RequestSendLocationEvent
-    Update(lastPosition);
+    Update(lastPosition.position);
   }
 
   if (mIsWatchPositionRequest || !canUseCache) {
@@ -506,10 +496,9 @@ nsGeolocationRequest::SendLocation(nsIDOMGeoPosition* aPosition)
     return;
   }
 
-  nsRefPtr<Position> wrapped, cachedWrapper = mLocator->GetCachedPosition();
-  if (cachedWrapper && aPosition == cachedWrapper->GetWrappedGeoPosition()) {
-    wrapped = cachedWrapper;
-  } else if (aPosition) {
+  nsRefPtr<Position> wrapped;
+
+  if (aPosition) {
     nsCOMPtr<nsIDOMGeoPositionCoords> coords;
     aPosition->GetCoords(getter_AddRefs(coords));
     if (coords) {
@@ -522,7 +511,6 @@ nsGeolocationRequest::SendLocation(nsIDOMGeoPosition* aPosition)
     return;
   }
 
-  mLocator->SetCachedPosition(wrapped);
   if (!mIsWatchPositionRequest) {
     // Cancel timer and position updates in case the position
     // callback spins the event loop
@@ -606,18 +594,6 @@ nsGeolocationRequest::Shutdown()
   }
 }
 
-bool nsGeolocationRequest::Recv__delete__(const bool& allow,
-                                          const InfallibleTArray<PermissionChoice>& choices)
-{
-  MOZ_ASSERT(choices.IsEmpty(), "Geolocation doesn't support permission choice");
-
-  if (allow) {
-    (void) Allow(JS::UndefinedHandleValue);
-  } else {
-    (void) Cancel();
-  }
-  return true;
-}
 ////////////////////////////////////////////////////
 // nsGeolocationService
 ////////////////////////////////////////////////////
@@ -764,7 +740,7 @@ nsGeolocationService::HandleMozsettingValue(const bool aValue)
       // turn things off
       StopDevice();
       Update(nullptr);
-      mLastPosition = nullptr;
+      mLastPosition.position = nullptr;
       sGeoEnabled = false;
     } else {
       sGeoEnabled = true;
@@ -854,10 +830,11 @@ nsGeolocationService::NotifyError(uint16_t aErrorCode)
 void
 nsGeolocationService::SetCachedPosition(nsIDOMGeoPosition* aPosition)
 {
-  mLastPosition = aPosition;
+  mLastPosition.position = aPosition;
+  mLastPosition.isHighAccuracy = mHigherAccuracy;
 }
 
-nsIDOMGeoPosition*
+CachedPositionAndAccuracy
 nsGeolocationService::GetCachedPosition()
 {
   return mLastPosition;
@@ -1033,7 +1010,6 @@ NS_IMPL_CYCLE_COLLECTING_ADDREF(Geolocation)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(Geolocation)
 
 NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(Geolocation,
-                                      mCachedPosition,
                                       mPendingCallbacks,
                                       mWatchingCallbacks,
                                       mPendingRequests)
@@ -1204,18 +1180,6 @@ Geolocation::NotifyError(uint16_t aErrorCode)
   }
 
   return NS_OK;
-}
-
-void
-Geolocation::SetCachedPosition(Position* aPosition)
-{
-  mCachedPosition = aPosition;
-}
-
-Position*
-Geolocation::GetCachedPosition()
-{
-  return mCachedPosition;
 }
 
 void
@@ -1487,37 +1451,7 @@ Geolocation::RegisterRequestWithPrompt(nsGeolocationRequest* request)
     return true;
   }
 
-  if (XRE_GetProcessType() == GeckoProcessType_Content) {
-    nsCOMPtr<nsPIDOMWindow> window = do_QueryReferent(mOwner);
-    if (!window) {
-      return true;
-    }
-
-    // because owner implements nsITabChild, we can assume that it is
-    // the one and only TabChild.
-    TabChild* child = TabChild::GetFrom(window->GetDocShell());
-    if (!child) {
-      return false;
-    }
-
-    nsTArray<PermissionRequest> permArray;
-    nsTArray<nsString> emptyOptions;
-    permArray.AppendElement(PermissionRequest(NS_LITERAL_CSTRING("geolocation"),
-                                              NS_LITERAL_CSTRING("unused"),
-                                              emptyOptions));
-
-    // Retain a reference so the object isn't deleted without IPDL's knowledge.
-    // Corresponding release occurs in DeallocPContentPermissionRequest.
-    request->AddRef();
-    child->SendPContentPermissionRequestConstructor(request,
-                                                    permArray,
-                                                    IPC::Principal(mPrincipal));
-
-    request->Sendprompt();
-    return true;
-  }
-
-  nsCOMPtr<nsIRunnable> ev  = new RequestPromptEvent(request);
+  nsCOMPtr<nsIRunnable> ev  = new RequestPromptEvent(request, mOwner);
   NS_DispatchToMainThread(ev);
   return true;
 }

@@ -282,9 +282,14 @@ class JSObject : public js::ObjectImpl
     }
 
     /* See InterpreterFrame::varObj. */
-    inline bool isVarObj();
-    bool setVarObj(js::ExclusiveContext *cx) {
-        return setFlag(cx, js::BaseShape::VAROBJ);
+    inline bool isQualifiedVarObj();
+    bool setQualifiedVarObj(js::ExclusiveContext *cx) {
+        return setFlag(cx, js::BaseShape::QUALIFIED_VAROBJ);
+    }
+
+    inline bool isUnqualifiedVarObj();
+    bool setUnqualifiedVarObj(js::ExclusiveContext *cx) {
+        return setFlag(cx, js::BaseShape::UNQUALIFIED_VAROBJ);
     }
 
     /*
@@ -597,6 +602,7 @@ class JSObject : public js::ObjectImpl
         return true;
     }
 
+    static uint32_t goodAllocated(uint32_t n, uint32_t length);
     bool growElements(js::ThreadSafeContext *cx, uint32_t newcap);
     void shrinkElements(js::ThreadSafeContext *cx, uint32_t cap);
     void setDynamicElements(js::ObjectElements *header) {
@@ -694,7 +700,7 @@ class JSObject : public js::ObjectImpl
         */
         JS::Zone *zone = this->zone();
         JS::shadow::Zone *shadowZone = JS::shadow::Zone::asShadowZone(zone);
-        if (shadowZone->needsBarrier()) {
+        if (shadowZone->needsIncrementalBarrier()) {
             if (dstStart < srcStart) {
                 js::HeapSlot *dst = elements + dstStart;
                 js::HeapSlot *src = elements + srcStart;
@@ -713,7 +719,7 @@ class JSObject : public js::ObjectImpl
     }
 
     void moveDenseElementsNoPreBarrier(uint32_t dstStart, uint32_t srcStart, uint32_t count) {
-        JS_ASSERT(!shadowZone()->needsBarrier());
+        JS_ASSERT(!shadowZone()->needsIncrementalBarrier());
 
         JS_ASSERT(dstStart + count <= getDenseCapacity());
         JS_ASSERT(srcStart + count <= getDenseCapacity());
@@ -1249,9 +1255,6 @@ GetBuiltinConstructor(ExclusiveContext *cx, JSProtoKey key, MutableHandleObject 
 bool
 GetBuiltinPrototype(ExclusiveContext *cx, JSProtoKey key, MutableHandleObject objp);
 
-const Class *
-ProtoKeyToClass(JSProtoKey key);
-
 JSObject *
 GetBuiltinPrototypePure(GlobalObject *global, JSProtoKey protoKey);
 
@@ -1407,7 +1410,7 @@ LookupNameNoGC(JSContext *cx, PropertyName *name, JSObject *scopeChain,
 
 /*
  * Like LookupName except returns the global object if 'name' is not found in
- * any preceding non-global scope.
+ * any preceding scope.
  *
  * Additionally, pobjp and propp are not needed by callers so they are not
  * returned.
@@ -1415,6 +1418,17 @@ LookupNameNoGC(JSContext *cx, PropertyName *name, JSObject *scopeChain,
 extern bool
 LookupNameWithGlobalDefault(JSContext *cx, HandlePropertyName name, HandleObject scopeChain,
                             MutableHandleObject objp);
+
+/*
+ * Like LookupName except returns the unqualified var object if 'name' is not found in
+ * any preceding scope. Normally the unqualified var object is the global.
+ *
+ * Additionally, pobjp and propp are not needed by callers so they are not
+ * returned.
+ */
+extern bool
+LookupNameUnqualified(JSContext *cx, HandlePropertyName name, HandleObject scopeChain,
+                      MutableHandleObject objp);
 
 }
 

@@ -190,6 +190,9 @@ destroying the MediaDecoder object.
 #include "MediaStreamGraph.h"
 #include "AbstractMediaDecoder.h"
 #include "necko-config.h"
+#ifdef MOZ_EME
+#include "mozilla/CDMProxy.h"
+#endif
 
 class nsIStreamListener;
 class nsIPrincipal;
@@ -440,7 +443,8 @@ public:
   public:
     DecodedStreamGraphListener(MediaStream* aStream, DecodedStreamData* aData);
     virtual void NotifyOutput(MediaStreamGraph* aGraph, GraphTime aCurrentTime) MOZ_OVERRIDE;
-    virtual void NotifyFinished(MediaStreamGraph* aGraph) MOZ_OVERRIDE;
+    virtual void NotifyEvent(MediaStreamGraph* aGraph,
+                             MediaStreamListener::MediaStreamGraphEvent event) MOZ_OVERRIDE;
 
     void DoNotifyFinished();
 
@@ -751,10 +755,7 @@ public:
   // main thread to be presented when the |currentTime| of the media is greater
   // or equal to aPublishTime.
   void QueueMetadata(int64_t aPublishTime,
-                     int aChannels,
-                     int aRate,
-                     bool aHasAudio,
-                     bool aHasVideo,
+                     MediaInfo* aInfo,
                      MetadataTags* aTags);
 
   /******
@@ -777,11 +778,17 @@ public:
 
   // Called when the metadata from the media file has been loaded by the
   // state machine. Call on the main thread only.
-  virtual void MetadataLoaded(int aChannels,
-                              int aRate,
-                              bool aHasAudio,
-                              bool aHasVideo,
+  virtual void MetadataLoaded(MediaInfo* aInfo,
                               MetadataTags* aTags);
+
+  // Called from MetadataLoaded(). Creates audio tracks and adds them to its
+  // owner's audio track list, and implies to video tracks respectively.
+  // Call on the main thread only.
+  void ConstructMediaTracks();
+
+  // Removes all audio tracks and video tracks that are previously added into
+  // the track list. Call on the main thread only.
+  virtual void RemoveMediaTracks() MOZ_OVERRIDE;
 
   // Called when the first frame has been loaded.
   // Call on the main thread only.
@@ -810,7 +817,7 @@ public:
   // Called when the backend has changed the current playback
   // position. It dispatches a timeupdate event and invalidates the frame.
   // This must be called on the main thread only.
-  void PlaybackPositionChanged();
+  virtual void PlaybackPositionChanged();
 
   // Calls mElement->UpdateReadyStateForData, telling it whether we have
   // data for the next frame and if we're buffering. Main thread only.
@@ -845,6 +852,14 @@ public:
   // The decoder monitor must be held.
   bool IsLogicallyPlaying();
 
+#ifdef MOZ_EME
+  // This takes the decoder monitor.
+  virtual nsresult SetCDMProxy(CDMProxy* aProxy) MOZ_OVERRIDE;
+
+  // Decoder monitor must be held.
+  virtual CDMProxy* GetCDMProxy() MOZ_OVERRIDE;
+#endif
+
 #ifdef MOZ_RAW
   static bool IsRawEnabled();
 #endif
@@ -869,10 +884,11 @@ public:
 
 #ifdef MOZ_OMX_DECODER
   static bool IsOmxEnabled();
+  static bool IsOmxAsyncEnabled();
 #endif
 
-#ifdef MOZ_MEDIA_PLUGINS
-  static bool IsMediaPluginsEnabled();
+#ifdef MOZ_ANDROID_OMX
+  static bool IsAndroidMediaEnabled();
 #endif
 
 #ifdef MOZ_WMF
@@ -999,6 +1015,7 @@ public:
 
 protected:
   virtual ~MediaDecoder();
+  void SetStateMachineParameters();
 
   /******
    * The following members should be accessed with the decoder lock held.
@@ -1093,6 +1110,10 @@ private:
 
   // The |RestrictedAccessMonitor| member object.
   RestrictedAccessMonitor mReentrantMonitor;
+
+#ifdef MOZ_EME
+  nsRefPtr<CDMProxy> mProxy;
+#endif
 
 protected:
   // Data about MediaStreams that are being fed by this decoder.
@@ -1215,6 +1236,14 @@ protected:
   // to minimize preroll, as we assume the user is likely to keep playing,
   // or play the media again.
   bool mMinimizePreroll;
+
+  // True if audio tracks and video tracks are constructed and added into the
+  // track list, false if all tracks are removed from the track list.
+  bool mMediaTracksConstructed;
+
+  // Stores media info, including info of audio tracks and video tracks, should
+  // only be accessed from main thread.
+  nsAutoPtr<MediaInfo> mInfo;
 };
 
 } // namespace mozilla

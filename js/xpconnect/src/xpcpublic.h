@@ -37,7 +37,7 @@ namespace xpc {
 
 class Scriptability {
 public:
-    Scriptability(JSCompartment *c);
+    explicit Scriptability(JSCompartment *c);
     bool Allowed();
     bool IsImmuneToScriptPolicy();
 
@@ -139,6 +139,9 @@ IsXrayWrapper(JSObject *obj);
 JSObject *
 XrayAwareCalleeGlobal(JSObject *fun);
 
+void
+TraceXPCGlobal(JSTracer *trc, JSObject *obj);
+
 } /* namespace xpc */
 
 namespace JS {
@@ -190,7 +193,7 @@ inline JSScript *
 xpc_UnmarkGrayScript(JSScript *script)
 {
     if (script)
-        JS::ExposeGCThingToActiveJS(script, JSTRACE_SCRIPT);
+        JS::ExposeScriptToActiveJS(script);
 
     return script;
 }
@@ -238,7 +241,7 @@ public:
         JS::Zone *zone = js::GetContextZone(cx);
         ZoneStringCache *cache = static_cast<ZoneStringCache*>(JS_GetZoneUserData(zone));
         if (cache && buf == cache->mBuffer) {
-            MOZ_ASSERT(JS::GetGCThingZone(cache->mString) == zone);
+            MOZ_ASSERT(JS::GetTenuredGCThingZone(cache->mString) == zone);
             JS::MarkStringAsLive(zone, cache->mString);
             rval.setString(cache->mString);
             *sharedBuffer = false;
@@ -286,6 +289,8 @@ private:
 
     XPCStringConvert();         // not implemented
 };
+
+class nsIAddonInterposition;
 
 namespace xpc {
 
@@ -499,6 +504,12 @@ RecordDonatedNode(JSCompartment *c);
 // racey.
 bool
 ShouldDiscardSystemSource();
+
+bool
+SetAddonInterposition(const nsACString &addonId, nsIAddonInterposition *interposition);
+
+bool
+ExtraWarningsForSystemJS();
 
 } // namespace xpc
 

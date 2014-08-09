@@ -975,7 +975,7 @@ TextRenderedRun::GetUserSpaceRect(nsPresContext* aContext,
   }
   gfxMatrix m = GetTransformFromRunUserSpaceToUserSpace(aContext);
   if (aAdditionalTransform) {
-    m.Multiply(*aAdditionalTransform);
+    m *= *aAdditionalTransform;
   }
   return m.TransformBounds(r.ToThebesRect());
 }
@@ -1064,7 +1064,10 @@ TextRenderedRun::GetCharNumAtPosition(nsPresContext* aContext,
 
   // Convert the point from user space into run user space, and take
   // into account any mFontSizeScaleFactor.
-  gfxMatrix m = GetTransformFromRunUserSpaceToUserSpace(aContext).Invert();
+  gfxMatrix m = GetTransformFromRunUserSpaceToUserSpace(aContext);
+  if (!m.Invert()) {
+    return -1;
+  }
   gfxPoint p = m.Transform(aPoint) / cssPxPerDevPx * mFontSizeScaleFactor;
 
   // First check that the point lies vertically between the top and bottom
@@ -3033,7 +3036,9 @@ SVGTextContextPaint::Paint::GetPattern(float aOpacity,
       // m maps original-user-space to pattern space
       gfxMatrix m = pattern->GetMatrix();
       gfxMatrix deviceToOriginalUserSpace = mContextMatrix;
-      deviceToOriginalUserSpace.Invert();
+      if (!deviceToOriginalUserSpace.Invert()) {
+        return nullptr;
+      }
       // mPatternMatrix maps device space to pattern space via original user space
       mPatternMatrix = deviceToOriginalUserSpace * m;
     }
@@ -3108,8 +3113,12 @@ nsDisplaySVGText::HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
   SVGTextFrame *frame = static_cast<SVGTextFrame*>(mFrame);
   nsPoint pointRelativeToReferenceFrame = aRect.Center();
   // ToReferenceFrame() includes frame->GetPosition(), our user space position.
-  nsPoint userSpacePt = pointRelativeToReferenceFrame -
-                          (ToReferenceFrame() - frame->GetPosition());
+  nsPoint userSpacePtInAppUnits = pointRelativeToReferenceFrame -
+                                    (ToReferenceFrame() - frame->GetPosition());
+
+  gfxPoint userSpacePt =
+    gfxPoint(userSpacePtInAppUnits.x, userSpacePtInAppUnits.y) /
+      frame->PresContext()->AppUnitsPerCSSPixel();
 
   nsIFrame* target = frame->GetFrameForPoint(userSpacePt);
   if (target) {
@@ -3167,7 +3176,7 @@ SVGTextFrame::Init(nsIContent*       aContent,
   AddStateBits((aParent->GetStateBits() & NS_STATE_SVG_CLIPPATH_CHILD) |
                NS_FRAME_SVG_LAYOUT | NS_FRAME_IS_SVG_TEXT);
 
-  mMutationObserver.StartObserving(this);
+  mMutationObserver = new MutationObserver(this);
 }
 
 void
@@ -3419,9 +3428,15 @@ SVGTextFrame::FindCloserFrameForSelection(
                      TextRenderedRun::eIncludeStroke |
                      TextRenderedRun::eNoHorizontalOverflow;
     SVGBBox userRect = run.GetUserSpaceRect(presContext, flags);
+    float devPxPerCSSPx = presContext->CSSPixelsToDevPixels(1.f);
+    userRect.Scale(devPxPerCSSPx);
+
     if (!userRect.IsEmpty()) {
-      nsRect rect = nsSVGUtils::ToCanvasBounds(userRect.ToThebesRect(),
-                                               GetCanvasTM(FOR_HIT_TESTING),
+      gfxMatrix m;
+      if (!NS_SVGDisplayListHitTestingEnabled()) {
+        m = GetCanvasTM(FOR_OUTERSVG_TM);
+      }
+      nsRect rect = nsSVGUtils::ToCanvasBounds(userRect.ToThebesRect(), m,
                                                presContext);
 
       if (nsLayoutUtils::PointIsCloserToRect(aPoint, rect,
@@ -3586,8 +3601,7 @@ SVGTextFrame::PaintSVG(nsRenderingContext* aContext,
     return NS_ERROR_FAILURE;
   }
 
-  gfxMatrix matrixForPaintServers(canvasTM);
-  matrixForPaintServers.Multiply(initialMatrix);
+  gfxMatrix matrixForPaintServers = canvasTM * initialMatrix;
 
   // Check if we need to draw anything.
   if (aDirtyRect) {
@@ -3650,8 +3664,8 @@ SVGTextFrame::PaintSVG(nsRenderingContext* aContext,
     // Set up the transform for painting the text frame for the substring
     // indicated by the run.
     gfxMatrix runTransform =
-      run.GetTransformFromUserSpaceForPainting(presContext, item);
-    runTransform.Multiply(currentMatrix);
+      run.GetTransformFromUserSpaceForPainting(presContext, item) *
+      currentMatrix;
     gfx->SetMatrix(runTransform);
 
     if (drawMode != DrawMode(0)) {
@@ -3683,7 +3697,7 @@ SVGTextFrame::PaintSVG(nsRenderingContext* aContext,
 }
 
 nsIFrame*
-SVGTextFrame::GetFrameForPoint(const nsPoint& aPoint)
+SVGTextFrame::GetFrameForPoint(const gfxPoint& aPoint)
 {
   NS_ASSERTION(GetFirstPrincipalChild(), "must have a child frame");
 
@@ -3697,9 +3711,19 @@ SVGTextFrame::GetFrameForPoint(const nsPoint& aPoint)
     NS_ASSERTION(!NS_SUBTREE_DIRTY(this), "reflow should have happened");
   }
 
+  // Hit-testing any clip-path will typically be a lot quicker than the
+  // hit-testing of our text frames in the loop below, so we do the former up
+  // front to avoid unnecessarily wasting cycles on the latter.
+  if (!nsSVGUtils::HitTestClip(this, aPoint)) {
+    return nullptr;
+  }
+
   nsPresContext* presContext = PresContext();
 
-  gfxPoint pointInOuterSVGUserUnits = AppUnitsToGfxUnits(aPoint, presContext);
+  // Ideally we'd iterate backwards so that we can just return the first frame
+  // that is under aPoint.  In practice this will rarely matter though since it
+  // is rare for text in/under an SVG <text> element to overlap (i.e. the first
+  // text frame that is hit will likely be the only text frame that is hit).
 
   TextRenderedRunIterator it(this);
   nsIFrame* hit = nullptr;
@@ -3709,17 +3733,17 @@ SVGTextFrame::GetFrameForPoint(const nsPoint& aPoint)
       continue;
     }
 
-    gfxMatrix m = GetCanvasTM(FOR_HIT_TESTING);
-    m.PreMultiply(run.GetTransformFromRunUserSpaceToUserSpace(presContext));
-    m.Invert();
+    gfxMatrix m = run.GetTransformFromRunUserSpaceToUserSpace(presContext);
+    if (!m.Invert()) {
+      return nullptr;
+    }
 
-    gfxPoint pointInRunUserSpace = m.Transform(pointInOuterSVGUserUnits);
+    gfxPoint pointInRunUserSpace = m.Transform(aPoint);
     gfxRect frameRect =
       run.GetRunUserSpaceRect(presContext, TextRenderedRun::eIncludeFill |
                                            TextRenderedRun::eIncludeStroke).ToThebesRect();
 
-    if (Inside(frameRect, pointInRunUserSpace) &&
-        nsSVGUtils::HitTestClip(this, aPoint)) {
+    if (Inside(frameRect, pointInRunUserSpace)) {
       hit = run.mFrame;
     }
   }
@@ -3869,8 +3893,7 @@ SVGTextFrame::GetCanvasTM(uint32_t aFor, nsIFrame* aTransformRoot)
 {
   if (!(GetStateBits() & NS_FRAME_IS_NONDISPLAY) &&
       !aTransformRoot) {
-    if ((aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) ||
-        (aFor == FOR_HIT_TESTING && NS_SVGDisplayListHitTestingEnabled())) {
+    if (aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) {
       return nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(this);
     }
   }
@@ -5094,8 +5117,7 @@ SVGTextFrame::ShouldRenderAsPath(nsRenderingContext* aContext,
 
   // Text has a stroke.
   if (style->HasStroke() &&
-      SVGContentUtils::CoordToFloat(PresContext(),
-                                    static_cast<nsSVGElement*>(mContent),
+      SVGContentUtils::CoordToFloat(static_cast<nsSVGElement*>(mContent),
                                     style->mStrokeWidth) > 0) {
     return true;
   }
@@ -5190,15 +5212,17 @@ SVGTextFrame::DoReflow()
   if (UpdateFontSizeScaleFactor()) {
     // If the font size scale factor changed, we need the block to report
     // an updated preferred width.
-    kid->MarkIntrinsicWidthsDirty();
+    kid->MarkIntrinsicISizesDirty();
   }
 
   mState |= NS_STATE_SVG_TEXT_IN_REFLOW;
 
-  nscoord width = kid->GetPrefWidth(renderingContext);
+  nscoord inlineSize = kid->GetPrefISize(renderingContext);
+  WritingMode wm = kid->GetWritingMode();
   nsHTMLReflowState reflowState(presContext, kid,
                                 renderingContext,
-                                nsSize(width, NS_UNCONSTRAINEDSIZE));
+                                LogicalSize(wm, inlineSize,
+                                            NS_UNCONSTRAINEDSIZE));
   nsHTMLReflowMetrics desiredSize(reflowState);
   nsReflowStatus status;
 
@@ -5210,7 +5234,7 @@ SVGTextFrame::DoReflow()
   kid->WillReflow(presContext);
   kid->Reflow(presContext, desiredSize, reflowState, status);
   kid->DidReflow(presContext, &reflowState, nsDidReflowStatus::FINISHED);
-  kid->SetSize(nsSize(desiredSize.Width(), desiredSize.Height()));
+  kid->SetSize(wm, desiredSize.Size(wm));
 
   mState &= ~NS_STATE_SVG_TEXT_IN_REFLOW;
 
@@ -5359,9 +5383,11 @@ SVGTextFrame::TransformFramePointToTextChild(const gfxPoint& aPoint,
                      TextRenderedRun::eNoHorizontalOverflow;
     gfxRect runRect = run.GetRunUserSpaceRect(presContext, flags).ToThebesRect();
 
-    gfxPoint pointInRunUserSpace =
-      run.GetTransformFromRunUserSpaceToUserSpace(presContext).Invert().
-          Transform(pointInUserSpace);
+    gfxMatrix m = run.GetTransformFromRunUserSpaceToUserSpace(presContext);
+    if (!m.Invert()) {
+      return aPoint;
+    }
+    gfxPoint pointInRunUserSpace = m.Transform(pointInUserSpace);
 
     if (Inside(runRect, pointInRunUserSpace)) {
       // The point was inside the rendered run's rect, so we choose it.
@@ -5432,9 +5458,13 @@ SVGTextFrame::TransformFrameRectToTextChild(const gfxRect& aRect,
                              aChildFrame);
   for (TextRenderedRun run = it.Current(); run.mFrame; run = it.Next()) {
     // Convert the incoming rect into frame user space.
-    gfxMatrix m;
-    m.PreMultiply(run.GetTransformFromRunUserSpaceToUserSpace(presContext).Invert());
-    m.PreMultiply(run.GetTransformFromRunUserSpaceToFrameUserSpace(presContext));
+    gfxMatrix userSpaceToRunUserSpace =
+      run.GetTransformFromRunUserSpaceToUserSpace(presContext);
+    if (!userSpaceToRunUserSpace.Invert()) {
+      return result;
+    }
+    gfxMatrix m = run.GetTransformFromRunUserSpaceToFrameUserSpace(presContext) *
+                    userSpaceToRunUserSpace;
     gfxRect incomingRectInFrameUserSpace =
       m.TransformBounds(incomingRectInUserSpace);
 

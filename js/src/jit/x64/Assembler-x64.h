@@ -76,6 +76,8 @@ static MOZ_CONSTEXPR_VAR FloatRegister ReturnFloat32Reg = xmm0;
 static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloat32Reg = xmm15;
 static MOZ_CONSTEXPR_VAR FloatRegister ReturnDoubleReg = xmm0;
 static MOZ_CONSTEXPR_VAR FloatRegister ScratchDoubleReg = xmm15;
+static MOZ_CONSTEXPR_VAR FloatRegister ReturnSimdReg = xmm0;
+static MOZ_CONSTEXPR_VAR FloatRegister ScratchSimdReg = xmm15;
 
 // Avoid rbp, which is the FramePointer, which is unavailable in some modes.
 static MOZ_CONSTEXPR_VAR Register ArgumentsRectifierReg = r8;
@@ -170,9 +172,11 @@ class ABIArgGenerator
     uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
 
     // Note: these registers are all guaranteed to be different
-    static const Register NonArgReturnVolatileReg0;
-    static const Register NonArgReturnVolatileReg1;
+    static const Register NonArgReturnReg0;
+    static const Register NonArgReturnReg1;
     static const Register NonVolatileReg;
+    static const Register NonArg_VolatileReg;
+    static const Register NonReturn_VolatileReg0;
 };
 
 static MOZ_CONSTEXPR_VAR Register OsrFrameReg = IntArgReg3;
@@ -185,12 +189,12 @@ static const uint32_t StackAlignment = 16;
 static const bool StackKeptAligned = false;
 static const uint32_t CodeAlignment = 8;
 
-// As an invariant across architectures, within asm.js code:
-//   $sp % StackAlignment = (AsmJSFrameSize + masm.framePushed) % StackAlignment
-// On x64, this naturally falls out of the fact that the 'call' instruction
-// pushes the return address on the stack and masm.framePushed = 0 at the first
-// instruction of the prologue.
-static const uint32_t AsmJSFrameSize = sizeof(void*);
+// This boolean indicates whether we support SIMD instructions flavoured for
+// this architecture or not. Rather than a method in the LIRGenerator, it is
+// here such that it is accessible from the entire codebase. Once full support
+// for SIMD is reached on all tier-1 platforms, this constant can be deleted.
+static const bool SupportsSimd = true;
+static const uint32_t SimdStackAlignment = 16;
 
 static const Scale ScalePointer = TimesEight;
 
@@ -552,7 +556,7 @@ class Assembler : public AssemblerX86Shared
     }
     void mov(AsmJSImmPtr imm, Register dest) {
         masm.movq_i64r(-1, dest.code());
-        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
+        append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
     }
     void mov(const Operand &src, Register dest) {
         movq(src, dest);
@@ -606,6 +610,11 @@ class Assembler : public AssemblerX86Shared
     }
     CodeOffsetLabel leaRipRelative(Register dest) {
         return CodeOffsetLabel(masm.leaq_rip(dest.code()).offset());
+    }
+
+    void loadAsmJSActivation(Register dest) {
+        CodeOffsetLabel label = loadRipRelativeInt64(dest);
+        append(AsmJSGlobalAccess(label, AsmJSActivationGlobalDataOffset));
     }
 
     // The below cmpq methods switch the lhs and rhs when it invokes the
@@ -707,11 +716,11 @@ class Assembler : public AssemblerX86Shared
         CodeOffsetLabel offset(size());
         JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
         addPendingJump(src, ImmPtr(target->raw()), Relocation::JITCODE);
-        JS_ASSERT(size() - offset.offset() == ToggledCallSize());
+        JS_ASSERT(size() - offset.offset() == ToggledCallSize(nullptr));
         return offset;
     }
 
-    static size_t ToggledCallSize() {
+    static size_t ToggledCallSize(uint8_t *code) {
         // Size of a call instruction.
         return 5;
     }

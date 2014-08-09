@@ -36,6 +36,7 @@ class nsIMemoryReporter;
 class ParentIdleListener;
 
 namespace mozilla {
+class PRemoteSpellcheckEngineParent;
 
 namespace ipc {
 class OptionalURIParams;
@@ -230,6 +231,12 @@ public:
         return PContentParent::RecvPNeckoConstructor(aActor);
     }
 
+    virtual PScreenManagerParent*
+    AllocPScreenManagerParent(uint32_t* aNumberOfScreens,
+                              float* aSystemDefaultScale,
+                              bool* aSuccess) MOZ_OVERRIDE;
+    virtual bool DeallocPScreenManagerParent(PScreenManagerParent* aActor) MOZ_OVERRIDE;
+
     virtual PHalParent* AllocPHalParent() MOZ_OVERRIDE;
     virtual bool RecvPHalConstructor(PHalParent* aActor) MOZ_OVERRIDE {
         return PContentParent::RecvPHalConstructor(aActor);
@@ -246,6 +253,7 @@ public:
     RecvPJavaScriptConstructor(PJavaScriptParent* aActor) MOZ_OVERRIDE {
         return PContentParent::RecvPJavaScriptConstructor(aActor);
     }
+    virtual PRemoteSpellcheckEngineParent* AllocPRemoteSpellcheckEngineParent() MOZ_OVERRIDE;
 
     virtual bool RecvRecordingDeviceEvents(const nsString& aRecordingStatus,
                                            const nsString& aPageURL,
@@ -266,7 +274,6 @@ protected:
     void OnNuwaForkTimeout();
 
     bool ShouldContinueFromReplyTimeout() MOZ_OVERRIDE;
-    bool ShouldSandboxContentProcesses();
 
 private:
     static nsDataHashtable<nsStringHashKey, ContentParent*> *sAppContentParents;
@@ -389,6 +396,7 @@ private:
 
     virtual bool DeallocPJavaScriptParent(mozilla::jsipc::PJavaScriptParent*) MOZ_OVERRIDE;
 
+    virtual bool DeallocPRemoteSpellcheckEngineParent(PRemoteSpellcheckEngineParent*) MOZ_OVERRIDE;
     virtual PBrowserParent* AllocPBrowserParent(const IPCTabContext& aContext,
                                                 const uint32_t& aChromeFlags,
                                                 const uint64_t& aId,
@@ -414,6 +422,9 @@ private:
     virtual bool RecvGetRandomValues(const uint32_t& length,
                                      InfallibleTArray<uint8_t>* randomValues) MOZ_OVERRIDE;
 
+    virtual bool RecvIsSecureURI(const uint32_t& type, const URIParams& uri,
+                                 const uint32_t& flags, bool* isSecureURI);
+
     virtual bool DeallocPHalParent(PHalParent*) MOZ_OVERRIDE;
 
     virtual bool DeallocPIndexedDBParent(PIndexedDBParent* aActor) MOZ_OVERRIDE;
@@ -422,7 +433,7 @@ private:
     AllocPMemoryReportRequestParent(const uint32_t& aGeneration,
                                     const bool &aAnonymize,
                                     const bool &aMinimizeMemoryUsage,
-                                    const nsString &aDMDDumpIdent) MOZ_OVERRIDE;
+                                    const FileDescriptor &aDMDFile) MOZ_OVERRIDE;
     virtual bool DeallocPMemoryReportRequestParent(PMemoryReportRequestParent* actor) MOZ_OVERRIDE;
 
     virtual PCycleCollectWithLogsParent*
@@ -572,6 +583,7 @@ private:
 
     virtual bool RecvDataStoreGetStores(
                        const nsString& aName,
+                       const nsString& aOwner,
                        const IPC::Principal& aPrincipal,
                        InfallibleTArray<DataStoreSetting>* aValue) MOZ_OVERRIDE;
 

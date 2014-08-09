@@ -115,13 +115,13 @@ static nsCSSProperty gAliases[eCSSAliasCount != 0 ? eCSSAliasCount : 1] = {
 };
 
 nsStaticCaseInsensitiveNameTable*
-CreateStaticTable(const char* const aRawTable[], int32_t aSize)
+CreateStaticTable(const char* const aRawTable[], int32_t aLength)
 {
   auto table = new nsStaticCaseInsensitiveNameTable();
   if (table) {
 #ifdef DEBUG
     // let's verify the table...
-    for (int32_t index = 0; index < aSize; ++index) {
+    for (int32_t index = 0; index < aLength; ++index) {
       nsAutoCString temp1(aRawTable[index]);
       nsAutoCString temp2(aRawTable[index]);
       ToLowerCase(temp1);
@@ -131,7 +131,7 @@ CreateStaticTable(const char* const aRawTable[], int32_t aSize)
                         "underscore char in case insensitive name table");
     }
 #endif
-    table->Init(aRawTable, aSize);
+    table->Init(aRawTable, aLength);
   }
   return table;
 }
@@ -1044,41 +1044,47 @@ const KTableValue nsCSSProps::kDirectionKTable[] = {
 };
 
 KTableValue nsCSSProps::kDisplayKTable[] = {
-  eCSSKeyword_none,               NS_STYLE_DISPLAY_NONE,
-  eCSSKeyword_inline,             NS_STYLE_DISPLAY_INLINE,
-  eCSSKeyword_block,              NS_STYLE_DISPLAY_BLOCK,
-  eCSSKeyword_inline_block,       NS_STYLE_DISPLAY_INLINE_BLOCK,
-  eCSSKeyword_list_item,          NS_STYLE_DISPLAY_LIST_ITEM,
-  eCSSKeyword_table,              NS_STYLE_DISPLAY_TABLE,
-  eCSSKeyword_inline_table,       NS_STYLE_DISPLAY_INLINE_TABLE,
-  eCSSKeyword_table_row_group,    NS_STYLE_DISPLAY_TABLE_ROW_GROUP,
-  eCSSKeyword_table_header_group, NS_STYLE_DISPLAY_TABLE_HEADER_GROUP,
-  eCSSKeyword_table_footer_group, NS_STYLE_DISPLAY_TABLE_FOOTER_GROUP,
-  eCSSKeyword_table_row,          NS_STYLE_DISPLAY_TABLE_ROW,
-  eCSSKeyword_table_column_group, NS_STYLE_DISPLAY_TABLE_COLUMN_GROUP,
-  eCSSKeyword_table_column,       NS_STYLE_DISPLAY_TABLE_COLUMN,
-  eCSSKeyword_table_cell,         NS_STYLE_DISPLAY_TABLE_CELL,
-  eCSSKeyword_table_caption,      NS_STYLE_DISPLAY_TABLE_CAPTION,
+  eCSSKeyword_none,                NS_STYLE_DISPLAY_NONE,
+  eCSSKeyword_inline,              NS_STYLE_DISPLAY_INLINE,
+  eCSSKeyword_block,               NS_STYLE_DISPLAY_BLOCK,
+  eCSSKeyword_inline_block,        NS_STYLE_DISPLAY_INLINE_BLOCK,
+  eCSSKeyword_list_item,           NS_STYLE_DISPLAY_LIST_ITEM,
+  eCSSKeyword_table,               NS_STYLE_DISPLAY_TABLE,
+  eCSSKeyword_inline_table,        NS_STYLE_DISPLAY_INLINE_TABLE,
+  eCSSKeyword_table_row_group,     NS_STYLE_DISPLAY_TABLE_ROW_GROUP,
+  eCSSKeyword_table_header_group,  NS_STYLE_DISPLAY_TABLE_HEADER_GROUP,
+  eCSSKeyword_table_footer_group,  NS_STYLE_DISPLAY_TABLE_FOOTER_GROUP,
+  eCSSKeyword_table_row,           NS_STYLE_DISPLAY_TABLE_ROW,
+  eCSSKeyword_table_column_group,  NS_STYLE_DISPLAY_TABLE_COLUMN_GROUP,
+  eCSSKeyword_table_column,        NS_STYLE_DISPLAY_TABLE_COLUMN,
+  eCSSKeyword_table_cell,          NS_STYLE_DISPLAY_TABLE_CELL,
+  eCSSKeyword_table_caption,       NS_STYLE_DISPLAY_TABLE_CAPTION,
   // Make sure this is kept in sync with the code in
   // nsCSSFrameConstructor::ConstructXULFrame
-  eCSSKeyword__moz_box,           NS_STYLE_DISPLAY_BOX,
-  eCSSKeyword__moz_inline_box,    NS_STYLE_DISPLAY_INLINE_BOX,
+  eCSSKeyword__moz_box,            NS_STYLE_DISPLAY_BOX,
+  eCSSKeyword__moz_inline_box,     NS_STYLE_DISPLAY_INLINE_BOX,
 #ifdef MOZ_XUL
-  eCSSKeyword__moz_grid,          NS_STYLE_DISPLAY_XUL_GRID,
-  eCSSKeyword__moz_inline_grid,   NS_STYLE_DISPLAY_INLINE_XUL_GRID,
-  eCSSKeyword__moz_grid_group,    NS_STYLE_DISPLAY_XUL_GRID_GROUP,
-  eCSSKeyword__moz_grid_line,     NS_STYLE_DISPLAY_XUL_GRID_LINE,
-  eCSSKeyword__moz_stack,         NS_STYLE_DISPLAY_STACK,
-  eCSSKeyword__moz_inline_stack,  NS_STYLE_DISPLAY_INLINE_STACK,
-  eCSSKeyword__moz_deck,          NS_STYLE_DISPLAY_DECK,
-  eCSSKeyword__moz_popup,         NS_STYLE_DISPLAY_POPUP,
-  eCSSKeyword__moz_groupbox,      NS_STYLE_DISPLAY_GROUPBOX,
+  eCSSKeyword__moz_grid,           NS_STYLE_DISPLAY_XUL_GRID,
+  eCSSKeyword__moz_inline_grid,    NS_STYLE_DISPLAY_INLINE_XUL_GRID,
+  eCSSKeyword__moz_grid_group,     NS_STYLE_DISPLAY_XUL_GRID_GROUP,
+  eCSSKeyword__moz_grid_line,      NS_STYLE_DISPLAY_XUL_GRID_LINE,
+  eCSSKeyword__moz_stack,          NS_STYLE_DISPLAY_STACK,
+  eCSSKeyword__moz_inline_stack,   NS_STYLE_DISPLAY_INLINE_STACK,
+  eCSSKeyword__moz_deck,           NS_STYLE_DISPLAY_DECK,
+  eCSSKeyword__moz_popup,          NS_STYLE_DISPLAY_POPUP,
+  eCSSKeyword__moz_groupbox,       NS_STYLE_DISPLAY_GROUPBOX,
 #endif
-  eCSSKeyword_flex,               NS_STYLE_DISPLAY_FLEX,
-  eCSSKeyword_inline_flex,        NS_STYLE_DISPLAY_INLINE_FLEX,
+  eCSSKeyword_flex,                NS_STYLE_DISPLAY_FLEX,
+  eCSSKeyword_inline_flex,         NS_STYLE_DISPLAY_INLINE_FLEX,
   // The next two entries are controlled by the layout.css.grid.enabled pref.
-  eCSSKeyword_grid,               NS_STYLE_DISPLAY_GRID,
-  eCSSKeyword_inline_grid,        NS_STYLE_DISPLAY_INLINE_GRID,
+  eCSSKeyword_grid,                NS_STYLE_DISPLAY_GRID,
+  eCSSKeyword_inline_grid,         NS_STYLE_DISPLAY_INLINE_GRID,
+  // The next five entries are controlled by the layout.css.ruby.enabled pref.
+  eCSSKeyword_ruby,                NS_STYLE_DISPLAY_RUBY,
+  eCSSKeyword_ruby_base,           NS_STYLE_DISPLAY_RUBY_BASE,
+  eCSSKeyword_ruby_base_container, NS_STYLE_DISPLAY_RUBY_BASE_CONTAINER,
+  eCSSKeyword_ruby_text,           NS_STYLE_DISPLAY_RUBY_TEXT,
+  eCSSKeyword_ruby_text_container, NS_STYLE_DISPLAY_RUBY_TEXT_CONTAINER,
   eCSSKeyword_UNKNOWN,-1
 };
 
@@ -1116,6 +1122,15 @@ const KTableValue nsCSSProps::kAlignSelfKTable[] = {
   eCSSKeyword_baseline,   NS_STYLE_ALIGN_ITEMS_BASELINE,
   eCSSKeyword_stretch,    NS_STYLE_ALIGN_ITEMS_STRETCH,
   eCSSKeyword_auto,       NS_STYLE_ALIGN_SELF_AUTO,
+  eCSSKeyword_UNKNOWN,-1
+};
+
+const KTableValue nsCSSProps::kFlexBasisKTable[] = {
+  eCSSKeyword__moz_max_content, NS_STYLE_WIDTH_MAX_CONTENT,
+  eCSSKeyword__moz_min_content, NS_STYLE_WIDTH_MIN_CONTENT,
+  eCSSKeyword__moz_fit_content, NS_STYLE_WIDTH_FIT_CONTENT,
+  eCSSKeyword__moz_available,   NS_STYLE_WIDTH_AVAILABLE,
+  eCSSKeyword_main_size,        NS_STYLE_FLEX_BASIS_MAIN_SIZE,
   eCSSKeyword_UNKNOWN,-1
 };
 
@@ -2151,6 +2166,7 @@ static const nsCSSProperty gAnimationSubpropTable[] = {
   eCSSProperty_animation_direction,
   eCSSProperty_animation_fill_mode,
   eCSSProperty_animation_iteration_count,
+  eCSSProperty_animation_play_state,
   // List animation-name last so we serialize it last, in case it has
   // a value that conflicts with one of the other properties.  (See
   // how Declaration::GetValue serializes 'animation'.

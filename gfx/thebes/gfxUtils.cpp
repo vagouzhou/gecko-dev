@@ -398,28 +398,22 @@ CreateSamplingRestrictedDrawable(gfxDrawable* aDrawable,
     if (needed.IsEmpty())
         return nullptr;
 
-    nsRefPtr<gfxDrawable> drawable;
     gfxIntSize size(int32_t(needed.Width()), int32_t(needed.Height()));
 
-    nsRefPtr<gfxImageSurface> image = aDrawable->GetAsImageSurface();
-    if (image && gfxRect(0, 0, image->GetSize().width, image->GetSize().height).Contains(needed)) {
-      nsRefPtr<gfxASurface> temp = image->GetSubimage(needed);
-      drawable = new gfxSurfaceDrawable(temp, size, gfxMatrix().Translate(-needed.TopLeft()));
-    } else {
-      RefPtr<DrawTarget> target =
-        gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(ToIntSize(size),
-                                                                     aFormat);
-      if (!target) {
-        return nullptr;
-      }
-
-      nsRefPtr<gfxContext> tmpCtx = new gfxContext(target);
-      tmpCtx->SetOperator(OptimalFillOperator());
-      aDrawable->Draw(tmpCtx, needed - needed.TopLeft(), true,
-                      GraphicsFilter::FILTER_FAST, gfxMatrix().Translate(needed.TopLeft()));
-      drawable = new gfxSurfaceDrawable(target, size, gfxMatrix().Translate(-needed.TopLeft()));
+    RefPtr<DrawTarget> target =
+      gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(ToIntSize(size),
+                                                                   aFormat);
+    if (!target) {
+      return nullptr;
     }
 
+    nsRefPtr<gfxContext> tmpCtx = new gfxContext(target);
+    tmpCtx->SetOperator(OptimalFillOperator());
+    aDrawable->Draw(tmpCtx, needed - needed.TopLeft(), true,
+                    GraphicsFilter::FILTER_FAST, gfxMatrix().Translate(needed.TopLeft()));
+    RefPtr<SourceSurface> surface = target->Snapshot();
+
+    nsRefPtr<gfxDrawable> drawable = new gfxSurfaceDrawable(surface, size, gfxMatrix().Translate(-needed.TopLeft()));
     return drawable.forget();
 }
 #endif // !MOZ_GFX_OPTIMIZE_MOBILE
@@ -496,9 +490,12 @@ DeviceToImageTransform(gfxContext* aContext,
     nsRefPtr<gfxASurface> currentTarget =
         aContext->CurrentSurface(&deviceX, &deviceY);
     gfxMatrix currentMatrix = aContext->CurrentMatrix();
-    gfxMatrix deviceToUser = gfxMatrix(currentMatrix).Invert();
+    gfxMatrix deviceToUser = currentMatrix;
+    if (!deviceToUser.Invert()) {
+        return gfxMatrix(0, 0, 0, 0, 0, 0); // singular
+    }
     deviceToUser.Translate(-gfxPoint(-deviceX, -deviceY));
-    return gfxMatrix(deviceToUser).Multiply(aUserSpaceToImageSpace);
+    return deviceToUser * aUserSpaceToImageSpace;
 }
 
 /* These heuristics are based on Source/WebCore/platform/graphics/skia/ImageSkia.cpp:computeResamplingMode() */
@@ -604,17 +601,7 @@ gfxUtils::DrawPixelSnapped(gfxContext*      aContext,
     // On Mobile, we don't ever want to do this; it has the potential for
     // allocating very large temporary surfaces, especially since we'll
     // do full-page snapshots often (see bug 749426).
-#ifdef MOZ_GFX_OPTIMIZE_MOBILE
-    // If the pattern translation is large we can get into trouble with pixman's
-    // 16 bit coordinate limits. For now, we only do this on platforms where
-    // we know we have the pixman limits. 16384.0 is a somewhat arbitrary
-    // large number to make sure we avoid the expensive fmod when we can, but
-    // still maintain a safe margin from the actual limit
-    if (doTile && (userSpaceToImageSpace._32 > 16384.0 || userSpaceToImageSpace._31 > 16384.0)) {
-        userSpaceToImageSpace._31 = fmod(userSpaceToImageSpace._31, aImageRect.width);
-        userSpaceToImageSpace._32 = fmod(userSpaceToImageSpace._32, aImageRect.height);
-    }
-#else
+#ifndef MOZ_GFX_OPTIMIZE_MOBILE
     // OK now, the hard part left is to account for the subimage sampling
     // restriction. If all the transforms involved are just integer
     // translations, then we assume no resampling will occur so there's
@@ -773,10 +760,10 @@ gfxUtils::ClampToScaleFactor(gfxFloat aVal)
 
   gfxFloat power = log(aVal)/log(kScaleResolution);
 
-  // If power is within 1e-6 of an integer, round to nearest to
+  // If power is within 1e-5 of an integer, round to nearest to
   // prevent floating point errors, otherwise round up to the
   // next integer value.
-  if (fabs(power - NS_round(power)) < 1e-6) {
+  if (fabs(power - NS_round(power)) < 1e-5) {
     power = NS_round(power);
   } else if (inverse) {
     power = floor(power);
@@ -1005,7 +992,9 @@ gfxUtils::ConvertYCbCrToRGB(const PlanarYCbCrData& aData,
   }
 }
 
-/* static */ void gfxUtils::ClearThebesSurface(gfxASurface* aSurface)
+/* static */ void gfxUtils::ClearThebesSurface(gfxASurface* aSurface,
+                                               nsIntRect* aRect,
+                                               const gfxRGBA& aColor)
 {
   if (aSurface->CairoStatus()) {
     return;
@@ -1015,8 +1004,16 @@ gfxUtils::ConvertYCbCrToRGB(const PlanarYCbCrData& aData,
     return;
   }
   cairo_t* ctx = cairo_create(surf);
-  cairo_set_operator(ctx, CAIRO_OPERATOR_CLEAR);
-  cairo_paint_with_alpha(ctx, 1.0);
+  cairo_set_source_rgba(ctx, aColor.r, aColor.g, aColor.b, aColor.a);
+  cairo_set_operator(ctx, CAIRO_OPERATOR_SOURCE);
+  nsIntRect bounds;
+  if (aRect) {
+    bounds = *aRect;
+  } else {
+    bounds = nsIntRect(nsIntPoint(0, 0), aSurface->GetSize());
+  }
+  cairo_rectangle(ctx, bounds.x, bounds.y, bounds.width, bounds.height);
+  cairo_fill(ctx);
   cairo_destroy(ctx);
 }
 

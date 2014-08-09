@@ -68,10 +68,14 @@ CodeGeneratorShared::CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph, Mac
         // An MAsmJSCall does not align the stack pointer at calls sites but instead
         // relies on the a priori stack adjustment (in the prologue) on platforms
         // (like x64) which require the stack to be aligned.
-        if (StackKeptAligned || gen->needsInitialStackAlignment()) {
-            unsigned alignmentAtCall = AsmJSFrameSize + frameDepth_;
+        if (StackKeptAligned || gen->performsCall() || gen->usesSimd()) {
+            unsigned alignmentAtCall = sizeof(AsmJSFrame) + frameDepth_;
+            unsigned firstFixup = 0;
             if (unsigned rem = alignmentAtCall % StackAlignment)
-                frameDepth_ += StackAlignment - rem;
+                frameDepth_ += (firstFixup = StackAlignment - rem);
+
+            if (gen->usesSimd())
+                setupSimdAlignment(firstFixup);
         }
 
         // FrameSizeClass is only used for bailing, which cannot happen in
@@ -80,6 +84,38 @@ CodeGeneratorShared::CodeGeneratorShared(MIRGenerator *gen, LIRGraph *graph, Mac
     } else {
         frameClass_ = FrameSizeClass::FromDepth(frameDepth_);
     }
+}
+
+void
+CodeGeneratorShared::setupSimdAlignment(unsigned fixup)
+{
+    JS_STATIC_ASSERT(SimdStackAlignment % StackAlignment == 0);
+    //  At this point, we have:
+    //      (frameDepth_ + sizeof(AsmJSFrame)) % StackAlignment == 0
+    //  which means we can add as many SimdStackAlignment as needed.
+
+    //  The next constraint is to have all stack slots
+    //  aligned for SIMD. That's done by having the first stack slot
+    //  aligned. We need an offset such that:
+    //      (frameDepth_ - offset) % SimdStackAlignment == 0
+    frameInitialAdjustment_ = frameDepth_ % SimdStackAlignment;
+
+    //  We need to ensure that the first stack slot is actually
+    //  located in this frame and not beforehand, when taking this
+    //  offset into account, i.e.:
+    //      frameDepth_ - initial adjustment >= frameDepth_ - fixup
+    //  <=>                            fixup >= initial adjustment
+    //
+    //  For instance, on x86 with gcc, if the initial frameDepth
+    //  % 16 is 8, then the fixup is 0, although the initial
+    //  adjustment is 8. The first stack slot would be located at
+    //  frameDepth - 8 in this case, which is obviously before
+    //  frameDepth.
+    //
+    //  If that's not the case, we add SimdStackAlignment to the
+    //  fixup, which will keep on satisfying other constraints.
+    if (frameInitialAdjustment_ > int32_t(fixup))
+        frameDepth_ += SimdStackAlignment;
 }
 
 bool
@@ -317,9 +353,7 @@ CodeGeneratorShared::encode(LSnapshot *snapshot)
 #endif
 
     uint32_t allocIndex = 0;
-    LRecoverInfo::OperandIter it(recoverInfo->begin());
-    LRecoverInfo::OperandIter end(recoverInfo->end());
-    for (; it != end; ++it) {
+    for (LRecoverInfo::OperandIter it(recoverInfo); !it; ++it) {
         DebugOnly<uint32_t> allocWritten = snapshots_.allocWritten();
         if (!encodeAllocation(snapshot, *it, &allocIndex))
             return false;
@@ -413,13 +447,13 @@ CodeGeneratorShared::ensureOsiSpace()
     //
     // At points where we want to ensure that invalidation won't corrupt an
     // important instruction, we make sure to pad with nops.
-    if (masm.currentOffset() - lastOsiPointOffset_ < Assembler::patchWrite_NearCallSize()) {
-        int32_t paddingSize = Assembler::patchWrite_NearCallSize();
+    if (masm.currentOffset() - lastOsiPointOffset_ < Assembler::PatchWrite_NearCallSize()) {
+        int32_t paddingSize = Assembler::PatchWrite_NearCallSize();
         paddingSize -= masm.currentOffset() - lastOsiPointOffset_;
         for (int32_t i = 0; i < paddingSize; ++i)
             masm.nop();
     }
-    JS_ASSERT(masm.currentOffset() - lastOsiPointOffset_ >= Assembler::patchWrite_NearCallSize());
+    JS_ASSERT(masm.currentOffset() - lastOsiPointOffset_ >= Assembler::PatchWrite_NearCallSize());
     lastOsiPointOffset_ = masm.currentOffset();
 }
 
@@ -771,12 +805,18 @@ CodeGeneratorShared::visitOutOfLineTruncateSlow(OutOfLineTruncateSlow *ool)
     Register dest = ool->dest();
 
     saveVolatile(dest);
+#ifdef JS_CODEGEN_ARM
+    if (ool->needFloat32Conversion()) {
+        masm.convertFloat32ToDouble(src, ScratchDoubleReg);
+        src = ScratchDoubleReg;
+    }
 
+#else
     if (ool->needFloat32Conversion()) {
         masm.push(src);
         masm.convertFloat32ToDouble(src, src);
     }
-
+#endif
     masm.setupUnalignedABICall(1, dest);
     masm.passABIArg(src, MoveOp::DOUBLE);
     if (gen->compilingAsmJS())
@@ -785,9 +825,10 @@ CodeGeneratorShared::visitOutOfLineTruncateSlow(OutOfLineTruncateSlow *ool)
         masm.callWithABI(JS_FUNC_TO_DATA_PTR(void *, js::ToInt32));
     masm.storeCallResult(dest);
 
+#ifndef JS_CODEGEN_ARM
     if (ool->needFloat32Conversion())
         masm.pop(src);
-
+#endif
     restoreVolatile(dest);
 
     masm.jump(ool->rejoin());
@@ -1000,16 +1041,22 @@ CodeGeneratorShared::computeDivisionConstants(int d) {
 bool
 CodeGeneratorShared::emitTracelogScript(bool isStart)
 {
+    Label done;
+
     RegisterSet regs = RegisterSet::Volatile();
     Register logger = regs.takeGeneral();
     Register script = regs.takeGeneral();
 
     masm.Push(logger);
-    masm.Push(script);
 
     CodeOffsetLabel patchLogger = masm.movWithPatch(ImmPtr(nullptr), logger);
     if (!patchableTraceLoggers_.append(patchLogger))
         return false;
+
+    Address enabledAddress(logger, TraceLogger::offsetOfEnabled());
+    masm.branch32(Assembler::Equal, enabledAddress, Imm32(0), &done);
+
+    masm.Push(script);
 
     CodeOffsetLabel patchScript = masm.movWithPatch(ImmWord(0), script);
     if (!patchableTLScripts_.append(patchScript))
@@ -1021,6 +1068,9 @@ CodeGeneratorShared::emitTracelogScript(bool isStart)
         masm.tracelogStop(logger, script);
 
     masm.Pop(script);
+
+    masm.bind(&done);
+
     masm.Pop(logger);
     return true;
 }
@@ -1031,6 +1081,7 @@ CodeGeneratorShared::emitTracelogTree(bool isStart, uint32_t textId)
     if (!TraceLogTextIdEnabled(textId))
         return true;
 
+    Label done;
     RegisterSet regs = RegisterSet::Volatile();
     Register logger = regs.takeGeneral();
 
@@ -1039,6 +1090,9 @@ CodeGeneratorShared::emitTracelogTree(bool isStart, uint32_t textId)
     CodeOffsetLabel patchLocation = masm.movWithPatch(ImmPtr(nullptr), logger);
     if (!patchableTraceLoggers_.append(patchLocation))
         return false;
+
+    Address enabledAddress(logger, TraceLogger::offsetOfEnabled());
+    masm.branch32(Assembler::Equal, enabledAddress, Imm32(0), &done);
 
     if (isStart) {
         masm.tracelogStart(logger, textId);
@@ -1049,6 +1103,8 @@ CodeGeneratorShared::emitTracelogTree(bool isStart, uint32_t textId)
         masm.tracelogStop(logger);
 #endif
     }
+
+    masm.bind(&done);
 
     masm.Pop(logger);
     return true;

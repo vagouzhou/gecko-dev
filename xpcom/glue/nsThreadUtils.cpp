@@ -125,34 +125,7 @@ NS_GetMainThread(nsIThread** aResult)
 #endif
 }
 
-#if defined(MOZILLA_INTERNAL_API) && defined(XP_WIN)
-extern DWORD gTLSThreadIDIndex;
-bool
-NS_IsMainThread()
-{
-  return TlsGetValue(gTLSThreadIDIndex) == (void*)mozilla::threads::Main;
-}
-#elif defined(MOZILLA_INTERNAL_API) && defined(NS_TLS)
-#ifdef MOZ_ASAN
-// Temporary workaround, see bug 895845
-bool
-NS_IsMainThread()
-{
-  return gTLSThreadID == mozilla::threads::Main;
-}
-#else
-// NS_IsMainThread() is defined inline in MainThreadUtils.h
-#endif
-#else
-#ifdef MOZILLA_INTERNAL_API
-bool
-NS_IsMainThread()
-{
-  bool result = false;
-  nsThreadManager::get()->nsThreadManager::GetIsMainThread(&result);
-  return bool(result);
-}
-#else
+#ifndef MOZILLA_INTERNAL_API
 bool
 NS_IsMainThread()
 {
@@ -165,11 +138,14 @@ NS_IsMainThread()
   return bool(result);
 }
 #endif
-#endif
 
+// It is common to call NS_DispatchToCurrentThread with a newly
+// allocated runnable with a refcount of zero. To keep us from leaking
+// the runnable if the dispatch method fails, we take a death grip.
 NS_METHOD
 NS_DispatchToCurrentThread(nsIRunnable* aEvent)
 {
+  nsCOMPtr<nsIRunnable> deathGrip = aEvent;
 #ifdef MOZILLA_INTERNAL_API
   nsIThread* thread = NS_GetCurrentThread();
   if (!thread) {
@@ -185,6 +161,11 @@ NS_DispatchToCurrentThread(nsIRunnable* aEvent)
   return thread->Dispatch(aEvent, NS_DISPATCH_NORMAL);
 }
 
+// In the case of failure with a newly allocated runnable with a
+// refcount of zero, we intentionally leak the runnable, because it is
+// likely that the runnable is being dispatched to the main thread
+// because it owns main thread only objects, so it is not safe to
+// release them here.
 NS_METHOD
 NS_DispatchToMainThread(nsIRunnable* aEvent, uint32_t aDispatchFlags)
 {
@@ -290,8 +271,10 @@ namespace {
 
 class nsNameThreadRunnable MOZ_FINAL : public nsIRunnable
 {
+  ~nsNameThreadRunnable() {}
+
 public:
-  nsNameThreadRunnable(const nsACString& aName) : mName(aName) {}
+  explicit nsNameThreadRunnable(const nsACString& aName) : mName(aName) {}
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIRUNNABLE
@@ -354,7 +337,9 @@ nsThreadPoolNaming::SetThreadPoolName(const nsACString& aPoolName,
     NS_SetThreadName(aThread, name);
   } else {
     // Set on the current thread
+#ifndef XPCOM_GLUE_AVOID_NSPR
     PR_SetCurrentThreadName(name.BeginReading());
+#endif
   }
 }
 

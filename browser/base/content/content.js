@@ -34,6 +34,34 @@ addMessageListener("Browser:HideSessionRestoreButton", function (message) {
   }
 });
 
+addMessageListener("Browser:Reload", function(message) {
+  /* First, we'll try to use the session history object to reload so
+   * that framesets are handled properly. If we're in a special
+   * window (such as view-source) that has no session history, fall
+   * back on using the web navigation's reload method.
+   */
+
+  let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
+  try {
+    let sh = webNav.sessionHistory;
+    if (sh)
+      webNav = sh.QueryInterface(Ci.nsIWebNavigation);
+  } catch (e) {
+  }
+
+  let reloadFlags = message.data.flags;
+  let handlingUserInput;
+  try {
+    handlingUserInput = content.QueryInterface(Ci.nsIInterfaceRequestor)
+                               .getInterface(Ci.nsIDOMWindowUtils)
+                               .setHandlingUserInput(message.data.handlingUserInput);
+    webNav.reload(reloadFlags);
+  } catch (e) {
+  } finally {
+    handlingUserInput.destruct();
+  }
+});
+
 addEventListener("DOMFormHasPassword", function(event) {
   InsecurePasswordUtils.checkForInsecurePasswords(event.target);
   LoginManagerContent.onFormPassword(event);
@@ -188,9 +216,37 @@ let AboutHomeListener = {
 AboutHomeListener.init(this);
 
 
+// An event listener for custom "WebChannelMessageToChrome" events on pages
+addEventListener("WebChannelMessageToChrome", function (e) {
+  // if target is window then we want the document principal, otherwise fallback to target itself.
+  let principal = e.target.nodePrincipal ? e.target.nodePrincipal : e.target.document.nodePrincipal;
+
+  if (e.detail) {
+    sendAsyncMessage("WebChannelMessageToChrome", e.detail, null, principal);
+  } else  {
+    Cu.reportError("WebChannel message failed. No message detail.");
+  }
+}, true, true);
+
+// Add message listener for "WebChannelMessageToContent" messages from chrome scripts
+addMessageListener("WebChannelMessageToContent", function (e) {
+  if (e.data) {
+    content.dispatchEvent(new content.CustomEvent("WebChannelMessageToContent", {
+      detail: Cu.cloneInto({
+        id: e.data.id,
+        message: e.data.message,
+      }, content),
+    }));
+  } else {
+    Cu.reportError("WebChannel message failed. No message data.");
+  }
+});
+
+
 let ContentSearchMediator = {
 
   whitelist: new Set([
+    "about:home",
     "about:newtab",
   ]),
 
@@ -219,7 +275,7 @@ let ContentSearchMediator = {
   },
 
   get _contentWhitelisted() {
-    return this.whitelist.has(content.document.documentURI.toLowerCase());
+    return this.whitelist.has(content.document.documentURI);
   },
 
   _sendMsg: function (type, data=null) {
@@ -230,12 +286,14 @@ let ContentSearchMediator = {
   },
 
   _fireEvent: function (type, data=null) {
-    content.dispatchEvent(new content.CustomEvent("ContentSearchService", {
+    let event = Cu.cloneInto({
       detail: {
         type: type,
         data: data,
       },
-    }));
+    }, content);
+    content.dispatchEvent(new content.CustomEvent("ContentSearchService",
+                                                  event));
   },
 };
 ContentSearchMediator.init(this);
@@ -258,10 +316,23 @@ let ClickEventHandler = {
   },
 
   handleEvent: function(event) {
-    // Bug 903016: Most of this code is an unfortunate duplication from
-    // contentAreaClick in browser.js.
-    if (!event.isTrusted || event.defaultPrevented || event.button == 2)
+    if (!event.isTrusted || event.defaultPrevented || event.button == 2) {
       return;
+    }
+
+    let originalTarget = event.originalTarget;
+    let ownerDoc = originalTarget.ownerDocument;
+
+    // Handle click events from about pages
+    if (ownerDoc.documentURI.startsWith("about:certerror")) {
+      this.onAboutCertError(originalTarget, ownerDoc);
+      return;
+    } else if (ownerDoc.documentURI.startsWith("about:blocked")) {
+      this.onAboutBlocked(originalTarget, ownerDoc);
+      return;
+    } else if (ownerDoc.documentURI.startsWith("about:neterror")) {
+      this.onAboutNetError(originalTarget, ownerDoc);
+    }
 
     let [href, node] = this._hrefAndLinkNodeForClickEvent(event);
 
@@ -274,12 +345,12 @@ let ClickEventHandler = {
       json.href = href;
       if (node) {
         json.title = node.getAttribute("title");
-
         if (event.button == 0 && !event.ctrlKey && !event.shiftKey &&
             !event.altKey && !event.metaKey) {
           json.bookmark = node.getAttribute("rel") == "sidebar";
-          if (json.bookmark)
+          if (json.bookmark) {
             event.preventDefault(); // Need to prevent the pageload.
+          }
         }
       }
 
@@ -288,8 +359,39 @@ let ClickEventHandler = {
     }
 
     // This might be middle mouse navigation.
-    if (event.button == 1)
+    if (event.button == 1) {
       sendAsyncMessage("Content:Click", json);
+    }
+  },
+
+  onAboutCertError: function (targetElement, ownerDoc) {
+    let docshell = ownerDoc.defaultView.QueryInterface(Ci.nsIInterfaceRequestor)
+                                       .getInterface(Ci.nsIWebNavigation)
+                                       .QueryInterface(Ci.nsIDocShell);
+    sendAsyncMessage("Browser:CertExceptionError", {
+      location: ownerDoc.location.href,
+      elementId: targetElement.getAttribute("id"),
+      isTopFrame: (ownerDoc.defaultView.parent === ownerDoc.defaultView),
+    }, {
+      failedChannel: docshell.failedChannel
+    });
+  },
+
+  onAboutBlocked: function (targetElement, ownerDoc) {
+    sendAsyncMessage("Browser:SiteBlockedError", {
+      location: ownerDoc.location.href,
+      isMalware: /e=malwareBlocked/.test(ownerDoc.documentURI),
+      elementId: targetElement.getAttribute("id"),
+      isTopFrame: (ownerDoc.defaultView.parent === ownerDoc.defaultView)
+    });
+  },
+
+  onAboutNetError: function (targetElement, ownerDoc) {
+    let elmId = targetElement.getAttribute("id");
+    if (elmId != "errorTryAgain" || !/e=netOffline/.test(ownerDoc.documentURI)) {
+      return;
+    }
+    sendSyncMessage("Browser:NetworkError", {});
   },
 
   /**
@@ -355,7 +457,7 @@ let PageStyleHandler = {
   },
 
   get markupDocumentViewer() {
-    return docShell.contentViewer.QueryInterface(Ci.nsIMarkupDocumentViewer);
+    return docShell.contentViewer;
   },
 
   // Called synchronously via CPOW from the parent.

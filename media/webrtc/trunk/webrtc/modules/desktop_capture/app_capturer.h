@@ -21,32 +21,28 @@
 
 namespace webrtc {
 
-	class DesktopCaptureOptions;
+class DesktopCaptureOptions;
 
-	class AppCapturer : public DesktopCapturer {
-	public:
-		typedef webrtc::ProcessId ProcessId;
-		struct App {
-			ProcessId id;
-			// Application Name in UTF-8 encoding.
-			std::string title;
-		};
-		typedef std::vector<App> AppList;
+class AppCapturer : public DesktopCapturer {
+public:
+    typedef webrtc::ProcessId ProcessId;
+    struct App {
+        ProcessId id;
+        // Application Name in UTF-8 encoding.
+        std::string title;
+    };
+    typedef std::vector<App> AppList;
 
-		//
-		static AppCapturer* Create(const DesktopCaptureOptions& options);
-		static AppCapturer* Create();
+    static AppCapturer* Create(const DesktopCaptureOptions& options);
+    static AppCapturer* Create();
 
-		//
-		virtual ~AppCapturer() {}
+    virtual ~AppCapturer() {}
 
-		//AppCapturer Interfaces
-		virtual bool GetAppList(AppList* apps) = 0;
-		virtual bool SelectApp(ProcessId processId) = 0;
-		virtual bool BringAppToFront() {
-			return true;
-		}
-	};
+    //AppCapturer Interfaces
+    virtual bool GetAppList(AppList* apps) = 0;
+    virtual bool SelectApp(ProcessId id) = 0;
+    virtual bool BringAppToFront() = 0;
+};
 
 }  // namespace webrtc
 

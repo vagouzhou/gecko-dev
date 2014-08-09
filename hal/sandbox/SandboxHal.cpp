@@ -426,9 +426,13 @@ CancelFMRadioSeek()
 }
 
 void
-FactoryReset()
+FactoryReset(FactoryResetReason& aReason)
 {
-  Hal()->SendFactoryReset();
+  if (aReason == FactoryResetReason::Normal) {
+    Hal()->SendFactoryReset(NS_LITERAL_STRING("normal"));
+  } else if (aReason == FactoryResetReason::Wipe) {
+    Hal()->SendFactoryReset(NS_LITERAL_STRING("wipe"));
+  }
 }
 
 void
@@ -441,6 +445,12 @@ void
 StopDiskSpaceWatcher()
 {
   NS_RUNTIMEABORT("StopDiskSpaceWatcher() can't be called from sandboxed contexts.");
+}
+
+bool IsHeadphoneEventFromInputDev()
+{
+  NS_RUNTIMEABORT("IsHeadphoneEventFromInputDev() cannot be called from sandboxed contexts.");
+  return false;
 }
 
 class HalParent : public PHalParent
@@ -835,12 +845,23 @@ public:
   }
 
   virtual bool
-  RecvFactoryReset()
+  RecvFactoryReset(const nsString& aReason) MOZ_OVERRIDE
   {
     if (!AssertAppProcessPermission(this, "power")) {
       return false;
     }
-    hal::FactoryReset();
+
+    FactoryResetReason reason = FactoryResetReason::Normal;
+    if (aReason.EqualsLiteral("normal")) {
+      reason = FactoryResetReason::Normal;
+    } else if (aReason.EqualsLiteral("wipe")) {
+      reason = FactoryResetReason::Wipe;
+    } else {
+      // Invalid factory reset reason. That should never happen.
+      return false;
+    }
+
+    hal::FactoryReset(reason);
     return true;
   }
 

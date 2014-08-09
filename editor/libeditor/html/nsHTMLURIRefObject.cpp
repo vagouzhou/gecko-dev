@@ -77,6 +77,7 @@
 #include "nsIDOMNode.h"
 #include "nsISupportsUtils.h"
 #include "nsString.h"
+#include "nsAutoPtr.h"
 
 // String classes change too often and I can't keep up.
 // Set this macro to this week's approved case-insensitive compare routine.
@@ -125,10 +126,7 @@ nsHTMLURIRefObject::GetNextURI(nsAString & aURI)
     NS_ENSURE_TRUE(mAttributeCnt, NS_ERROR_FAILURE);
     mCurAttrIndex = 0;
   }
-#ifdef DEBUG_akkana
-  printf("Looking at tag '%s'\n",
-         NS_LossyConvertUTF16toASCII(tagName).get());
-#endif
+
   while (mCurAttrIndex < mAttributeCnt)
   {
     nsCOMPtr<nsIDOMAttr> attrNode;
@@ -140,10 +138,6 @@ nsHTMLURIRefObject::GetNextURI(nsAString & aURI)
     NS_ENSURE_SUCCESS(rv, rv);
 
     // href >> A, AREA, BASE, LINK
-#ifdef DEBUG_akkana
-    printf("Trying to match attribute '%s'\n",
-           NS_LossyConvertUTF16toASCII(curAttr).get());
-#endif
     if (MATCHES(curAttr, "href"))
     {
       if (!MATCHES(tagName, "a") && !MATCHES(tagName, "area")
@@ -247,9 +241,6 @@ nsHTMLURIRefObject::RewriteAllURIs(const nsAString & aOldPat,
                             const nsAString & aNewPat,
                             bool aMakeRel)
 {
-#ifdef DEBUG_akkana
-  printf("Can't rewrite URIs yet\n");
-#endif
   return NS_ERROR_NOT_IMPLEMENTED;
 }
 
@@ -282,11 +273,10 @@ nsHTMLURIRefObject::SetNode(nsIDOMNode *aNode)
 
 nsresult NS_NewHTMLURIRefObject(nsIURIRefObject** aResult, nsIDOMNode* aNode)
 {
-  nsHTMLURIRefObject* refObject = new nsHTMLURIRefObject();
+  nsRefPtr<nsHTMLURIRefObject> refObject = new nsHTMLURIRefObject();
   nsresult rv = refObject->SetNode(aNode);
   if (NS_FAILED(rv)) {
     *aResult = 0;
-    delete refObject;
     return rv;
   }
   return refObject->QueryInterface(NS_GET_IID(nsIURIRefObject),

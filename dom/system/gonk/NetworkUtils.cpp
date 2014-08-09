@@ -97,6 +97,8 @@ typedef Tuple3<NetdCommand*, CommandChain*, CommandCallback> QueueData;
 #define GET_CURRENT_CALLBACK       (gCommandQueue.IsEmpty() ? nullptr : gCommandQueue[0].c)
 #define GET_CURRENT_COMMAND        (gCommandQueue.IsEmpty() ? nullptr : gCommandQueue[0].a->mData)
 
+#define CNT_OF_ARRAY(a) (sizeof(a) / sizeof(a[0]))
+
 static NetworkUtils* gNetworkUtils;
 static nsTArray<QueueData> gCommandQueue;
 static CurrentCommand gCurrentCommand;
@@ -209,12 +211,6 @@ CommandFunc NetworkUtils::sStartDhcpServerChain[] = {
 CommandFunc NetworkUtils::sStopDhcpServerChain[] = {
   NetworkUtils::stopTethering,
   NetworkUtils::setDhcpServerSuccess
-};
-
-CommandFunc NetworkUtils::sNetworkInterfaceStatsChain[] = {
-  NetworkUtils::getRxBytes,
-  NetworkUtils::getTxBytes,
-  NetworkUtils::networkInterfaceStatsSuccess
 };
 
 CommandFunc NetworkUtils::sNetworkInterfaceEnableAlarmChain[] = {
@@ -617,29 +613,6 @@ void NetworkUtils::clearWifiTetherParms(CommandChain* aChain,
   next(aChain, false, aResult);
 }
 
-void NetworkUtils::getRxBytes(CommandChain* aChain,
-                              CommandCallback aCallback,
-                              NetworkResultOptions& aResult)
-{
-  char command[MAX_COMMAND_SIZE];
-  snprintf(command, MAX_COMMAND_SIZE - 1, "interface readrxcounter %s", GET_CHAR(mIfname));
-
-  doCommand(command, aChain, aCallback);
-}
-
-void NetworkUtils::getTxBytes(CommandChain* aChain,
-                              CommandCallback aCallback,
-                              NetworkResultOptions& aResult)
-{
-  NetworkParams& options = aChain->getParams();
-  options.mRxBytes = atof(NS_ConvertUTF16toUTF8(aResult.mResultReason).get());
-
-  char command[MAX_COMMAND_SIZE];
-  snprintf(command, MAX_COMMAND_SIZE - 1, "interface readtxcounter %s", GET_CHAR(mIfname));
-
-  doCommand(command, aChain, aCallback);
-}
-
 void NetworkUtils::enableAlarm(CommandChain* aChain,
                                CommandCallback aCallback,
                                NetworkResultOptions& aResult)
@@ -992,20 +965,6 @@ void NetworkUtils::usbTetheringSuccess(CommandChain* aChain,
   postMessage(aChain->getParams(), aResult);
 }
 
-void NetworkUtils::networkInterfaceStatsFail(NetworkParams& aOptions, NetworkResultOptions& aResult)
-{
-  postMessage(aOptions, aResult);
-}
-
-void NetworkUtils::networkInterfaceStatsSuccess(CommandChain* aChain,
-                                                CommandCallback aCallback,
-                                                NetworkResultOptions& aResult)
-{
-  ASSIGN_FIELD(mRxBytes)
-  ASSIGN_FIELD_VALUE(mTxBytes, atof(NS_ConvertUTF16toUTF8(aResult.mResultReason).get()))
-  postMessage(aChain->getParams(), aResult);
-}
-
 void NetworkUtils::networkInterfaceAlarmFail(NetworkParams& aOptions, NetworkResultOptions& aResult)
 {
   postMessage(aOptions, aResult);
@@ -1087,54 +1046,63 @@ NetworkUtils::~NetworkUtils()
 
 void NetworkUtils::ExecuteCommand(NetworkParams aOptions)
 {
-  bool ret = true;
+  typedef bool (NetworkUtils::*CommandHandler)(NetworkParams&);
 
-  if (aOptions.mCmd.EqualsLiteral("removeNetworkRoute")) {
-    removeNetworkRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setDNS")) {
-    setDNS(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setDefaultRouteAndDNS")) {
-    setDefaultRouteAndDNS(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("removeDefaultRoute")) {
-    removeDefaultRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("addHostRoute")) {
-    addHostRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("removeHostRoute")) {
-    removeHostRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("removeHostRoutes")) {
-    removeHostRoutes(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("addSecondaryRoute")) {
-    addSecondaryRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("removeSecondaryRoute")) {
-    removeSecondaryRoute(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("getNetworkInterfaceStats")) {
-    getNetworkInterfaceStats(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setNetworkInterfaceAlarm")) {
-    setNetworkInterfaceAlarm(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("enableNetworkInterfaceAlarm")) {
-    enableNetworkInterfaceAlarm(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("disableNetworkInterfaceAlarm")) {
-    disableNetworkInterfaceAlarm(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setWifiOperationMode")) {
-    setWifiOperationMode(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setDhcpServer")) {
-    setDhcpServer(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setWifiTethering")) {
-    setWifiTethering(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("setUSBTethering")) {
-    setUSBTethering(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("enableUsbRndis")) {
-    enableUsbRndis(aOptions);
-  } else if (aOptions.mCmd.EqualsLiteral("updateUpStream")) {
-    updateUpStream(aOptions);
-  } else {
-    WARN("unknon message");
+  const static struct {
+    const char* mCommandName;
+    CommandHandler mCommandHandler;
+  } COMMAND_HANDLER_TABLE[] = {
+
+    // For command 'testCommand', BUILD_ENTRY(testCommand) will generate
+    // {"testCommand", NetworkUtils::testCommand}
+    #define BUILD_ENTRY(c) {#c, &NetworkUtils::c}
+
+    BUILD_ENTRY(removeNetworkRoute),
+    BUILD_ENTRY(setDNS),
+    BUILD_ENTRY(setDefaultRouteAndDNS),
+    BUILD_ENTRY(removeDefaultRoute),
+    BUILD_ENTRY(addHostRoute),
+    BUILD_ENTRY(removeHostRoute),
+    BUILD_ENTRY(removeHostRoutes),
+    BUILD_ENTRY(addSecondaryRoute),
+    BUILD_ENTRY(removeSecondaryRoute),
+    BUILD_ENTRY(setNetworkInterfaceAlarm),
+    BUILD_ENTRY(enableNetworkInterfaceAlarm),
+    BUILD_ENTRY(disableNetworkInterfaceAlarm),
+    BUILD_ENTRY(setWifiOperationMode),
+    BUILD_ENTRY(setDhcpServer),
+    BUILD_ENTRY(setWifiTethering),
+    BUILD_ENTRY(setUSBTethering),
+    BUILD_ENTRY(enableUsbRndis),
+    BUILD_ENTRY(updateUpStream),
+
+    #undef BUILD_ENTRY
+  };
+
+  // Loop until we find the command name which matches aOptions.mCmd.
+  CommandHandler handler = nullptr;
+  for (size_t i = 0; i < CNT_OF_ARRAY(COMMAND_HANDLER_TABLE); i++) {
+    if (aOptions.mCmd.EqualsASCII(COMMAND_HANDLER_TABLE[i].mCommandName)) {
+      handler = COMMAND_HANDLER_TABLE[i].mCommandHandler;
+      break;
+    }
+  }
+
+  if (!handler) {
+    // Command not found in COMMAND_HANDLER_TABLE.
+    WARN("unknown message: %s", NS_ConvertUTF16toUTF8(aOptions.mCmd).get());
     return;
   }
 
+  // Command matches! Dispatch to the handler.
+  (this->*handler)(aOptions);
+
   if (!aOptions.mIsAsync) {
+    // The requested command is synchronous, which implies the actual result
+    // from netd is not important to the client. So, just notify the
+    // registered callback.
     NetworkResultOptions result;
-    result.mRet = ret;
+    result.mRet = true;
     postMessage(aOptions, result);
   }
 }
@@ -1503,16 +1471,6 @@ bool NetworkUtils::removeSecondaryRoute(NetworkParams& aOptions)
 
   doCommand(command, nullptr, nullptr);
   return true;
-}
-
-bool NetworkUtils::getNetworkInterfaceStats(NetworkParams& aOptions)
-{
-  DEBUG("getNetworkInterfaceStats: %s", GET_CHAR(mIfname));
-  aOptions.mRxBytes = -1;
-  aOptions.mTxBytes = -1;
-
-  RUN_CHAIN(aOptions, sNetworkInterfaceStatsChain, networkInterfaceStatsFail);
-  return  true;
 }
 
 bool NetworkUtils::setNetworkInterfaceAlarm(NetworkParams& aOptions)

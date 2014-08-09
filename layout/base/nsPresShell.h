@@ -224,9 +224,9 @@ public:
   virtual void SetMayHaveTouchCaret(bool aSet) MOZ_OVERRIDE;
   virtual bool MayHaveTouchCaret() MOZ_OVERRIDE;
   // selection caret
-  virtual NS_HIDDEN_(already_AddRefed<mozilla::SelectionCarets>) GetSelectionCarets() const MOZ_OVERRIDE;
-  virtual NS_HIDDEN_(mozilla::dom::Element*) GetSelectionCaretsStartElement() const MOZ_OVERRIDE;
-  virtual NS_HIDDEN_(mozilla::dom::Element*) GetSelectionCaretsEndElement() const MOZ_OVERRIDE;
+  virtual already_AddRefed<mozilla::SelectionCarets> GetSelectionCarets() const MOZ_OVERRIDE;
+  virtual mozilla::dom::Element* GetSelectionCaretsStartElement() const MOZ_OVERRIDE;
+  virtual mozilla::dom::Element* GetSelectionCaretsEndElement() const MOZ_OVERRIDE;
   // caret handling
   virtual already_AddRefed<nsCaret> GetCaret() const MOZ_OVERRIDE;
   virtual void MaybeInvalidateCaretPosition() MOZ_OVERRIDE;
@@ -552,7 +552,7 @@ protected:
   {
     nsRefPtr<nsFrameSelection> frameSelection = FrameSelection();
     if (frameSelection) {
-      frameSelection->SetMouseDownState(false);
+      frameSelection->SetDragState(false);
     }
     if (gCaptureInfo.mContent &&
         gCaptureInfo.mContent->OwnerDoc() == mDocument) {
@@ -822,7 +822,7 @@ protected:
   bool                      mIgnoreFrameDestruction : 1;
   bool                      mHaveShutDown : 1;
   bool                      mViewportOverridden : 1;
-  bool                      mLastRootReflowHadUnconstrainedHeight : 1;
+  bool                      mLastRootReflowHadUnconstrainedBSize : 1;
   bool                      mNoDelayedMouseEvents : 1;
   bool                      mNoDelayedKeyEvents : 1;
 

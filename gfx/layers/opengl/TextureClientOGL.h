@@ -15,7 +15,7 @@
 #include "mozilla/layers/TextureClient.h"  // for TextureClient, etc
 
 namespace mozilla {
-namespace gfx {
+namespace gl {
 class SurfaceStream;
 }
 }
@@ -59,6 +59,12 @@ public:
   {
     return gfx::SurfaceFormat::UNKNOWN;
   }
+
+  // This TextureClient should not be used in a context where we use CreateSimilar
+  // (ex. component alpha) because the underlying texture data is always created by
+  // an external producer.
+  virtual TemporaryRef<TextureClient>
+  CreateSimilar(TextureFlags, TextureAllocationFlags) const MOZ_OVERRIDE { return nullptr; }
 
   virtual bool AllocateForSurface(gfx::IntSize aSize, TextureAllocationFlags aFlags) MOZ_OVERRIDE
   {

@@ -12,7 +12,6 @@
 #include "nsGkAtoms.h"
 
 #include "mozilla/dom/HTMLVideoElement.h"
-#include "nsIDOMHTMLVideoElement.h"
 #include "nsIDOMHTMLImageElement.h"
 #include "nsDisplayList.h"
 #include "nsGenericHTMLElement.h"
@@ -220,7 +219,6 @@ nsVideoFrame::BuildLayer(nsDisplayListBuilder* aBuilder,
   transform.Translate(p.x, p.y);
   transform.Scale(r.Width()/frameSize.width, r.Height()/frameSize.height);
   layer->SetBaseTransform(gfx::Matrix4x4::From2D(transform));
-  layer->SetVisibleRegion(nsIntRect(0, 0, frameSize.width, frameSize.height));
   nsRefPtr<Layer> result = layer.forget();
   return result.forget();
 }
@@ -273,8 +271,8 @@ nsVideoFrame::Reflow(nsPresContext*           aPresContext,
       // Reflow the poster frame.
       nsImageFrame* imageFrame = static_cast<nsImageFrame*>(child);
       nsHTMLReflowMetrics kidDesiredSize(aReflowState);
-      nsSize availableSize = nsSize(aReflowState.AvailableWidth(),
-                                    aReflowState.AvailableHeight());
+      WritingMode wm = imageFrame->GetWritingMode();
+      LogicalSize availableSize = aReflowState.AvailableSize(wm);
       nsHTMLReflowState kidReflowState(aPresContext,
                                        aReflowState,
                                        imageFrame,
@@ -328,8 +326,8 @@ nsVideoFrame::Reflow(nsPresContext*           aPresContext,
     } else if (child->GetContent() == mCaptionDiv) {
       // Reflow to caption div
       nsHTMLReflowMetrics kidDesiredSize(aReflowState);
-      nsSize availableSize = nsSize(aReflowState.AvailableWidth(),
-                                    aReflowState.AvailableHeight());
+      WritingMode wm = child->GetWritingMode();
+      LogicalSize availableSize = aReflowState.AvailableSize(wm);
       nsHTMLReflowState kidReflowState(aPresContext,
                                        aReflowState,
                                        child,
@@ -503,14 +501,14 @@ nsSize nsVideoFrame::ComputeSize(nsRenderingContext *aRenderingContext,
                                                            aPadding);
 }
 
-nscoord nsVideoFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
+nscoord nsVideoFrame::GetMinISize(nsRenderingContext *aRenderingContext)
 {
   nscoord result = GetVideoIntrinsicSize(aRenderingContext).width;
   DISPLAY_MIN_WIDTH(this, result);
   return result;
 }
 
-nscoord nsVideoFrame::GetPrefWidth(nsRenderingContext *aRenderingContext)
+nscoord nsVideoFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
 {
   nscoord result = GetVideoIntrinsicSize(aRenderingContext).width;
   DISPLAY_PREF_WIDTH(this, result);
@@ -618,8 +616,8 @@ nsVideoFrame::AttributeChanged(int32_t aNameSpaceID,
 }
 
 bool nsVideoFrame::HasVideoElement() {
-  nsCOMPtr<nsIDOMHTMLVideoElement> videoDomElement = do_QueryInterface(mContent);
-  return videoDomElement != nullptr;
+  nsCOMPtr<nsIDOMHTMLMediaElement> mediaDomElement = do_QueryInterface(mContent);
+  return mediaDomElement->IsVideo();
 }
 
 bool nsVideoFrame::HasVideoData()

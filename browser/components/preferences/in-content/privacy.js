@@ -284,7 +284,6 @@ var gPrivacyPane = {
 
         if (shouldProceed) {
           pref.value = autoStart.hasAttribute('checked');
-          document.documentElement.acceptDialog();
           let appStartup = Cc["@mozilla.org/toolkit/app-startup;1"]
                              .getService(Ci.nsIAppStartup);
           appStartup.quit(Ci.nsIAppStartup.eAttemptQuit |  Ci.nsIAppStartup.eRestart);
@@ -470,9 +469,8 @@ var gPrivacyPane = {
                    permissionType : "cookie",
                    windowTitle    : bundlePreferences.getString("cookiepermissionstitle"),
                    introText      : bundlePreferences.getString("cookiepermissionstext") };
-    openDialog("chrome://browser/content/preferences/permissions.xul",
-               "Browser:Permissions",
-               "modal=yes", params);
+    gSubDialog.open("chrome://browser/content/preferences/permissions.xul",
+                    null, params);
   },
 
   /**
@@ -480,9 +478,7 @@ var gPrivacyPane = {
    */
   showCookies: function (aCategory)
   {
-    openDialog("chrome://browser/content/preferences/cookies.xul",
-               "Browser:Cookies",
-               "modal=yes", null);
+    gSubDialog.open("chrome://browser/content/preferences/cookies.xul");
   },
 
   // CLEAR PRIVATE DATA
@@ -500,8 +496,7 @@ var gPrivacyPane = {
    */
   showClearPrivateDataSettings: function ()
   {
-    openDialog("chrome://browser/content/preferences/sanitize.xul",
-               "modal=yes", null);
+    gSubDialog.open("chrome://browser/content/preferences/sanitize.xul");
   },
 
 

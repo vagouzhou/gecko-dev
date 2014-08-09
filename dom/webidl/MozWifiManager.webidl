@@ -14,7 +14,7 @@ enum ConnectionStatus {
   "associated",
   "connected",
   "disconnected",
-  "wps-timeout",
+  "wps-timedout",
   "wps-failed",
   "wps-overlapped",
   "connectingfailed"
@@ -124,6 +124,14 @@ dictionary IPConfiguration {
  NavigatorProperty="mozWifiManager",
  Func="Navigator::HasWifiManagerSupport"]
 interface MozWifiManager : EventTarget {
+  /**
+   * Turn on/off wifi functionality.
+   * @param enable true for enable, false for disable.
+   * onsuccess: Wifi enable/disable successfully, including no status change.
+   * onerror: Wifi enable/disable failed or prohibited.
+   */
+  DOMRequest setWifiEnabled(boolean enabled);
+
   /**
    * Returns the list of currently available networks.
    * onsuccess: We have obtained the current list of networks. request.value
@@ -315,7 +323,7 @@ interface MozWifiManager : EventTarget {
    * An event listener that is called with information about the signal
    * strength and link speed every 5 seconds.
    */
-  attribute EventHandler onconnectionInfoUpdate;
+  attribute EventHandler onconnectioninfoupdate;
 
   /**
    * These two events fire when the wifi system is brought online or taken
@@ -328,5 +336,5 @@ interface MozWifiManager : EventTarget {
    * An event listener that is called with information about the number
    * of wifi stations connected to wifi hotspot every 5 seconds.
    */
-  attribute EventHandler onstationInfoUpdate;
+  attribute EventHandler onstationinfoupdate;
 };

@@ -231,6 +231,8 @@ public:
   void DetachTransport_s();
   void DetachMedia_m();
 
+  bool AnyCodecHasPluginID(uint64_t aPluginID);
+
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(LocalSourceStreamInfo)
 private:
   nsTArray<mozilla::TrackID> mAudioTracks;
@@ -261,6 +263,8 @@ class RemoteSourceStreamInfo : public SourceStreamInfo {
 #ifdef MOZILLA_INTERNAL_API
   void UpdatePrincipal_m(nsIPrincipal* aPrincipal);
 #endif
+
+  bool AnyCodecHasPluginID(uint64_t aPluginID);
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(RemoteSourceStreamInfo)
 
@@ -330,13 +334,14 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
   // the stream, that would potentially affect others), so that it sends
   // black/silence.  Once the peer is identified, re-enable those streams.
   void UpdateSinkIdentity_m(nsIPrincipal* aPrincipal, const PeerIdentity* aSinkIdentity);
-  // this determines if any stream is isolated, given the current
-  // document (or script) principal
-  bool AnyLocalStreamIsolated(nsIPrincipal *scriptPrincipal) const;
+  // this determines if any stream is peerIdentity constrained
+  bool AnyLocalStreamHasPeerIdentity() const;
   // When we finally learn who is on the other end, we need to change the ownership
   // on streams
   void UpdateRemoteStreamPrincipals_m(nsIPrincipal* aPrincipal);
 #endif
+
+  bool AnyCodecHasPluginID(uint64_t aPluginID);
 
   const nsCOMPtr<nsIThread>& GetMainThread() const { return mMainThread; }
   const nsCOMPtr<nsIEventTarget>& GetSTSThread() const { return mSTSThread; }
@@ -357,8 +362,10 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
   void AddTransportFlow(int aIndex, bool aRtcp,
                         const mozilla::RefPtr<mozilla::TransportFlow> &aFlow);
   void ConnectDtlsListener_s(const mozilla::RefPtr<mozilla::TransportFlow>& aFlow);
-  void DtlsConnected(mozilla::TransportLayer* aFlow,
-                     mozilla::TransportLayer::State state);
+  void DtlsConnected_s(mozilla::TransportLayer* aFlow,
+                       mozilla::TransportLayer::State state);
+  static void DtlsConnected_m(const std::string& aParentHandle,
+                              bool aPrivacyRequested);
 
   mozilla::RefPtr<mozilla::MediaSessionConduit> GetConduit(int aStreamIndex, bool aReceive) {
     int index_inner = aStreamIndex * 2 + (aReceive ? 0 : 1);
@@ -401,6 +408,8 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
 
   // The parent PC
   PeerConnectionImpl *mParent;
+  // and a loose handle on it for event driven stuff
+  std::string mParentHandle;
 
   // A list of streams returned from GetUserMedia
   // This is only accessed on the main thread (with one special exception)

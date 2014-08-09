@@ -52,7 +52,7 @@ JS_FOR_EACH_PROTOTYPE(DECLARE_PROTOTYPE_CLASS_INIT)
 JSObject *
 js_InitViaClassSpec(JSContext *cx, Handle<JSObject*> obj)
 {
-    MOZ_ASSUME_UNREACHABLE();
+    MOZ_CRASH("js_InitViaClassSpec() should not be called.");
 }
 
 static const ProtoTableEntry protoTable[JSProto_LIMIT] = {
@@ -63,7 +63,7 @@ static const ProtoTableEntry protoTable[JSProto_LIMIT] = {
 #undef INIT_FUNC
 };
 
-const js::Class *
+JS_FRIEND_API(const js::Class *)
 js::ProtoKeyToClass(JSProtoKey key)
 {
     MOZ_ASSERT(key < JSProto_LIMIT);
@@ -166,18 +166,21 @@ GlobalObject::resolveConstructor(JSContext *cx, Handle<GlobalObject*> global, JS
     global->setConstructor(key, ObjectValue(*ctor));
     global->setConstructorPropertySlot(key, ObjectValue(*ctor));
 
-    // Define any specified functions and properties.
-    if (const JSFunctionSpec *funs = clasp->spec.prototypeFunctions) {
-        if (!JS_DefineFunctions(cx, proto, funs))
-            return false;
-    }
-    if (const JSPropertySpec *props = clasp->spec.prototypeProperties) {
-        if (!JS_DefineProperties(cx, proto, props))
-            return false;
-    }
-    if (const JSFunctionSpec *funs = clasp->spec.constructorFunctions) {
-        if (!JS_DefineFunctions(cx, ctor, funs))
-            return false;
+    // Define any specified functions and properties, unless we're a dependent
+    // standard class (in which case they live on the prototype).
+    if (!StandardClassIsDependent(key)) {
+        if (const JSFunctionSpec *funs = clasp->spec.prototypeFunctions) {
+            if (!JS_DefineFunctions(cx, proto, funs))
+                return false;
+        }
+        if (const JSPropertySpec *props = clasp->spec.prototypeProperties) {
+            if (!JS_DefineProperties(cx, proto, props))
+                return false;
+        }
+        if (const JSFunctionSpec *funs = clasp->spec.constructorFunctions) {
+            if (!JS_DefineFunctions(cx, ctor, funs))
+                return false;
+        }
     }
 
     // If the prototype exists, link it with the constructor.
@@ -232,7 +235,9 @@ GlobalObject::create(JSContext *cx, const Class *clasp)
 
     cx->compartment()->initGlobal(*global);
 
-    if (!global->setVarObj(cx))
+    if (!global->setQualifiedVarObj(cx))
+        return nullptr;
+    if (!global->setUnqualifiedVarObj(cx))
         return nullptr;
     if (!global->setDelegate(cx))
         return nullptr;

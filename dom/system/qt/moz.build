@@ -12,6 +12,8 @@ if CONFIG['MOZ_ENABLE_QT5GEOPOSITION']:
         'QTMLocationProvider.cpp',
     ]
 
+    CXXFLAGS += CONFIG['MOZ_QT_CFLAGS']
+
     LOCAL_INCLUDES += [
         '/dom/src/geolocation',
     ]
@@ -25,4 +27,4 @@ FAIL_ON_WARNINGS = True
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
-FINAL_LIBRARY = 'gklayout'
+FINAL_LIBRARY = 'xul'

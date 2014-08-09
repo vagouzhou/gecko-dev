@@ -50,6 +50,7 @@
 
 #ifdef XP_WIN
 #include "SharedSurfaceANGLE.h"
+#include "mozilla/layers/TextureDIB.h"
 #endif
 
 #if 0
@@ -201,6 +202,7 @@ TextureHost::Create(const SurfaceDescriptor& aDesc,
   switch (aDesc.type()) {
     case SurfaceDescriptor::TSurfaceDescriptorShmem:
     case SurfaceDescriptor::TSurfaceDescriptorMemory:
+    case SurfaceDescriptor::TSurfaceDescriptorDIB:
       return CreateBackendIndependentTextureHost(aDesc, aDeallocator, aFlags);
 
     case SurfaceDescriptor::TSharedTextureDescriptor:
@@ -227,7 +229,6 @@ TextureHost::Create(const SurfaceDescriptor& aDesc,
 
 #ifdef XP_WIN
     case SurfaceDescriptor::TSurfaceDescriptorD3D9:
-    case SurfaceDescriptor::TSurfaceDescriptorDIB:
       return CreateTextureHostD3D9(aDesc, aDeallocator, aFlags);
 
     case SurfaceDescriptor::TSurfaceDescriptorD3D10:
@@ -264,6 +265,12 @@ CreateBackendIndependentTextureHost(const SurfaceDescriptor& aDesc,
                                      aFlags);
       break;
     }
+#ifdef XP_WIN
+    case SurfaceDescriptor::TSurfaceDescriptorDIB: {
+      result = new DIBTextureHost(aFlags, aDesc);
+      break;
+    }
+#endif
     default: {
       NS_WARNING("No backend independent TextureHost for this descriptor type");
     }
@@ -390,23 +397,26 @@ BufferTextureHost::DeallocateDeviceData()
 bool
 BufferTextureHost::Lock()
 {
-  mLocked = true;
-  return true;
+  MOZ_ASSERT(!mLocked);
+  if (!MaybeUpload(mPartialUpdate ? &mMaybeUpdatedRegion : nullptr)) {
+      return false;
+  }
+  mLocked = !!mFirstSource;
+  return mLocked;
 }
 
 void
 BufferTextureHost::Unlock()
 {
+  MOZ_ASSERT(mLocked);
   mLocked = false;
 }
 
 NewTextureSource*
 BufferTextureHost::GetTextureSources()
 {
-  MOZ_ASSERT(mLocked, "should never be called while not locked");
-  if (!MaybeUpload(mPartialUpdate ? &mMaybeUpdatedRegion : nullptr)) {
-      return nullptr;
-  }
+  MOZ_ASSERT(mLocked);
+  MOZ_ASSERT(mFirstSource);
   return mFirstSource;
 }
 
@@ -435,6 +445,7 @@ BufferTextureHost::MaybeUpload(nsIntRegion *aRegion)
   if (!Upload(aRegion)) {
     return false;
   }
+  // If upload returns true we know mFirstSource is not null
   mFirstSource->SetUpdateSerial(mUpdateSerial);
   return true;
 }
@@ -539,6 +550,7 @@ BufferTextureHost::Upload(nsIntRegion *aRegion)
       return false;
     }
   }
+  MOZ_ASSERT(mFirstSource);
   return true;
 }
 
@@ -571,7 +583,7 @@ ShmemTextureHost::ShmemTextureHost(const ipc::Shmem& aShmem,
                                    ISurfaceAllocator* aDeallocator,
                                    TextureFlags aFlags)
 : BufferTextureHost(aFormat, aFlags)
-, mShmem(new ipc::Shmem(aShmem))
+, mShmem(MakeUnique<ipc::Shmem>(aShmem))
 , mDeallocator(aDeallocator)
 {
   MOZ_COUNT_CTOR(ShmemTextureHost);
@@ -580,7 +592,6 @@ ShmemTextureHost::ShmemTextureHost(const ipc::Shmem& aShmem,
 ShmemTextureHost::~ShmemTextureHost()
 {
   DeallocateDeviceData();
-  delete mShmem;
   MOZ_COUNT_DTOR(ShmemTextureHost);
 }
 
@@ -591,7 +602,6 @@ ShmemTextureHost::DeallocateSharedData()
     MOZ_ASSERT(mDeallocator,
                "Shared memory would leak without a ISurfaceAllocator");
     mDeallocator->DeallocShmem(*mShmem);
-    delete mShmem;
     mShmem = nullptr;
   }
 }
@@ -600,7 +610,6 @@ void
 ShmemTextureHost::ForgetSharedData()
 {
   if (mShmem) {
-    delete mShmem;
     mShmem = nullptr;
   }
 }
@@ -608,7 +617,6 @@ ShmemTextureHost::ForgetSharedData()
 void
 ShmemTextureHost::OnShutdown()
 {
-  delete mShmem;
   mShmem = nullptr;
 }
 
@@ -814,7 +822,7 @@ StreamTextureHost::StreamTextureHost(TextureFlags aFlags,
                                      const SurfaceStreamDescriptor& aDesc)
   : TextureHost(aFlags)
 {
-  mStream = gfx::SurfaceStream::FromHandle(aDesc.handle());
+  mStream = (gl::SurfaceStream*)aDesc.surfStream();
   MOZ_ASSERT(mStream);
 }
 
@@ -831,7 +839,7 @@ StreamTextureHost::Lock()
     return false;
   }
 
-  gfx::SharedSurface* abstractSurf = mStream->SwapConsumer();
+  gl::SharedSurface* abstractSurf = mStream->SwapConsumer();
   if (!abstractSurf) {
     return false;
   }
@@ -841,8 +849,8 @@ StreamTextureHost::Lock()
     case LayersBackend::LAYERS_BASIC:
     case LayersBackend::LAYERS_D3D9:
     case LayersBackend::LAYERS_D3D10:
-      switch (abstractSurf->Type()) {
-        case gfx::SharedSurfaceType::Basic:
+      switch (abstractSurf->mType) {
+        case gl::SharedSurfaceType::Basic:
           compositorSupportsShSurfType = true;
           break;
         default:
@@ -850,12 +858,12 @@ StreamTextureHost::Lock()
       }
       break;
     case LayersBackend::LAYERS_OPENGL:
-      switch (abstractSurf->Type()) {
-        case gfx::SharedSurfaceType::Basic:
-        case gfx::SharedSurfaceType::GLTextureShare:
-        case gfx::SharedSurfaceType::EGLImageShare:
-        case gfx::SharedSurfaceType::Gralloc:
-        case gfx::SharedSurfaceType::IOSurface:
+      switch (abstractSurf->mType) {
+        case gl::SharedSurfaceType::Basic:
+        case gl::SharedSurfaceType::GLTextureShare:
+        case gl::SharedSurfaceType::EGLImageShare:
+        case gl::SharedSurfaceType::Gralloc:
+        case gl::SharedSurfaceType::IOSurface:
           compositorSupportsShSurfType = true;
           break;
         default:
@@ -863,9 +871,9 @@ StreamTextureHost::Lock()
       }
       break;
     case LayersBackend::LAYERS_D3D11:
-      switch (abstractSurf->Type()) {
-        case gfx::SharedSurfaceType::Basic:
-        case gfx::SharedSurfaceType::EGLSurfaceANGLE:
+      switch (abstractSurf->mType) {
+        case gl::SharedSurfaceType::Basic:
+        case gl::SharedSurfaceType::EGLSurfaceANGLE:
           compositorSupportsShSurfType = true;
           break;
         default:
@@ -878,11 +886,11 @@ StreamTextureHost::Lock()
 
   RefPtr<NewTextureSource> newTexSource;
   if (compositorSupportsShSurfType) {
-    gfx::SurfaceFormat format = abstractSurf->HasAlpha() ? gfx::SurfaceFormat::R8G8B8A8
-                                                         : gfx::SurfaceFormat::R8G8B8X8;
+    gfx::SurfaceFormat format = abstractSurf->mHasAlpha ? gfx::SurfaceFormat::R8G8B8A8
+                                                        : gfx::SurfaceFormat::R8G8B8X8;
 
-    switch (abstractSurf->Type()) {
-      case gfx::SharedSurfaceType::Basic: {
+    switch (abstractSurf->mType) {
+      case gl::SharedSurfaceType::Basic: {
         gl::SharedSurface_Basic* surf = gl::SharedSurface_Basic::Cast(abstractSurf);
 
         if (!this->mDataTextureSource) {
@@ -894,7 +902,7 @@ StreamTextureHost::Lock()
         newTexSource = mDataTextureSource;
         break;
       }
-      case gfx::SharedSurfaceType::GLTextureShare: {
+      case gl::SharedSurfaceType::GLTextureShare: {
         gl::SharedSurface_GLTexture* surf = gl::SharedSurface_GLTexture::Cast(abstractSurf);
 
         MOZ_ASSERT(mCompositor->GetBackendType() == LayersBackend::LAYERS_OPENGL);
@@ -907,11 +915,11 @@ StreamTextureHost::Lock()
                                            tex,
                                            format,
                                            target,
-                                           surf->Size());
+                                           surf->mSize);
         break;
       }
 #ifdef MOZ_ENABLE_D3D10_LAYER
-      case gfx::SharedSurfaceType::EGLSurfaceANGLE: {
+      case gl::SharedSurfaceType::EGLSurfaceANGLE: {
         gl::SharedSurface_ANGLEShareHandle* surf = gl::SharedSurface_ANGLEShareHandle::Cast(abstractSurf);
         HANDLE shareHandle = surf->GetShareHandle();
 
@@ -931,7 +939,7 @@ StreamTextureHost::Lock()
         break;
       }
 #endif
-      case gfx::SharedSurfaceType::EGLImageShare: {
+      case gl::SharedSurfaceType::EGLImageShare: {
         gl::SharedSurface_EGLImage* surf = gl::SharedSurface_EGLImage::Cast(abstractSurf);
 
         MOZ_ASSERT(mCompositor->GetBackendType() == LayersBackend::LAYERS_OPENGL);
@@ -947,15 +955,15 @@ StreamTextureHost::Lock()
                                            tex,
                                            format,
                                            target,
-                                           surf->Size());
+                                           surf->mSize);
         break;
       }
-      case gfx::SharedSurfaceType::Gralloc: {
+      case gl::SharedSurfaceType::Gralloc: {
         MOZ_ASSERT(false, "WebGL in the Host process? Gralloc without E10S? Not yet supported.");
         break;
       }
 #ifdef XP_MACOSX
-      case gfx::SharedSurfaceType::IOSurface: {
+      case gl::SharedSurfaceType::IOSurface: {
         gl::SharedSurface_IOSurface* surf = gl::SharedSurface_IOSurface::Cast(abstractSurf);
         MacIOSurface* ioSurf = surf->GetIOSurface();
 

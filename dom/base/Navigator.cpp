@@ -106,6 +106,8 @@
 #endif
 #include "mozilla/dom/ContentChild.h"
 
+#include "mozilla/dom/FeatureList.h"
+
 namespace mozilla {
 namespace dom {
 
@@ -809,7 +811,7 @@ Navigator::Vibrate(const nsTArray<uint32_t>& aPattern)
 
   // The spec says we check sVibratorEnabled after we've done the sanity
   // checking on the pattern.
-  if (pattern.IsEmpty() || !sVibratorEnabled) {
+  if (!sVibratorEnabled) {
     return true;
   }
 
@@ -1464,6 +1466,7 @@ Navigator::GetBattery(ErrorResult& aRv)
 /* static */ already_AddRefed<Promise>
 Navigator::GetDataStores(nsPIDOMWindow* aWindow,
                          const nsAString& aName,
+                         const nsAString& aOwner,
                          ErrorResult& aRv)
 {
   if (!aWindow || !aWindow->GetDocShell()) {
@@ -1478,23 +1481,28 @@ Navigator::GetDataStores(nsPIDOMWindow* aWindow,
   }
 
   nsCOMPtr<nsISupports> promise;
-  aRv = service->GetDataStores(aWindow, aName, getter_AddRefs(promise));
+  aRv = service->GetDataStores(aWindow, aName, aOwner, getter_AddRefs(promise));
 
   nsRefPtr<Promise> p = static_cast<Promise*>(promise.get());
   return p.forget();
 }
 
 already_AddRefed<Promise>
-Navigator::GetDataStores(const nsAString& aName, ErrorResult& aRv)
+Navigator::GetDataStores(const nsAString& aName,
+                         const nsAString& aOwner,
+                         ErrorResult& aRv)
 {
-  return GetDataStores(mWindow, aName, aRv);
+  return GetDataStores(mWindow, aName, aOwner, aRv);
 }
 
 already_AddRefed<Promise>
-Navigator::GetFeature(const nsAString& aName)
+Navigator::GetFeature(const nsAString& aName, ErrorResult& aRv)
 {
   nsCOMPtr<nsIGlobalObject> go = do_QueryInterface(mWindow);
-  nsRefPtr<Promise> p = new Promise(go);
+  nsRefPtr<Promise> p = Promise::Create(go, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
 
 #if defined(XP_LINUX)
   if (aName.EqualsLiteral("hardware.memory")) {
@@ -1515,6 +1523,36 @@ Navigator::GetFeature(const nsAString& aName)
     return p.forget();
   } // hardware.memory
 #endif
+
+  // Hardcoded manifest features. Some are still b2g specific.
+  const char manifestFeatures[][64] = {
+    "manifest.origin"
+  , "manifest.redirects"
+#ifdef MOZ_B2G
+  , "manifest.chrome.navigation"
+  , "manifest.precompile"
+#endif
+  };
+
+  nsAutoCString feature = NS_ConvertUTF16toUTF8(aName);
+  for (uint32_t i = 0; i < MOZ_ARRAY_LENGTH(manifestFeatures); i++) {
+    if (feature.Equals(manifestFeatures[i])) {
+      p->MaybeResolve(true);
+      return p.forget();
+    }
+  }
+
+  NS_NAMED_LITERAL_STRING(apiWindowPrefix, "api.window.");
+  if (StringBeginsWith(aName, apiWindowPrefix)) {
+    const nsAString& featureName = Substring(aName, apiWindowPrefix.Length());
+    if (IsFeatureDetectible(featureName)) {
+      p->MaybeResolve(true);
+    } else {
+      p->MaybeResolve(JS::UndefinedHandleValue);
+    }
+    return p.forget();
+  }
+
   // resolve with <undefined> because the feature name is not supported
   p->MaybeResolve(JS::UndefinedHandleValue);
 
@@ -1953,7 +1991,6 @@ Navigator::DoNewResolve(JSContext* aCx, JS::Handle<JSObject*> aObject,
                         JS::Handle<jsid> aId,
                         JS::MutableHandle<JSPropertyDescriptor> aDesc)
 {
-  // Note: The infallibleInit call below depends on this check.
   if (!JSID_IS_STRING(aId)) {
     return true;
   }
@@ -1963,8 +2000,10 @@ Navigator::DoNewResolve(JSContext* aCx, JS::Handle<JSObject*> aObject,
     return Throw(aCx, NS_ERROR_NOT_INITIALIZED);
   }
 
-  nsDependentJSString name;
-  name.infallibleInit(aId);
+  nsAutoJSString name;
+  if (!name.init(aCx, JSID_TO_STRING(aId))) {
+    return false;
+  }
 
   const nsGlobalNameStruct* name_struct =
     nameSpaceManager->LookupNavigatorName(name);
@@ -2165,33 +2204,6 @@ Navigator::HasWakeLockSupport(JSContext* /* unused*/, JSObject* /*unused */)
 
 /* static */
 bool
-Navigator::HasMobileMessageSupport(JSContext* /* unused */, JSObject* aGlobal)
-{
-  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
-
-#ifndef MOZ_WEBSMS_BACKEND
-  return false;
-#endif
-
-  // First of all, the general pref has to be turned on.
-  bool enabled = false;
-  Preferences::GetBool("dom.sms.enabled", &enabled);
-  if (!enabled) {
-    return false;
-  }
-
-  NS_ENSURE_TRUE(win, false);
-  NS_ENSURE_TRUE(win->GetDocShell(), false);
-
-  if (!CheckPermission(win, "sms")) {
-    return false;
-  }
-
-  return true;
-}
-
-/* static */
-bool
 Navigator::HasCameraSupport(JSContext* /* unused */, JSObject* aGlobal)
 {
   nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
@@ -2223,27 +2235,18 @@ Navigator::HasWifiManagerSupport(JSContext* /* unused */,
 bool
 Navigator::HasNFCSupport(JSContext* /* unused */, JSObject* aGlobal)
 {
+  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
+
   // Do not support NFC if NFC content helper does not exist.
   nsCOMPtr<nsISupports> contentHelper = do_GetService("@mozilla.org/nfc/content-helper;1");
   if (!contentHelper) {
     return false;
   }
 
-  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
   return win && (CheckPermission(win, "nfc-read") ||
                  CheckPermission(win, "nfc-write"));
 }
 #endif // MOZ_NFC
-
-#ifdef MOZ_TIME_MANAGER
-/* static */
-bool
-Navigator::HasTimeSupport(JSContext* /* unused */, JSObject* aGlobal)
-{
-  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
-  return win && CheckPermission(win, "time");
-}
-#endif // MOZ_TIME_MANAGER
 
 #ifdef MOZ_MEDIA_NAVIGATOR
 /* static */
@@ -2344,22 +2347,6 @@ Navigator::HasDataStoreSupport(JSContext* aCx, JSObject* aGlobal)
   }
 
   return HasDataStoreSupport(doc->NodePrincipal());
-}
-
-/* static */
-bool
-Navigator::HasNetworkStatsSupport(JSContext* /* unused */, JSObject* aGlobal)
-{
-  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
-  return CheckPermission(win, "networkstats-manage");
-}
-
-/* static */
-bool
-Navigator::HasFeatureDetectionSupport(JSContext* /* unused */, JSObject* aGlobal)
-{
-  nsCOMPtr<nsPIDOMWindow> win = GetWindowFromGlobal(aGlobal);
-  return CheckPermission(win, "feature-detection");
 }
 
 #ifdef MOZ_B2G

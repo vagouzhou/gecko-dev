@@ -23,7 +23,7 @@ class MDefinition;
 class MInstruction;
 class LOsiPoint;
 
-class LIRGeneratorShared : public MInstructionVisitorWithDefaults
+class LIRGeneratorShared : public MDefinitionVisitorDefaultNYI
 {
   protected:
     MIRGenerator *gen;
@@ -204,11 +204,6 @@ class LIRGeneratorShared : public MInstructionVisitorWithDefaults
     // Whether to generate typed array accesses on statically known objects.
     static bool allowStaticTypedArrayAccesses() {
         return false;
-    }
-
-     // Whether we can emit Float32 specific optimizations.
-    static bool allowFloat32Optimizations() {
-       return false;
     }
 
     // Whether we can inline ForkJoinGetSlice.

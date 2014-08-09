@@ -1,14 +1,19 @@
+/** @jsx React.DOM */
+
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* global loop:true */
+/* jshint newcap:false, esnext:true */
+/* global loop:true, React */
 
 var loop = loop || {};
 loop.conversation = (function(OT, mozL10n) {
   "use strict";
 
-  var sharedViews = loop.shared.views;
+  var sharedViews = loop.shared.views,
+      // aliasing translation function as __ for concision
+      __ = mozL10n.get;
 
   /**
    * App router.
@@ -16,68 +21,98 @@ loop.conversation = (function(OT, mozL10n) {
    */
   var router;
 
-  /**
-   * Incoming call view.
-   * @type {loop.shared.views.BaseView}
-   */
-  var IncomingCallView = sharedViews.BaseView.extend({
-    template: _.template([
-      '<h2 data-l10n-id="incoming_call"></h2>',
-      '<p>',
-      '  <button class="btn btn-success btn-accept"',
-      '           data-l10n-id="accept_button"></button>',
-      '  <button class="btn btn-error btn-decline"',
-      '           data-l10n-id="decline_button"></button>',
-      '</p>'
-    ].join("")),
+  var IncomingCallView = React.createClass({displayName: 'IncomingCallView',
 
-    className: "incoming-call",
-
-    events: {
-      "click .btn-accept": "handleAccept",
-      "click .btn-decline": "handleDecline"
+    propTypes: {
+      model: React.PropTypes.object.isRequired
     },
 
-    /**
-     * User clicked on the "accept" button.
-     * @param  {MouseEvent} event
-     */
-    handleAccept: function(event) {
-      event.preventDefault();
-      this.model.trigger("accept");
+    getInitialState: function() {
+      return {showDeclineMenu: false};
     },
 
-    /**
-     * User clicked on the "decline" button.
-     * @param  {MouseEvent} event
-     */
-    handleDecline: function(event) {
-      event.preventDefault();
-      this.model.trigger("decline");
-    }
-  });
-
-  /**
-   * Call ended view.
-   * @type {loop.shared.views.BaseView}
-   */
-  var EndedCallView = sharedViews.BaseView.extend({
-    template: _.template([
-      '<p>',
-      '  <button class="btn btn-info" data-l10n-id="close_window"></button>',
-      '</p>'
-    ].join("")),
-
-    className: "call-ended",
-
-    events: {
-      "click button": "closeWindow"
+    componentDidMount: function() {
+      window.addEventListener('click', this.clickHandler);
+      window.addEventListener('blur', this._hideDeclineMenu);
     },
 
-    closeWindow: function(event) {
-      event.preventDefault();
-      // XXX For now, we just close the window.
-      window.close();
+    componentWillUnmount: function() {
+      window.removeEventListener('click', this.clickHandler);
+      window.removeEventListener('blur', this._hideDeclineMenu);
+    },
+
+    clickHandler: function(e) {
+      var target = e.target;
+      if (!target.classList.contains('btn-chevron')) {
+        this._hideDeclineMenu();
+      }
+    },
+
+    _handleAccept: function() {
+      this.props.model.trigger("accept");
+    },
+
+    _handleDecline: function() {
+      this.props.model.trigger("decline");
+    },
+
+    _handleDeclineBlock: function(e) {
+      this.props.model.trigger("declineAndBlock");
+      /* Prevent event propagation
+       * stop the click from reaching parent element */
+      return false;
+    },
+
+    _toggleDeclineMenu: function() {
+      var currentState = this.state.showDeclineMenu;
+      this.setState({showDeclineMenu: !currentState});
+    },
+
+    _hideDeclineMenu: function() {
+      this.setState({showDeclineMenu: false});
+    },
+
+    render: function() {
+      /* jshint ignore:start */
+      var btnClassAccept = "btn btn-success btn-accept";
+      var btnClassBlock = "btn btn-error btn-block";
+      var btnClassDecline = "btn btn-error btn-decline";
+      var conversationPanelClass = "incoming-call " +
+                                  loop.shared.utils.getTargetPlatform();
+      var cx = React.addons.classSet;
+      var declineDropdownMenuClasses = cx({
+        "native-dropdown-menu": true,
+        "decline-block-menu": true,
+        "visually-hidden": !this.state.showDeclineMenu
+      });
+      return (
+        React.DOM.div({className: conversationPanelClass}, 
+          React.DOM.h2(null, __("incoming_call")), 
+          React.DOM.div({className: "button-group incoming-call-action-group"}, 
+            React.DOM.div({className: "button-chevron-menu-group"}, 
+              React.DOM.div({className: "button-group-chevron"}, 
+                React.DOM.div({className: "button-group"}, 
+                  React.DOM.button({className: btnClassDecline, onClick: this._handleDecline}, 
+                    __("incoming_call_decline_button")
+                  ), 
+                  React.DOM.div({className: "btn-chevron", 
+                    onClick: this._toggleDeclineMenu}
+                  )
+                ), 
+                React.DOM.ul({className: declineDropdownMenuClasses}, 
+                  React.DOM.li({className: "btn-block", onClick: this._handleDeclineBlock}, 
+                    __("incoming_call_decline_and_block_button")
+                  )
+                )
+              )
+            ), 
+            React.DOM.button({className: btnClassAccept, onClick: this._handleAccept}, 
+              __("incoming_call_answer_button")
+            )
+          )
+        )
+      );
+      /* jshint ignore:end */
     }
   });
 
@@ -96,7 +131,8 @@ loop.conversation = (function(OT, mozL10n) {
       "call/accept": "accept",
       "call/decline": "decline",
       "call/ongoing": "conversation",
-      "call/ended": "ended"
+      "call/declineAndBlock": "declineAndBlock",
+      "call/feedback": "feedback"
     },
 
     /**
@@ -110,7 +146,7 @@ loop.conversation = (function(OT, mozL10n) {
      * @override {loop.shared.router.BaseConversationRouter.endCall}
      */
     endCall: function() {
-      this.navigate("call/ended", {trigger: true});
+      this.navigate("call/feedback", {trigger: true});
     },
 
     /**
@@ -120,34 +156,70 @@ loop.conversation = (function(OT, mozL10n) {
      *                             by the router from the URL.
      */
     incoming: function(loopVersion) {
-      window.navigator.mozLoop.startAlerting();
+      navigator.mozLoop.startAlerting();
       this._conversation.set({loopVersion: loopVersion});
-      this._conversation.once("accept", function() {
+      this._conversation.once("accept", () => {
         this.navigate("call/accept", {trigger: true});
-      }.bind(this));
-      this._conversation.once("decline", function() {
+      });
+      this._conversation.once("decline", () => {
         this.navigate("call/decline", {trigger: true});
-      }.bind(this));
-      this.loadView(new IncomingCallView({model: this._conversation}));
+      });
+      this._conversation.once("declineAndBlock", () => {
+        this.navigate("call/declineAndBlock", {trigger: true});
+      });
+      this._conversation.once("call:incoming", this.startCall, this);
+      this._client.requestCallsInfo(loopVersion, (err, sessionData) => {
+        if (err) {
+          console.error("Failed to get the sessionData", err);
+          // XXX Not the ideal response, but bug 1047410 will be replacing
+          //this by better "call failed" UI.
+          this._notifier.errorL10n("cannot_start_call_session_not_ready");
+          return;
+        }
+        // XXX For incoming calls we might have more than one call queued.
+        // For now, we'll just assume the first call is the right information.
+        // We'll probably really want to be getting this data from the
+        // background worker on the desktop client.
+        // Bug 1032700 should fix this.
+        this._conversation.setSessionData(sessionData[0]);
+        this.loadReactComponent(loop.conversation.IncomingCallView({
+          model: this._conversation
+        }));
+      });
     },
 
     /**
      * Accepts an incoming call.
      */
     accept: function() {
-      window.navigator.mozLoop.stopAlerting();
-      this._conversation.initiate({
-        baseServerUrl: window.navigator.mozLoop.serverUrl,
-        outgoing: false
-      });
+      navigator.mozLoop.stopAlerting();
+      this._conversation.incoming();
     },
 
     /**
      * Declines an incoming call.
      */
     decline: function() {
-      window.navigator.mozLoop.stopAlerting();
+      navigator.mozLoop.stopAlerting();
       // XXX For now, we just close the window
+      window.close();
+    },
+
+    /**
+     * Decline and block an incoming call
+     * @note:
+     * - loopToken is the callUrl identifier. It gets set in the panel
+     *   after a callUrl is received
+     */
+    declineAndBlock: function() {
+      navigator.mozLoop.stopAlerting();
+      var token = navigator.mozLoop.getLoopCharPref('loopToken');
+      this._client.deleteCallUrl(token, function(error) {
+        // XXX The conversation window will be closed when this cb is triggered
+        // figure out if there is a better way to report the error to the user
+        // (bug 1048909).
+        console.log(error);
+      });
       window.close();
     },
 
@@ -163,18 +235,34 @@ loop.conversation = (function(OT, mozL10n) {
         return;
       }
 
-      this.loadView(
-        new loop.shared.views.ConversationView({
-          sdk: OT,
-          model: this._conversation
+      /*jshint newcap:false*/
+      this.loadReactComponent(sharedViews.ConversationView({
+        sdk: OT,
+        model: this._conversation
       }));
     },
 
     /**
-     * XXX: load a view with a close button for now?
+     * Call has ended, display a feedback form.
      */
-    ended: function() {
-      this.loadView(new EndedCallView());
+    feedback: function() {
+      document.title = mozL10n.get("call_has_ended");
+
+      var feebackAPIBaseUrl = navigator.mozLoop.getLoopCharPref(
+        "feedback.baseUrl");
+
+      var appVersionInfo = navigator.mozLoop.appVersionInfo;
+
+      var feedbackClient = new loop.FeedbackAPIClient(feebackAPIBaseUrl, {
+        product: navigator.mozLoop.getLoopCharPref("feedback.product"),
+        platform: appVersionInfo.OS,
+        channel: appVersionInfo.channel,
+        version: appVersionInfo.version
+      });
+
+      this.loadReactComponent(sharedViews.FeedbackView({
+        feedbackApiClient: feedbackClient
+      }));
     }
   });
 
@@ -184,12 +272,16 @@ loop.conversation = (function(OT, mozL10n) {
   function init() {
     // Do the initial L10n setup, we do this before anything
     // else to ensure the L10n environment is setup correctly.
-    mozL10n.initialize(window.navigator.mozLoop);
+    mozL10n.initialize(navigator.mozLoop);
 
     document.title = mozL10n.get("incoming_call_title");
 
+    var client = new loop.Client();
     router = new ConversationRouter({
-      conversation: new loop.shared.models.ConversationModel({}, {sdk: OT}),
+      client: client,
+      conversation: new loop.shared.models.ConversationModel(
+        {},         // Model attributes
+        {sdk: OT}), // Model dependencies
       notifier: new sharedViews.NotificationListView({el: "#messages"})
     });
     Backbone.history.start();
@@ -197,7 +289,6 @@ loop.conversation = (function(OT, mozL10n) {
 
   return {
     ConversationRouter: ConversationRouter,
-    EndedCallView: EndedCallView,
     IncomingCallView: IncomingCallView,
     init: init
   };

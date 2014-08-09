@@ -11,6 +11,7 @@
 #include "jsobjinlines.h"
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/CheckedInt.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/TemplateLib.h"
@@ -36,12 +37,12 @@
 #include "jswatchpoint.h"
 #include "jswrapper.h"
 
+#include "asmjs/AsmJSModule.h"
 #include "builtin/Eval.h"
 #include "builtin/Object.h"
 #include "builtin/SymbolObject.h"
 #include "frontend/BytecodeCompiler.h"
 #include "gc/Marking.h"
-#include "jit/AsmJSModule.h"
 #include "jit/BaselineJIT.h"
 #include "js/MemoryMetrics.h"
 #include "js/OldDebugAPI.h"
@@ -167,6 +168,13 @@ FinishObjectClassInit(JSContext *cx, JS::HandleObject ctor, JS::HandleObject pro
     {
         return false;
     }
+
+    /*
+     * Define self-hosted functions after setting the intrinsics holder
+     * (which is needed to define self-hosted functions)
+     */
+    if (!JS_DefineFunctions(cx, ctor, object_static_selfhosted_methods))
+        return false;
 
     /*
      * The global object should have |Object.prototype| as its [[Prototype]].
@@ -1512,6 +1520,17 @@ js::NewObjectWithGivenProto(ExclusiveContext *cxArg, const js::Class *clasp,
     return obj;
 }
 
+static JSProtoKey
+ClassProtoKeyOrAnonymousOrNull(const js::Class *clasp)
+{
+    JSProtoKey key = JSCLASS_CACHED_PROTO_KEY(clasp);
+    if (key != JSProto_Null)
+        return key;
+    if (clasp->flags & JSCLASS_IS_ANONYMOUS)
+        return JSProto_Object;
+    return JSProto_Null;
+}
+
 JSObject *
 js::NewObjectWithClassProtoCommon(ExclusiveContext *cxArg,
                                   const js::Class *clasp, JSObject *protoArg, JSObject *parentArg,
@@ -1535,7 +1554,7 @@ js::NewObjectWithClassProtoCommon(ExclusiveContext *cxArg,
      * stored in an immutable slot on the global (except for ClearScope, which
      * will flush the new object cache).
      */
-    JSProtoKey protoKey = GetClassProtoKey(clasp);
+    JSProtoKey protoKey = ClassProtoKeyOrAnonymousOrNull(clasp);
 
     NewObjectCache::EntryIndex entry = -1;
     if (JSContext *cx = cxArg->maybeJSContext()) {
@@ -2146,7 +2165,7 @@ js::XDRObjectLiteral(XDRState<mode> *xdr, MutableHandleObject obj)
                 else if (JSID_IS_ATOM(id))
                     idType = JSID_TYPE_STRING;
                 else
-                    MOZ_ASSUME_UNREACHABLE("Object property is not yet supported by XDR.");
+                    MOZ_CRASH("Object property is not yet supported by XDR.");
 
                 tmpValue = obj->getSlot(i);
             }
@@ -2189,6 +2208,22 @@ js::XDRObjectLiteral(XDRState<mode> *xdr, MutableHandleObject obj)
             FixArrayType(cx, obj);
         else
             FixObjectType(cx, obj);
+    }
+
+    {
+        uint32_t frozen;
+        bool extensible;
+        if (mode == XDR_ENCODE) {
+            if (!JSObject::isExtensible(cx, obj, &extensible))
+                return false;
+            frozen = extensible ? 0 : 1;
+        }
+        if (!xdr->codeUint32(&frozen))
+            return false;
+        if (mode == XDR_DECODE && frozen == 1) {
+            if (!JSObject::freeze(cx, obj))
+                return false;
+        }
     }
 
     return true;
@@ -2339,13 +2374,13 @@ JSObject::ReserveForTradeGuts(JSContext *cx, JSObject *aArg, JSObject *bArg,
     unsigned bdynamic = dynamicSlotsCount(reserved.newbfixed, a->slotSpan(), a->getClass());
 
     if (adynamic) {
-        reserved.newaslots = cx->pod_malloc<HeapSlot>(adynamic);
+        reserved.newaslots = a->zone()->pod_malloc<HeapSlot>(adynamic);
         if (!reserved.newaslots)
             return false;
         Debug_SetSlotRangeToCrashOnTouch(reserved.newaslots, adynamic);
     }
     if (bdynamic) {
-        reserved.newbslots = cx->pod_malloc<HeapSlot>(bdynamic);
+        reserved.newbslots = b->zone()->pod_malloc<HeapSlot>(bdynamic);
         if (!reserved.newbslots)
             return false;
         Debug_SetSlotRangeToCrashOnTouch(reserved.newbslots, bdynamic);
@@ -2359,6 +2394,17 @@ JSObject::TradeGuts(JSContext *cx, JSObject *a, JSObject *b, TradeGutsReserved &
 {
     JS_ASSERT(a->compartment() == b->compartment());
     JS_ASSERT(a->is<JSFunction>() == b->is<JSFunction>());
+
+    /*
+     * Neither object may be in the nursery, but ensure we update any embedded
+     * nursery pointers in either object.
+     */
+#ifdef JSGC_GENERATIONAL
+    JS_ASSERT(!IsInsideNursery(a) && !IsInsideNursery(b));
+    cx->runtime()->gc.storeBuffer.putWholeCellFromMainThread(a);
+    cx->runtime()->gc.storeBuffer.putWholeCellFromMainThread(b);
+#endif
+    JS::AutoCheckCannotGC nogc;
 
     /*
      * Swap the object's types, to restore their initial type information.
@@ -2401,17 +2447,6 @@ JSObject::TradeGuts(JSContext *cx, JSObject *a, JSObject *b, TradeGutsReserved &
         js_memcpy(tmp, a, size);
         js_memcpy(a, b, size);
         js_memcpy(b, tmp, size);
-
-#ifdef JSGC_GENERATIONAL
-        /*
-         * Trigger post barriers for fixed slots. JSObject bits are barriered
-         * below, in common with the other case.
-         */
-        for (size_t i = 0; i < a->numFixedSlots(); ++i) {
-            HeapSlot::writeBarrierPost(a, HeapSlot::Slot, i, a->getSlot(i));
-            HeapSlot::writeBarrierPost(b, HeapSlot::Slot, i, b->getSlot(i));
-        }
-#endif
     } else {
         /*
          * If the objects are of differing sizes, use the space we reserved
@@ -2467,13 +2502,6 @@ JSObject::TradeGuts(JSContext *cx, JSObject *a, JSObject *b, TradeGutsReserved &
         reserved.newbslots = nullptr;
     }
 
-#ifdef JSGC_GENERATIONAL
-    Shape::writeBarrierPost(a->shape_, &a->shape_);
-    Shape::writeBarrierPost(b->shape_, &b->shape_);
-    types::TypeObject::writeBarrierPost(a->type_, &a->type_);
-    types::TypeObject::writeBarrierPost(b->type_, &b->type_);
-#endif
-
     if (a->inDictionaryMode())
         a->lastProperty()->listp = &a->shape_;
     if (b->inDictionaryMode())
@@ -2491,7 +2519,7 @@ JSObject::TradeGuts(JSContext *cx, JSObject *a, JSObject *b, TradeGutsReserved &
      * makes changes to the objects that might confuse the tracing code.
      */
     JS::Zone *zone = a->zone();
-    if (zone->needsBarrier()) {
+    if (zone->needsIncrementalBarrier()) {
         MarkChildren(zone->barrierTracer(), a);
         MarkChildren(zone->barrierTracer(), b);
     }
@@ -2502,9 +2530,6 @@ JSObject::TradeGuts(JSContext *cx, JSObject *a, JSObject *b, TradeGutsReserved &
 bool
 JSObject::swap(JSContext *cx, HandleObject a, HandleObject b)
 {
-    AutoMarkInDeadZone adc1(a->zone());
-    AutoMarkInDeadZone adc2(b->zone());
-
     // Ensure swap doesn't cause a finalizer to not be run.
     JS_ASSERT(IsBackgroundFinalized(a->tenuredGetAllocKind()) ==
               IsBackgroundFinalized(b->tenuredGetAllocKind()));
@@ -2828,13 +2853,13 @@ AllocateSlots(ThreadSafeContext *cx, JSObject *obj, uint32_t nslots)
 {
 #ifdef JSGC_GENERATIONAL
     if (cx->isJSContext())
-        return cx->asJSContext()->runtime()->gc.nursery.allocateSlots(cx->asJSContext(), obj, nslots);
+        return cx->asJSContext()->runtime()->gc.nursery.allocateSlots(obj, nslots);
 #endif
 #ifdef JSGC_FJGENERATIONAL
     if (cx->isForkJoinContext())
         return cx->asForkJoinContext()->nursery().allocateSlots(obj, nslots);
 #endif
-    return cx->pod_malloc<HeapSlot>(nslots);
+    return obj->zone()->pod_malloc<HeapSlot>(nslots);
 }
 
 // This will not run the garbage collector.  If a nursery cannot accomodate the slot array
@@ -2847,8 +2872,7 @@ ReallocateSlots(ThreadSafeContext *cx, JSObject *obj, HeapSlot *oldSlots,
 {
 #ifdef JSGC_GENERATIONAL
     if (cx->isJSContext()) {
-        return cx->asJSContext()->runtime()->gc.nursery.reallocateSlots(cx->asJSContext(),
-                                                                        obj, oldSlots,
+        return cx->asJSContext()->runtime()->gc.nursery.reallocateSlots(obj, oldSlots,
                                                                         oldCount, newCount);
     }
 #endif
@@ -2858,8 +2882,7 @@ ReallocateSlots(ThreadSafeContext *cx, JSObject *obj, HeapSlot *oldSlots,
                                                                   oldCount, newCount);
     }
 #endif
-    return (HeapSlot *)cx->realloc_(oldSlots, oldCount * sizeof(HeapSlot),
-                                    newCount * sizeof(HeapSlot));
+    return obj->zone()->pod_realloc<HeapSlot>(oldSlots, oldCount, newCount);
 }
 
 /* static */ bool
@@ -2930,7 +2953,7 @@ FreeSlots(ThreadSafeContext *cx, HeapSlot *slots)
 #ifdef JSGC_GENERATIONAL
     // Note: threads without a JSContext do not have access to GGC nursery allocated things.
     if (cx->isJSContext())
-        return cx->asJSContext()->runtime()->gc.nursery.freeSlots(cx->asJSContext(), slots);
+        return cx->asJSContext()->runtime()->gc.nursery.freeSlots(slots);
 #endif
 #ifdef JSGC_FJGENERATIONAL
     if (cx->isForkJoinContext())
@@ -3158,14 +3181,14 @@ AllocateElements(ThreadSafeContext *cx, JSObject *obj, uint32_t nelems)
 {
 #ifdef JSGC_GENERATIONAL
     if (cx->isJSContext())
-        return cx->asJSContext()->runtime()->gc.nursery.allocateElements(cx->asJSContext(), obj, nelems);
+        return cx->asJSContext()->runtime()->gc.nursery.allocateElements(obj, nelems);
 #endif
 #ifdef JSGC_FJGENERATIONAL
     if (cx->isForkJoinContext())
         return cx->asForkJoinContext()->nursery().allocateElements(obj, nelems);
 #endif
 
-    return static_cast<js::ObjectElements *>(cx->malloc_(nelems * sizeof(HeapValue)));
+    return reinterpret_cast<js::ObjectElements *>(obj->zone()->pod_malloc<HeapSlot>(nelems));
 }
 
 // This will not run the garbage collector.  If a nursery cannot accomodate the element array
@@ -3176,9 +3199,8 @@ ReallocateElements(ThreadSafeContext *cx, JSObject *obj, ObjectElements *oldHead
 {
 #ifdef JSGC_GENERATIONAL
     if (cx->isJSContext()) {
-        return cx->asJSContext()->runtime()->gc.nursery.reallocateElements(cx->asJSContext(), obj,
-                                                                           oldHeader, oldCount,
-                                                                           newCount);
+        return cx->asJSContext()->runtime()->gc.nursery.reallocateElements(obj, oldHeader,
+                                                                           oldCount, newCount);
     }
 #endif
 #ifdef JSGC_FJGENERATIONAL
@@ -3188,94 +3210,202 @@ ReallocateElements(ThreadSafeContext *cx, JSObject *obj, ObjectElements *oldHead
     }
 #endif
 
-    return static_cast<js::ObjectElements *>(cx->realloc_(oldHeader, oldCount * sizeof(HeapSlot),
-                                                          newCount * sizeof(HeapSlot)));
+    return reinterpret_cast<js::ObjectElements *>(
+            obj->zone()->pod_realloc<HeapSlot>(reinterpret_cast<HeapSlot *>(oldHeader),
+                                               oldCount, newCount));
+}
+
+// Round up |reqAllocated| to a good size. Up to 1 Mebi (i.e. 1,048,576) the
+// slot count is usually a power-of-two:
+//
+//   8, 16, 32, 64, ..., 256 Ki, 512 Ki, 1 Mi
+//
+// Beyond that, we use this formula:
+//
+//   count(n+1) = Math.ceil(count(n) * 1.125)
+//
+// where |count(n)| is the size of the nth bucket measured in MiSlots.
+//
+// These counts lets us add N elements to an array in amortized O(N) time.
+// Having the second class means that for bigger arrays the constant factor is
+// higher, but we waste less space.
+//
+// There are two exceptions to the above rules. Both exceptions optimize for
+// cases where the requested capacity is near the array's length.
+//
+// - If |reqAllocated| would give us a capacity equal to |length|, it's
+//   probably due to code like this:
+//
+//      var a = new Array(1024);
+//
+//   1024 is smaller than |EagerAllocationMaxLength|, so the array elements
+//   are allocated immediately. This is likely to be the final size of the
+//   array, so we just allocate the exact length immediately. In this case, the
+//   capacity is 1024 and |goodAllocated| is 1026.
+//
+// - If the |goodAllocated| value we compute gives a capacity slightly smaller
+//   than |length|, we nudge |goodAllocated| up so that the capacity equals the
+//   length. Consider the following code, which is very much like some code
+//   that appears in the Kraken benchmark suite:
+//
+//     var a = new Array(8192);
+//     for (var i = 0; i < 8192; i++) { a[i] = i; }
+//
+//   8192 is larger than |EagerAllocationMaxLength|, so the elements will be
+//   resized up to the final size rather than allocated immediately. Without
+//   this exception, it would be repeatedly resized and |goodAllocated| would
+//   reach 8192, which gives a capacity of 8190, which isn't quite enough, so
+//   it would then be have to be resized one more time to 16382 elements,
+//   wasting time and memory. But with the exception, the final resizing is
+//   nudged, resulting in a capacity of 8192 and |goodAllocated| value of 8194.
+//
+/* static */ uint32_t
+JSObject::goodAllocated(uint32_t reqAllocated, uint32_t length = 0)
+{
+    static const uint32_t Mebi = 1024 * 1024;
+
+    uint32_t reqCapacity = reqAllocated - ObjectElements::VALUES_PER_HEADER;
+    if (reqCapacity == length && reqAllocated >= JSObject::SLOT_CAPACITY_MIN) {
+        // This is the first exception mentioned above.
+        return length + ObjectElements::VALUES_PER_HEADER;
+    }
+
+    // This table was generated with this JavaScript code and a small amount
+    // subsequent reformatting:
+    //
+    //   for (let n = 1, i = 0; i < 57; i++) {
+    //     print((n * 1024 * 1024) + ', ');
+    //     n = Math.ceil(n * 1.125);
+    //   }
+    //   print('0');
+    //
+    // The final element is a sentinel value.
+    static const uint32_t BigBuckets[] = {
+        1048576, 2097152, 3145728, 4194304, 5242880, 6291456, 7340032, 8388608,
+        9437184, 11534336, 13631488, 15728640, 17825792, 20971520, 24117248,
+        27262976, 31457280, 35651584, 40894464, 46137344, 52428800, 59768832,
+        68157440, 77594624, 88080384, 99614720, 112197632, 126877696,
+        143654912, 162529280, 183500800, 206569472, 232783872, 262144000,
+        295698432, 333447168, 375390208, 422576128, 476053504, 535822336,
+        602931200, 678428672, 763363328, 858783744, 966787072, 1088421888,
+        1224736768, 1377828864, 1550843904, 1744830464, 1962934272, 2208301056,
+        2485125120, 2796552192, 3146776576, 3541041152, 3984588800, 0
+    };
+
+    // This code relies very much on |goodAllocated| being a uint32_t.
+    uint32_t goodAllocated = reqAllocated;
+    if (goodAllocated < Mebi) {
+        goodAllocated = RoundUpPow2(goodAllocated);
+        if (goodAllocated < JSObject::SLOT_CAPACITY_MIN)
+            goodAllocated = JSObject::SLOT_CAPACITY_MIN;
+    } else {
+        uint32_t i = 0;
+        while (true) {
+            uint32_t b = BigBuckets[i++];
+            if (b >= goodAllocated) {
+                // Found the first bucket greater than or equal to
+                // |goodAllocated|.
+                goodAllocated = b;
+                break;
+            } else if (b == 0) {
+                // Hit the end; return the maximum possible goodAllocated.
+                goodAllocated = 0xffffffff;
+                break;
+            }
+        }
+    }
+
+    uint32_t goodCapacity = goodAllocated - ObjectElements::VALUES_PER_HEADER;
+    if (length > goodCapacity && (length - goodCapacity) < 16) {
+        // This is the second exception mentioned above.
+        return length + ObjectElements::VALUES_PER_HEADER;
+    }
+
+    return goodAllocated;
 }
 
 bool
-JSObject::growElements(ThreadSafeContext *cx, uint32_t newcap)
+JSObject::growElements(ThreadSafeContext *cx, uint32_t reqCapacity)
 {
     JS_ASSERT(nonProxyIsExtensible());
     JS_ASSERT(canHaveNonEmptyElements());
 
-    /*
-     * When an object with CAPACITY_DOUBLING_MAX or fewer elements needs to
-     * grow, double its capacity, to add N elements in amortized O(N) time.
-     *
-     * Above this limit, grow by 12.5% each time. Speed is still amortized
-     * O(N), with a higher constant factor, and we waste less space.
-     */
-    static const size_t CAPACITY_DOUBLING_MAX = 1024 * 1024;
-    static const size_t CAPACITY_CHUNK = CAPACITY_DOUBLING_MAX / sizeof(Value);
+    uint32_t oldCapacity = getDenseCapacity();
+    JS_ASSERT(oldCapacity < reqCapacity);
 
-    uint32_t oldcap = getDenseCapacity();
-    JS_ASSERT(oldcap <= newcap);
+    using mozilla::CheckedInt;
 
-    uint32_t nextsize = (oldcap <= CAPACITY_DOUBLING_MAX)
-                      ? oldcap * 2
-                      : oldcap + (oldcap >> 3);
+    CheckedInt<uint32_t> checkedOldAllocated =
+        CheckedInt<uint32_t>(oldCapacity) + ObjectElements::VALUES_PER_HEADER;
+    CheckedInt<uint32_t> checkedReqAllocated =
+        CheckedInt<uint32_t>(reqCapacity) + ObjectElements::VALUES_PER_HEADER;
+    if (!checkedOldAllocated.isValid() || !checkedReqAllocated.isValid())
+        return false;
 
-    uint32_t actualCapacity;
+    uint32_t reqAllocated = checkedReqAllocated.value();
+    uint32_t oldAllocated = checkedOldAllocated.value();
+
+    uint32_t newAllocated;
     if (is<ArrayObject>() && !as<ArrayObject>().lengthIsWritable()) {
-        JS_ASSERT(newcap <= as<ArrayObject>().length());
+        JS_ASSERT(reqCapacity <= as<ArrayObject>().length());
         // Preserve the |capacity <= length| invariant for arrays with
         // non-writable length.  See also js::ArraySetLength which initially
         // enforces this requirement.
-        actualCapacity = newcap;
+        newAllocated = reqAllocated;
     } else {
-        actualCapacity = Max(newcap, nextsize);
-        if (actualCapacity >= CAPACITY_CHUNK)
-            actualCapacity = JS_ROUNDUP(actualCapacity, CAPACITY_CHUNK);
-        else if (actualCapacity < SLOT_CAPACITY_MIN)
-            actualCapacity = SLOT_CAPACITY_MIN;
-
-        /* Don't let nelements get close to wrapping around uint32_t. */
-        if (actualCapacity >= NELEMENTS_LIMIT || actualCapacity < oldcap || actualCapacity < newcap)
-            return false;
+        newAllocated = goodAllocated(reqAllocated, getElementsHeader()->length);
     }
 
+    uint32_t newCapacity = newAllocated - ObjectElements::VALUES_PER_HEADER;
+    JS_ASSERT(newCapacity > oldCapacity && newCapacity >= reqCapacity);
+
+    // Don't let nelements get close to wrapping around uint32_t.
+    if (newCapacity >= NELEMENTS_LIMIT)
+        return false;
+
     uint32_t initlen = getDenseInitializedLength();
-    uint32_t oldAllocated = oldcap + ObjectElements::VALUES_PER_HEADER;
-    uint32_t newAllocated = actualCapacity + ObjectElements::VALUES_PER_HEADER;
 
     ObjectElements *newheader;
     if (hasDynamicElements()) {
         newheader = ReallocateElements(cx, this, getElementsHeader(), oldAllocated, newAllocated);
         if (!newheader)
-            return false; /* Leave elements as its old size. */
+            return false;   // Leave elements at its old size.
     } else {
         newheader = AllocateElements(cx, this, newAllocated);
         if (!newheader)
-            return false; /* Leave elements as its old size. */
+            return false;   // Leave elements at its old size.
         js_memcpy(newheader, getElementsHeader(),
                   (ObjectElements::VALUES_PER_HEADER + initlen) * sizeof(Value));
     }
 
-    newheader->capacity = actualCapacity;
+    newheader->capacity = newCapacity;
     elements = newheader->elements();
 
-    Debug_SetSlotRangeToCrashOnTouch(elements + initlen, actualCapacity - initlen);
+    Debug_SetSlotRangeToCrashOnTouch(elements + initlen, newCapacity - initlen);
 
     return true;
 }
 
 void
-JSObject::shrinkElements(ThreadSafeContext *cx, uint32_t newcap)
+JSObject::shrinkElements(ThreadSafeContext *cx, uint32_t reqCapacity)
 {
     JS_ASSERT(cx->isThreadLocal(this));
     JS_ASSERT(canHaveNonEmptyElements());
 
-    uint32_t oldcap = getDenseCapacity();
-    JS_ASSERT(newcap <= oldcap);
-
-    // Don't shrink elements below the minimum capacity.
-    if (oldcap <= SLOT_CAPACITY_MIN || !hasDynamicElements())
+    if (!hasDynamicElements())
         return;
 
-    newcap = Max(newcap, SLOT_CAPACITY_MIN);
+    uint32_t oldCapacity = getDenseCapacity();
+    JS_ASSERT(reqCapacity < oldCapacity);
 
-    uint32_t oldAllocated = oldcap + ObjectElements::VALUES_PER_HEADER;
-    uint32_t newAllocated = newcap + ObjectElements::VALUES_PER_HEADER;
+    uint32_t oldAllocated = oldCapacity + ObjectElements::VALUES_PER_HEADER;
+    uint32_t reqAllocated = reqCapacity + ObjectElements::VALUES_PER_HEADER;
+    uint32_t newAllocated = goodAllocated(reqAllocated);
+    if (newAllocated == oldAllocated)
+        return;  // Leave elements at its old size.
+
+    MOZ_ASSERT(newAllocated > ObjectElements::VALUES_PER_HEADER);
+    uint32_t newCapacity = newAllocated - ObjectElements::VALUES_PER_HEADER;
 
     ObjectElements *newheader = ReallocateElements(cx, this, getElementsHeader(),
                                                    oldAllocated, newAllocated);
@@ -3284,7 +3414,7 @@ JSObject::shrinkElements(ThreadSafeContext *cx, uint32_t newcap)
         return;  // Leave elements at its old size.
     }
 
-    newheader->capacity = newcap;
+    newheader->capacity = newCapacity;
     elements = newheader->elements();
 }
 
@@ -3413,7 +3543,7 @@ JS::IdentifyStandardInstance(JSObject *obj)
 {
     // Note: The prototype shares its JSClass with instances.
     JS_ASSERT(!obj->is<CrossCompartmentWrapperObject>());
-    JSProtoKey key = JSCLASS_CACHED_PROTO_KEY(obj->getClass());
+    JSProtoKey key = StandardProtoKeyOrNull(obj);
     if (key != JSProto_Null && !IsStandardPrototype(obj, key))
         return key;
     return JSProto_Null;
@@ -3424,7 +3554,7 @@ JS::IdentifyStandardPrototype(JSObject *obj)
 {
     // Note: The prototype shares its JSClass with instances.
     JS_ASSERT(!obj->is<CrossCompartmentWrapperObject>());
-    JSProtoKey key = JSCLASS_CACHED_PROTO_KEY(obj->getClass());
+    JSProtoKey key = StandardProtoKeyOrNull(obj);
     if (key != JSProto_Null && IsStandardPrototype(obj, key))
         return key;
     return JSProto_Null;
@@ -3433,7 +3563,7 @@ JS::IdentifyStandardPrototype(JSObject *obj)
 JSProtoKey
 JS::IdentifyStandardInstanceOrPrototype(JSObject *obj)
 {
-    return JSCLASS_CACHED_PROTO_KEY(obj->getClass());
+    return StandardProtoKeyOrNull(obj);
 }
 
 JSProtoKey
@@ -3459,7 +3589,7 @@ JS::IdentifyStandardConstructor(JSObject *obj)
 bool
 js::FindClassObject(ExclusiveContext *cx, MutableHandleObject protop, const Class *clasp)
 {
-    JSProtoKey protoKey = GetClassProtoKey(clasp);
+    JSProtoKey protoKey = ClassProtoKeyOrAnonymousOrNull(clasp);
     if (protoKey != JSProto_Null) {
         JS_ASSERT(JSProto_Null < protoKey);
         JS_ASSERT(protoKey < JSProto_LIMIT);
@@ -4361,6 +4491,27 @@ js::LookupNameWithGlobalDefault(JSContext *cx, HandlePropertyName name, HandleOb
     return true;
 }
 
+bool
+js::LookupNameUnqualified(JSContext *cx, HandlePropertyName name, HandleObject scopeChain,
+                          MutableHandleObject objp)
+{
+    RootedId id(cx, NameToId(name));
+
+    RootedObject pobj(cx);
+    RootedShape prop(cx);
+
+    RootedObject scope(cx, scopeChain);
+    for (; !scope->isUnqualifiedVarObj(); scope = scope->enclosingScope()) {
+        if (!JSObject::lookupGeneric(cx, scope, id, &pobj, &prop))
+            return false;
+        if (prop)
+            break;
+    }
+
+    objp.set(scope);
+    return true;
+}
+
 template <AllowGC allowGC>
 bool
 js::HasOwnProperty(JSContext *cx, LookupGenericOp lookup,
@@ -4460,7 +4611,6 @@ NativeGetInline(JSContext *cx,
     {
         jsbytecode *pc;
         JSScript *script = cx->currentScript(&pc);
-#ifdef JS_ION
         if (script && script->hasBaselineScript()) {
             switch (JSOp(*pc)) {
               case JSOP_GETPROP:
@@ -4472,7 +4622,6 @@ NativeGetInline(JSContext *cx,
                 break;
             }
         }
-#endif
     }
 
     if (!allowGC)
@@ -4616,7 +4765,7 @@ GetPropertyHelperInline(JSContext *cx,
             }
 
             /* Don't warn if extra warnings not enabled or for random getprop operations. */
-            if (!cx->options().extraWarnings() || (op != JSOP_GETPROP && op != JSOP_GETELEM))
+            if (!cx->compartment()->options().extraWarnings(cx) || (op != JSOP_GETPROP && op != JSOP_GETELEM))
                 return true;
 
             /* Don't warn repeatedly for the same script. */
@@ -4625,7 +4774,7 @@ GetPropertyHelperInline(JSContext *cx,
 
             /*
              * Don't warn in self-hosted code (where the further presence of
-             * JS::ContextOptions::werror() would result in impossible-to-avoid
+             * JS::RuntimeOptions::werror() would result in impossible-to-avoid
              * errors to entirely-innocent client code).
              */
             if (script->selfHosted())
@@ -4884,7 +5033,7 @@ MaybeReportUndeclaredVarAssignment(JSContext *cx, JSString *propname)
 
         // If the code is not strict and extra warnings aren't enabled, then no
         // check is needed.
-        if (!script->strict() && !cx->options().extraWarnings())
+        if (!script->strict() && !cx->compartment()->options().extraWarnings(cx))
             return true;
     }
 
@@ -5003,7 +5152,7 @@ baseops::SetPropertyHelper(typename ExecutionModeTraits<mode>::ContextType cxArg
                 if (pd.isReadonly()) {
                     if (strict)
                         return JSObject::reportReadOnly(cx, id, JSREPORT_ERROR);
-                    if (cx->options().extraWarnings())
+                    if (cx->compartment()->options().extraWarnings(cx))
                         return JSObject::reportReadOnly(cx, id, JSREPORT_STRICT | JSREPORT_WARNING);
                     return true;
                 }
@@ -5015,7 +5164,7 @@ baseops::SetPropertyHelper(typename ExecutionModeTraits<mode>::ContextType cxArg
         /* We should never add properties to lexical blocks. */
         JS_ASSERT(!obj->is<BlockObject>());
 
-        if (obj->is<GlobalObject>() && !qualified) {
+        if (obj->isUnqualifiedVarObj() && !qualified) {
             if (mode == ParallelExecution)
                 return false;
 
@@ -5063,7 +5212,7 @@ baseops::SetPropertyHelper(typename ExecutionModeTraits<mode>::ContextType cxArg
                 JSContext *cx = cxArg->asJSContext();
                 if (strict)
                     return JSObject::reportReadOnly(cx, id, JSREPORT_ERROR);
-                if (cx->options().extraWarnings())
+                if (cx->compartment()->options().extraWarnings(cx))
                     return JSObject::reportReadOnly(cx, id, JSREPORT_STRICT | JSREPORT_WARNING);
                 return true;
             }
@@ -5173,8 +5322,11 @@ baseops::SetPropertyHelper(typename ExecutionModeTraits<mode>::ContextType cxArg
             /* Error in strict mode code, warn with extra warnings option, otherwise do nothing. */
             if (strict)
                 return obj->reportNotExtensible(cxArg);
-            if (mode == SequentialExecution && cxArg->asJSContext()->options().extraWarnings())
+            if (mode == SequentialExecution &&
+                cxArg->asJSContext()->compartment()->options().extraWarnings(cxArg->asJSContext()))
+            {
                 return obj->reportNotExtensible(cxArg, JSREPORT_STRICT | JSREPORT_WARNING);
+            }
             return true;
         }
 
@@ -5560,7 +5712,7 @@ bool
 js::FindClassPrototype(ExclusiveContext *cx, MutableHandleObject protop, const Class *clasp)
 {
     protop.set(nullptr);
-    JSProtoKey protoKey = GetClassProtoKey(clasp);
+    JSProtoKey protoKey = ClassProtoKeyOrAnonymousOrNull(clasp);
     if (protoKey != JSProto_Null)
         return GetBuiltinPrototype(cx, protoKey, protop);
 
@@ -5769,7 +5921,7 @@ DumpProperty(JSObject *obj, Shape &shape)
     jsid id = shape.propid();
     uint8_t attrs = shape.attributes();
 
-    fprintf(stderr, "    ((JSShape *) %p) ", (void *) &shape);
+    fprintf(stderr, "    ((js::Shape *) %p) ", (void *) &shape);
     if (attrs & JSPROP_ENUMERATE) fprintf(stderr, "enumerate ");
     if (attrs & JSPROP_READONLY) fprintf(stderr, "readonly ");
     if (attrs & JSPROP_PERMANENT) fprintf(stderr, "permanent ");
@@ -5785,10 +5937,8 @@ DumpProperty(JSObject *obj, Shape &shape)
     else if (!shape.hasDefaultSetter())
         fprintf(stderr, "setterOp=%p ", JS_FUNC_TO_DATA_PTR(void *, shape.setterOp()));
 
-    if (JSID_IS_ATOM(id))
-        JSID_TO_STRING(id)->dump();
-    else if (JSID_IS_INT(id))
-        fprintf(stderr, "%d", (int) JSID_TO_INT(id));
+    if (JSID_IS_ATOM(id) || JSID_IS_INT(id) || JSID_IS_SYMBOL(id))
+        dumpValue(js::IdToValue(id));
     else
         fprintf(stderr, "unknown jsid %p", (void *) JSID_BITS(id));
 
@@ -5822,7 +5972,8 @@ JSObject::dump()
     if (!obj->is<ProxyObject>() && !obj->nonProxyIsExtensible()) fprintf(stderr, " not_extensible");
     if (obj->isIndexed()) fprintf(stderr, " indexed");
     if (obj->isBoundFunction()) fprintf(stderr, " bound_function");
-    if (obj->isVarObj()) fprintf(stderr, " varobj");
+    if (obj->isQualifiedVarObj()) fprintf(stderr, " varobj");
+    if (obj->isUnqualifiedVarObj()) fprintf(stderr, " unqualified_varobj");
     if (obj->watched()) fprintf(stderr, " watched");
     if (obj->isIteratedSingleton()) fprintf(stderr, " iterated_singleton");
     if (obj->isNewTypeUnknown()) fprintf(stderr, " new_type_unknown");
@@ -6038,11 +6189,9 @@ JSObject::addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::Objects
         sizes->mallocHeapPropertyIteratorData += as<PropertyIteratorObject>().sizeOfMisc(mallocSizeOf);
     } else if (is<ArrayBufferObject>() || is<SharedArrayBufferObject>()) {
         ArrayBufferObject::addSizeOfExcludingThis(this, mallocSizeOf, sizes);
-#ifdef JS_ION
     } else if (is<AsmJSModuleObject>()) {
         as<AsmJSModuleObject>().addSizeOfMisc(mallocSizeOf, &sizes->nonHeapCodeAsmJS,
                                               &sizes->mallocHeapAsmJSModuleData);
-#endif
 #ifdef JS_HAS_CTYPES
     } else {
         // This must be the last case.

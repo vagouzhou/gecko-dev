@@ -7,7 +7,6 @@
 #define GFX_FRAMEMETRICS_H
 
 #include <stdint.h>                     // for uint32_t, uint64_t
-#include <string>                       // for std::string
 #include "Units.h"                      // for CSSRect, CSSPixel, etc
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
 #include "mozilla/gfx/Rect.h"           // for RoundedIn
@@ -34,6 +33,7 @@ struct ParentLayerPixel {};
 
 template<> struct IsPixel<ParentLayerPixel> : TrueType {};
 
+typedef gfx::MarginTyped<ParentLayerPixel> ParentLayerMargin;
 typedef gfx::PointTyped<ParentLayerPixel> ParentLayerPoint;
 typedef gfx::RectTyped<ParentLayerPixel> ParentLayerRect;
 typedef gfx::SizeTyped<ParentLayerPixel> ParentLayerSize;
@@ -91,7 +91,6 @@ public:
     , mZoom(1)
     , mUpdateScrollOffset(false)
     , mScrollGeneration(0)
-    , mContentDescription()
     , mRootCompositionSize(0, 0)
     , mDisplayPortMargins(0, 0, 0, 0)
     , mUseDisplayPortMargins(false)
@@ -102,8 +101,6 @@ public:
 
   bool operator==(const FrameMetrics& aOther) const
   {
-    // mContentDescription is not compared on purpose as it's only used
-    // for debugging.
     return mCompositionBounds.IsEqualEdges(aOther.mCompositionBounds) &&
            mRootCompositionSize == aOther.mRootCompositionSize &&
            mDisplayPort.IsEqualEdges(aOther.mDisplayPort) &&
@@ -192,8 +189,8 @@ public:
   CSSToScreenScale CalculateIntrinsicScale() const
   {
     return CSSToScreenScale(
-        std::max(float(mCompositionBounds.width) / mViewport.width,
-                 float(mCompositionBounds.height) / mViewport.height));
+        std::max(mCompositionBounds.width / mViewport.width,
+                 mCompositionBounds.height / mViewport.height));
   }
 
   // Return the scale factor for converting from CSS pixels (for this layer)
@@ -259,7 +256,7 @@ public:
   // This value is valid for nested scrollable layers as well, and is still
   // relative to the layer tree origin. This value is provided by Gecko at
   // layout/paint time.
-  ParentLayerIntRect mCompositionBounds;
+  ParentLayerRect mCompositionBounds;
 
   // ---------------------------------------------------------------------------
   // The following metrics are all in CSS pixels. They are not in any uniform
@@ -401,18 +398,6 @@ public:
     return mScrollGeneration;
   }
 
-  std::string GetContentDescription() const
-  {
-    return std::string(mContentDescription);
-  }
-
-  void SetContentDescription(const std::string& aContentDescription)
-  {
-    strncpy(mContentDescription, aContentDescription.c_str(), sizeof(mContentDescription));
-    // forcibly null-terminate in case aContentDescription is too long
-    mContentDescription[sizeof(mContentDescription) - 1] = '\0';
-  }
-
   ViewID GetScrollId() const
   {
     return mScrollId;
@@ -501,10 +486,6 @@ private:
   bool mUpdateScrollOffset;
   // The scroll generation counter used to acknowledge the scroll offset update.
   uint32_t mScrollGeneration;
-
-  // A description of the content element corresponding to this frame.
-  // This is empty unless the apz.printtree pref is turned on.
-  char mContentDescription[20];
 
   // The size of the root scrollable's composition bounds, but in local CSS pixels.
   CSSSize mRootCompositionSize;

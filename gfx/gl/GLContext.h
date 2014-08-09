@@ -25,9 +25,10 @@
 #undef GetClassName
 #endif
 
+#include "mozilla/UniquePtr.h"
+
 #include "GLDefs.h"
 #include "GLLibraryLoader.h"
-#include "gfx3DMatrix.h"
 #include "nsISupportsImpl.h"
 #include "plstr.h"
 #include "nsDataHashtable.h"
@@ -40,7 +41,6 @@
 #include "GLContextSymbols.h"
 #include "base/platform_thread.h"       // for PlatformThreadId
 #include "mozilla/GenericRefCounted.h"
-#include "mozilla/Scoped.h"
 #include "gfx2DGlue.h"
 
 class nsIntRegion;
@@ -53,9 +53,8 @@ namespace android {
 
 namespace mozilla {
     namespace gfx {
-        class SourceSurface;
         class DataSourceSurface;
-        struct SurfaceCaps;
+        class SourceSurface;
     }
 
     namespace gl {
@@ -66,7 +65,7 @@ namespace mozilla {
         class GLBlitHelper;
         class GLBlitTextureImageHelper;
         class GLReadTexImageHelper;
-        class SharedSurface_GL;
+        struct SurfaceCaps;
     }
 
     namespace layers {
@@ -147,6 +146,7 @@ MOZ_BEGIN_ENUM_CLASS(GLRenderer)
     AndroidEmulator,
     GalliumLlvmpipe,
     IntelHD3000,
+    MicrosoftBasicRenderDriver,
     Other
 MOZ_END_ENUM_CLASS(GLRenderer)
 
@@ -331,6 +331,7 @@ public:
      * in GLContext.cpp.
      */
     enum GLExtensions {
+        Extension_None = 0,
         EXT_framebuffer_object,
         ARB_framebuffer_object,
         ARB_texture_rectangle,
@@ -410,6 +411,8 @@ public:
         EXT_frag_depth,
         OES_compressed_ETC1_RGB8_texture,
         EXT_draw_range_elements,
+        EXT_shader_texture_lod,
+        NV_fence,
         Extensions_Max,
         Extensions_End
     };
@@ -493,6 +496,11 @@ private:
      * Mark the feature and associated extensions as unsupported
      */
     void MarkUnsupported(GLFeature feature);
+
+    /**
+     * Is this feature supported using the core (unsuffixed) symbols?
+     */
+    bool IsFeatureProvidedByCoreSymbols(GLFeature feature);
 
 // -----------------------------------------------------------------------------
 // Robustness handling
@@ -843,9 +851,9 @@ public:
             !data &&
             Vendor() == GLVendor::NVIDIA)
         {
-            ScopedDeleteArray<char> buf(new char[1]);
+            UniquePtr<char[]> buf = MakeUnique<char[]>(1);
             buf[0] = 0;
-            fBufferSubData(target, size-1, 1, buf);
+            fBufferSubData(target, size-1, 1, buf.get());
         }
     }
 
@@ -2494,14 +2502,70 @@ public:
         return ret;
     }
 
+// -----------------------------------------------------------------------------
+// Extension NV_fence
+public:
+    void fGenFences(GLsizei n, GLuint* fences)
+    {
+        ASSERT_SYMBOL_PRESENT(fGenFences);
+        BEFORE_GL_CALL;
+        mSymbols.fGenFences(n, fences);
+        AFTER_GL_CALL;
+    }
+
+    void fDeleteFences(GLsizei n, const GLuint* fences)
+    {
+        ASSERT_SYMBOL_PRESENT(fDeleteFences);
+        BEFORE_GL_CALL;
+        mSymbols.fDeleteFences(n, fences);
+        AFTER_GL_CALL;
+    }
+
+    void fSetFence(GLuint fence, GLenum condition)
+    {
+        ASSERT_SYMBOL_PRESENT(fSetFence);
+        BEFORE_GL_CALL;
+        mSymbols.fSetFence(fence, condition);
+        AFTER_GL_CALL;
+    }
+
+    realGLboolean fTestFence(GLuint fence)
+    {
+        ASSERT_SYMBOL_PRESENT(fTestFence);
+        BEFORE_GL_CALL;
+        realGLboolean ret = mSymbols.fTestFence(fence);
+        AFTER_GL_CALL;
+        return ret;
+    }
+
+    void fFinishFence(GLuint fence)
+    {
+        ASSERT_SYMBOL_PRESENT(fFinishFence);
+        BEFORE_GL_CALL;
+        mSymbols.fFinishFence(fence);
+        AFTER_GL_CALL;
+    }
+
+    realGLboolean fIsFence(GLuint fence)
+    {
+        ASSERT_SYMBOL_PRESENT(fIsFence);
+        BEFORE_GL_CALL;
+        realGLboolean ret = mSymbols.fIsFence(fence);
+        AFTER_GL_CALL;
+        return ret;
+    }
+
+    void fGetFenceiv(GLuint fence, GLenum pname, GLint* params)
+    {
+        ASSERT_SYMBOL_PRESENT(fGetFenceiv);
+        BEFORE_GL_CALL;
+        mSymbols.fGetFenceiv(fence, pname, params);
+        AFTER_GL_CALL;
+    }
+
 
 // -----------------------------------------------------------------------------
 // Constructor
-public:
-
-    typedef struct gfx::SurfaceCaps SurfaceCaps;
-
-
 protected:
     GLContext(const SurfaceCaps& caps,
               GLContext* sharedContext = nullptr,
@@ -2517,8 +2581,6 @@ public:
 // -----------------------------------------------------------------------------
 // Everything that isn't standard GL APIs
 protected:
-    typedef class gfx::SharedSurface SharedSurface;
-    typedef gfx::SharedSurfaceType SharedSurfaceType;
     typedef gfx::SurfaceFormat SurfaceFormat;
 
     virtual bool MakeCurrentImpl(bool aForce) = 0;
@@ -2702,7 +2764,7 @@ public:
     GLint GetMaxTextureImageSize() { return mMaxTextureImageSize; }
 
 public:
-    std::map<GLuint, SharedSurface_GL*> mFBOMapping;
+    std::map<GLuint, SharedSurface*> mFBOMapping;
 
     enum {
         DebugEnabled = 1 << 0,
@@ -2737,9 +2799,9 @@ protected:
     static unsigned sCurrentGLContextTLS;
 #endif
 
-    ScopedDeletePtr<GLBlitHelper> mBlitHelper;
-    ScopedDeletePtr<GLBlitTextureImageHelper> mBlitTextureImageHelper;
-    ScopedDeletePtr<GLReadTexImageHelper> mReadTexImageHelper;
+    UniquePtr<GLBlitHelper> mBlitHelper;
+    UniquePtr<GLBlitTextureImageHelper> mBlitTextureImageHelper;
+    UniquePtr<GLReadTexImageHelper> mReadTexImageHelper;
 
 public:
     GLBlitHelper* BlitHelper();
@@ -2771,7 +2833,7 @@ public:
         fScissor(0, 0, size.width, size.height);
         fViewport(0, 0, size.width, size.height);
 
-        mCaps = mScreen->Caps();
+        mCaps = mScreen->mCaps;
         if (mCaps.any)
             DetermineCaps();
 
@@ -2862,20 +2924,20 @@ protected:
 
     void DestroyScreenBuffer();
 
-    SharedSurface_GL* mLockedSurface;
+    SharedSurface* mLockedSurface;
 
 public:
-    void LockSurface(SharedSurface_GL* surf) {
+    void LockSurface(SharedSurface* surf) {
         MOZ_ASSERT(!mLockedSurface);
         mLockedSurface = surf;
     }
 
-    void UnlockSurface(SharedSurface_GL* surf) {
+    void UnlockSurface(SharedSurface* surf) {
         MOZ_ASSERT(mLockedSurface == surf);
         mLockedSurface = nullptr;
     }
 
-    SharedSurface_GL* GetLockedSurface() const {
+    SharedSurface* GetLockedSurface() const {
         return mLockedSurface;
     }
 
@@ -2888,7 +2950,7 @@ public:
     }
 
     bool PublishFrame();
-    SharedSurface_GL* RequestFrame();
+    SharedSurface* RequestFrame();
 
     /* Clear to transparent black, with 0 depth and stencil,
      * while preserving current ClearColor etc. values.

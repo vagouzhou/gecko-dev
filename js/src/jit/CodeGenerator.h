@@ -20,6 +20,8 @@
 # include "jit/arm/CodeGenerator-arm.h"
 #elif defined(JS_CODEGEN_MIPS)
 # include "jit/mips/CodeGenerator-mips.h"
+#elif defined(JS_CODEGEN_NONE)
+# include "jit/none/CodeGenerator-none.h"
 #else
 #error "Unknown architecture!"
 #endif
@@ -53,7 +55,7 @@ class CodeGenerator : public CodeGeneratorSpecific
 
   public:
     bool generate();
-    bool generateAsmJS(Label *stackOverflowLabel);
+    bool generateAsmJS(AsmJSFunctionLabels *labels);
     bool link(JSContext *cx, types::CompilerConstraintList *constraints);
 
     bool visitLabel(LLabel *lir);
@@ -351,6 +353,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitAssertRangeV(LAssertRangeV *ins);
 
     bool visitInterruptCheck(LInterruptCheck *lir);
+    bool visitAsmJSInterruptCheck(LAsmJSInterruptCheck *lir);
     bool visitRecompileCheck(LRecompileCheck *ins);
 
     IonScriptCounts *extractScriptCounts() {

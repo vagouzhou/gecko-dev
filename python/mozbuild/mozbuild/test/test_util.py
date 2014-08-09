@@ -20,6 +20,7 @@ from mozunit import (
 from mozbuild.util import (
     FileAvoidWrite,
     hash_file,
+    memoize,
     resolve_target_to_make,
     MozbuildDeletionError,
     HierarchicalStringList,
@@ -323,6 +324,18 @@ class TestStrictOrderingOnAppendList(unittest.TestCase):
 
         self.assertEqual(len(l), 2)
 
+    def test_add_after_iadd(self):
+        l = StrictOrderingOnAppendList(['b'])
+        l += ['a']
+        l2 = l + ['c', 'd']
+        self.assertEqual(len(l), 2)
+        self.assertEqual(len(l2), 4)
+        self.assertIsInstance(l2, StrictOrderingOnAppendList)
+        with self.assertRaises(UnsortedError):
+            l2 = l + ['d', 'c']
+
+        self.assertEqual(len(l), 2)
+
 
 class TestStrictOrderingOnAppendListWithFlagsFactory(unittest.TestCase):
     def test_strict_ordering_on_append_list_with_flags_factory(self):
@@ -415,6 +428,28 @@ class TestHierarchicalStringListWithFlagsFactory(unittest.TestCase):
 
         with self.assertRaises(AttributeError):
             l.x['y'].baz = False
+
+
+class TestMemoize(unittest.TestCase):
+    def test_memoize(self):
+        self._count = 0
+        @memoize
+        def wrapped(a, b):
+            self._count += 1
+            return a + b
+
+        self.assertEqual(wrapped(1, 1), 2)
+        self.assertEqual(self._count, 1)
+        self.assertEqual(wrapped(1, 1), 2)
+        self.assertEqual(self._count, 1)
+        self.assertEqual(wrapped(2, 1), 3)
+        self.assertEqual(self._count, 2)
+        self.assertEqual(wrapped(1, 2), 3)
+        self.assertEqual(self._count, 3)
+        self.assertEqual(wrapped(1, 2), 3)
+        self.assertEqual(self._count, 3)
+        self.assertEqual(wrapped(1, 1), 2)
+        self.assertEqual(self._count, 3)
 
 
 if __name__ == '__main__':

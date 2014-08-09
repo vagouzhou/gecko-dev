@@ -18,7 +18,6 @@
 #include "nsITabParent.h"
 #include "nsPIWindowWatcher.h"
 #include "nsTArray.h"
-#include "js/TypeDecls.h"
 
 class  nsIURI;
 class  nsIDocShellTreeItem;
@@ -41,7 +40,6 @@ friend class nsWatcherWindowEnumerator;
 
 public:
   nsWindowWatcher();
-  virtual ~nsWindowWatcher();
 
   nsresult Init();
 
@@ -58,6 +56,8 @@ public:
                                           bool aSizeSpecified);
 
 protected:
+  virtual ~nsWindowWatcher();
+
   friend class nsPromptService;
   bool AddEnumerator(nsWatcherWindowEnumerator* inEnumerator);
   bool RemoveEnumerator(nsWatcherWindowEnumerator* inEnumerator);
@@ -88,7 +88,6 @@ protected:
                               nsIArray *argv,
                               nsIDOMWindow **_retval);
 
-  static JSContext *GetJSContextFromWindow(nsIDOMWindow *aWindow);
   static nsresult   URIfromURL(const char *aURL,
                                nsIDOMWindow *aParent,
                                nsIURI **aURI);

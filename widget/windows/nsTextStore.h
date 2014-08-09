@@ -11,6 +11,7 @@
 #include "nsCOMPtr.h"
 #include "nsIWidget.h"
 #include "nsWindowBase.h"
+#include "WinUtils.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/TextRange.h"
 #include "mozilla/WindowsVersion.h"
@@ -53,9 +54,9 @@ class nsTextStore MOZ_FINAL : public ITextStoreACP,
                               public ITfInputProcessorProfileActivationSink
 {
 public: /*IUnknown*/
-  STDMETHODIMP_(ULONG)  AddRef(void);
   STDMETHODIMP          QueryInterface(REFIID, void**);
-  STDMETHODIMP_(ULONG)  Release(void);
+
+  NS_INLINE_DECL_IUNKNOWN_REFCOUNTING(nsTextStore)
 
 public: /*ITextStoreACP*/
   STDMETHODIMP AdviseSink(REFIID, IUnknown*, DWORD);
@@ -225,6 +226,7 @@ protected:
   ~nsTextStore();
 
   bool Init(ITfThreadMgr* aThreadMgr);
+  void Shutdown();
 
   static void MarkContextAsKeyboardDisabled(ITfContext* aContext);
   static void MarkContextAsEmpty(ITfContext* aContext);
@@ -504,6 +506,8 @@ protected:
     nsRefPtr<mozilla::TextRangeArray> mRanges;
     // For selectionset
     bool mSelectionReversed;
+    // For compositionupdate
+    bool mIncomplete;
   };
   // Items of mPendingActions are appended when TSF tells us to need to dispatch
   // DOM composition events.  However, we cannot dispatch while the document is
@@ -511,7 +515,7 @@ protected:
   // actions should be performed when document lock is unlocked.
   nsTArray<PendingAction> mPendingActions;
 
-  PendingAction* GetPendingCompositionUpdate()
+  PendingAction* LastOrNewPendingCompositionUpdate()
   {
     if (!mPendingActions.IsEmpty()) {
       PendingAction& lastAction = mPendingActions.LastElement();
@@ -522,7 +526,18 @@ protected:
     PendingAction* newAction = mPendingActions.AppendElement();
     newAction->mType = PendingAction::COMPOSITION_UPDATE;
     newAction->mRanges = new mozilla::TextRangeArray();
+    newAction->mIncomplete = true;
     return newAction;
+  }
+
+  bool IsPendingCompositionUpdateIncomplete() const
+  {
+    if (mPendingActions.IsEmpty()) {
+      return false;
+    }
+    const PendingAction& lastAction = mPendingActions.LastElement();
+    return lastAction.mType == PendingAction::COMPOSITION_UPDATE &&
+           lastAction.mIncomplete;
   }
 
   // When On*Composition() is called without document lock, we need to flush
@@ -696,9 +711,6 @@ protected:
   // Message the Tablet Input Panel uses to flush text during blurring.
   // See comments in Destroy
   static UINT           sFlushTIPInputMessage;
-
-private:
-  ULONG                       mRefCnt;
 };
 
 #endif /*NSTEXTSTORE_H_*/

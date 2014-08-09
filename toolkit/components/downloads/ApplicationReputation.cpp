@@ -361,8 +361,11 @@ PendingLookup::IsBinaryFile()
   nsString fileName;
   nsresult rv = mQuery->GetSuggestedFileName(fileName);
   if (NS_FAILED(rv)) {
+    LOG(("No suggested filename [this = %p]", this));
     return false;
   }
+  LOG(("Suggested filename: %s [this = %p]",
+       NS_ConvertUTF16toUTF8(fileName).get(), this));
   return
     // Executable extensions for MS Windows, from
     // https://code.google.com/p/chromium/codesearch#chromium/src/chrome/common/safe_browsing/download_protection_util.cc&l=14
@@ -984,6 +987,8 @@ PendingLookup::OnStopRequestInternal(nsIRequest *aRequest,
   // DANGEROUS_HOST for now and treat everything else as SAFE.
   Accumulate(mozilla::Telemetry::APPLICATION_REPUTATION_SERVER,
     SERVER_RESPONSE_VALID);
+  Accumulate(mozilla::Telemetry::APPLICATION_REPUTATION_SERVER_RESPONSE,
+    response.verdict());
   switch(response.verdict()) {
     case safe_browsing::ClientDownloadResponse::DANGEROUS:
     case safe_browsing::ClientDownloadResponse::DANGEROUS_HOST:

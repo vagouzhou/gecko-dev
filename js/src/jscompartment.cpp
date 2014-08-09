@@ -18,9 +18,7 @@
 #include "jswrapper.h"
 
 #include "gc/Marking.h"
-#ifdef JS_ION
 #include "jit/JitCompartment.h"
-#endif
 #include "js/RootingAPI.h"
 #include "vm/StopIterationObject.h"
 #include "vm/WrapperObject.h"
@@ -66,10 +64,10 @@ JSCompartment::JSCompartment(Zone *zone, const JS::CompartmentOptions &options =
     debugScriptMap(nullptr),
     debugScopes(nullptr),
     enumerators(nullptr),
-    compartmentStats(nullptr)
-#ifdef JS_ION
-    , jitCompartment_(nullptr)
-#endif
+    compartmentStats(nullptr),
+    scheduledForDestruction(false),
+    maybeAlive(true),
+    jitCompartment_(nullptr)
 {
     runtime_->numCompartments++;
     JS_ASSERT_IF(options.mergeable(), options.invisibleToDebugger());
@@ -77,10 +75,7 @@ JSCompartment::JSCompartment(Zone *zone, const JS::CompartmentOptions &options =
 
 JSCompartment::~JSCompartment()
 {
-#ifdef JS_ION
     js_delete(jitCompartment_);
-#endif
-
     js_delete(watchpointMap);
     js_delete(scriptCountsMap);
     js_delete(debugScriptMap);
@@ -120,7 +115,6 @@ JSCompartment::init(JSContext *cx)
     return debuggees.init(0);
 }
 
-#ifdef JS_ION
 jit::JitRuntime *
 JSRuntime::createJitRuntime(JSContext *cx)
 {
@@ -180,7 +174,6 @@ JSCompartment::ensureJitCompartmentExists(JSContext *cx)
 
     return true;
 }
-#endif
 
 #ifdef JSGC_GENERATIONAL
 
@@ -394,8 +387,8 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
               !cx->runtime()->isSelfHostingGlobal(objGlobal));
 
     // Unwrap the object, but don't unwrap outer windows.
-    unsigned flags = 0;
-    obj.set(UncheckedUnwrap(obj, /* stopAtOuter = */ true, &flags));
+    RootedObject objectPassedToWrap(cx, obj);
+    obj.set(UncheckedUnwrap(obj, /* stopAtOuter = */ true));
 
     if (obj->compartment() == this) {
         MOZ_ASSERT(obj == GetOuterObject(cx, obj));
@@ -417,7 +410,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
     // recursion here, so we do a check - see bug 809295.
     JS_CHECK_CHROME_RECURSION(cx, return false);
     if (cb->preWrap) {
-        obj.set(cb->preWrap(cx, global, obj, flags));
+        obj.set(cb->preWrap(cx, global, obj, objectPassedToWrap));
         if (!obj)
             return false;
     }
@@ -449,7 +442,7 @@ JSCompartment::wrap(JSContext *cx, MutableHandleObject obj, HandleObject existin
         }
     }
 
-    obj.set(cb->wrap(cx, existing, obj, global, flags));
+    obj.set(cb->wrap(cx, existing, obj, global));
     if (!obj)
         return false;
 
@@ -556,8 +549,7 @@ JSCompartment::markCrossCompartmentWrappers(JSTracer *trc)
 void
 JSCompartment::trace(JSTracer *trc)
 {
-    // At the moment, this is merely ceremonial, but any live-compartment-only tracing should go
-    // here.
+    savedStacks_.trace(trc);
 }
 
 void
@@ -565,10 +557,8 @@ JSCompartment::markRoots(JSTracer *trc)
 {
     JS_ASSERT(!trc->runtime()->isHeapMinorCollecting());
 
-#ifdef JS_ION
     if (jitCompartment_)
         jitCompartment_->mark(trc, this);
-#endif
 
     /*
      * If a compartment is on-stack, we mark its global so that
@@ -609,10 +599,8 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
             selfHostingScriptSource.set(nullptr);
         }
 
-#ifdef JS_ION
         if (jitCompartment_)
             jitCompartment_->sweep(fop, this);
-#endif
 
         /*
          * JIT code increments activeUseCount for any RegExpShared used by jit
@@ -684,9 +672,7 @@ JSCompartment::clearTables()
     // compartment and zone.
     JS_ASSERT(crossCompartmentWrappers.empty());
     JS_ASSERT_IF(callsiteClones.initialized(), callsiteClones.empty());
-#ifdef JS_ION
     JS_ASSERT(!jitCompartment_);
-#endif
     JS_ASSERT(!debugScopes);
     JS_ASSERT(!gcWeakMapList);
     JS_ASSERT(enumerators->next() == enumerators);
@@ -836,15 +822,11 @@ JSCompartment::setDebugModeFromC(JSContext *cx, bool b, AutoDebugModeInvalidatio
 bool
 JSCompartment::updateJITForDebugMode(JSContext *maybecx, AutoDebugModeInvalidation &invalidate)
 {
-#ifdef JS_ION
     // The AutoDebugModeInvalidation argument makes sure we can't forget to
     // invalidate, but it is also important not to run any scripts in this
     // compartment until the invalidate is destroyed.  That is the caller's
     // responsibility.
-    if (!jit::UpdateForDebugMode(maybecx, this, invalidate))
-        return false;
-#endif
-    return true;
+    return jit::UpdateForDebugMode(maybecx, this, invalidate);
 }
 
 bool
@@ -930,17 +912,6 @@ JSCompartment::clearBreakpointsIn(FreeOp *fop, js::Debugger *dbg, HandleObject h
         JSScript *script = i.get<JSScript>();
         if (script->compartment() == this && script->hasAnyBreakpointsOrStepMode())
             script->clearBreakpointsIn(fop, dbg, handler);
-    }
-}
-
-void
-JSCompartment::clearTraps(FreeOp *fop)
-{
-    MinorGC(fop->runtime(), JS::gcreason::EVICT_NURSERY);
-    for (gc::ZoneCellIter i(zone(), gc::FINALIZE_SCRIPT); !i.done(); i.next()) {
-        JSScript *script = i.get<JSScript>();
-        if (script->compartment() == this && script->hasAnyBreakpointsOrStepMode())
-            script->clearTraps(fop);
     }
 }
 

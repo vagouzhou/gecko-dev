@@ -284,7 +284,11 @@ SVGDrawingCallback::operator()(gfxContext* aContext,
   aContext->Clip();
 
   gfxContextMatrixAutoSaveRestore contextMatrixRestorer(aContext);
-  aContext->Multiply(gfxMatrix(aTransform).Invert());
+  gfxMatrix matrix = aTransform;
+  if (!matrix.Invert()) {
+    return false;
+  }
+  aContext->Multiply(matrix);
   aContext->Scale(1.0 / mScale.width, 1.0 / mScale.height);
 
   nsPresContext* presContext = presShell->GetPresContext();
@@ -360,7 +364,7 @@ VectorImage::FrameRect(uint32_t aWhichFrame)
 }
 
 size_t
-VectorImage::HeapSizeOfSourceWithComputedFallback(mozilla::MallocSizeOf aMallocSizeOf) const
+VectorImage::HeapSizeOfSourceWithComputedFallback(MallocSizeOf aMallocSizeOf) const
 {
   // We're not storing the source data -- we just feed that directly to
   // our helper SVG document as we receive it, for it to parse.
@@ -372,7 +376,7 @@ VectorImage::HeapSizeOfSourceWithComputedFallback(mozilla::MallocSizeOf aMallocS
 }
 
 size_t
-VectorImage::HeapSizeOfDecodedWithComputedFallback(mozilla::MallocSizeOf aMallocSizeOf) const
+VectorImage::HeapSizeOfDecodedWithComputedFallback(MallocSizeOf aMallocSizeOf) const
 {
   // If implementing this, we'll need to restructure our callers to make sure
   // any amount we return is attributed to the vector images measure (i.e.
@@ -499,7 +503,7 @@ VectorImage::ShouldAnimate()
 }
 
 NS_IMETHODIMP_(void)
-VectorImage::SetAnimationStartTime(const mozilla::TimeStamp& aTime)
+VectorImage::SetAnimationStartTime(const TimeStamp& aTime)
 {
   // We don't care about animation start time.
 }
@@ -529,7 +533,7 @@ VectorImage::GetWidth(int32_t* aWidth)
 //******************************************************************************
 /* [notxpcom] void requestRefresh ([const] in TimeStamp aTime); */
 NS_IMETHODIMP_(void)
-VectorImage::RequestRefresh(const mozilla::TimeStamp& aTime)
+VectorImage::RequestRefresh(const TimeStamp& aTime)
 {
   if (HadRecentRefresh(aTime)) {
     return;
@@ -751,7 +755,7 @@ VectorImage::GetFrame(uint32_t aWhichFrame,
 /* [noscript] ImageContainer getImageContainer(); */
 NS_IMETHODIMP
 VectorImage::GetImageContainer(LayerManager* aManager,
-                               mozilla::layers::ImageContainer** _retval)
+                               layers::ImageContainer** _retval)
 {
   *_retval = nullptr;
   return NS_OK;
@@ -911,7 +915,7 @@ VectorImage::CreateDrawableAndShow(const SVGDrawingParameters& aParams)
     return Show(svgDrawable, aParams);
 
   // Try to create an offscreen surface.
-  mozilla::RefPtr<mozilla::gfx::DrawTarget> target =
+  RefPtr<gfx::DrawTarget> target =
    gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(aParams.imageRect.Size(), gfx::SurfaceFormat::B8G8R8A8);
 
   // If we couldn't create the draw target, it was probably because it would end
@@ -931,8 +935,10 @@ VectorImage::CreateDrawableAndShow(const SVGDrawingParameters& aParams)
                              SurfaceFormat::B8G8R8A8,
                              GraphicsFilter::FILTER_NEAREST, aParams.flags);
 
+  RefPtr<SourceSurface> surface = target->Snapshot();
+
   // Attempt to cache the resulting surface.
-  SurfaceCache::Insert(target,
+  SurfaceCache::Insert(surface,
                        ImageKey(this),
                        SurfaceKey(aParams.imageRect.Size(), aParams.scale,
                                   aParams.svgContext, aParams.animationTime,
@@ -942,7 +948,7 @@ VectorImage::CreateDrawableAndShow(const SVGDrawingParameters& aParams)
   // then |target| is all that is keeping the pixel data alive, so we have
   // to draw before returning from this function.
   nsRefPtr<gfxDrawable> drawable =
-    new gfxSurfaceDrawable(target, ThebesIntSize(aParams.imageRect.Size()));
+    new gfxSurfaceDrawable(surface, ThebesIntSize(aParams.imageRect.Size()));
   Show(drawable, aParams);
 }
 
@@ -1212,6 +1218,17 @@ VectorImage::InvalidateObserversOnNextRefreshDriverTick()
   } else {
     SendInvalidationNotifications();
   }
+}
+
+nsIntSize
+VectorImage::OptimalImageSizeForDest(const gfxSize& aDest, uint32_t aWhichFrame, GraphicsFilter aFilter, uint32_t aFlags)
+{
+  MOZ_ASSERT(aDest.width >= 0 || ceil(aDest.width) <= INT32_MAX ||
+             aDest.height >= 0 || ceil(aDest.height) <= INT32_MAX,
+             "Unexpected destination size");
+
+  // We can rescale SVGs freely, so just return the provided destination size.
+  return nsIntSize(ceil(aDest.width), ceil(aDest.height));
 }
 
 already_AddRefed<imgIContainer>

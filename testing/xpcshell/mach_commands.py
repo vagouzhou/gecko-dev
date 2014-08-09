@@ -87,13 +87,15 @@ class XPCShellRunner(MozbuildObject):
                            debuggerInteractive=debuggerInteractive,
                            rerun_failures=rerun_failures)
             return
+        elif test_paths:
+            test_paths = [self._wrap_path_argument(p).relpath() for p in test_paths]
 
         if test_objects:
             tests = test_objects
         else:
             resolver = self._spawn(TestResolver)
             tests = list(resolver.resolve_tests(paths=test_paths,
-                flavor='xpcshell', cwd=self.cwd))
+                flavor='xpcshell'))
 
         if not tests:
             raise InvalidTestPathError('We could not find an xpcshell test '
@@ -139,10 +141,16 @@ class XPCShellRunner(MozbuildObject):
         # We want output from the test to be written immediately if we are only
         # running a single test.
         verbose_output = test_path is not None or (manifest and len(manifest.test_paths())==1)
+        
+        # We need to attach the '.exe' extension on Windows for the debugger to
+        # work properly.
+        xpcsExecutable = 'xpcshell'
+        if os.name == 'nt':
+          xpcsExecutable += '.exe'
 
         args = {
             'manifest': manifest,
-            'xpcshell': os.path.join(self.bindir, 'xpcshell'),
+            'xpcshell': os.path.join(self.bindir, xpcsExecutable),
             'mozInfo': os.path.join(self.topobjdir, 'mozinfo.json'),
             'symbolsPath': os.path.join(self.distdir, 'crashreporter-symbols'),
             'interactive': interactive,

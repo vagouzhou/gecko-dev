@@ -5,6 +5,8 @@ from ConfigParser import (
 import datetime
 import os
 import posixpath
+import re
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -12,12 +14,17 @@ import time
 import traceback
 
 from mozdevice import DMError
+from mozprocess import ProcessHandler
 
 class Device(object):
-    def __init__(self, app_ctx, restore=True):
+    connected = False
+
+    def __init__(self, app_ctx, logdir=None, serial=None, restore=True):
         self.app_ctx = app_ctx
         self.dm = self.app_ctx.dm
         self.restore = restore
+        self.serial = serial
+        self.logdir = logdir
         self.added_files = set()
         self.backup_files = set()
 
@@ -28,7 +35,7 @@ class Device(object):
         """
         remote_ini = self.app_ctx.remote_profiles_ini
         if not self.dm.fileExists(remote_ini):
-            raise Exception("Remote file '%s' not found" % remote_ini)
+            raise IOError("Remote file '%s' not found" % remote_ini)
 
         local_ini = tempfile.NamedTemporaryFile()
         self.dm.getFile(remote_ini, local_ini.name)
@@ -71,16 +78,6 @@ class Device(object):
 
         self.dm.pushDir(profile.profile, self.app_ctx.remote_profile)
 
-        extension_dir = os.path.join(profile.profile, 'extensions', 'staged')
-        if os.path.isdir(extension_dir):
-            # Copy the extensions to the B2G bundles dir.
-            # need to write to read-only dir
-            for filename in os.listdir(extension_dir):
-                path = posixpath.join(self.app_ctx.remote_bundles_dir, filename)
-                if self.dm.fileExists(path):
-                    self.dm.shellCheckOutput(['rm', '-rf', path])
-            self.dm.pushDir(extension_dir, self.app_ctx.remote_bundles_dir)
-
         timeout = 5 # seconds
         starttime = datetime.datetime.now()
         while datetime.datetime.now() - starttime < datetime.timedelta(seconds=timeout):
@@ -106,6 +103,52 @@ class Device(object):
         self.backup_file(self.app_ctx.remote_profiles_ini)
         self.dm.pushFile(new_profiles_ini.name, self.app_ctx.remote_profiles_ini)
 
+        # Ideally all applications would read the profile the same way, but in practice
+        # this isn't true. Perform application specific profile-related setup if necessary.
+        if hasattr(self.app_ctx, 'setup_profile'):
+            for remote_path in self.app_ctx.remote_backup_files:
+                self.backup_file(remote_path)
+            self.app_ctx.setup_profile(profile)
+
+    def _get_online_devices(self):
+        return [d[0] for d in self.dm.devices() if d[1] != 'offline' if not d[0].startswith('emulator')]
+
+    def connect(self):
+        """
+        Connects to a running device. If no serial was specified in the
+        constructor, defaults to the first entry in `adb devices`.
+        """
+        if self.connected:
+            return
+
+        if self.serial:
+            serial = self.serial
+        else:
+            online_devices = self._get_online_devices()
+            if not online_devices:
+                raise IOError("No devices connected. Ensure the device is on and remote debugging via adb is enabled in the settings.")
+            serial = online_devices[0]
+
+        self.dm._deviceSerial = serial
+        self.dm.connect()
+        self.connected = True
+
+        if self.logdir:
+            # save logcat
+            logcat_log = os.path.join(self.logdir, '%s.log' % serial)
+            if os.path.isfile(logcat_log):
+                self._rotate_log(logcat_log)
+            logcat_args = [self.app_ctx.adb, '-s', '%s' % serial,
+                           'logcat', '-v', 'time']
+            self.logcat_proc = ProcessHandler(logcat_args, logfile=logcat_log)
+            self.logcat_proc.run()
+
+    def reboot(self):
+        """
+        Reboots the device via adb.
+        """
+        self.dm.reboot(wait=True)
+
     def install_busybox(self, busybox):
         """
         Installs busybox on the device.
@@ -124,20 +167,40 @@ class Device(object):
         adb.wait()
         self.dm._verifyZip()
 
-    def setup_port_forwarding(self, remote_port):
+    def setup_port_forwarding(self, local_port=None, remote_port=2828):
         """
         Set up TCP port forwarding to the specified port on the device,
-        using any availble local port, and return the local port.
+        using any availble local port (if none specified), and return the local port.
 
-        :param remote_port: The remote port to wait on.
+        :param local_port: The local port to forward from, if unspecified a
+                           random port is chosen.
+        :param remote_port: The remote port to forward to, defaults to 2828.
+        :returns: The local_port being forwarded.
         """
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.bind(("",0))
-        local_port = s.getsockname()[1]
-        s.close()
+        if not local_port:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.bind(("",0))
+            local_port = s.getsockname()[1]
+            s.close()
 
-        self.dm.forward('tcp:%d' % local_port, 'tcp:%d' % remote_port)
+        self.dm.forward('tcp:%d' % int(local_port), 'tcp:%d' % int(remote_port))
         return local_port
+
+    def wait_for_net(self):
+        active = False
+        time_out = 0
+        while not active and time_out < 40:
+            proc = subprocess.Popen([self.app_ctx.adb, 'shell', '/system/bin/netcfg'], stdout=subprocess.PIPE)
+            proc.stdout.readline() # ignore first line
+            line = proc.stdout.readline()
+            while line != "":
+                if (re.search(r'UP\s+[1-9]\d{0,2}\.\d{1,3}\.\d{1,3}\.\d{1,3}', line)):
+                    active = True
+                    break
+                line = proc.stdout.readline()
+            time_out += 1
+            time.sleep(1)
+        return active
 
     def wait_for_port(self, port, timeout=300):
         starttime = datetime.datetime.now()
@@ -158,7 +221,7 @@ class Device(object):
         if not self.restore:
             return
 
-        if self.dm.fileExists(remote_path):
+        if self.dm.fileExists(remote_path) or self.dm.dirExists(remote_path):
             self.dm.copyTree(remote_path, '%s.orig' % remote_path)
             self.backup_files.add(remote_path)
         else:
@@ -182,19 +245,35 @@ class Device(object):
             self.dm.removeFile(added_file)
 
         for backup_file in self.backup_files:
-            if self.dm.fileExists('%s.orig' % backup_file):
+            if self.dm.fileExists('%s.orig' % backup_file) or self.dm.dirExists('%s.orig' % backup_file):
                 self.dm.moveTree('%s.orig' % backup_file, backup_file)
 
-        # Delete any bundled extensions
-        extension_dir = posixpath.join(self.app_ctx.remote_profile, 'extensions', 'staged')
-        if self.dm.dirExists(extension_dir):
-            for filename in self.dm.listFiles(extension_dir):
-                try:
-                    self.dm.removeDir(posixpath.join(self.app_ctx.remote_bundles_dir, filename))
-                except DMError:
-                    pass
+        # Perform application specific profile cleanup if necessary
+        if hasattr(self.app_ctx, 'cleanup_profile'):
+            self.app_ctx.cleanup_profile()
+
         # Remove the test profile
         self.dm.removeDir(self.app_ctx.remote_profile)
+
+    def _rotate_log(self, srclog, index=1):
+        """
+        Rotate a logfile, by recursively rotating logs further in the sequence,
+        deleting the last file if necessary.
+        """
+        basename = os.path.basename(srclog)
+        basename = basename[:-len('.log')]
+        if index > 1:
+            basename = basename[:-len('.1')]
+        basename = '%s.%d.log' % (basename, index)
+
+        destlog = os.path.join(self.logdir, basename)
+        if os.path.isfile(destlog):
+            if index == 3:
+                os.remove(destlog)
+            else:
+                self._rotate_log(destlog, index+1)
+        shutil.move(srclog, destlog)
+
 
 
 class ProfileConfigParser(RawConfigParser):

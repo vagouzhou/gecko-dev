@@ -10,6 +10,7 @@
 #include "mozilla/Services.h"
 #include "nsIObserverService.h"
 #include "mozilla/unused.h"
+#include "mozilla/SyncRunnable.h"
 
 #include "nsThreadUtils.h"
 #include "nsXULAppAPI.h"
@@ -163,6 +164,7 @@ static XP_CHAR* crashReporterPath;
 
 // Where crash events should go.
 static XP_CHAR* eventsDirectory;
+static char* eventsEnv = nullptr;
 
 // If this is false, we don't launch the crash reporter
 static bool doReport = true;
@@ -384,7 +386,7 @@ patched_SetUnhandledExceptionFilter (LPTOP_LEVEL_EXCEPTION_FILTER lpTopLevelExce
  * This size is bigger than xul.dll plus some extra for MinidumpWriteDump
  * allocations.
  */
-static const SIZE_T kReserveSize = 0x2400000; // 36 MB
+static const SIZE_T kReserveSize = 0x2800000; // 40 MB
 static void* gBreakpadReservedVM;
 #endif
 
@@ -1858,6 +1860,10 @@ nsresult WriteMinidumpForException(EXCEPTION_POINTERS* aExceptionInfo)
 #ifdef XP_LINUX
 bool WriteMinidumpForSigInfo(int signo, siginfo_t* info, void* uc)
 {
+  if (!gExceptionHandler) {
+    // Crash reporting is disabled.
+    return false;
+  }
   return gExceptionHandler->HandleSignal(signo, info, uc);
 }
 #endif
@@ -2107,10 +2113,29 @@ SetCrashEventsDir(nsIFile* aDir)
   nsString path;
   eventsDir->GetPath(path);
   eventsDirectory = reinterpret_cast<wchar_t*>(ToNewUnicode(path));
+
+  // Save the path in the environment for the crash reporter application.
+  nsAutoString eventsDirEnv(NS_LITERAL_STRING("MOZ_CRASHREPORTER_EVENTS_DIRECTORY="));
+  eventsDirEnv.Append(path);
+  _wputenv(eventsDirEnv.get());
 #else
   nsCString path;
   eventsDir->GetNativePath(path);
   eventsDirectory = ToNewCString(path);
+
+  // Save the path in the environment for the crash reporter application.
+  nsAutoCString eventsDirEnv("MOZ_CRASHREPORTER_EVENTS_DIRECTORY=");
+  eventsDirEnv.Append(path);
+
+  // PR_SetEnv() wants the string to be available for the lifetime
+  // of the app, so dup it here.
+  char* oldEventsEnv = eventsEnv;
+  eventsEnv = ToNewCString(eventsDirEnv);
+  PR_SetEnv(eventsEnv);
+
+  if (oldEventsEnv) {
+    NS_Free(oldEventsEnv);
+  }
 #endif
 }
 
@@ -2522,6 +2547,21 @@ static bool ChildFilter(void *context) {
 void
 OOPInit()
 {
+  class ProxyToMainThread : public nsRunnable
+  {
+  public:
+    NS_IMETHOD Run() {
+      OOPInit();
+      return NS_OK;
+    }
+  };
+  if (!NS_IsMainThread()) {
+    // This logic needs to run on the main thread
+    nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
+    mozilla::SyncRunnable::DispatchToThread(mainThread, new ProxyToMainThread());
+    return;
+  }
+
   if (OOPInitialized())
     return;
 

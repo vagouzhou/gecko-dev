@@ -49,7 +49,7 @@ public class Tabs implements GeckoEventListener {
     private final HashMap<Integer, Tab> mTabs = new HashMap<Integer, Tab>();
 
     private AccountManager mAccountManager;
-    private OnAccountsUpdateListener mAccountListener = null;
+    private OnAccountsUpdateListener mAccountListener;
 
     public static final int LOADURL_NONE         = 0;
     public static final int LOADURL_NEW_TAB      = 1 << 0;
@@ -496,6 +496,7 @@ public class Tabs implements GeckoEventListener {
                     tab.setBackgroundColor(Color.WHITE);
                 }
                 tab.setErrorType(message.optString("errorType"));
+                tab.setMetadata(message.optJSONObject("metadata"));
                 notifyListeners(tab, Tabs.TabEvents.LOADED);
             } else if (event.equals("DOMTitleChanged")) {
                 tab.updateTitle(message.getString("title"));

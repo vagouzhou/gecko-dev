@@ -270,6 +270,7 @@ nsXPTIInterfaceInfoManagerGetSingleton(nsISupports* outer,
 nsComponentManagerImpl* nsComponentManagerImpl::gComponentManager = nullptr;
 bool gXPCOMShuttingDown = false;
 bool gXPCOMThreadsShutDown = false;
+char16_t* gGREPath = nullptr;
 
 static NS_DEFINE_CID(kComponentManagerCID, NS_COMPONENTMANAGER_CID);
 static NS_DEFINE_CID(kINIParserFactoryCID, NS_INIPARSERFACTORY_CID);
@@ -380,6 +381,8 @@ private:
             "explicit/icu", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory used by ICU, a Unicode and globalization support library.");
     }
+
+    ~ICUReporter() {}
 };
 
 NS_IMPL_ISUPPORTS(ICUReporter, nsIMemoryReporter)
@@ -401,6 +404,8 @@ private:
             "explicit/media/libogg", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory allocated through libogg for Ogg, Theora, and related media files.");
     }
+
+    ~OggReporter() {}
 };
 
 NS_IMPL_ISUPPORTS(OggReporter, nsIMemoryReporter)
@@ -423,6 +428,8 @@ private:
             "explicit/media/libvpx", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory allocated through libvpx for WebM media files.");
     }
+
+    ~VPXReporter() {}
 };
 
 NS_IMPL_ISUPPORTS(VPXReporter, nsIMemoryReporter)
@@ -446,6 +453,8 @@ private:
             "explicit/media/libnestegg", KIND_HEAP, UNITS_BYTES, MemoryAllocated(),
             "Memory allocated through libnestegg for WebM media files.");
     }
+
+    ~NesteggReporter() {}
 };
 
 NS_IMPL_ISUPPORTS(NesteggReporter, nsIMemoryReporter)
@@ -556,15 +565,18 @@ NS_InitXPCOM2(nsIServiceManager* *result,
     }
 
     nsCOMPtr<nsIFile> xpcomLib;
-
     nsDirectoryService::gService->Get(NS_GRE_DIR,
                                       NS_GET_IID(nsIFile),
                                       getter_AddRefs(xpcomLib));
+    MOZ_ASSERT(xpcomLib);
 
-    if (xpcomLib) {
-        xpcomLib->AppendNative(nsDependentCString(XPCOM_DLL));
-        nsDirectoryService::gService->Set(NS_XPCOM_LIBRARY_FILE, xpcomLib);
-    }
+    // set gGREPath
+    nsAutoString path;
+    xpcomLib->GetPath(path);
+    gGREPath = ToNewUnicode(path);
+
+    xpcomLib->AppendNative(nsDependentCString(XPCOM_DLL));
+    nsDirectoryService::gService->Set(NS_XPCOM_LIBRARY_FILE, xpcomLib);
 
     if (!mozilla::Omnijar::IsInitialized()) {
         mozilla::Omnijar::Init();
@@ -711,10 +723,6 @@ NS_InitXPCOM2(nsIServiceManager* *result,
     mozilla::eventtracer::Init();
 #endif
 
-    // TODO: Cache the GRE dir here instead of telling GeckoChildProcessHost to do it.
-    //       Then have GeckoChildProcessHost get the dir from XPCOM::GetGREPath().
-    mozilla::ipc::GeckoChildProcessHost::CacheGreDir();
-
     return NS_OK;
 }
 
@@ -803,16 +811,16 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
             }
         }
 
+        // This must happen after the shutdown of media and widgets, which
+        // are triggered by the NS_XPCOM_SHUTDOWN_OBSERVER_ID notification.
         NS_ProcessPendingEvents(thread);
+        gfxPlatform::ShutdownLayersIPC();
+
         mozilla::scache::StartupCache::DeleteSingleton();
         if (observerService)
             (void) observerService->
                 NotifyObservers(nullptr, NS_XPCOM_SHUTDOWN_THREADS_OBSERVER_ID,
                                 nullptr);
-
-        // This must happen after the shutdown of media and widgets, which
-        // are triggered by the NS_XPCOM_SHUTDOWN_OBSERVER_ID notification.
-        gfxPlatform::ShutdownLayersIPC();
 
         gXPCOMThreadsShutDown = true;
         NS_ProcessPendingEvents(thread);
@@ -872,6 +880,9 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
 
     // Release the directory service
     NS_IF_RELEASE(nsDirectoryService::gService);
+
+    NS_Free(gGREPath);
+    gGREPath = nullptr;
 
     if (moduleLoaders) {
         bool more;
@@ -963,31 +974,27 @@ ShutdownXPCOM(nsIServiceManager* servMgr)
 
     NS_IF_RELEASE(gDebug);
 
-    if (sIOThread) {
-        delete sIOThread;
-        sIOThread = nullptr;
-    }
-    if (sMessageLoop) {
-        delete sMessageLoop;
-        sMessageLoop = nullptr;
-    }
+    delete sIOThread;
+    sIOThread = nullptr;
+
+    delete sMessageLoop;
+    sMessageLoop = nullptr;
+
     if (sCommandLineWasInitialized) {
         CommandLine::Terminate();
         sCommandLineWasInitialized = false;
     }
-    if (sExitManager) {
-        delete sExitManager;
-        sExitManager = nullptr;
-    }
+
+    delete sExitManager;
+    sExitManager = nullptr;
 
     Omnijar::CleanUp();
 
     HangMonitor::Shutdown();
 
-    if (sMainHangMonitor) {
-        delete sMainHangMonitor;
-        sMainHangMonitor = nullptr;
-    }
+    delete sMainHangMonitor;
+    sMainHangMonitor = nullptr;
+
     BackgroundHangMonitor::Shutdown();
 
 #ifdef MOZ_VISUAL_EVENT_TRACER

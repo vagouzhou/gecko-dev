@@ -1205,10 +1205,10 @@ GetFMBandSettings(FMRadioCountry aCountry) {
     return settings;
 }
 
-void FactoryReset()
+void FactoryReset(mozilla::dom::FactoryResetReason& aReason)
 {
   AssertMainThread();
-  PROXY_IF_SANDBOXED(FactoryReset());
+  PROXY_IF_SANDBOXED(FactoryReset(aReason));
 }
 
 void
@@ -1237,6 +1237,12 @@ uint32_t
 GetTotalSystemMemoryLevel()
 {
   return hal_impl::GetTotalSystemMemoryLevel();
+}
+
+bool IsHeadphoneEventFromInputDev()
+{
+  AssertMainThread();
+  RETURN_PROXY_IF_SANDBOXED(IsHeadphoneEventFromInputDev(), false);
 }
 
 } // namespace hal

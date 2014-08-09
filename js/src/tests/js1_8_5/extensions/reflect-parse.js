@@ -93,6 +93,10 @@ function callExpr(callee, args) Pattern({ type: "CallExpression", callee: callee
 function arrExpr(elts) Pattern({ type: "ArrayExpression", elements: elts })
 function objExpr(elts) Pattern({ type: "ObjectExpression", properties: elts })
 function templateLit(elts) Pattern({ type: "TemplateLiteral", elements: elts })
+function taggedTemplate(tagPart, templatePart) Pattern({ type: "TaggedTemplate", callee: tagPart,
+                arguments : templatePart })
+function template(raw, cooked, ...args) Pattern([{ type: "CallSiteObject", raw: raw, cooked:
+cooked}, ...args])
 function compExpr(body, blocks, filter) Pattern({ type: "ComprehensionExpression", body: body, blocks: blocks, filter: filter })
 function genExpr(body, blocks, filter) Pattern({ type: "GeneratorExpression", body: body, blocks: blocks, filter: filter })
 function graphExpr(idx, body) Pattern({ type: "GraphExpression", index: idx, expression: body })
@@ -219,7 +223,7 @@ assertDecl("function foo(a, b=4, ...rest) { }",
            funDecl(ident("foo"), [ident("a"), ident("b")], blockStmt([]), [lit(4)], ident("rest")));
 assertDecl("function foo(a=(function () {})) { function a() {} }",
            funDecl(ident("foo"), [ident("a")], blockStmt([funDecl(ident("a"), [], blockStmt([]))]),
-                   [funExpr(ident("a"), [], blockStmt([]))]));
+                   [funExpr(null, [], blockStmt([]))]));
 
 
 // Bug 591437: rebound args have their defs turned into uses
@@ -343,6 +347,8 @@ assertExpr("[1,(2,3)]", arrExpr([lit(1),seqExpr([lit(2),lit(3)])]));
 assertExpr("[,(2,3)]", arrExpr([null,seqExpr([lit(2),lit(3)])]));
 assertExpr("({})", objExpr([]));
 assertExpr("({x:1})", objExpr([{ key: ident("x"), value: lit(1) }]));
+assertExpr("({x:x, y})", objExpr([{ key: ident("x"), value: ident("x"), shorthand: false },
+                                  { key: ident("y"), value: ident("y"), shorthand: true }]));
 assertExpr("({x:1, y:2})", objExpr([{ key: ident("x"), value: lit(1) },
                                     { key: ident("y"), value: lit(2) } ]));
 assertExpr("({x:1, y:2, z:3})", objExpr([{ key: ident("x"), value: lit(1) },
@@ -401,15 +407,28 @@ assertStmt("if (foo) { throw 1; throw 2; throw 3; } else true;",
            ifStmt(ident("foo"),
                   blockStmt([throwStmt(lit(1)), throwStmt(lit(2)), throwStmt(lit(3))]),
                   exprStmt(lit(true))));
-var hasTemplateStrings = false;  try { eval("``"); hasTemplateStrings = true; } catch (exc) { }
-if (hasTemplateStrings == true) {
-    assertStringExpr("`hey there`", literal("hey there"));
-    assertStringExpr("`hey\nthere`", literal("hey\nthere"));
-    assertExpr("`hey${\"there\"}`", templateLit([lit("hey"), lit("there"), lit("")]));
-    assertExpr("`hey${\"there\"}mine`", templateLit([lit("hey"), lit("there"), lit("mine")]));
-    assertExpr("`hey${a == 5}mine`", templateLit([lit("hey"), binExpr("==", ident("a"), lit(5)), lit("mine")]));
-    assertExpr("`hey${`there${\"how\"}`}mine`", templateLit([lit("hey"), templateLit([lit("there"), lit("how"), lit("")]), lit("mine")]));
-}
+
+// template strings
+assertStringExpr("`hey there`", literal("hey there"));
+assertStringExpr("`hey\nthere`", literal("hey\nthere"));
+assertExpr("`hey${\"there\"}`", templateLit([lit("hey"), lit("there"), lit("")]));
+assertExpr("`hey${\"there\"}mine`", templateLit([lit("hey"), lit("there"), lit("mine")]));
+assertExpr("`hey${a == 5}mine`", templateLit([lit("hey"), binExpr("==", ident("a"), lit(5)), lit("mine")]));
+assertExpr("`hey${`there${\"how\"}`}mine`", templateLit([lit("hey"),
+           templateLit([lit("there"), lit("how"), lit("")]), lit("mine")]));
+assertExpr("func`hey`", taggedTemplate(ident("func"), template(["hey"], ["hey"])));
+assertExpr("func`hey${\"4\"}there`", taggedTemplate(ident("func"),
+           template(["hey", "there"], ["hey", "there"], lit("4"))));
+assertExpr("func`hey${\"4\"}there${5}`", taggedTemplate(ident("func"),
+           template(["hey", "there", ""], ["hey", "there", ""],
+                  lit("4"), lit(5))));
+assertExpr("func`hey\r\n`", taggedTemplate(ident("func"), template(["hey\n"], ["hey\n"])));
+assertExpr("func`hey${4}``${5}there``mine`",
+           taggedTemplate(taggedTemplate(taggedTemplate(
+               ident("func"), template(["hey", ""], ["hey", ""], lit(4))),
+               template(["", "there"], ["", "there"], lit(5))),
+               template(["mine"], ["mine"])));
+
 assertStringExpr("\"hey there\"", literal("hey there"));
 
 assertStmt("foo: for(;;) break foo;", labStmt(ident("foo"), forStmt(null, null, null, breakStmt(ident("foo")))));
@@ -486,8 +505,10 @@ assertStmt("function f() { var x = 42; var x = 43; }",
                                               varDecl([{ id: ident("x"), init: lit(43) }])])));
 
 
-assertDecl("var {x:y} = foo;", varDecl([{ id: objPatt([{ key: ident("x"), value: ident("y") }]),
+assertDecl("var {x:y} = foo;", varDecl([{ id: objPatt([{ key: ident("x"), value: ident("y"), shorthand: false }]),
                                           init: ident("foo") }]));
+assertDecl("var {x} = foo;", varDecl([{ id: objPatt([{ key: ident("x"), value: ident("x"), shorthand: true }]),
+                                        init: ident("foo") }]));
 
 // Bug 632030: redeclarations between var and funargs, var and function
 assertStmt("function g(x) { var x }",
@@ -998,13 +1019,6 @@ try {
 }
 if (!thrown)
     throw new Error("builder exception not propagated");
-
-// Missing property RHS's in an object literal should throw.
-try {
-    Reflect.parse("({foo})");
-    throw new Error("object literal missing property RHS didn't throw");
-} catch (e if e instanceof SyntaxError) { }
-
 
 // A simple proof-of-concept that the builder API can be used to generate other
 // formats, such as JsonMLAst:

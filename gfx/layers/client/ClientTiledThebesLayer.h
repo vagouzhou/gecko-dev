@@ -43,8 +43,11 @@ class ClientTiledThebesLayer : public ThebesLayer,
 public:
   ClientTiledThebesLayer(ClientLayerManager* const aManager,
                          ClientLayerManager::ThebesLayerCreationHint aCreationHint = LayerManager::NONE);
+
+protected:
   ~ClientTiledThebesLayer();
 
+public:
   // Override name to distinguish it from ClientThebesLayer in layer dumps
   virtual const char* Name() const { return "TiledThebesLayer"; }
 
@@ -100,6 +103,7 @@ private:
    * This function returns true if it updated the paint buffer.
    */
   bool RenderHighPrecision(nsIntRegion& aInvalidRegion,
+                           const nsIntRegion& aVisibleRegion,
                            LayerManager::DrawThebesLayerCallback aCallback,
                            void* aCallbackData);
 
@@ -108,6 +112,7 @@ private:
    * This function returns true if it updated the paint buffer.
    */
   bool RenderLowPrecision(nsIntRegion& aInvalidRegion,
+                          const nsIntRegion& aVisibleRegion,
                           LayerManager::DrawThebesLayerCallback aCallback,
                           void* aCallbackData);
 

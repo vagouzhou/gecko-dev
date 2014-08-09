@@ -9,7 +9,6 @@ Cu.import('resource://gre/modules/SettingsChangeNotifier.jsm');
 Cu.import('resource://gre/modules/DataStoreChangeNotifier.jsm');
 Cu.import('resource://gre/modules/AlarmService.jsm');
 Cu.import('resource://gre/modules/ActivitiesService.jsm');
-Cu.import('resource://gre/modules/PermissionPromptHelper.jsm');
 Cu.import('resource://gre/modules/NotificationDB.jsm');
 Cu.import('resource://gre/modules/Payment.jsm');
 Cu.import("resource://gre/modules/AppsUtils.jsm");
@@ -19,16 +18,14 @@ Cu.import('resource://gre/modules/ErrorPage.jsm');
 Cu.import('resource://gre/modules/AlertsHelper.jsm');
 #ifdef MOZ_WIDGET_GONK
 Cu.import('resource://gre/modules/NetworkStatsService.jsm');
+Cu.import('resource://gre/modules/ResourceStatsService.jsm');
 #endif
 
 // Identity
 Cu.import('resource://gre/modules/SignInToWebsite.jsm');
 SignInToWebsiteController.init();
 
-#ifdef MOZ_SERVICES_FXACCOUNTS
 Cu.import('resource://gre/modules/FxAccountsMgmtService.jsm');
-#endif
-
 Cu.import('resource://gre/modules/DownloadsAPI.jsm');
 Cu.import('resource://gre/modules/MobileIdentityManager.jsm');
 
@@ -57,6 +54,16 @@ XPCOMUtils.defineLazyServiceGetter(Services, 'fm',
 XPCOMUtils.defineLazyGetter(this, 'DebuggerServer', function() {
   Cu.import('resource://gre/modules/devtools/dbg-server.jsm');
   return DebuggerServer;
+});
+
+XPCOMUtils.defineLazyGetter(this, 'devtools', function() {
+  const { devtools } =
+    Cu.import('resource://gre/modules/devtools/Loader.jsm', {});
+  return devtools;
+});
+
+XPCOMUtils.defineLazyGetter(this, 'discovery', function() {
+  return devtools.require('devtools/toolkit/discovery/discovery');
 });
 
 XPCOMUtils.defineLazyGetter(this, "ppmm", function() {
@@ -210,11 +217,6 @@ var shell = {
     }, "network-connection-state-changed", false);
   },
 
-  get contentBrowser() {
-    delete this.contentBrowser;
-    return this.contentBrowser = document.getElementById('systemapp');
-  },
-
   get homeURL() {
     try {
       let homeSrc = Services.env.get('B2G_HOMESCREEN');
@@ -314,7 +316,7 @@ var shell = {
       container.removeChild(hotfix);
     }
 #endif
-    container.appendChild(systemAppFrame);
+    this.contentBrowser = container.appendChild(systemAppFrame);
 
     systemAppFrame.contentWindow
                   .QueryInterface(Ci.nsIInterfaceRequestor)
@@ -344,6 +346,7 @@ var shell = {
     window.addEventListener('sizemodechange', this);
     window.addEventListener('unload', this);
     this.contentBrowser.addEventListener('mozbrowserloadstart', this, true);
+    this.contentBrowser.addEventListener('mozbrowserselectionchange', this, true);
 
     CustomEventManager.init();
     WebappsHelper.init();
@@ -370,6 +373,7 @@ var shell = {
     window.removeEventListener('mozfullscreenchange', this);
     window.removeEventListener('sizemodechange', this);
     this.contentBrowser.removeEventListener('mozbrowserloadstart', this, true);
+    this.contentBrowser.removeEventListener('mozbrowserselectionchange', this, true);
     ppmm.removeMessageListener("content-handler", this);
 
     UserAgentOverrides.uninit();
@@ -511,6 +515,30 @@ var shell = {
 
         this.notifyContentStart();
        break;
+
+      case 'mozbrowserselectionchange':
+        // The mozbrowserselectionchange event, may have crossed the chrome-content boundary.
+        // This event always dispatch to shell.js. But the offset we got from this event is
+        // based on tab's coordinate. So get the actual offsets between shell and evt.target.
+        let elt = evt.target;
+        let win = elt.ownerDocument.defaultView;
+        let offsetX = win.mozInnerScreenX;
+        let offsetY = win.mozInnerScreenY;
+
+        let rect = elt.getBoundingClientRect();
+        offsetX += rect.left;
+        offsetY += rect.top;
+
+        let data = evt.detail;
+        data.offsetX = offsetX;
+        data.offsetY = offsetY;
+
+        DoCommandHelper.setEvent(evt);
+        shell.sendChromeEvent({
+          type: 'selectionchange',
+          detail: data,
+        });
+        break;
 
       case 'MozApplicationManifest':
         try {
@@ -711,6 +739,23 @@ var CustomEventManager = {
       case 'inputmethod-update-layouts':
         KeyboardHelper.handleEvent(detail);
         break;
+      case 'do-command':
+        DoCommandHelper.handleEvent(detail.cmd);
+        break;
+    }
+  }
+}
+
+let DoCommandHelper = {
+  _event: null,
+  setEvent: function docommand_setEvent(evt) {
+    this._event = evt;
+  },
+
+  handleEvent: function docommand_handleEvent(cmd) {
+    if (this._event) {
+      shell.sendEvent(this._event.target, 'mozdocommand', { cmd: cmd });
+      this._event = null;
     }
   }
 }
@@ -757,7 +802,8 @@ var WebappsHelper = {
           if (!aManifest)
             return;
 
-          let manifest = new ManifestHelper(aManifest, json.origin);
+          let manifest = new ManifestHelper(aManifest, json.origin,
+                                            json.manifestURL);
           let payload = {
             timestamp: json.timestamp,
             url: manifest.fullLaunchPath(json.startPoint),
@@ -817,7 +863,6 @@ let IndexedDBPromptHelper = {
 let RemoteDebugger = {
   _promptDone: false,
   _promptAnswer: false,
-  _running: false,
 
   prompt: function debugger_prompt() {
     this._promptDone = false;
@@ -838,8 +883,69 @@ let RemoteDebugger = {
     this._promptDone = true;
   },
 
+  initServer: function() {
+    if (DebuggerServer.initialized) {
+      return;
+    }
+
+    // Ask for remote connections.
+    DebuggerServer.init(this.prompt.bind(this));
+
+    // /!\ Be careful when adding a new actor, especially global actors.
+    // Any new global actor will be exposed and returned by the root actor.
+
+    // Add Firefox-specific actors, but prevent tab actors to be loaded in
+    // the parent process, unless we enable certified apps debugging.
+    let restrictPrivileges = Services.prefs.getBoolPref("devtools.debugger.forbid-certified-apps");
+    DebuggerServer.addBrowserActors("navigator:browser", restrictPrivileges);
+
+    /**
+     * Construct a root actor appropriate for use in a server running in B2G.
+     * The returned root actor respects the factories registered with
+     * DebuggerServer.addGlobalActor only if certified apps debugging is on,
+     * otherwise we used an explicit limited list of global actors
+     *
+     * * @param connection DebuggerServerConnection
+     *        The conection to the client.
+     */
+    DebuggerServer.createRootActor = function createRootActor(connection)
+    {
+      let { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
+      let parameters = {
+        // We do not expose browser tab actors yet,
+        // but we still have to define tabList.getList(),
+        // otherwise, client won't be able to fetch global actors
+        // from listTabs request!
+        tabList: {
+          getList: function() {
+            return promise.resolve([]);
+          }
+        },
+        // Use an explicit global actor list to prevent exposing
+        // unexpected actors
+        globalActorFactories: restrictPrivileges ? {
+          webappsActor: DebuggerServer.globalActorFactories.webappsActor,
+          deviceActor: DebuggerServer.globalActorFactories.deviceActor,
+        } : DebuggerServer.globalActorFactories
+      };
+      let { RootActor } = devtools.require("devtools/server/actors/root");
+      let root = new RootActor(connection, parameters);
+      root.applicationType = "operating-system";
+      return root;
+    };
+
+#ifdef MOZ_WIDGET_GONK
+    DebuggerServer.on("connectionchange", function() {
+      AdbController.updateState();
+    });
+#endif
+  }
+};
+
+let USBRemoteDebugger = {
+
   get isDebugging() {
-    if (!this._running) {
+    if (!this._listener) {
       return false;
     }
 
@@ -847,99 +953,78 @@ let RemoteDebugger = {
            Object.keys(DebuggerServer._connections).length > 0;
   },
 
-  // Start the debugger server.
-  start: function debugger_start() {
-    if (this._running) {
+  start: function() {
+    if (this._listener) {
       return;
     }
 
-    if (!DebuggerServer.initialized) {
-      // Ask for remote connections.
-      DebuggerServer.init(this.prompt.bind(this));
+    RemoteDebugger.initServer();
 
-      // /!\ Be careful when adding a new actor, especially global actors.
-      // Any new global actor will be exposed and returned by the root actor.
+    let portOrPath =
+      Services.prefs.getCharPref("devtools.debugger.unix-domain-socket") ||
+      "/data/local/debugger-socket";
 
-      // Add Firefox-specific actors, but prevent tab actors to be loaded in
-      // the parent process, unless we enable certified apps debugging.
-      let restrictPrivileges = Services.prefs.getBoolPref("devtools.debugger.forbid-certified-apps");
-      DebuggerServer.addBrowserActors("navigator:browser", restrictPrivileges);
-
-      /**
-       * Construct a root actor appropriate for use in a server running in B2G.
-       * The returned root actor respects the factories registered with
-       * DebuggerServer.addGlobalActor only if certified apps debugging is on,
-       * otherwise we used an explicit limited list of global actors
-       *
-       * * @param connection DebuggerServerConnection
-       *        The conection to the client.
-       */
-      DebuggerServer.createRootActor = function createRootActor(connection)
-      {
-        let { Promise: promise } = Cu.import("resource://gre/modules/Promise.jsm", {});
-        let parameters = {
-          // We do not expose browser tab actors yet,
-          // but we still have to define tabList.getList(),
-          // otherwise, client won't be able to fetch global actors
-          // from listTabs request!
-          tabList: {
-            getList: function() {
-              return promise.resolve([]);
-            }
-          },
-          // Use an explicit global actor list to prevent exposing
-          // unexpected actors
-          globalActorFactories: restrictPrivileges ? {
-            webappsActor: DebuggerServer.globalActorFactories.webappsActor,
-            deviceActor: DebuggerServer.globalActorFactories.deviceActor,
-          } : DebuggerServer.globalActorFactories
-        };
-        let devtools = Cu.import("resource://gre/modules/devtools/Loader.jsm", {}).devtools;
-        let { RootActor } = devtools.require("devtools/server/actors/root");
-        let root = new RootActor(connection, parameters);
-        root.applicationType = "operating-system";
-        return root;
-      };
-
-#ifdef MOZ_WIDGET_GONK
-      DebuggerServer.on("connectionchange", function() {
-        AdbController.updateState();
-      });
-#endif
-    }
-
-    let path = Services.prefs.getCharPref("devtools.debugger.unix-domain-socket") ||
-               "/data/local/debugger-socket";
     try {
-      DebuggerServer.openListener(path);
+      debug("Starting USB debugger on " + portOrPath);
+      this._listener = DebuggerServer.openListener(portOrPath);
       // Temporary event, until bug 942756 lands and offers a way to know
       // when the server is up and running.
       Services.obs.notifyObservers(null, 'debugger-server-started', null);
-      this._running = true;
     } catch (e) {
-      dump('Unable to start debugger server: ' + e + '\n');
+      debug('Unable to start USB debugger server: ' + e);
     }
   },
 
-  stop: function debugger_stop() {
-    if (!this._running) {
-      return;
-    }
-
-    if (!DebuggerServer.initialized) {
-      // Can this really happen if we are running?
-      this._running = false;
+  stop: function() {
+    if (!this._listener) {
       return;
     }
 
     try {
-      DebuggerServer.closeListener();
+      this._listener.close();
+      this._listener = null;
     } catch (e) {
-      dump('Unable to stop debugger server: ' + e + '\n');
+      debug('Unable to stop USB debugger server: ' + e);
     }
-    this._running = false;
   }
-}
+
+};
+
+let WiFiRemoteDebugger = {
+
+  start: function() {
+    if (this._listener) {
+      return;
+    }
+
+    RemoteDebugger.initServer();
+
+    try {
+      debug("Starting WiFi debugger");
+      this._listener = DebuggerServer.openListener(-1);
+      let port = this._listener.port;
+      debug("Started WiFi debugger on " + port);
+      discovery.addService("devtools", { port: port });
+    } catch (e) {
+      debug('Unable to start WiFi debugger server: ' + e);
+    }
+  },
+
+  stop: function() {
+    if (!this._listener) {
+      return;
+    }
+
+    try {
+      discovery.removeService("devtools");
+      this._listener.close();
+      this._listener = null;
+    } catch (e) {
+      debug('Unable to stop WiFi debugger server: ' + e);
+    }
+  }
+
+};
 
 let KeyboardHelper = {
   handleEvent: function keyboard_handleEvent(detail) {
@@ -1232,54 +1317,7 @@ window.addEventListener('ContentStart', function update_onContentStart() {
   // We must set the size in KB, and keep a bit of free space.
   let size = Math.floor(stats.totalBytes / 1024) - 1024;
   Services.prefs.setIntPref("browser.cache.disk.capacity", size);
-}) ()
-#endif
-
-#ifdef MOZ_WIDGET_GONK
-let SensorsListener = {
-  sensorsListenerDevices: ['crespo'],
-  device: libcutils.property_get("ro.product.device"),
-
-  deviceNeedsWorkaround: function SensorsListener_deviceNeedsWorkaround() {
-    return (this.sensorsListenerDevices.indexOf(this.device) != -1);
-  },
-
-  handleEvent: function SensorsListener_handleEvent(evt) {
-    switch(evt.type) {
-      case 'devicemotion':
-        // Listener that does nothing, we need this to have the sensor being
-        // able to report correct values, as explained in bug 753245, comment 6
-        // and in bug 871916
-        break;
-
-      default:
-        break;
-    }
-  },
-
-  observe: function SensorsListener_observe(subject, topic, data) {
-    // We remove the listener when the screen is off, otherwise sensor will
-    // continue to bother us with data and we won't be able to get the
-    // system into suspend state, thus draining battery.
-    if (data === 'on') {
-      window.addEventListener('devicemotion', this);
-    } else {
-      window.removeEventListener('devicemotion', this);
-    }
-  },
-
-  init: function SensorsListener_init() {
-    if (this.deviceNeedsWorkaround()) {
-      // On boot, enable the listener, screen will be on.
-      window.addEventListener('devicemotion', this);
-
-      // Then listen for further screen state changes
-      Services.obs.addObserver(this, 'screen-state-changed', false);
-    }
-  }
-}
-
-SensorsListener.init();
+})();
 #endif
 
 // Calling this observer will cause a shutdown an a profile reset.

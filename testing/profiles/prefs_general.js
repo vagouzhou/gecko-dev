@@ -40,6 +40,8 @@ user_pref("media.volume_scale", "0.01");
 user_pref("security.warn_viewing_mixed", false);
 user_pref("app.update.enabled", false);
 user_pref("app.update.staging.enabled", false);
+// Make sure GMPInstallManager won't hit the network.
+user_pref("media.gmp-manager.url.override", "http://%(server)s/dummy.xml");
 user_pref("browser.panorama.experienced_first_run", true); // Assume experienced
 user_pref("dom.w3c_touch_events.enabled", 1);
 user_pref("dom.undo_manager.enabled", true);
@@ -82,6 +84,9 @@ user_pref("urlclassifier.updateinterval", 172800);
 // Point the url-classifier to the local testing server for fast failures
 user_pref("browser.safebrowsing.gethashURL", "http://%(server)s/safebrowsing-dummy/gethash");
 user_pref("browser.safebrowsing.updateURL", "http://%(server)s/safebrowsing-dummy/update");
+user_pref("browser.safebrowsing.appRepURL", "http://%(server)s/safebrowsing-dummy/update");
+user_pref("browser.trackingprotection.gethashURL", "http://%(server)s/safebrowsing-dummy/gethash");
+user_pref("browser.trackingprotection.updateURL", "http://%(server)s/safebrowsing-dummy/update");
 // Point update checks to the local testing server for fast failures
 user_pref("extensions.update.url", "http://%(server)s/extensions-dummy/updateURL");
 user_pref("extensions.update.background.url", "http://%(server)s/extensions-dummy/updateBackgroundURL");
@@ -131,10 +136,14 @@ user_pref("layout.css.report_errors", true);
 // Enable CSS Grid for testing
 user_pref("layout.css.grid.enabled", true);
 
+// Enable CSS Ruby for testing
+user_pref("layout.css.ruby.enabled", true);
+
+// Disable spammy layout warnings because they pollute test logs
+user_pref("layout.spammy_warnings.enabled", false);
+
 // Enable mozContacts
 user_pref("dom.mozContacts.enabled", true);
-user_pref("dom.navigator-property.disable.mozContacts", false);
-user_pref("dom.global-constructor.disable.mozContact", false);
 
 // Enable mozSettings
 user_pref("dom.mozSettings.enabled", true);
@@ -210,3 +219,9 @@ user_pref('apz.test.logging_enabled', true);
 // Make sure Translation won't hit the network.
 user_pref("browser.translation.bing.authURL", "http://%(server)s/browser/browser/components/translation/test/bing.sjs");
 user_pref("browser.translation.bing.translateArrayURL", "http://%(server)s/browser/browser/components/translation/test/bing.sjs");
+
+// Make sure we don't try to load snippets from the network.
+user_pref("browser.aboutHomeSnippets.updateUrl", "nonexistent://test");
+
+// Enable debug logging in the mozApps implementation.
+user_pref("dom.mozApps.debug", true);

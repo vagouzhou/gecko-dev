@@ -168,10 +168,11 @@ public:
 
   JSContext* cx() const {
     MOZ_ASSERT(mCx, "Must call Init before using an AutoJSAPI");
+    MOZ_ASSERT_IF(NS_IsMainThread(), CxPusherIsStackTop());
     return mCx;
   }
 
-  bool CxPusherIsStackTop() { return mCxPusher.ref().IsStackTop(); }
+  bool CxPusherIsStackTop() const { return mCxPusher.ref().IsStackTop(); }
 
 protected:
   // Protected constructor, allowing subclasses to specify a particular cx to
@@ -195,7 +196,7 @@ private:
 class AutoEntryScript : public AutoJSAPI,
                         protected ScriptSettingsStackEntry {
 public:
-  AutoEntryScript(nsIGlobalObject* aGlobalObject,
+  explicit AutoEntryScript(nsIGlobalObject* aGlobalObject,
                   bool aIsMainThread = NS_IsMainThread(),
                   // Note: aCx is mandatory off-main-thread.
                   JSContext* aCx = nullptr);
@@ -221,7 +222,7 @@ private:
  */
 class AutoIncumbentScript : protected ScriptSettingsStackEntry {
 public:
-  AutoIncumbentScript(nsIGlobalObject* aGlobalObject);
+  explicit AutoIncumbentScript(nsIGlobalObject* aGlobalObject);
 private:
   JS::AutoHideScriptedCaller mCallerOverride;
 };
@@ -236,7 +237,7 @@ private:
  */
 class AutoNoJSAPI : protected ScriptSettingsStackEntry {
 public:
-  AutoNoJSAPI(bool aIsMainThread = NS_IsMainThread());
+  explicit AutoNoJSAPI(bool aIsMainThread = NS_IsMainThread());
 private:
   mozilla::Maybe<AutoCxPusher> mCxPusher;
 };

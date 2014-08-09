@@ -11,7 +11,12 @@ const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/devtools/Loader.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "promise", "resource://gre/modules/Promise.jsm", "Promise");
+
+XPCOMUtils.defineLazyModuleGetter(this, "promise",
+                                  "resource://gre/modules/Promise.jsm", "Promise");
+
+XPCOMUtils.defineLazyModuleGetter(this, "console",
+                                  "resource://gre/modules/devtools/Console.jsm");
 
 const EventEmitter = devtools.require("devtools/toolkit/event-emitter");
 const FORBIDDEN_IDS = new Set(["toolbox", ""]);
@@ -276,22 +281,12 @@ DevTools.prototype = {
         this.emit("toolbox-destroyed", target);
       });
 
-      // If we were asked for a specific tool then we need to wait for the
-      // tool to be ready and selected, otherwise we can just wait for the
-      // toolbox open promise.
-      if (toolId != null) {
-        toolbox.once(toolId + "-selected", (event, panel) => {
-          this.emit("toolbox-ready", toolbox);
-          deferred.resolve(toolbox);
-        });
-        toolbox.open();
-      }
-      else {
-        toolbox.open().then(() => {
-          deferred.resolve(toolbox);
-          this.emit("toolbox-ready", toolbox);
-        });
-      }
+      // If toolId was passed in, it will already be selected before the
+      // open promise resolves.
+      toolbox.open().then(() => {
+        deferred.resolve(toolbox);
+        this.emit("toolbox-ready", toolbox);
+      });
     }
 
     return deferred.promise;
@@ -430,7 +425,7 @@ let gDevToolsBrowser = {
       focusEl.setAttribute("disabled", "true");
     }
     if (devToolbarEnabled && Services.prefs.getBoolPref("devtools.toolbar.visible")) {
-      win.DeveloperToolbar.show(false);
+      win.DeveloperToolbar.show(false).catch(console.error);
     }
 
     // Enable WebIDE?
@@ -899,24 +894,13 @@ let gDevToolsBrowser = {
   },
 
   /**
-   * Connects to the SPS profiler when the developer tools are open.
+   * Connects to the SPS profiler when the developer tools are open. This is
+   * necessary because of the WebConsole's `profile` and `profileEnd` methods.
    */
-  _connectToProfiler: function DT_connectToProfiler() {
-    let ProfilerController = devtools.require("devtools/profiler/controller");
-
-    for (let win of gDevToolsBrowser._trackedBrowserWindows) {
-      if (devtools.TargetFactory.isKnownTab(win.gBrowser.selectedTab)) {
-        let target = devtools.TargetFactory.forTab(win.gBrowser.selectedTab);
-        if (gDevTools._toolboxes.has(target)) {
-          target.makeRemote().then(() => {
-            let profiler = new ProfilerController(target);
-            profiler.connect();
-          }).then(null, Cu.reportError);
-
-          return;
-        }
-      }
-    }
+  _connectToProfiler: function DT_connectToProfiler(event, toolbox) {
+    let SharedProfilerUtils = devtools.require("devtools/profiler/shared");
+    let connection = SharedProfilerUtils.getProfilerConnection(toolbox);
+    connection.open();
   },
 
   /**

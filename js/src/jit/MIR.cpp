@@ -7,6 +7,7 @@
 #include "jit/MIR.h"
 
 #include "mozilla/FloatingPoint.h"
+#include "mozilla/MathAlgorithms.h"
 
 #include <ctype.h>
 
@@ -134,6 +135,38 @@ EvaluateConstantOperands(TempAllocator &alloc, MBinaryInstruction *ins, bool *pt
     return MConstant::New(alloc, ret);
 }
 
+static MMul *
+EvaluateExactReciprocal(TempAllocator &alloc, MDiv *ins)
+{
+    // we should fold only when it is a floating point operation
+    if (!IsFloatingPointType(ins->type()))
+        return nullptr;
+
+    MDefinition *left = ins->getOperand(0);
+    MDefinition *right = ins->getOperand(1);
+
+    if (!right->isConstant())
+        return nullptr;
+
+    Value rhs = right->toConstant()->value();
+
+    int32_t num;
+    if (!mozilla::NumberIsInt32(rhs.toNumber(), &num))
+        return nullptr;
+
+    // check if rhs is a power of two
+    if (mozilla::Abs(num) & (mozilla::Abs(num) - 1))
+        return nullptr;
+
+    Value ret;
+    ret.setDouble(1.0 / (double) num);
+    MConstant *foldedRhs = MConstant::New(alloc, ret);
+    foldedRhs->setResultType(ins->type());
+    ins->block()->insertBefore(ins, foldedRhs);
+
+    return MMul::New(alloc, left, foldedRhs, ins->type());
+}
+
 void
 MDefinition::printName(FILE *fp) const
 {
@@ -142,13 +175,19 @@ MDefinition::printName(FILE *fp) const
 }
 
 HashNumber
+MDefinition::addU32ToHash(HashNumber hash, uint32_t data)
+{
+    return data + (hash << 6) + (hash << 16) - hash;
+}
+
+HashNumber
 MDefinition::valueHash() const
 {
     HashNumber out = op();
-    for (size_t i = 0, e = numOperands(); i < e; i++) {
-        uint32_t valueNumber = getOperand(i)->id();
-        out = valueNumber + (out << 6) + (out << 16) - out;
-    }
+    for (size_t i = 0, e = numOperands(); i < e; i++)
+        out = addU32ToHash(out, getOperand(i)->id());
+    if (MDefinition *dep = dependency())
+        out = addU32ToHash(out, dep->id());
     return out;
 }
 
@@ -239,7 +278,7 @@ MTest::foldsTo(TempAllocator &alloc)
     MDefinition *op = getOperand(0);
 
     if (op->isNot())
-        return MTest::New(alloc, op->toNot()->operand(), ifFalse(), ifTrue());
+        return MTest::New(alloc, op->toNot()->input(), ifFalse(), ifTrue());
 
     return this;
 }
@@ -653,7 +692,9 @@ MParameter::printOpcode(FILE *fp) const
 HashNumber
 MParameter::valueHash() const
 {
-    return index_; // Why not?
+    HashNumber hash = MDefinition::valueHash();
+    hash = addU32ToHash(hash, index_);
+    return hash;
 }
 
 bool
@@ -1460,6 +1501,10 @@ MBinaryArithInstruction::foldsTo(TempAllocator &alloc)
 void
 MBinaryArithInstruction::trySpecializeFloat32(TempAllocator &alloc)
 {
+    // Do not use Float32 if we can use int32.
+    if (specialization_ == MIRType_Int32)
+        return;
+
     MDefinition *left = lhs();
     MDefinition *right = rhs();
 
@@ -1477,6 +1522,29 @@ MBinaryArithInstruction::trySpecializeFloat32(TempAllocator &alloc)
     setResultType(MIRType_Float32);
 }
 
+MDefinition *
+MMinMax::foldsTo(TempAllocator &alloc)
+{
+    if (!lhs()->isConstant() && !rhs()->isConstant())
+        return this;
+
+    MDefinition *operand = lhs()->isConstant() ? rhs() : lhs();
+    MConstant *constant = lhs()->isConstant() ? lhs()->toConstant() : rhs()->toConstant();
+
+    if (operand->isToDouble() && operand->getOperand(0)->type() == MIRType_Int32) {
+        const js::Value &val = constant->value();
+
+        // min(int32, d >= INT32_MAX) = int32
+        if (val.isDouble() && val.toDouble() >= INT32_MAX && !isMax())
+            return operand;
+
+        // max(int32, d <= INT32_MIN) = int32
+        if (val.isDouble() && val.toDouble() <= INT32_MIN && isMax())
+            return operand;
+    }
+    return this;
+}
+
 bool
 MAbs::fallible() const
 {
@@ -1486,6 +1554,10 @@ MAbs::fallible() const
 void
 MAbs::trySpecializeFloat32(TempAllocator &alloc)
 {
+    // Do not use Float32 if we can use int32.
+    if (input()->type() == MIRType_Int32)
+        return;
+
     if (!input()->canProduceFloat32() || !CheckUsesAreFloat32Consumers(this)) {
         if (input()->type() == MIRType_Float32)
             ConvertDefinitionToDouble<0>(alloc, input(), this);
@@ -1503,6 +1575,9 @@ MDiv::foldsTo(TempAllocator &alloc)
         return this;
 
     if (MDefinition *folded = EvaluateConstantOperands(alloc, this))
+        return folded;
+
+    if (MDefinition *folded = EvaluateExactReciprocal(alloc, this))
         return folded;
 
     return this;
@@ -2549,6 +2624,65 @@ MCompare::evaluateConstantOperands(bool *result)
     MDefinition *left = getOperand(0);
     MDefinition *right = getOperand(1);
 
+    if (compareType() == Compare_Double) {
+        // Optimize "MCompare MConstant (MToDouble SomethingInInt32Range).
+        // In most cases the MToDouble was added, because the constant is
+        // a double. e.g. v < 9007199254740991,
+        // where v is an int32 so the result is always true.
+        if (!lhs()->isConstant() && !rhs()->isConstant())
+            return false;
+
+        MDefinition *operand = left->isConstant() ? right : left;
+        MConstant *constant = left->isConstant() ? left->toConstant() : right->toConstant();
+        JS_ASSERT(constant->value().isDouble());
+        double d = constant->value().toDouble();
+
+        if (operand->isToDouble() && operand->getOperand(0)->type() == MIRType_Int32) {
+            switch (jsop_) {
+              case JSOP_LT:
+                if (d > INT32_MAX || d < INT32_MIN) {
+                    *result = !((constant == lhs()) ^ (d < INT32_MIN));
+                    return true;
+                }
+                break;
+              case JSOP_LE:
+                if (d >= INT32_MAX || d <= INT32_MIN) {
+                    *result = !((constant == lhs()) ^ (d <= INT32_MIN));
+                    return true;
+                }
+                break;
+              case JSOP_GT:
+                if (d > INT32_MAX || d < INT32_MIN) {
+                    *result = !((constant == rhs()) ^ (d < INT32_MIN));
+                    return true;
+                }
+                break;
+              case JSOP_GE:
+                if (d >= INT32_MAX || d <= INT32_MIN) {
+                    *result = !((constant == rhs()) ^ (d <= INT32_MIN));
+                    return true;
+                }
+                break;
+              case JSOP_STRICTEQ: // Fall through.
+              case JSOP_EQ:
+                if (d > INT32_MAX || d < INT32_MIN) {
+                    *result = false;
+                    return true;
+                }
+                break;
+              case JSOP_STRICTNE: // Fall through.
+              case JSOP_NE:
+                if (d > INT32_MAX || d < INT32_MIN) {
+                    *result = true;
+                    return true;
+                }
+                break;
+              default:
+                MOZ_ASSUME_UNREACHABLE("Unexpected op.");
+            }
+        }
+    }
+
     if (!left->isConstant() || !right->isConstant())
         return false;
 
@@ -2726,8 +2860,8 @@ MDefinition *
 MNot::foldsTo(TempAllocator &alloc)
 {
     // Fold if the input is constant
-    if (operand()->isConstant()) {
-        bool result = operand()->toConstant()->valueToBoolean();
+    if (input()->isConstant()) {
+        bool result = input()->toConstant()->valueToBoolean();
         if (type() == MIRType_Int32)
             return MConstant::New(alloc, Int32Value(!result));
 
@@ -2736,11 +2870,11 @@ MNot::foldsTo(TempAllocator &alloc)
     }
 
     // NOT of an undefined or null value is always true
-    if (operand()->type() == MIRType_Undefined || operand()->type() == MIRType_Null)
+    if (input()->type() == MIRType_Undefined || input()->type() == MIRType_Null)
         return MConstant::New(alloc, BooleanValue(true));
 
     // NOT of an object that can't emulate undefined is always false.
-    if (operand()->type() == MIRType_Object && !operandMightEmulateUndefined())
+    if (input()->type() == MIRType_Object && !operandMightEmulateUndefined())
         return MConstant::New(alloc, BooleanValue(false));
 
     return this;
@@ -2772,6 +2906,47 @@ MNewObject::shouldUseVM() const
     return obj->hasSingletonType() || obj->hasDynamicSlots();
 }
 
+MObjectState::MObjectState(MDefinition *obj)
+{
+    // This instruction is only used as a summary for bailout paths.
+    setRecoveredOnBailout();
+    JSObject *templateObject = obj->toNewObject()->templateObject();
+    numSlots_ = templateObject->slotSpan();
+    numFixedSlots_ = templateObject->numFixedSlots();
+}
+
+bool
+MObjectState::init(TempAllocator &alloc, MDefinition *obj)
+{
+    if (!MVariadicInstruction::init(alloc, numSlots() + 1))
+        return false;
+    initOperand(0, obj);
+    return true;
+}
+
+MObjectState *
+MObjectState::New(TempAllocator &alloc, MDefinition *obj, MDefinition *undefinedVal)
+{
+    MObjectState *res = new(alloc) MObjectState(obj);
+    if (!res || !res->init(alloc, obj))
+        return nullptr;
+    for (size_t i = 0; i < res->numSlots(); i++)
+        res->initSlot(i, undefinedVal);
+    return res;
+}
+
+MObjectState *
+MObjectState::Copy(TempAllocator &alloc, MObjectState *state)
+{
+    MDefinition *obj = state->object();
+    MObjectState *res = new(alloc) MObjectState(obj);
+    if (!res || !res->init(alloc, obj))
+        return nullptr;
+    for (size_t i = 0; i < res->numSlots(); i++)
+        res->initSlot(i, state->getSlot(i));
+    return res;
+}
+
 bool
 MNewArray::shouldUseVM() const
 {
@@ -2794,6 +2969,28 @@ MLoadFixedSlot::mightAlias(const MDefinition *store) const
     if (store->isStoreFixedSlot() && store->toStoreFixedSlot()->slot() != slot())
         return false;
     return true;
+}
+
+MDefinition *
+MLoadFixedSlot::foldsTo(TempAllocator &alloc)
+{
+    if (!dependency() || !dependency()->isStoreFixedSlot())
+        return this;
+
+    MStoreFixedSlot *store = dependency()->toStoreFixedSlot();
+    if (!store->block()->dominates(block()))
+        return this;
+
+    if (store->object() != object())
+        return this;
+
+    if (store->slot() != slot())
+        return this;
+
+    if (store->value()->type() != type())
+        return this;
+
+    return store->value();
 }
 
 bool
@@ -2830,11 +3027,74 @@ MAsmJSLoadGlobalVar::mightAlias(const MDefinition *def) const
     return true;
 }
 
+HashNumber
+MAsmJSLoadGlobalVar::valueHash() const
+{
+    HashNumber hash = MDefinition::valueHash();
+    hash = addU32ToHash(hash, globalDataOffset_);
+    return hash;
+}
+
 bool
 MAsmJSLoadGlobalVar::congruentTo(const MDefinition *ins) const
 {
     if (ins->isAsmJSLoadGlobalVar()) {
         const MAsmJSLoadGlobalVar *load = ins->toAsmJSLoadGlobalVar();
+        return globalDataOffset_ == load->globalDataOffset_;
+    }
+    return false;
+}
+
+MDefinition *
+MAsmJSLoadGlobalVar::foldsTo(TempAllocator &alloc)
+{
+    if (!dependency() || !dependency()->isAsmJSStoreGlobalVar())
+        return this;
+
+    MAsmJSStoreGlobalVar *store = dependency()->toAsmJSStoreGlobalVar();
+    if (!store->block()->dominates(block()))
+        return this;
+
+    if (store->globalDataOffset() != globalDataOffset())
+        return this;
+
+    if (store->value()->type() != type())
+        return this;
+
+    return store->value();
+}
+
+HashNumber
+MAsmJSLoadFuncPtr::valueHash() const
+{
+    HashNumber hash = MDefinition::valueHash();
+    hash = addU32ToHash(hash, globalDataOffset_);
+    return hash;
+}
+
+bool
+MAsmJSLoadFuncPtr::congruentTo(const MDefinition *ins) const
+{
+    if (ins->isAsmJSLoadFuncPtr()) {
+        const MAsmJSLoadFuncPtr *load = ins->toAsmJSLoadFuncPtr();
+        return globalDataOffset_ == load->globalDataOffset_;
+    }
+    return false;
+}
+
+HashNumber
+MAsmJSLoadFFIFunc::valueHash() const
+{
+    HashNumber hash = MDefinition::valueHash();
+    hash = addU32ToHash(hash, globalDataOffset_);
+    return hash;
+}
+
+bool
+MAsmJSLoadFFIFunc::congruentTo(const MDefinition *ins) const
+{
+    if (ins->isAsmJSLoadFFIFunc()) {
+        const MAsmJSLoadFFIFunc *load = ins->toAsmJSLoadFFIFunc();
         return globalDataOffset_ == load->globalDataOffset_;
     }
     return false;
@@ -2846,6 +3106,55 @@ MLoadSlot::mightAlias(const MDefinition *store) const
     if (store->isStoreSlot() && store->toStoreSlot()->slot() != slot())
         return false;
     return true;
+}
+
+HashNumber
+MLoadSlot::valueHash() const
+{
+    HashNumber hash = MDefinition::valueHash();
+    hash = addU32ToHash(hash, slot_);
+    return hash;
+}
+
+MDefinition *
+MLoadSlot::foldsTo(TempAllocator &alloc)
+{
+    if (!dependency() || !dependency()->isStoreSlot())
+        return this;
+
+    MStoreSlot *store = dependency()->toStoreSlot();
+    if (!store->block()->dominates(block()))
+        return this;
+
+    if (store->slots() != slots())
+        return this;
+
+    if (store->value()->type() != type())
+        return this;
+
+    return store->value();
+}
+
+MDefinition *
+MLoadElement::foldsTo(TempAllocator &alloc)
+{
+    if (!dependency() || !dependency()->isStoreElement())
+        return this;
+
+    MStoreElement *store = dependency()->toStoreElement();
+    if (!store->block()->dominates(block()))
+        return this;
+
+    if (store->elements() != elements())
+        return this;
+
+    if (store->index() != index())
+        return this;
+
+    if (store->value()->type() != type())
+        return this;
+
+    return store->value();
 }
 
 bool
@@ -3115,7 +3424,7 @@ jit::ElementAccessIsDenseNative(MDefinition *obj, MDefinition *id)
 
 bool
 jit::ElementAccessIsTypedArray(MDefinition *obj, MDefinition *id,
-                               ScalarTypeDescr::Type *arrayType)
+                               Scalar::Type *arrayType)
 {
     if (obj->mightBeType(MIRType_String))
         return false;
@@ -3127,8 +3436,8 @@ jit::ElementAccessIsTypedArray(MDefinition *obj, MDefinition *id,
     if (!types)
         return false;
 
-    *arrayType = (ScalarTypeDescr::Type) types->getTypedArrayType();
-    return *arrayType != ScalarTypeDescr::TYPE_MAX;
+    *arrayType = types->getTypedArrayType();
+    return *arrayType != Scalar::TypeMax;
 }
 
 bool

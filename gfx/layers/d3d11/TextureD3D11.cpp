@@ -11,6 +11,7 @@
 #include "gfxWindowsPlatform.h"
 #include "gfxD2DSurface.h"
 #include "gfx2DGlue.h"
+#include "ReadbackManagerD3D11.h"
 
 namespace mozilla {
 
@@ -100,14 +101,20 @@ DataTextureSourceD3D11::~DataTextureSourceD3D11()
 
 
 template<typename T> // ID3D10Texture2D or ID3D11Texture2D
-static void LockD3DTexture(T* aTexture)
+static bool LockD3DTexture(T* aTexture)
 {
   MOZ_ASSERT(aTexture);
   RefPtr<IDXGIKeyedMutex> mutex;
   aTexture->QueryInterface((IDXGIKeyedMutex**)byRef(mutex));
+  // Textures created by the DXVA decoders don't have a mutex for synchronization
   if (mutex) {
-    mutex->AcquireSync(0, INFINITE);
+    HRESULT hr = mutex->AcquireSync(0, INFINITE);
+    if (FAILED(hr)) {
+      NS_WARNING("Failed to lock the texture");
+      return false;
+    }
   }
+  return true;
 }
 
 template<typename T> // ID3D10Texture2D or ID3D11Texture2D
@@ -117,7 +124,10 @@ static void UnlockD3DTexture(T* aTexture)
   RefPtr<IDXGIKeyedMutex> mutex;
   aTexture->QueryInterface((IDXGIKeyedMutex**)byRef(mutex));
   if (mutex) {
-    mutex->ReleaseSync(0);
+    HRESULT hr = mutex->ReleaseSync(0);
+    if (FAILED(hr)) {
+      NS_WARNING("Failed to unlock the texture");
+    }
   }
 }
 
@@ -158,6 +168,9 @@ TextureClientD3D11::TextureClientD3D11(gfx::SurfaceFormat aFormat, TextureFlags 
 
 TextureClientD3D11::~TextureClientD3D11()
 {
+  if (mTexture && mActor) {
+    KeepUntilFullDeallocation(new TKeepAlive<ID3D10Texture2D>(mTexture));
+  }
 #ifdef DEBUG
   // An Azure DrawTarget needs to be locked when it gets nullptr'ed as this is
   // when it calls EndDraw. This EndDraw should not execute anything so it
@@ -173,6 +186,19 @@ TextureClientD3D11::~TextureClientD3D11()
 #endif
 }
 
+TemporaryRef<TextureClient>
+TextureClientD3D11::CreateSimilar(TextureFlags aFlags,
+                                  TextureAllocationFlags aAllocFlags) const
+{
+  RefPtr<TextureClient> tex = new TextureClientD3D11(mFormat, mFlags | aFlags);
+
+  if (!tex->AllocateForSurface(mSize, aAllocFlags)) {
+    return nullptr;
+  }
+
+  return tex;
+}
+
 bool
 TextureClientD3D11::Lock(OpenMode aMode)
 {
@@ -180,8 +206,21 @@ TextureClientD3D11::Lock(OpenMode aMode)
     return false;
   }
   MOZ_ASSERT(!mIsLocked, "The Texture is already locked!");
-  LockD3DTexture(mTexture.get());
-  mIsLocked = true;
+
+  mIsLocked = LockD3DTexture(mTexture.get());
+  if (!mIsLocked) {
+    return false;
+  }
+
+  // Make sure that successful write-lock means we will have a DrawTarget to
+  // write into.
+  if (aMode & OpenMode::OPEN_WRITE) {
+    mDrawTarget = BorrowDrawTarget();
+    if (!mDrawTarget) {
+      Unlock();
+      return false;
+    }
+  }
 
   if (mNeedsClear) {
     mDrawTarget = BorrowDrawTarget();
@@ -211,6 +250,28 @@ TextureClientD3D11::Unlock()
     mDrawTarget->Flush();
   }
 
+  if (mReadbackSink) {
+    ID3D10Device* device = gfxWindowsPlatform::GetPlatform()->GetD3D10Device();
+
+    D3D10_TEXTURE2D_DESC desc;
+    mTexture->GetDesc(&desc);
+    desc.BindFlags = 0;
+    desc.Usage = D3D10_USAGE_STAGING;
+    desc.CPUAccessFlags = D3D10_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+
+    RefPtr<ID3D10Texture2D> tex;
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, byRef(tex));
+
+    if (SUCCEEDED(hr)) {
+      device->CopyResource(tex, mTexture);
+
+      gfxWindowsPlatform::GetPlatform()->GetReadbackManager()->PostTask(tex, mReadbackSink);
+    } else {
+      mReadbackSink->ProcessReadback(nullptr);
+    }
+  }
+
   // The DrawTarget is created only once, and is only usable between calls
   // to Lock and Unlock.
   UnlockD3DTexture(mTexture.get());
@@ -230,6 +291,7 @@ TextureClientD3D11::BorrowDrawTarget()
     return mDrawTarget;
   }
 
+  // This may return a null DrawTarget
   mDrawTarget = Factory::CreateDrawTargetForD3D10Texture(mTexture, mFormat);
   return mDrawTarget;
 }
@@ -287,12 +349,35 @@ DXGITextureHostD3D11::DXGITextureHostD3D11(TextureFlags aFlags,
   , mHandle(aDescriptor.handle())
   , mFormat(aDescriptor.format())
   , mIsLocked(false)
-{}
+{
+  OpenSharedHandle();
+}
+
+bool
+DXGITextureHostD3D11::OpenSharedHandle()
+{
+  if (!GetDevice()) {
+    return false;
+  }
+
+  HRESULT hr = GetDevice()->OpenSharedResource((HANDLE)mHandle,
+                                               __uuidof(ID3D11Texture2D),
+                                               (void**)(ID3D11Texture2D**)byRef(mTexture));
+  if (FAILED(hr)) {
+    NS_WARNING("Failed to open shared texture");
+    return false;
+  }
+
+  D3D11_TEXTURE2D_DESC desc;
+  mTexture->GetDesc(&desc);
+  mSize = IntSize(desc.Width, desc.Height);
+  return true;
+}
 
 ID3D11Device*
 DXGITextureHostD3D11::GetDevice()
 {
-  return mCompositor ? mCompositor->GetDevice() : nullptr;
+  return gfxWindowsPlatform::GetPlatform()->GetD3D11Device();
 }
 
 void
@@ -309,25 +394,16 @@ DXGITextureHostD3D11::Lock()
     return false;
   }
   if (!mTextureSource) {
-    RefPtr<ID3D11Texture2D> tex;
-    HRESULT hr = GetDevice()->OpenSharedResource((HANDLE)mHandle,
-                                                 __uuidof(ID3D11Texture2D),
-                                                 (void**)(ID3D11Texture2D**)byRef(tex));
-    if (FAILED(hr)) {
-      NS_WARNING("Failed to open shared texture");
+    if (!mTexture && !OpenSharedHandle()) {
       return false;
     }
 
-    mTextureSource = new DataTextureSourceD3D11(mFormat, mCompositor, tex);
-    D3D11_TEXTURE2D_DESC desc;
-    tex->GetDesc(&desc);
-    mSize = IntSize(desc.Width, desc.Height);
+    mTextureSource = new DataTextureSourceD3D11(mFormat, mCompositor, mTexture);
   }
 
-  LockD3DTexture(mTextureSource->GetD3D11Texture());
+  mIsLocked = LockD3DTexture(mTextureSource->GetD3D11Texture());
 
-  mIsLocked = true;
-  return true;
+  return mIsLocked;
 }
 
 void
@@ -341,6 +417,9 @@ DXGITextureHostD3D11::Unlock()
 NewTextureSource*
 DXGITextureHostD3D11::GetTextureSources()
 {
+  MOZ_ASSERT(mIsLocked);
+  // If Lock was successful we must have a valid TextureSource.
+  MOZ_ASSERT(mTextureSource);
   return mTextureSource.get();
 }
 
@@ -349,11 +428,12 @@ DataTextureSourceD3D11::Update(DataSourceSurface* aSurface,
                                nsIntRegion* aDestRegion,
                                IntPoint* aSrcOffset)
 {
-  // Right now we only support full surface update. If aDestRegion is provided,
-  // It will be ignored. Incremental update with a source offset is only used
-  // on Mac so it is not clear that we ever will need to support it for D3D.
+  // Incremental update with a source offset is only used on Mac so it is not
+  // clear that we ever will need to support it for D3D.
   MOZ_ASSERT(!aSrcOffset);
   MOZ_ASSERT(aSurface);
+
+  HRESULT hr;
 
   if (!mCompositor || !mCompositor->GetDevice()) {
     return false;
@@ -365,23 +445,59 @@ DataTextureSourceD3D11::Update(DataSourceSurface* aSurface,
   mSize = aSurface->GetSize();
   mFormat = aSurface->GetFormat();
 
-  CD3D11_TEXTURE2D_DESC desc(dxgiFormat, mSize.width, mSize.height,
-                             1, 1, D3D11_BIND_SHADER_RESOURCE,
-                             D3D11_USAGE_IMMUTABLE);
+  CD3D11_TEXTURE2D_DESC desc(dxgiFormat, mSize.width, mSize.height, 1, 1);
 
   int32_t maxSize = mCompositor->GetMaxTextureSize();
   if ((mSize.width <= maxSize && mSize.height <= maxSize) ||
       (mFlags & TextureFlags::DISALLOW_BIGIMAGE)) {
-    D3D11_SUBRESOURCE_DATA initData;
-    initData.pSysMem = aSurface->GetData();
-    initData.SysMemPitch = aSurface->Stride();
 
-    mCompositor->GetDevice()->CreateTexture2D(&desc, &initData, byRef(mTexture));
-    mIsTiled = false;
-    if (!mTexture) {
-      Reset();
-      return false;
+    if (mTexture) {
+      D3D11_TEXTURE2D_DESC currentDesc;
+      mTexture->GetDesc(&currentDesc);
+
+      // Make sure there's no size mismatch, if there is, recreate.
+      if (currentDesc.Width != mSize.width || currentDesc.Height != mSize.height ||
+          currentDesc.Format != dxgiFormat) {
+        mTexture = nullptr;
+        // Make sure we upload the whole surface.
+        aDestRegion = nullptr;
+      }
     }
+
+    if (!mTexture) {
+      hr = mCompositor->GetDevice()->CreateTexture2D(&desc, nullptr, byRef(mTexture));
+      mIsTiled = false;
+      if (FAILED(hr) || !mTexture) {
+        Reset();
+        return false;
+      }
+    }
+
+    DataSourceSurface::MappedSurface map;
+    aSurface->Map(DataSourceSurface::MapType::READ, &map);
+
+    if (aDestRegion) {
+      nsIntRegionRectIterator iter(*aDestRegion);
+      const nsIntRect *iterRect;
+      while ((iterRect = iter.Next())) {
+        D3D11_BOX box;
+        box.front = 0;
+        box.back = 1;
+        box.left = iterRect->x;
+        box.top = iterRect->y;
+        box.right = iterRect->XMost();
+        box.bottom = iterRect->YMost();
+
+        void* data = map.mData + map.mStride * iterRect->y + BytesPerPixel(aSurface->GetFormat()) * iterRect->x;
+
+        mCompositor->GetDC()->UpdateSubresource(mTexture, 0, &box, data, map.mStride, map.mStride * mSize.height);
+      }
+    } else {
+      mCompositor->GetDC()->UpdateSubresource(mTexture, 0, nullptr, aSurface->GetData(),
+                                              aSurface->Stride(), aSurface->Stride() * mSize.height);
+    }
+
+    aSurface->Unmap();
   } else {
     mIsTiled = true;
     uint32_t tileCount = GetRequiredTilesD3D11(mSize.width, maxSize) *
@@ -395,6 +511,7 @@ DataTextureSourceD3D11::Update(DataSourceSurface* aSurface,
 
       desc.Width = tileRect.width;
       desc.Height = tileRect.height;
+      desc.Usage = D3D11_USAGE_IMMUTABLE;
 
       D3D11_SUBRESOURCE_DATA initData;
       initData.pSysMem = aSurface->GetData() +
@@ -402,8 +519,8 @@ DataTextureSourceD3D11::Update(DataSourceSurface* aSurface,
                          tileRect.x * bpp;
       initData.SysMemPitch = aSurface->Stride();
 
-      mCompositor->GetDevice()->CreateTexture2D(&desc, &initData, byRef(mTileTextures[i]));
-      if (!mTileTextures[i]) {
+      hr = mCompositor->GetDevice()->CreateTexture2D(&desc, &initData, byRef(mTileTextures[i]));
+      if (FAILED(hr) || !mTileTextures[i]) {
         Reset();
         return false;
       }

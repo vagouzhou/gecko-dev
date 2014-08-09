@@ -21,6 +21,7 @@
 
 #include "nsISMILAttr.h"
 #include "nsIDocument.h"
+#include "mozilla/dom/ShadowRoot.h"
 
 class nsIDOMAttr;
 class nsIDOMEventListener;
@@ -92,7 +93,8 @@ public:
   virtual nsresult InsertChildAt(nsIContent* aKid, uint32_t aIndex,
                                  bool aNotify) MOZ_OVERRIDE;
   virtual void RemoveChildAt(uint32_t aIndex, bool aNotify) MOZ_OVERRIDE;
-  virtual void GetTextContentInternal(nsAString& aTextContent) MOZ_OVERRIDE
+  virtual void GetTextContentInternal(nsAString& aTextContent,
+                                      mozilla::ErrorResult& aError) MOZ_OVERRIDE
   {
     GetNodeValue(aTextContent);
   }

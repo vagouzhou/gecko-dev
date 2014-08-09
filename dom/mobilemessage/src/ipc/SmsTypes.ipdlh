@@ -17,13 +17,6 @@ namespace mozilla {
 namespace dom {
 namespace mobilemessage {
 
-struct SmsSegmentInfoData
-{
-  int32_t segments;
-  int32_t charsPerSegment;
-  int32_t charsAvailableInLastSegment;
-};
-
 struct SmsMessageData
 {
   int32_t        id;
@@ -108,6 +101,12 @@ union MobileMessageCursorData
   MmsMessageData;
   SmsMessageData;
   ThreadData;
+};
+
+struct DeletedMessageInfoData
+{
+  int32_t[] deletedMessageIds;
+  uint64_t[] deletedThreadIds;
 };
 
 }

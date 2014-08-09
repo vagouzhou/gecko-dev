@@ -68,6 +68,7 @@ nsHttpConnection::nsHttpConnection()
     , mProxyConnectInProgress(false)
     , mExperienced(false)
     , mInSpdyTunnel(false)
+    , mForcePlainText(false)
     , mHttp1xTransactionCount(0)
     , mRemainingConnectionUses(0xffffffff)
     , mClassification(nsAHttpTransaction::CLASS_GENERAL)
@@ -460,7 +461,7 @@ nsHttpConnection::SetupSSL()
     // of this function
     mNPNComplete = true;
 
-    if (!mConnInfo->FirstHopSSL()) {
+    if (!mConnInfo->FirstHopSSL() || mForcePlainText) {
         return;
     }
 
@@ -481,17 +482,20 @@ nsHttpConnection::SetupNPNList(nsISSLSocketControl *ssl, uint32_t caps)
 
     // The first protocol is used as the fallback if none of the
     // protocols supported overlap with the server's list.
-    // In the case of overlap, matching priority is driven by
-    // the order of the server's advertisement.
+    // When using ALPN the advertised preferences are protocolArray indicies
+    // {1, .., N, 0} in decreasing order.
+    // For NPN, In the case of overlap, matching priority is driven by
+    // the order of the server's advertisement - with index 0 used when
+    // there is no match.
     protocolArray.AppendElement(NS_LITERAL_CSTRING("http/1.1"));
 
     if (gHttpHandler->IsSpdyEnabled() &&
         !(caps & NS_HTTP_DISALLOW_SPDY)) {
         LOG(("nsHttpConnection::SetupSSL Allow SPDY NPN selection"));
-        for (uint32_t index = 0; index < SpdyInformation::kCount; ++index) {
-            if (gHttpHandler->SpdyInfo()->ProtocolEnabled(index))
+        for (uint32_t index = SpdyInformation::kCount; index > 0; --index) {
+            if (gHttpHandler->SpdyInfo()->ProtocolEnabled(index - 1))
                 protocolArray.AppendElement(
-                    gHttpHandler->SpdyInfo()->VersionString[index]);
+                    gHttpHandler->SpdyInfo()->VersionString[index - 1]);
         }
     }
 
@@ -975,12 +979,15 @@ nsHttpConnection::OnHeadersAvailable(nsAHttpTransaction *trans,
         MOZ_ASSERT(!mUsingSpdyVersion,
                    "SPDY NPN Complete while using proxy connect stream");
         mProxyConnectStream = nullptr;
+        bool isHttps =
+            mTransaction ? mTransaction->ConnectionInfo()->EndToEndSSL() :
+            mConnInfo->EndToEndSSL();
+
         if (responseStatus == 200) {
-            LOG(("proxy CONNECT succeeded! endtoendssl=%s\n",
-                 mConnInfo->EndToEndSSL() ? "true" :"false"));
+            LOG(("proxy CONNECT succeeded! endtoendssl=%d\n", isHttps));
             *reset = true;
             nsresult rv;
-            if (mConnInfo->EndToEndSSL()) {
+            if (isHttps) {
                 if (mConnInfo->UsingHttpsProxy()) {
                     LOG(("%p new TLSFilterTransaction %s %d\n",
                          this, mConnInfo->Host(), mConnInfo->Port()));
@@ -997,8 +1004,7 @@ nsHttpConnection::OnHeadersAvailable(nsAHttpTransaction *trans,
             MOZ_ASSERT(NS_SUCCEEDED(rv), "mSocketOut->AsyncWait failed");
         }
         else {
-            LOG(("proxy CONNECT failed! endtoendssl=%s\n",
-                 mConnInfo->EndToEndSSL() ? "true" :"false"));
+            LOG(("proxy CONNECT failed! endtoendssl=%d\n", isHttps));
             mTransaction->SetProxyConnectFailed();
         }
     }
@@ -1081,15 +1087,25 @@ nsHttpConnection::TakeTransport(nsISocketTransport  **aTransport,
         }
     }
 
-    NS_IF_ADDREF(*aTransport = mSocketTransport);
-    NS_IF_ADDREF(*aInputStream = mSocketIn);
-    NS_IF_ADDREF(*aOutputStream = mSocketOut);
-
     mSocketTransport->SetSecurityCallbacks(nullptr);
     mSocketTransport->SetEventSink(nullptr, nullptr);
-    mSocketTransport = nullptr;
-    mSocketIn = nullptr;
-    mSocketOut = nullptr;
+
+    // The nsHttpConnection will go away soon, so if there is a TLS Filter
+    // being used (e.g. for wss CONNECT tunnel from a proxy connected to
+    // via https) that filter needs to take direct control of the
+    // streams
+    if (mTLSFilter) {
+        nsCOMPtr<nsISupports> ref1(mSocketIn);
+        nsCOMPtr<nsISupports> ref2(mSocketOut);
+        mTLSFilter->newIODriver(mSocketIn, mSocketOut,
+                                getter_AddRefs(mSocketIn),
+                                getter_AddRefs(mSocketOut));
+        mTLSFilter = nullptr;
+    }
+
+    mSocketTransport.forget(aTransport);
+    mSocketIn.forget(aInputStream);
+    mSocketOut.forget(aOutputStream);
 
     return NS_OK;
 }

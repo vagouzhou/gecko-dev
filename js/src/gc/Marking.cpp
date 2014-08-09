@@ -157,28 +157,14 @@ template<typename T>
 static inline void
 CheckMarkedThing(JSTracer *trc, T **thingp)
 {
+#ifdef DEBUG
     JS_ASSERT(trc);
     JS_ASSERT(thingp);
 
-#if defined(JS_CRASH_DIAGNOSTICS) || defined(DEBUG)
     T *thing = *thingp;
-#endif
-
-#ifdef JS_CRASH_DIAGNOSTICS
-    if (uintptr_t(thing) <= ArenaSize || (uintptr_t(thing) & 1) != 0) {
-        char msgbuf[1024];
-        const char *label = trc->tracingName("<unknown>");
-        JS_snprintf(msgbuf, sizeof(msgbuf),
-                    "[crash diagnostics] Marking invalid pointer %p @ %p of type %s, named \"%s\"",
-                    thing, thingp, TraceKindAsAscii(MapTypeToTraceKind<T>::kind), label);
-        MOZ_ReportAssertionFailure(msgbuf, __FILE__, __LINE__);
-        MOZ_CRASH();
-    }
-#endif
     JS_ASSERT(*thingp);
 
-#ifdef DEBUG
-#ifdef JSGC_FJGENERATIONAL
+# ifdef JSGC_FJGENERATIONAL
     /*
      * The code below (runtimeFromMainThread(), etc) makes assumptions
      * not valid for the ForkJoin worker threads during ForkJoin GGC,
@@ -186,7 +172,7 @@ CheckMarkedThing(JSTracer *trc, T **thingp)
      */
     if (ForkJoinContext::current())
         return;
-#endif
+# endif
 
     /* This function uses data that's not available in the nursery. */
     if (IsInsideNursery(thing))
@@ -206,8 +192,6 @@ CheckMarkedThing(JSTracer *trc, T **thingp)
     DebugOnly<JSRuntime *> rt = trc->runtime();
 
     bool isGcMarkingTracer = IS_GC_MARKING_TRACER(trc);
-    JS_ASSERT_IF(isGcMarkingTracer && rt->gc.isManipulatingDeadZones(),
-                 !thing->zone()->scheduledForDestruction);
 
     JS_ASSERT(CurrentThreadCanAccessRuntime(rt));
 
@@ -237,7 +221,33 @@ CheckMarkedThing(JSTracer *trc, T **thingp)
     JS_ASSERT_IF(IsThingPoisoned(thing) && rt->isHeapBusy(),
                  !InFreeList(thing->arenaHeader(), thing));
 #endif
+}
 
+/*
+ * We only set the maybeAlive flag for objects and scripts. It's assumed that,
+ * if a compartment is alive, then it will have at least some live object or
+ * script it in. Even if we get this wrong, the worst that will happen is that
+ * scheduledForDestruction will be set on the compartment, which will cause some
+ * extra GC activity to try to free the compartment.
+ */
+template<typename T>
+static inline void
+SetMaybeAliveFlag(T *thing)
+{
+}
+
+template<>
+void
+SetMaybeAliveFlag(JSObject *thing)
+{
+    thing->compartment()->maybeAlive = true;
+}
+
+template<>
+void
+SetMaybeAliveFlag(JSScript *thing)
+{
+    thing->compartment()->maybeAlive = true;
 }
 
 template<typename T>
@@ -283,7 +293,7 @@ MarkInternal(JSTracer *trc, T **thingp)
             return;
 
         PushMarkStack(AsGCMarker(trc), thing);
-        thing->zone()->maybeAlive = true;
+        SetMaybeAliveFlag(thing);
     } else {
         trc->callback(trc, (void **)thingp, MapTypeToTraceKind<T>::kind);
         trc->unsetTracingLocation();
@@ -744,12 +754,14 @@ MarkValueInternal(JSTracer *trc, Value *v)
         void *thing = v->toGCThing();
         trc->setTracingLocation((void *)v);
         MarkKind(trc, &thing, v->gcKind());
-        if (v->isString())
+        if (v->isString()) {
             v->setString((JSString *)thing);
-        else if (v->isSymbol())
-            v->setSymbol((JS::Symbol *)thing);
-        else
+        } else if (v->isObject()) {
             v->setObjectOrNull((JSObject *)thing);
+        } else {
+            JS_ASSERT(v->isSymbol());
+            v->setSymbol((JS::Symbol *)thing);
+        }
     } else {
         /* Unset realLocation manually if we do not call MarkInternal. */
         trc->unsetTracingLocation();
@@ -815,10 +827,15 @@ gc::IsValueMarked(Value *v)
         JSString *str = (JSString *)v->toGCThing();
         rv = IsMarked<JSString>(&str);
         v->setString(str);
-    } else {
+    } else if (v->isObject()) {
         JSObject *obj = (JSObject *)v->toGCThing();
         rv = IsMarked<JSObject>(&obj);
         v->setObject(*obj);
+    } else {
+        JS_ASSERT(v->isSymbol());
+        JS::Symbol *sym = v->toSymbol();
+        rv = IsMarked<JS::Symbol>(&sym);
+        v->setSymbol(sym);
     }
     return rv;
 }
@@ -832,10 +849,15 @@ gc::IsValueAboutToBeFinalized(Value *v)
         JSString *str = (JSString *)v->toGCThing();
         rv = IsAboutToBeFinalized<JSString>(&str);
         v->setString(str);
-    } else {
+    } else if (v->isObject()) {
         JSObject *obj = (JSObject *)v->toGCThing();
         rv = IsAboutToBeFinalized<JSObject>(&obj);
         v->setObject(*obj);
+    } else {
+        JS_ASSERT(v->isSymbol());
+        JS::Symbol *sym = v->toSymbol();
+        rv = IsAboutToBeFinalized<JS::Symbol>(&sym);
+        v->setSymbol(sym);
     }
     return rv;
 }
@@ -1421,9 +1443,7 @@ gc::MarkChildren(JSTracer *trc, types::TypeObject *type)
 static void
 gc::MarkChildren(JSTracer *trc, jit::JitCode *code)
 {
-#ifdef JS_ION
     code->trace(trc);
-#endif
 }
 
 template<typename T>

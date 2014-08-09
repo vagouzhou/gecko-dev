@@ -10,8 +10,8 @@ public class StringHelper {
     };
     public static final String[] DEFAULT_BOOKMARKS_URLS = new String[] {
         "about:firefox",
-        "http://support.mozilla.org/en-US/products/mobile",
-        "https://addons.mozilla.org/en-US/android/"
+        "https://support.mozilla.org/products/mobile",
+        "https://addons.mozilla.org/android/"
     };
     public static final int DEFAULT_BOOKMARKS_COUNT = DEFAULT_BOOKMARKS_TITLES.length;
 
@@ -105,13 +105,13 @@ public class StringHelper {
     // Option labels
     // Customize
     public static final String SYNC_LABEL = "Sync";
-    public static final String SEARCH_SETTINGS_LABEL = "Search settings";
     public static final String IMPORT_FROM_ANDROID_LABEL = "Import from Android";
     public static final String TABS_LABEL = "Tabs";
 
     // Display
     public static final String TEXT_SIZE_LABEL = "Text size";
     public static final String TITLE_BAR_LABEL = "Title bar";
+    public static final String SCROLL_TITLE_BAR_LABEL="Full-screen browsing";
     public static final String TEXT_REFLOW_LABEL = "Text reflow";
     public static final String CHARACTER_ENCODING_LABEL = "Character encoding";
     public static final String PLUGINS_LABEL = "Plugins";
@@ -125,18 +125,18 @@ public class StringHelper {
     public static final String COOKIES_LABEL = "Cookies";
     public static final String REMEMBER_PASSWORDS_LABEL = "Remember passwords";
     public static final String MASTER_PASWSWORD_LABEL = "Use master password";
-    public static final String CLEAR_PRIVATE_DATA_LABEL = "Clear private data";
+    public static final String CLEAR_PRIVATE_DATA_LABEL = "Clear now";
 
     // Mozilla
     public static final String ABOUT_LABEL = "About (Fennec|Nightly|Aurora|Firefox Beta|Firefox)";
     public static final String FAQS_LABEL = "FAQs";
     public static final String FEEDBACK_LABEL = "Give feedback";
-    public static final String PRODUCT_ANNOUNCEMENTS_LABEL = "Show product announcements";
     public static final String LOCATION_SERVICES_LABEL = "Mozilla location services";
     public static final String HELTH_REPORT_LABEL = "(Fennec|Nightly|Aurora|Firefox Beta|Firefox) Health Report";
     public static final String MY_HEALTH_REPORT_LABEL = "View my Health Report";
 
     // Developer tools
+    public static final String PAINT_FLASHING_LABEL = "Paint flashing";
     public static final String REMOTE_DEBUGGING_LABEL = "Remote debugging";
     public static final String LEARN_MORE_LABEL = "Learn more";
 

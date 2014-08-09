@@ -59,7 +59,6 @@ class NetworkInformation;
 namespace dom {
 namespace mobilemessage {
 struct SmsFilterData;
-struct SmsSegmentInfoData;
 } // namespace mobilemessage
 } // namespace dom
 
@@ -350,6 +349,8 @@ public:
     static void InputStreamClose(jobject obj);
     static uint32_t InputStreamAvailable(jobject obj);
     static nsresult InputStreamRead(jobject obj, char *aBuf, uint32_t aCount, uint32_t *aRead);
+
+    static nsresult GetExternalPublicDirectory(const nsAString& aType, nsAString& aPath);
 
 protected:
     static StaticRefPtr<AndroidBridge> sBridge;

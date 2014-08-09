@@ -210,8 +210,11 @@ let FunctionCallActor = protocol.ActorClass({
     // XXX: All of this sucks. Make this smarter, so that the frontend
     // can inspect each argument, be it object or primitive. Bug 978960.
     let serializeArgs = () => args.map((arg, i) => {
-      if (typeof arg == "undefined") {
+      if (arg === undefined) {
         return "undefined";
+      }
+      if (arg === null) {
+        return "null";
       }
       if (typeof arg == "function") {
         return "Function";
@@ -222,7 +225,7 @@ let FunctionCallActor = protocol.ActorClass({
       // If this argument matches the method's signature
       // and is an enum, change it to its constant name.
       if (enumArgs && enumArgs.indexOf(i) !== -1) {
-        return getEnumsLookupTable(global, caller)[arg] || arg;
+        return getBitToEnumValue(global, caller, arg);
       }
       return arg;
     });
@@ -276,7 +279,7 @@ let CallWatcherActor = exports.CallWatcherActor = protocol.ActorClass({
    * created, in order to instrument the specified objects and become
    * aware of everything the content does with them.
    */
-  setup: method(function({ tracedGlobals, tracedFunctions, startRecording, performReload, holdWeak }) {
+  setup: method(function({ tracedGlobals, tracedFunctions, startRecording, performReload, holdWeak, storeCalls }) {
     if (this._initialized) {
       return;
     }
@@ -286,6 +289,7 @@ let CallWatcherActor = exports.CallWatcherActor = protocol.ActorClass({
     this._tracedGlobals = tracedGlobals || [];
     this._tracedFunctions = tracedFunctions || [];
     this._holdWeak = !!holdWeak;
+    this._storeCalls = !!storeCalls;
     this._contentObserver = new ContentObserver(this.tabActor);
 
     on(this._contentObserver, "global-created", this._onGlobalCreated);
@@ -303,7 +307,8 @@ let CallWatcherActor = exports.CallWatcherActor = protocol.ActorClass({
       tracedFunctions: Option(0, "nullable:array:string"),
       startRecording: Option(0, "boolean"),
       performReload: Option(0, "boolean"),
-      holdWeak: Option(0, "boolean")
+      holdWeak: Option(0, "boolean"),
+      storeCalls: Option(0, "boolean")
     },
     oneway: true
   }),
@@ -541,7 +546,11 @@ let CallWatcherActor = exports.CallWatcherActor = protocol.ActorClass({
       return;
     }
     let functionCall = new FunctionCallActor(this.conn, details, this._holdWeak);
-    this._functionCalls.push(functionCall);
+
+    if (this._storeCalls) {
+      this._functionCalls.push(functionCall);
+    }
+
     this.onCall(functionCall);
   }
 });
@@ -552,7 +561,6 @@ let CallWatcherActor = exports.CallWatcherActor = protocol.ActorClass({
 let CallWatcherFront = exports.CallWatcherFront = protocol.FrontClass(CallWatcherActor, {
   initialize: function(client, { callWatcherActor }) {
     protocol.Front.prototype.initialize.call(this, client, { actor: callWatcherActor });
-    client.addActorPool(this);
     this.manage(this);
   }
 });
@@ -626,7 +634,7 @@ CallWatcherFront.ENUM_METHODS[CallWatcherFront.CANVAS_WEBGL_CONTEXT] = {
   stencilOpSeparate: [0, 1, 2, 3],
   texImage2D: (args) => args.length > 6 ? [0, 2, 6, 7] : [0, 2, 3, 4],
   texParameterf: [0, 1],
-  texParameteri: [0, 1],
+  texParameteri: [0, 1, 2],
   texSubImage2D: (args) => args.length === 9 ? [0, 6, 7] : [0, 4, 5],
   vertexAttribPointer: [2]
 };
@@ -638,22 +646,51 @@ CallWatcherFront.ENUM_METHODS[CallWatcherFront.CANVAS_WEBGL_CONTEXT] = {
  * For example, when gl.clear(gl.COLOR_BUFFER_BIT) is called, the actual passed
  * argument's value is 16384, which we want identified as "COLOR_BUFFER_BIT".
  */
-var gEnumRegex = /^[A-Z_]+$/;
+var gEnumRegex = /^[A-Z][A-Z0-9_]+$/;
 var gEnumsLookupTable = {};
 
-function getEnumsLookupTable(type, object) {
-  let cachedEnum = gEnumsLookupTable[type];
-  if (cachedEnum) {
-    return cachedEnum;
-  }
+// These values are returned from errors, or empty values,
+// and need to be ignored when checking arguments due to the bitwise math.
+var INVALID_ENUMS = [
+  "INVALID_ENUM", "NO_ERROR", "INVALID_VALUE", "OUT_OF_MEMORY", "NONE"
+];
 
-  let table = gEnumsLookupTable[type] = {};
+function getBitToEnumValue(type, object, arg) {
+  let table = gEnumsLookupTable[type];
 
-  for (let key in object) {
-    if (key.match(gEnumRegex)) {
-      table[object[key]] = key;
+  // If mapping not yet created, do it on the first run.
+  if (!table) {
+    table = gEnumsLookupTable[type] = {};
+
+    for (let key in object) {
+      if (key.match(gEnumRegex)) {
+        // Maps `16384` to `"COLOR_BUFFER_BIT"`, etc.
+        table[object[key]] = key;
+      }
     }
   }
 
-  return table;
+  // If a single bit value, just return it.
+  if (table[arg]) {
+    return table[arg];
+  }
+
+  // Otherwise, attempt to reduce it to the original bit flags:
+  // `16640` -> "COLOR_BUFFER_BIT | DEPTH_BUFFER_BIT"
+  let flags = [];
+  for (let flag in table) {
+    if (INVALID_ENUMS.indexOf(table[flag]) !== -1) {
+      continue;
+    }
+
+    // Cast to integer as all values are stored as strings
+    // in `table`
+    flag = flag | 0;
+    if (flag && (arg & flag) === flag) {
+      flags.push(table[flag]);
+    }
+  }
+
+  // Cache the combined bitmask value
+  return table[arg] = flags.join(" | ") || arg;
 }

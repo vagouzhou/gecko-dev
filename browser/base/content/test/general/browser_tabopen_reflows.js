@@ -14,7 +14,8 @@ const EXPECTED_REFLOWS = [
     "onxbltransitionend@chrome://browser/content/tabbrowser.xml|",
 
   // switching focus in updateCurrentBrowser() causes reflows
-  "updateCurrentBrowser@chrome://browser/content/tabbrowser.xml|" +
+  "_adjustFocusAfterTabSwitch@chrome://browser/content/tabbrowser.xml|" +
+    "updateCurrentBrowser@chrome://browser/content/tabbrowser.xml|" +
     "onselect@chrome://browser/content/browser.xul|",
 
   // switching focus in openLinkIn() causes reflows
@@ -107,8 +108,8 @@ function test() {
   });
 
   Services.prefs.setBoolPref(PREF_PRELOAD, false);
-  // set directory source to empty links
-  Services.prefs.setCharPref(PREF_NEWTAB_DIRECTORYSOURCE, "data:application/json,{}");
+  // set directory source to dummy/empty links
+  Services.prefs.setCharPref(PREF_NEWTAB_DIRECTORYSOURCE, 'data:application/json,{"test":1}');
 }
 
 let observer = {

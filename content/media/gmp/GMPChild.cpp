@@ -6,17 +6,31 @@
 #include "GMPChild.h"
 #include "GMPVideoDecoderChild.h"
 #include "GMPVideoEncoderChild.h"
+#include "GMPAudioDecoderChild.h"
+#include "GMPDecryptorChild.h"
 #include "GMPVideoHost.h"
 #include "nsIFile.h"
 #include "nsXULAppAPI.h"
 #include "gmp-video-decode.h"
 #include "gmp-video-encode.h"
 #include "GMPPlatform.h"
+#include "mozilla/dom/CrashReporterChild.h"
+
+using mozilla::dom::CrashReporterChild;
 
 #ifdef XP_WIN
 #include <stdlib.h> // for _exit()
 #else
 #include <unistd.h> // for _exit()
+#endif
+
+#if defined(XP_WIN)
+#define TARGET_SANDBOX_EXPORTS
+#include "mozilla/sandboxTarget.h"
+#elif defined (MOZ_GMP_SANDBOX)
+#if defined(XP_LINUX) || defined(XP_MACOSX)
+#include "mozilla/Sandbox.h"
+#endif
 #endif
 
 namespace mozilla {
@@ -33,18 +47,9 @@ GMPChild::~GMPChild()
 {
 }
 
-bool
-GMPChild::Init(const std::string& aPluginPath,
-               base::ProcessHandle aParentProcessHandle,
-               MessageLoop* aIOLoop,
-               IPC::Channel* aChannel)
-{
-  return LoadPluginLibrary(aPluginPath) &&
-         Open(aChannel, aParentProcessHandle, aIOLoop);
-}
-
-bool
-GMPChild::LoadPluginLibrary(const std::string& aPluginPath)
+static bool
+GetPluginBinaryPath(const std::string& aPluginPath,
+                    nsCString &aPluginBinaryPath)
 {
   nsDependentCString pluginPath(aPluginPath.c_str());
 
@@ -71,8 +76,90 @@ GMPChild::LoadPluginLibrary(const std::string& aPluginPath)
 #endif
   libFile->AppendRelativePath(binaryName);
 
+  libFile->GetNativePath(aPluginBinaryPath);
+  return true;
+}
+
+#if defined(XP_MACOSX) && defined(MOZ_GMP_SANDBOX)
+void
+GMPChild::OnChannelConnected(int32_t aPid)
+{
+  MacSandboxInfo info;
+  info.type = MacSandboxType_Plugin;
+  info.pluginInfo.type = MacSandboxPluginType_GMPlugin_Default;
+  info.pluginInfo.pluginPath.Assign(mPluginPath.c_str());
+
+  nsAutoCString pluginBinaryPath;
+  if (!GetPluginBinaryPath(mPluginPath, pluginBinaryPath)) {
+    MOZ_CRASH("Error scanning plugin path");
+  }
+  mPluginBinaryPath.Assign(pluginBinaryPath);
+  info.pluginInfo.pluginBinaryPath.Assign(pluginBinaryPath);
+
+  nsAutoCString err;
+  if (!mozilla::StartMacSandbox(info, err)) {
+    NS_WARNING(err.get());
+    MOZ_CRASH("sandbox_init() failed");
+  }
+
+  if (!LoadPluginLibrary(mPluginPath)) {
+    err.AppendPrintf("Failed to load GMP plugin \"%s\"",
+                     mPluginPath.c_str());
+    NS_WARNING(err.get());
+    MOZ_CRASH("Failed to load GMP plugin");
+  }
+}
+#endif // XP_MACOSX && MOZ_GMP_SANDBOX
+
+void
+GMPChild::CheckThread()
+{
+  MOZ_ASSERT(mGMPMessageLoop == MessageLoop::current());
+}
+
+bool
+GMPChild::Init(const std::string& aPluginPath,
+               base::ProcessHandle aParentProcessHandle,
+               MessageLoop* aIOLoop,
+               IPC::Channel* aChannel)
+{
+  if (!Open(aChannel, aParentProcessHandle, aIOLoop)) {
+    return false;
+  }
+
+#if defined(XP_MACOSX) && defined(MOZ_GMP_SANDBOX)
+  mPluginPath = aPluginPath;
+  return true;
+#endif
+
+#ifdef MOZ_CRASHREPORTER
+  SendPCrashReporterConstructor(CrashReporter::CurrentThreadId());
+#endif
+#if defined(XP_WIN)
+  mozilla::SandboxTarget::Instance()->StartSandbox();
+#endif
+
+  return LoadPluginLibrary(aPluginPath);
+}
+
+bool
+GMPChild::LoadPluginLibrary(const std::string& aPluginPath)
+{
   nsAutoCString nativePath;
-  libFile->GetNativePath(nativePath);
+#if defined(XP_MACOSX) && defined(MOZ_GMP_SANDBOX)
+  nativePath.Assign(mPluginBinaryPath);
+#else
+  if (!GetPluginBinaryPath(aPluginPath, nativePath)) {
+    return false;
+  }
+#endif
+
+#if defined(XP_LINUX) && defined(MOZ_GMP_SANDBOX)
+  // Enable sandboxing here -- we know the plugin file's path, but
+  // this process's execution hasn't been affected by its content yet.
+  mozilla::SetMediaPluginSandbox(nativePath.get());
+#endif
+
   mLib = PR_LoadLibrary(nativePath.get());
   if (!mLib) {
     return false;
@@ -84,7 +171,7 @@ GMPChild::LoadPluginLibrary(const std::string& aPluginPath)
   }
 
   auto platformAPI = new GMPPlatformAPI();
-  InitPlatformAPI(*platformAPI);
+  InitPlatformAPI(*platformAPI, this);
 
   if (initFunc(platformAPI) != GMPNoErr) {
     return false;
@@ -145,6 +232,32 @@ GMPChild::ProcessingError(Result aWhat)
   }
 }
 
+PGMPAudioDecoderChild*
+GMPChild::AllocPGMPAudioDecoderChild()
+{
+  return new GMPAudioDecoderChild(this);
+}
+
+bool
+GMPChild::DeallocPGMPAudioDecoderChild(PGMPAudioDecoderChild* aActor)
+{
+  delete aActor;
+  return true;
+}
+
+mozilla::dom::PCrashReporterChild*
+GMPChild::AllocPCrashReporterChild(const NativeThreadId& aThread)
+{
+  return new CrashReporterChild();
+}
+
+bool
+GMPChild::DeallocPCrashReporterChild(PCrashReporterChild* aCrashReporter)
+{
+  delete aCrashReporter;
+  return true;
+}
+
 PGMPVideoDecoderChild*
 GMPChild::AllocPGMPVideoDecoderChild()
 {
@@ -155,6 +268,35 @@ bool
 GMPChild::DeallocPGMPVideoDecoderChild(PGMPVideoDecoderChild* aActor)
 {
   delete aActor;
+  return true;
+}
+
+PGMPDecryptorChild*
+GMPChild::AllocPGMPDecryptorChild()
+{
+  return new GMPDecryptorChild(this);
+}
+
+bool
+GMPChild::DeallocPGMPDecryptorChild(PGMPDecryptorChild* aActor)
+{
+  delete aActor;
+  return true;
+}
+
+bool
+GMPChild::RecvPGMPAudioDecoderConstructor(PGMPAudioDecoderChild* aActor)
+{
+  auto vdc = static_cast<GMPAudioDecoderChild*>(aActor);
+
+  void* vd = nullptr;
+  GMPErr err = mGetAPIFunc("decode-audio", &vdc->Host(), &vd);
+  if (err != GMPNoErr || !vd) {
+    return false;
+  }
+
+  vdc->Init(static_cast<GMPAudioDecoder*>(vd));
+
   return true;
 }
 
@@ -200,6 +342,57 @@ GMPChild::RecvPGMPVideoEncoderConstructor(PGMPVideoEncoderChild* aActor)
 
   vec->Init(static_cast<GMPVideoEncoder*>(ve));
 
+  return true;
+}
+
+bool
+GMPChild::RecvPGMPDecryptorConstructor(PGMPDecryptorChild* aActor)
+{
+  GMPDecryptorChild* child = static_cast<GMPDecryptorChild*>(aActor);
+  GMPDecryptorHost* host = static_cast<GMPDecryptorHost*>(child);
+
+  void* session = nullptr;
+  GMPErr err = mGetAPIFunc("eme-decrypt", host, &session);
+  if (err != GMPNoErr || !session) {
+    return false;
+  }
+
+  child->Init(static_cast<GMPDecryptor*>(session));
+
+  return true;
+}
+
+PGMPTimerChild*
+GMPChild::AllocPGMPTimerChild()
+{
+  return new GMPTimerChild(this);
+}
+
+bool
+GMPChild::DeallocPGMPTimerChild(PGMPTimerChild* aActor)
+{
+  MOZ_ASSERT(mTimerChild == static_cast<GMPTimerChild*>(aActor));
+  mTimerChild = nullptr;
+  return true;
+}
+
+GMPTimerChild*
+GMPChild::GetGMPTimers()
+{
+  if (!mTimerChild) {
+    PGMPTimerChild* sc = SendPGMPTimerConstructor();
+    if (!sc) {
+      return nullptr;
+    }
+    mTimerChild = static_cast<GMPTimerChild*>(sc);
+  }
+  return mTimerChild;
+}
+
+bool
+GMPChild::RecvCrashPluginNow()
+{
+  MOZ_CRASH();
   return true;
 }
 

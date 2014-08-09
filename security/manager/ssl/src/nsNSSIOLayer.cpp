@@ -137,12 +137,17 @@ nsNSSSocketInfo::nsNSSSocketInfo(SharedSSLState& aState, uint32_t providerFlags)
     mKEAExpected(nsISSLSocketControl::KEY_EXCHANGE_UNKNOWN),
     mKEAKeyBits(0),
     mSSLVersionUsed(nsISSLSocketControl::SSL_VERSION_UNKNOWN),
+    mMACAlgorithmUsed(nsISSLSocketControl::SSL_MAC_UNKNOWN),
     mProviderFlags(providerFlags),
     mSocketCreationTimestamp(TimeStamp::Now()),
     mPlaintextBytesRead(0)
 {
   mTLSVersionRange.min = 0;
   mTLSVersionRange.max = 0;
+}
+
+nsNSSSocketInfo::~nsNSSSocketInfo()
+{
 }
 
 NS_IMPL_ISUPPORTS_INHERITED(nsNSSSocketInfo, TransportSecurityInfo,
@@ -188,6 +193,13 @@ NS_IMETHODIMP
 nsNSSSocketInfo::GetSSLVersionUsed(int16_t* aSSLVersionUsed)
 {
   *aSSLVersionUsed = mSSLVersionUsed;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsNSSSocketInfo::GetMACAlgorithmUsed(int16_t* aMac)
+{
+  *aMac = mMACAlgorithmUsed;
   return NS_OK;
 }
 
@@ -387,16 +399,19 @@ nsNSSSocketInfo::JoinConnection(const nsACString& npnProtocol,
 
   ScopedCERTCertificate nssCert;
 
-  nsCOMPtr<nsIX509Cert2> cert2 = do_QueryInterface(SSLStatus()->mServerCert);
-  if (cert2)
-    nssCert = cert2->GetCert();
+  nsCOMPtr<nsIX509Cert> cert(SSLStatus()->mServerCert);
+  if (cert) {
+    nssCert = cert->GetCert();
+  }
 
-  if (!nssCert)
+  if (!nssCert) {
     return NS_OK;
+  }
 
   if (CERT_VerifyCertName(nssCert, PromiseFlatCString(hostname).get()) !=
-      SECSuccess)
-    return NS_OK;
+      SECSuccess) {
+      return NS_OK;
+  }
 
   // All tests pass - this is joinable
   mJoined = true;
@@ -1198,7 +1213,7 @@ nsSSLIOLayerHelpers::nsSSLIOLayerHelpers()
   : mRenegoUnrestrictedSites(nullptr)
   , mTreatUnsafeNegotiationAsBroken(false)
   , mWarnLevelMissingRFC5746(1)
-  , mTLSIntoleranceInfo(16)
+  , mTLSIntoleranceInfo()
   , mFalseStartRequireNPN(true)
   , mFalseStartRequireForwardSecrecy(false)
   , mutex("nsSSLIOLayerHelpers.mutex")
@@ -1503,7 +1518,7 @@ nsSSLIOLayerHelpers::Init()
     nsSSLPlaintextLayerMethods.recv = PlaintextRecv;
   }
 
-  mRenegoUnrestrictedSites = new nsTHashtable<nsCStringHashKey>(16);
+  mRenegoUnrestrictedSites = new nsTHashtable<nsCStringHashKey>();
 
   nsCString unrestricted_hosts;
   Preferences::GetCString("security.ssl.renego_unrestricted_hosts", &unrestricted_hosts);
@@ -1882,9 +1897,9 @@ ClientAuthDataRunnable::RunOnTargetThread()
 {
   PLArenaPool* arena = nullptr;
   char** caNameStrings;
-  mozilla::pkix::ScopedCERTCertificate cert;
+  ScopedCERTCertificate cert;
   ScopedSECKEYPrivateKey privKey;
-  mozilla::pkix::ScopedCERTCertList certList;
+  ScopedCERTCertList certList;
   CERTCertListNode* node;
   ScopedCERTCertNicknames nicknames;
   int keyError = 0; // used for private key retrieval error
@@ -2228,7 +2243,7 @@ done:
     PORT_FreeArena(arena, false);
   }
 
-  *mPRetCert = cert.release();
+  *mPRetCert = cert.forget();
   *mPRetKey = privKey.forget();
 
   if (mRV == SECFailure) {

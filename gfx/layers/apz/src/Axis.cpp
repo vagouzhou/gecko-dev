@@ -34,8 +34,15 @@ Axis::Axis(AsyncPanZoomController* aAsyncPanZoomController)
 }
 
 void Axis::UpdateWithTouchAtDevicePoint(int32_t aPos, uint32_t aTimestampMs) {
+  // mVelocityQueue is controller-thread only
+  AsyncPanZoomController::AssertOnControllerThread();
+
   if (aTimestampMs == mPosTimeMs) {
-    // Duplicate event?
+    // This could be a duplicate event, or it could be a legitimate event
+    // on some platforms that generate events really fast. As a compromise
+    // update mPos so we don't run into problems like bug 1042734, even though
+    // that means the velocity will be stale. Better than doing a divide-by-zero.
+    mPos = aPos;
     return;
   }
 
@@ -62,24 +69,27 @@ void Axis::StartTouch(int32_t aPos, uint32_t aTimestampMs) {
   mAxisLocked = false;
 }
 
-float Axis::AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut) {
+bool Axis::AdjustDisplacement(float aDisplacement,
+                              float& aDisplacementOut,
+                              float& aOverscrollAmountOut)
+{
   if (mAxisLocked) {
     aOverscrollAmountOut = 0;
-    return 0;
+    aDisplacementOut = 0;
+    return false;
   }
 
   float displacement = aDisplacement;
 
   // First consume any overscroll in the opposite direction along this axis.
+  float consumedOverscroll = 0;
   if (mOverscroll > 0 && aDisplacement < 0) {
-    float consumedOverscroll = std::min(mOverscroll, -aDisplacement);
-    mOverscroll -= consumedOverscroll;
-    displacement += consumedOverscroll;
+    consumedOverscroll = std::min(mOverscroll, -aDisplacement);
   } else if (mOverscroll < 0 && aDisplacement > 0) {
-    float consumedOverscroll = std::min(-mOverscroll, aDisplacement);
-    mOverscroll += consumedOverscroll;
-    displacement -= consumedOverscroll;
+    consumedOverscroll = 0 - std::min(-mOverscroll, aDisplacement);
   }
+  mOverscroll -= consumedOverscroll;
+  displacement += consumedOverscroll;
 
   // Split the requested displacement into an allowed displacement that does
   // not overscroll, and an overscroll amount.
@@ -90,7 +100,8 @@ float Axis::AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut)
     aOverscrollAmountOut = DisplacementWillOverscrollAmount(displacement);
     displacement -= aOverscrollAmountOut;
   }
-  return displacement;
+  aDisplacementOut = displacement;
+  return fabsf(consumedOverscroll) > EPSILON;
 }
 
 float Axis::ApplyResistance(float aRequestedOverscroll) const {
@@ -190,6 +201,9 @@ float Axis::PanDistance(float aPos) {
 }
 
 void Axis::EndTouch(uint32_t aTimestampMs) {
+  // mVelocityQueue is controller-thread only
+  AsyncPanZoomController::AssertOnControllerThread();
+
   mVelocity = 0;
   int count = 0;
   while (!mVelocityQueue.IsEmpty()) {
@@ -206,6 +220,9 @@ void Axis::EndTouch(uint32_t aTimestampMs) {
 }
 
 void Axis::CancelTouch() {
+  // mVelocityQueue is controller-thread only
+  AsyncPanZoomController::AssertOnControllerThread();
+
   mVelocity = 0.0f;
   while (!mVelocityQueue.IsEmpty()) {
     mVelocityQueue.RemoveElementAt(0);
@@ -268,8 +285,8 @@ float Axis::ScaleWillOverscrollAmount(float aScale, float aFocus) {
   float originAfterScale = (GetOrigin() + aFocus) - (aFocus / aScale);
 
   bool both = ScaleWillOverscrollBothSides(aScale);
-  bool minus = originAfterScale < GetPageStart();
-  bool plus = (originAfterScale + (GetCompositionLength() / aScale)) > GetPageEnd();
+  bool minus = GetPageStart() - originAfterScale > COORDINATE_EPSILON;
+  bool plus = (originAfterScale + (GetCompositionLength() / aScale)) - GetPageEnd() > COORDINATE_EPSILON;
 
   if ((minus && plus) || both) {
     // If we ever reach here it's a bug in the client code.
@@ -326,7 +343,7 @@ bool Axis::ScaleWillOverscrollBothSides(float aScale) {
   CSSToParentLayerScale scale(metrics.GetZoomToParent().scale * aScale);
   CSSRect cssCompositionBounds = metrics.mCompositionBounds / scale;
 
-  return GetRectLength(metrics.GetExpandedScrollableRect()) < GetRectLength(cssCompositionBounds);
+  return GetRectLength(cssCompositionBounds) - GetRectLength(metrics.GetExpandedScrollableRect()) > COORDINATE_EPSILON;
 }
 
 const FrameMetrics& Axis::GetFrameMetrics() const {

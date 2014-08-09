@@ -220,7 +220,7 @@ public:
   /**
    * Construct writing mode based on a style context
    */
-  WritingMode(const nsStyleVisibility* aStyleVisibility)
+  explicit WritingMode(const nsStyleVisibility* aStyleVisibility)
   {
     NS_ASSERTION(aStyleVisibility, "we need an nsStyleVisibility here");
 
@@ -278,6 +278,11 @@ public:
     return mWritingMode == aOther.mWritingMode;
   }
 
+  bool operator!=(const WritingMode& aOther) const
+  {
+    return mWritingMode != aOther.mWritingMode;
+  }
+
 private:
   friend class LogicalPoint;
   friend class LogicalSize;
@@ -296,7 +301,7 @@ private:
    * Constructing a WritingMode with an arbitrary value is a private operation
    * currently only used by the Unknown() static method.
    */
-  WritingMode(uint8_t aValue)
+  explicit WritingMode(uint8_t aValue)
     : mWritingMode(aValue)
   { }
 
@@ -360,7 +365,7 @@ private:
  */
 class LogicalPoint {
 public:
-  LogicalPoint(WritingMode aWritingMode)
+  explicit LogicalPoint(WritingMode aWritingMode)
     :
 #ifdef DEBUG
       mWritingMode(aWritingMode),
@@ -564,7 +569,7 @@ private:
  */
 class LogicalSize {
 public:
-  LogicalSize(WritingMode aWritingMode)
+  explicit LogicalSize(WritingMode aWritingMode)
     :
 #ifdef DEBUG
       mWritingMode(aWritingMode),
@@ -592,6 +597,12 @@ public:
       ISize() = aPhysicalSize.width;
       BSize() = aPhysicalSize.height;
     }
+  }
+
+  void SizeTo(WritingMode aWritingMode, nscoord aISize, nscoord aBSize)
+  {
+    CHECK_WRITING_MODE(aWritingMode);
+    mSize.SizeTo(aISize, aBSize);
   }
 
   /**
@@ -675,6 +686,16 @@ public:
       *this : LogicalSize(aToMode, GetPhysicalSize(aFromMode));
   }
 
+  bool operator==(const LogicalSize& aOther) const
+  {
+    return mWritingMode == aOther.mWritingMode && mSize == aOther.mSize;
+  }
+
+  bool operator!=(const LogicalSize& aOther) const
+  {
+    return mWritingMode != aOther.mWritingMode || mSize != aOther.mSize;
+  }
+
 private:
   friend class LogicalRect;
 
@@ -713,7 +734,7 @@ private:
  */
 class LogicalMargin {
 public:
-  LogicalMargin(WritingMode aWritingMode)
+  explicit LogicalMargin(WritingMode aWritingMode)
     :
 #ifdef DEBUG
       mWritingMode(aWritingMode),
@@ -999,7 +1020,7 @@ private:
  */
 class LogicalRect {
 public:
-  LogicalRect(WritingMode aWritingMode)
+  explicit LogicalRect(WritingMode aWritingMode)
     :
 #ifdef DEBUG
       mWritingMode(aWritingMode),
@@ -1236,6 +1257,8 @@ public:
   {
     return (mRect.width == 0 && mRect.height == 0);
   }
+
+  void SetEmpty() { mRect.SetEmpty(); }
 
 /* XXX are these correct?
   nscoord ILeft(WritingMode aWritingMode) const

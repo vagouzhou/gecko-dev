@@ -83,9 +83,13 @@ public:
    * to prevent the viewport from overscrolling the page rect), and axis locking
    * (which might prevent any displacement from happening). If overscroll
    * ocurred, its amount is written to |aOverscrollAmountOut|.
-   * The adjusted displacement is returned.
+   * The |aDisplacementOut| parameter is set to the adjusted
+   * displacement, and the function returns true iff internal overscroll amounts
+   * were changed.
    */
-  float AdjustDisplacement(float aDisplacement, float& aOverscrollAmountOut);
+  bool AdjustDisplacement(float aDisplacement,
+                          float& aDisplacementOut,
+                          float& aOverscrollAmountOut);
 
   /**
    * Overscrolls this axis by the requested amount in the requested direction.
@@ -229,7 +233,8 @@ protected:
   float mOverscroll;
   // A queue of (timestamp, velocity) pairs; these are the historical
   // velocities at the given timestamps. Timestamps are in milliseconds,
-  // velocities are in screen pixels per ms.
+  // velocities are in screen pixels per ms. This member can only be
+  // accessed on the controller/UI thread.
   nsTArray<std::pair<uint32_t, float> > mVelocityQueue;
 
   const FrameMetrics& GetFrameMetrics() const;

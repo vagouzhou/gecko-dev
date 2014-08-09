@@ -69,7 +69,13 @@ TestTransport.prototype = {
 
 // Use TestTransport instead of the usual Transport
 discovery._factories.Transport = TestTransport;
-discovery.device.name = "test-device";
+
+// Ignore name generation on b2g and force a fixed value
+Object.defineProperty(discovery.device, "name", {
+  get: function() {
+    return "test-device";
+  }
+});
 
 function run_test() {
   run_next_test();
@@ -116,6 +122,9 @@ add_task(function*() {
   discovery.addService("penguins", { tux: false });
   yield scanForChange("penguins", "updated");
 
+  // Scan again, but nothing should be removed
+  yield scanForNoChange("penguins", "removed");
+
   // Split the scanning side from the service side to simulate the machine with
   // the service becoming unreachable
   gTestTransports = {};
@@ -133,6 +142,20 @@ function scanForChange(service, changeType) {
     discovery.off(service + "-device-" + changeType, onChange);
     clearTimeout(timer);
     deferred.resolve();
+  });
+  discovery.scan();
+  return deferred.promise;
+}
+
+function scanForNoChange(service, changeType) {
+  let deferred = promise.defer();
+  let timer = setTimeout(() => {
+    deferred.resolve();
+  }, discovery.replyTimeout + 500);
+  discovery.on(service + "-device-" + changeType, function onChange() {
+    discovery.off(service + "-device-" + changeType, onChange);
+    clearTimeout(timer);
+    deferred.reject(new Error("Unexpected change occurred"));
   });
   discovery.scan();
   return deferred.promise;

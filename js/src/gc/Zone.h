@@ -42,6 +42,40 @@ class Allocator
     JS::Zone *zone_;
 };
 
+namespace gc {
+
+// This class encapsulates the data that determines when we need to do a zone GC.
+class ZoneHeapThreshold
+{
+    // The "growth factor" for computing our next thresholds after a GC.
+    double gcHeapGrowthFactor_;
+
+    // GC trigger threshold for allocations on the GC heap.
+    size_t gcTriggerBytes_;
+
+  public:
+    ZoneHeapThreshold()
+      : gcHeapGrowthFactor_(3.0),
+        gcTriggerBytes_(0)
+    {}
+
+    double gcHeapGrowthFactor() const { return gcHeapGrowthFactor_; }
+    size_t gcTriggerBytes() const { return gcTriggerBytes_; }
+
+    void updateAfterGC(size_t lastBytes, JSGCInvocationKind gckind,
+                       const GCSchedulingTunables &tunables, const GCSchedulingState &state);
+    void updateForRemovedArena(const GCSchedulingTunables &tunables);
+
+  private:
+    static double computeZoneHeapGrowthFactorForHeapSize(size_t lastBytes,
+                                                         const GCSchedulingTunables &tunables,
+                                                         const GCSchedulingState &state);
+    static size_t computeZoneTriggerBytes(double growthFactor, size_t lastBytes,
+                                          JSGCInvocationKind gckind,
+                                          const GCSchedulingTunables &tunables);
+};
+
+} // namespace gc
 } // namespace js
 
 namespace JS {
@@ -95,7 +129,7 @@ struct Zone : public JS::shadow::Zone,
 {
     explicit Zone(JSRuntime *rt);
     ~Zone();
-    bool init();
+    bool init(bool isSystem);
 
     void findOutgoingEdges(js::gc::ComponentFinder<JS::Zone> &finder);
 
@@ -104,9 +138,6 @@ struct Zone : public JS::shadow::Zone,
     void addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                 size_t *typePool,
                                 size_t *baselineStubsOptimized);
-
-    void setGCLastBytes(size_t lastBytes, js::JSGCInvocationKind gckind);
-    void reduceGCTriggerBytes(size_t amount);
 
     void resetGCMallocBytes();
     void setGCMaxMallocBytes(size_t value);
@@ -156,7 +187,7 @@ struct Zone : public JS::shadow::Zone,
         if (runtimeFromMainThread()->isHeapCollecting())
             return gcState_ != NoGC;
         else
-            return needsBarrier();
+            return needsIncrementalBarrier();
     }
 
     // If this returns true, all object tracing must be done with a GC marking
@@ -169,7 +200,7 @@ struct Zone : public JS::shadow::Zone,
         if (runtimeFromMainThread()->isHeapCollecting())
             return gcState_ == Mark || gcState_ == MarkGray;
         else
-            return needsBarrier();
+            return needsIncrementalBarrier();
     }
 
     bool wasGCStarted() const { return gcState_ != NoGC; }
@@ -182,14 +213,15 @@ struct Zone : public JS::shadow::Zone,
     // possibly at other times too.
     uint64_t gcNumber();
 
-    bool compileBarriers() const { return compileBarriers(needsBarrier()); }
-    bool compileBarriers(bool needsBarrier) const {
-        return needsBarrier || runtimeFromMainThread()->gcZeal() == js::gc::ZealVerifierPreValue;
+    bool compileBarriers() const { return compileBarriers(needsIncrementalBarrier()); }
+    bool compileBarriers(bool needsIncrementalBarrier) const {
+        return needsIncrementalBarrier ||
+               runtimeFromMainThread()->gcZeal() == js::gc::ZealVerifierPreValue;
     }
 
-    enum ShouldUpdateIon { DontUpdateIon, UpdateIon };
-    void setNeedsBarrier(bool needs, ShouldUpdateIon updateIon);
-    const bool *addressOfNeedsBarrier() const { return &needsBarrier_; }
+    enum ShouldUpdateJit { DontUpdateJit, UpdateJit };
+    void setNeedsIncrementalBarrier(bool needs, ShouldUpdateJit updateJit);
+    const bool *addressOfNeedsIncrementalBarrier() const { return &needsIncrementalBarrier_; }
 
     js::jit::JitZone *getJitZone(JSContext *cx) { return jitZone_ ? jitZone_ : createJitZone(cx); }
     js::jit::JitZone *jitZone() { return jitZone_; }
@@ -226,9 +258,6 @@ struct Zone : public JS::shadow::Zone,
     typedef js::HashSet<Zone *, js::DefaultHasher<Zone *>, js::SystemAllocPolicy> ZoneSet;
     ZoneSet gcZoneGroupEdges;
 
-    // The "growth factor" for computing our next thresholds after a GC.
-    double gcHeapGrowthFactor;
-
     // Malloc counter to measure memory pressure for GC scheduling. It runs from
     // gcMaxMallocBytes down to zero. This counter should be used only when it's
     // not possible to know the size of a free.
@@ -244,12 +273,11 @@ struct Zone : public JS::shadow::Zone,
     // types.
     mozilla::Atomic<uint32_t, mozilla::ReleaseAcquire> gcMallocGCTriggered;
 
-    // Counts the number of bytes allocated in the GC heap for this zone. It is
-    // updated by both the main and GC helper threads.
-    mozilla::Atomic<size_t, mozilla::ReleaseAcquire> gcBytes;
+    // Track heap usage under this Zone.
+    js::gc::HeapUsage usage;
 
-    // GC trigger threshold for allocations on the GC heap.
-    size_t gcTriggerBytes;
+    // Thresholds used to trigger GC.
+    js::gc::ZoneHeapThreshold threshold;
 
     // Per-zone data for use by an embedder.
     void *data;
@@ -257,11 +285,6 @@ struct Zone : public JS::shadow::Zone,
     bool isSystem;
 
     bool usedByExclusiveThread;
-
-    // These flags help us to discover if a compartment that shouldn't be alive
-    // manages to outlive a GC.
-    bool scheduledForDestruction;
-    bool maybeAlive;
 
     // True when there are active frames.
     bool active;
@@ -274,7 +297,7 @@ struct Zone : public JS::shadow::Zone,
     GCState gcState_;
     bool gcScheduled_;
     bool gcPreserveCode_;
-    bool ionUsingBarriers_;
+    bool jitUsingBarriers_;
 
     friend bool js::CurrentThreadCanAccessZone(Zone *zone);
     friend class js::gc::GCRuntime;

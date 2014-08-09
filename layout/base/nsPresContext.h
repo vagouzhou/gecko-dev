@@ -688,10 +688,6 @@ public:
   /**
    * Getter and setter for OMTA time counters
    */
-  bool ThrottledTransitionStyleIsUpToDate() const;
-  void TickLastUpdateThrottledTransitionStyle();
-  bool ThrottledAnimationStyleIsUpToDate() const;
-  void TickLastUpdateThrottledAnimationStyle();
   bool StyleUpdateForAllAnimationsIsUpToDate();
   void TickLastStyleUpdateForAllAnimations();
 
@@ -941,7 +937,7 @@ public:
   friend class InterruptPreventer;
   class MOZ_STACK_CLASS InterruptPreventer {
   public:
-    InterruptPreventer(nsPresContext* aCtx) :
+    explicit InterruptPreventer(nsPresContext* aCtx) :
       mCtx(aCtx),
       mInterruptsEnabled(aCtx->mInterruptsEnabled),
       mHasPendingInterrupt(aCtx->mHasPendingInterrupt)
@@ -1282,10 +1278,6 @@ protected:
 
   mozilla::TimeStamp    mReflowStartTime;
 
-  // last time animations styles were flushed to their primary frames
-  mozilla::TimeStamp    mLastUpdateThrottledAnimationStyle;
-  // last time transition styles were flushed to their primary frames
-  mozilla::TimeStamp    mLastUpdateThrottledTransitionStyle;
   // last time we did a full style flush
   mozilla::TimeStamp    mLastStyleUpdateForAllAnimations;
 
@@ -1500,7 +1492,7 @@ protected:
 
   class RunWillPaintObservers : public nsRunnable {
   public:
-    RunWillPaintObservers(nsRootPresContext* aPresContext) : mPresContext(aPresContext) {}
+    explicit RunWillPaintObservers(nsRootPresContext* aPresContext) : mPresContext(aPresContext) {}
     void Revoke() { mPresContext = nullptr; }
     NS_IMETHOD Run() MOZ_OVERRIDE
     {

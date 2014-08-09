@@ -24,9 +24,10 @@
 
 class NS_COM_GLUE nsCategoryObserver MOZ_FINAL : public nsIObserver
 {
-public:
-  nsCategoryObserver(const char* aCategory);
   ~nsCategoryObserver();
+
+public:
+  explicit nsCategoryObserver(const char* aCategory);
 
   void ListenerDied();
   nsInterfaceHashtable<nsCStringHashKey, nsISupports>& GetHash()

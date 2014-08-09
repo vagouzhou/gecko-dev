@@ -42,6 +42,8 @@ public:
   {
     MOZ_COUNT_CTOR(ClientThebesLayer);
   }
+
+protected:
   virtual ~ClientThebesLayer()
   {
     if (mContentClient) {
@@ -51,6 +53,7 @@ public:
     MOZ_COUNT_DTOR(ClientThebesLayer);
   }
 
+public:
   virtual void SetVisibleRegion(const nsIntRegion& aRegion)
   {
     NS_ASSERTION(ClientManager()->InConstruction(),
@@ -66,7 +69,9 @@ public:
     mValidRegion.Sub(mValidRegion, mInvalidRegion);
   }
 
-  virtual void RenderLayer();
+  virtual void RenderLayer() { RenderLayerWithReadback(nullptr); }
+
+  virtual void RenderLayerWithReadback(ReadbackProcessor *aReadback) MOZ_OVERRIDE;
 
   virtual void ClearCachedResources()
   {

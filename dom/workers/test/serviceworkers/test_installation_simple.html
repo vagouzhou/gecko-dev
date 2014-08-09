@@ -16,7 +16,7 @@
 <script class="testbody" type="text/javascript">
 
   function simpleRegister() {
-    var p = navigator.serviceWorker.register("worker.js");
+    var p = navigator.serviceWorker.register("worker.js", { scope: "simpleregister/*" });
     ok(p instanceof Promise, "register() should return a Promise");
     return Promise.resolve();
   }
@@ -56,15 +56,15 @@
   }
 
   function realWorker() {
-    var p = navigator.serviceWorker.register("worker.js");
+    var p = navigator.serviceWorker.register("worker.js", { scope: "realworker*" });
     return p.then(function(w) {
       ok(w instanceof ServiceWorker, "Register a ServiceWorker");
       info(w.scope);
-      ok(w.scope == (new URL("/*", document.baseURI)).href, "Scope should match");
+      ok(w.scope == (new URL("realworker*", document.baseURI)).href, "Scope should match");
       ok(w.url == (new URL("worker.js", document.baseURI)).href, "URL should be of the worker");
     }, function(e) {
-      info(e.name);
-      ok(false, "Registration should have succeeded!");
+      info("Error: " + e.name);
+      ok(false, "realWorker Registration should have succeeded!");
     });
   }
 
@@ -95,6 +95,49 @@
       });
   }
 
+  function parseError() {
+    var p = navigator.serviceWorker.register("parse_error_worker.js");
+    return p.then(function(w) {
+      ok(false, "Registration should fail with parse error");
+    }, function(e) {
+    info("NSM " + e.name);
+      ok(e instanceof Error, "Registration should fail with parse error");
+    });
+  }
+
+  // FIXME(nsm): test for parse error when Update step doesn't happen (directly from register).
+
+  function updatefound() {
+    var frame = document.createElement("iframe");
+    frame.setAttribute("id", "simpleregister-frame");
+    frame.setAttribute("src", new URL("simpleregister/index.html", document.baseURI).href);
+    document.body.appendChild(frame);
+    var resolve, reject;
+    var p = new Promise(function(res, rej) {
+      resolve = res;
+      reject = rej;
+    });
+
+    function continueTest() {
+      navigator.serviceWorker.register("worker2.js", { scope: "simpleregister/*" });
+    }
+
+    window.onmessage = function(e) {
+      if (e.data == "ready") {
+        continueTest();
+      } else if (e.data == "updatefound") {
+        window.onmessage = null;
+        // We have to make frame navigate away, otherwise it will call
+        // MaybeStopControlling() when this document is unloaded. At that point
+        // the pref has been disabled, and so MaybeStopControlling() will just
+        // return since it is currently gated.
+        frame.setAttribute("src", new URL("about:blank").href);
+        resolve();
+      }
+    }
+    return p;
+  }
+
   function runTest() {
     simpleRegister()
       .then(sameOriginWorker)
@@ -102,8 +145,9 @@
       .then(httpsOnly)
       .then(realWorker)
       .then(abortPrevious)
-      // FIXME(nsm): Uncomment once we have the error trapping patch from Bug 984048.
-      // .then(networkError404)
+      .then(networkError404)
+      .then(parseError)
+      .then(updatefound)
       // put more tests here.
       .then(function() {
         SimpleTest.finish();

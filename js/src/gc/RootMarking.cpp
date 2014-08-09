@@ -22,9 +22,7 @@
 #include "gc/ForkJoinNursery.h"
 #include "gc/GCInternals.h"
 #include "gc/Marking.h"
-#ifdef JS_ION
-# include "jit/IonMacroAssembler.h"
-#endif
+#include "jit/IonMacroAssembler.h"
 #include "js/HashTable.h"
 #include "vm/Debugger.h"
 #include "vm/PropDesc.h"
@@ -187,7 +185,7 @@ IsAddressableGCThing(JSRuntime *rt, uintptr_t w,
 
     Chunk *chunk = Chunk::fromAddress(addr);
 
-    if (!rt->gc.chunkSet.has(chunk))
+    if (!rt->gc.hasChunk(chunk))
         return CGCT_NOTCHUNK;
 
     /*
@@ -305,7 +303,7 @@ MarkRangeConservativelyAndSkipIon(JSTracer *trc, JSRuntime *rt, const uintptr_t 
 {
     const uintptr_t *i = begin;
 
-#if JS_STACK_GROWTH_DIRECTION < 0 && defined(JS_ION) && !defined(JS_ARM_SIMULATOR) && !defined(JS_MIPS_SIMULATOR)
+#if JS_STACK_GROWTH_DIRECTION < 0 && !defined(JS_ARM_SIMULATOR) && !defined(JS_MIPS_SIMULATOR)
     // Walk only regions in between JIT activations. Note that non-volatile
     // registers are spilled to the stack before the entry frame, ensuring
     // that the conservative scanner will still see them.
@@ -346,9 +344,7 @@ gc::GCRuntime::markConservativeStackRoots(JSTracer *trc, bool useSavedRoots)
 #endif
 
     if (!conservativeGC.hasStackToScan()) {
-#ifdef JS_THREADSAFE
         JS_ASSERT(!rt->requestDepth);
-#endif
         return;
     }
 
@@ -540,16 +536,12 @@ AutoGCRooter::trace(JSTracer *trc)
       }
 
       case IONMASM: {
-#ifdef JS_ION
         static_cast<js::jit::MacroAssembler::AutoRooter *>(this)->masm()->trace(trc);
-#endif
         return;
       }
 
       case IONALLOC: {
-#ifdef JS_ION
         static_cast<js::jit::AutoTempAllocatorRooter *>(this)->trace(trc);
-#endif
         return;
       }
 
@@ -755,7 +747,7 @@ js::gc::GCRuntime::markRuntime(JSTracer *trc, bool useSavedRoots)
             else if (type == JS_GC_ROOT_SCRIPT_PTR)
                 MarkScriptRoot(trc, reinterpret_cast<JSScript **>(key), name);
             else
-                MOZ_ASSUME_UNREACHABLE("unexpected js::RootInfo::type value");
+                MOZ_CRASH("unexpected js::RootInfo::type value");
         }
     }
 
@@ -772,9 +764,7 @@ js::gc::GCRuntime::markRuntime(JSTracer *trc, bool useSavedRoots)
             MarkPermanentAtoms(trc);
             MarkAtoms(trc);
             MarkWellKnownSymbols(trc);
-#ifdef JS_ION
             jit::JitRuntime::Mark(trc);
-#endif
         }
     }
 
@@ -818,9 +808,7 @@ js::gc::GCRuntime::markRuntime(JSTracer *trc, bool useSavedRoots)
 
     MarkInterpreterActivations(&rt->mainThread, trc);
 
-#ifdef JS_ION
     jit::MarkJitActivations(&rt->mainThread, trc);
-#endif
 
     if (!isHeapMinorCollecting()) {
         /*

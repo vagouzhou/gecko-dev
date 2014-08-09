@@ -54,11 +54,14 @@
 #include "nsScriptNameSpaceManager.h"
 #include "StructuredCloneTags.h"
 #include "mozilla/AutoRestore.h"
+#include "mozilla/dom/CryptoKey.h"
 #include "mozilla/dom/ErrorEvent.h"
-#include "mozilla/dom/ImageData.h"
-#include "mozilla/dom/Key.h"
 #include "mozilla/dom/ImageDataBinding.h"
+#include "mozilla/dom/ImageData.h"
+#include "mozilla/dom/StructuredClone.h"
 #include "mozilla/dom/SubtleCryptoBinding.h"
+#include "mozilla/ipc/BackgroundUtils.h"
+#include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "nsAXPCNativeCallContext.h"
 #include "mozilla/CycleCollectedJSRuntime.h"
 
@@ -370,10 +373,9 @@ AsyncErrorReporter::AsyncErrorReporter(JSRuntime* aRuntime,
 
   const char16_t* m = static_cast<const char16_t*>(aErrorReport->ucmessage);
   if (m) {
-    const char16_t* n = static_cast<const char16_t*>
-      (js::GetErrorTypeName(aRuntime, aErrorReport->exnType));
-    if (n) {
-      mErrorMsg.Assign(n);
+    JSFlatString* name = js::GetErrorTypeName(aRuntime, aErrorReport->exnType);
+    if (name) {
+      AssignJSFlatString(mErrorMsg, name);
       mErrorMsg.AppendLiteral(": ");
     }
     mErrorMsg.Append(m);
@@ -711,11 +713,6 @@ DumpString(const nsAString &str)
 #define JS_OPTIONS_DOT_STR "javascript.options."
 
 static const char js_options_dot_str[]   = JS_OPTIONS_DOT_STR;
-static const char js_strict_option_str[] = JS_OPTIONS_DOT_STR "strict";
-#ifdef DEBUG
-static const char js_strict_debug_option_str[] = JS_OPTIONS_DOT_STR "strict.debug";
-#endif
-static const char js_werror_option_str[] = JS_OPTIONS_DOT_STR "werror";
 #ifdef JS_GC_ZEAL
 static const char js_zeal_option_str[]        = JS_OPTIONS_DOT_STR "gczeal";
 static const char js_zeal_frequency_str[]     = JS_OPTIONS_DOT_STR "gczeal.frequency";
@@ -726,36 +723,11 @@ static const char js_memnotify_option_str[]   = JS_OPTIONS_DOT_STR "mem.notify";
 void
 nsJSContext::JSOptionChangedCallback(const char *pref, void *data)
 {
-  nsJSContext *context = reinterpret_cast<nsJSContext *>(data);
-  JSContext *cx = context->mContext;
-
   sPostGCEventsToConsole = Preferences::GetBool(js_memlog_option_str);
   sPostGCEventsToObserver = Preferences::GetBool(js_memnotify_option_str);
 
-  JS::ContextOptionsRef(cx).setExtraWarnings(Preferences::GetBool(js_strict_option_str));
-
-  // The vanilla GetGlobalObject returns null if a global isn't set up on
-  // the context yet. We can sometimes be call midway through context init,
-  // So ask for the member directly instead.
-  nsIScriptGlobalObject *global = context->GetGlobalObjectRef();
-
-  // XXX should we check for sysprin instead of a chrome window, to make
-  // XXX components be covered by the chrome pref instead of the content one?
-  nsCOMPtr<nsIDOMWindow> contentWindow(do_QueryInterface(global));
-  nsCOMPtr<nsIDOMChromeWindow> chromeWindow(do_QueryInterface(global));
-
-#ifdef DEBUG
-  // In debug builds, warnings are enabled in chrome context if
-  // javascript.options.strict.debug is true
-  if (Preferences::GetBool(js_strict_debug_option_str) &&
-      (chromeWindow || !contentWindow)) {
-    JS::ContextOptionsRef(cx).setExtraWarnings(true);
-  }
-#endif
-
-  JS::ContextOptionsRef(cx).setWerror(Preferences::GetBool(js_werror_option_str));
-
 #ifdef JS_GC_ZEAL
+  nsJSContext *context = reinterpret_cast<nsJSContext *>(data);
   int32_t zeal = Preferences::GetInt(js_zeal_option_str, -1);
   int32_t frequency = Preferences::GetInt(js_zeal_frequency_str, JS_DEFAULT_ZEAL_FREQ);
   if (zeal >= 0)
@@ -940,8 +912,12 @@ nsJSContext::InitContext()
 nsresult
 nsJSContext::SetProperty(JS::Handle<JSObject*> aTarget, const char* aPropName, nsISupports* aArgs)
 {
-  nsCxPusher pusher;
-  pusher.Push(mContext);
+  AutoJSAPI jsapi;
+  if (NS_WARN_IF(!jsapi.InitWithLegacyErrorReporting(GetGlobalObject()))) {
+    return NS_ERROR_FAILURE;
+  }
+  MOZ_ASSERT(jsapi.cx() == mContext,
+             "AutoJSAPI should have found our own JSContext*");
 
   JS::AutoValueVector args(mContext);
 
@@ -1440,8 +1416,27 @@ namespace dmd {
 // See https://wiki.mozilla.org/Performance/MemShrink/DMD for instructions on
 // how to use DMD.
 
+static FILE *
+OpenDMDOutputFile(JSContext *cx, JS::CallArgs &args)
+{
+  JSString *str = JS::ToString(cx, args.get(0));
+  if (!str)
+    return nullptr;
+  JSAutoByteString pathname(cx, str);
+  if (!pathname)
+    return nullptr;
+
+  FILE* fp = fopen(pathname.ptr(), "w");
+  if (!fp) {
+    JS_ReportError(cx, "DMD can't open %s: %s",
+                   pathname.ptr(), strerror(errno));
+    return nullptr;
+  }
+  return fp;
+}
+
 static bool
-ReportAndDump(JSContext *cx, unsigned argc, JS::Value *vp)
+AnalyzeReports(JSContext *cx, unsigned argc, JS::Value *vp)
 {
   if (!dmd::IsRunning()) {
     JS_ReportError(cx, "DMD is not running");
@@ -1449,24 +1444,48 @@ ReportAndDump(JSContext *cx, unsigned argc, JS::Value *vp)
   }
 
   JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
-  JSString *str = JS::ToString(cx, args.get(0));
-  if (!str)
-    return false;
-  JSAutoByteString pathname(cx, str);
-  if (!pathname)
-    return false;
-
-  FILE* fp = fopen(pathname.ptr(), "w");
+  FILE *fp = OpenDMDOutputFile(cx, args);
   if (!fp) {
-    JS_ReportError(cx, "DMD can't open %s: %s",
-                   pathname.ptr(), strerror(errno));
     return false;
   }
 
   dmd::ClearReports();
   dmd::RunReportersForThisProcess();
   dmd::Writer writer(FpWrite, fp);
-  dmd::Dump(writer);
+  dmd::AnalyzeReports(writer);
+
+  fclose(fp);
+
+  args.rval().setUndefined();
+  return true;
+}
+
+// This will be removed eventually.
+static bool
+ReportAndDump(JSContext *cx, unsigned argc, JS::Value *vp)
+{
+  JS_ReportWarning(cx, "DMDReportAndDump() is deprecated; "
+                   "please use DMDAnalyzeReports() instead");
+
+  return AnalyzeReports(cx, argc, vp);
+}
+
+static bool
+AnalyzeHeap(JSContext *cx, unsigned argc, JS::Value *vp)
+{
+  if (!dmd::IsRunning()) {
+    JS_ReportError(cx, "DMD is not running");
+    return false;
+  }
+
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  FILE *fp = OpenDMDOutputFile(cx, args);
+  if (!fp) {
+    return false;
+  }
+
+  dmd::Writer writer(FpWrite, fp);
+  dmd::AnalyzeHeap(writer);
 
   fclose(fp);
 
@@ -1478,7 +1497,9 @@ ReportAndDump(JSContext *cx, unsigned argc, JS::Value *vp)
 } // namespace mozilla
 
 static const JSFunctionSpec DMDFunctions[] = {
-    JS_FS("DMDReportAndDump", dmd::ReportAndDump, 1, 0),
+    JS_FS("DMDReportAndDump",  dmd::ReportAndDump,  1, 0),
+    JS_FS("DMDAnalyzeReports", dmd::AnalyzeReports, 1, 0),
+    JS_FS("DMDAnalyzeHeap",    dmd::AnalyzeHeap,    1, 0),
     JS_FS_END
 };
 
@@ -2793,25 +2814,7 @@ NS_DOMReadStructuredClone(JSContext* cx,
                           void* closure)
 {
   if (tag == SCTAG_DOM_IMAGEDATA) {
-    // Read the information out of the stream.
-    uint32_t width, height;
-    JS::Rooted<JS::Value> dataArray(cx);
-    if (!JS_ReadUint32Pair(reader, &width, &height) ||
-        !JS_ReadTypedArray(reader, &dataArray)) {
-      return nullptr;
-    }
-    MOZ_ASSERT(dataArray.isObject());
-
-    // Protect the result from a moving GC in ~nsRefPtr.
-    JS::Rooted<JSObject*> result(cx);
-    {
-      // Construct the ImageData.
-      nsRefPtr<ImageData> imageData = new ImageData(width, height,
-                                                    dataArray.toObject());
-      // Wrap it in a JS::Value.
-      result = imageData->WrapObject(cx);
-    }
-    return result;
+    return ReadStructuredCloneImageData(cx, reader);
   } else if (tag == SCTAG_DOM_WEBCRYPTO_KEY) {
     nsIGlobalObject *global = xpc::GetNativeForGlobal(JS::CurrentGlobalOrNull(cx));
     if (!global) {
@@ -2821,7 +2824,7 @@ NS_DOMReadStructuredClone(JSContext* cx,
     // Prevent the return value from being trashed by a GC during ~nsRefPtr.
     JS::Rooted<JSObject*> result(cx);
     {
-      nsRefPtr<Key> key = new Key(global);
+      nsRefPtr<CryptoKey> key = new CryptoKey(global);
       if (!key->ReadStructuredClone(reader)) {
         result = nullptr;
       } else {
@@ -2829,6 +2832,46 @@ NS_DOMReadStructuredClone(JSContext* cx,
       }
     }
     return result;
+  } else if (tag == SCTAG_DOM_NULL_PRINCIPAL ||
+             tag == SCTAG_DOM_SYSTEM_PRINCIPAL ||
+             tag == SCTAG_DOM_CONTENT_PRINCIPAL) {
+    mozilla::ipc::PrincipalInfo info;
+    if (tag == SCTAG_DOM_SYSTEM_PRINCIPAL) {
+      info = mozilla::ipc::SystemPrincipalInfo();
+    } else if (tag == SCTAG_DOM_NULL_PRINCIPAL) {
+      info = mozilla::ipc::NullPrincipalInfo();
+    } else {
+      uint32_t appId = data;
+
+      uint32_t isInBrowserElement, specLength;
+      if (!JS_ReadUint32Pair(reader, &isInBrowserElement, &specLength)) {
+        return nullptr;
+      }
+
+      nsAutoCString spec;
+      spec.SetLength(specLength);
+      if (!JS_ReadBytes(reader, spec.BeginWriting(), specLength)) {
+        return nullptr;
+      }
+
+      info = mozilla::ipc::ContentPrincipalInfo(appId, isInBrowserElement, spec);
+    }
+
+    nsresult rv;
+    nsCOMPtr<nsIPrincipal> principal = PrincipalInfoToPrincipal(info, &rv);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      xpc::Throw(cx, NS_ERROR_DOM_DATA_CLONE_ERR);
+      return nullptr;
+    }
+
+    JS::RootedValue result(cx);
+    rv = nsContentUtils::WrapNative(cx, principal, &NS_GET_IID(nsIPrincipal), &result);
+    if (NS_FAILED(rv)) {
+      xpc::Throw(cx, NS_ERROR_DOM_DATA_CLONE_ERR);
+      return nullptr;
+    }
+
+    return result.toObjectOrNull();
   }
 
   // Don't know what this is. Bail.
@@ -2845,24 +2888,39 @@ NS_DOMWriteStructuredClone(JSContext* cx,
   // Handle ImageData cloning
   ImageData* imageData;
   if (NS_SUCCEEDED(UNWRAP_OBJECT(ImageData, obj, imageData))) {
-    // Prepare the ImageData internals.
-    uint32_t width = imageData->Width();
-    uint32_t height = imageData->Height();
-    JS::Rooted<JSObject*> dataArray(cx, imageData->GetDataObject());
-
-    // Write the internals to the stream.
-    JSAutoCompartment ac(cx, dataArray);
-    JS::Rooted<JS::Value> arrayValue(cx, JS::ObjectValue(*dataArray));
-    return JS_WriteUint32Pair(writer, SCTAG_DOM_IMAGEDATA, 0) &&
-           JS_WriteUint32Pair(writer, width, height) &&
-           JS_WriteTypedArray(writer, arrayValue);
+    return WriteStructuredCloneImageData(cx, writer, imageData);
   }
 
   // Handle Key cloning
-  Key* key;
-  if (NS_SUCCEEDED(UNWRAP_OBJECT(Key, obj, key))) {
+  CryptoKey* key;
+  if (NS_SUCCEEDED(UNWRAP_OBJECT(CryptoKey, obj, key))) {
     return JS_WriteUint32Pair(writer, SCTAG_DOM_WEBCRYPTO_KEY, 0) &&
            key->WriteStructuredClone(writer);
+  }
+
+  if (xpc::IsReflector(obj)) {
+    nsCOMPtr<nsISupports> base = xpc::UnwrapReflectorToISupports(obj);
+    nsCOMPtr<nsIPrincipal> principal = do_QueryInterface(base);
+    if (principal) {
+      mozilla::ipc::PrincipalInfo info;
+      if (NS_WARN_IF(NS_FAILED(PrincipalToPrincipalInfo(principal, &info)))) {
+        xpc::Throw(cx, NS_ERROR_DOM_DATA_CLONE_ERR);
+        return false;
+      }
+
+      if (info.type() == mozilla::ipc::PrincipalInfo::TNullPrincipalInfo) {
+        return JS_WriteUint32Pair(writer, SCTAG_DOM_NULL_PRINCIPAL, 0);
+      }
+      if (info.type() == mozilla::ipc::PrincipalInfo::TSystemPrincipalInfo) {
+        return JS_WriteUint32Pair(writer, SCTAG_DOM_SYSTEM_PRINCIPAL, 0);
+      }
+
+      MOZ_ASSERT(info.type() == mozilla::ipc::PrincipalInfo::TContentPrincipalInfo);
+      const mozilla::ipc::ContentPrincipalInfo& cInfo = info;
+      return JS_WriteUint32Pair(writer, SCTAG_DOM_CONTENT_PRINCIPAL, cInfo.appId()) &&
+             JS_WriteUint32Pair(writer, cInfo.isInBrowserElement(), cInfo.spec().Length()) &&
+             JS_WriteBytes(writer, cInfo.spec().get(), cInfo.spec().Length());
+    }
   }
 
   // Don't know what this is
@@ -2951,11 +3009,6 @@ nsJSContext::EnsureStatics()
   };
   JS_SetStructuredCloneCallbacks(sRuntime, &cloneCallbacks);
 
-  static js::DOMCallbacks DOMcallbacks = {
-    InstanceClassHasProtoAtDepth
-  };
-  SetDOMCallbacks(sRuntime, &DOMcallbacks);
-
   // Set up the asm.js cache callbacks
   static JS::AsmJSCacheOps asmJSCacheOps = {
     AsmJSCacheOpenEntryForRead,
@@ -3026,6 +3079,14 @@ nsJSContext::EnsureStatics()
   Preferences::RegisterCallbackAndCall(SetIncrementalCCPrefChangedCallback,
                                        "dom.cycle_collector.incremental");
 
+  Preferences::RegisterCallbackAndCall(SetMemoryGCPrefChangedCallback,
+                                       "javascript.options.mem.gc_min_empty_chunk_count",
+                                       (void *)JSGC_MIN_EMPTY_CHUNK_COUNT);
+
+  Preferences::RegisterCallbackAndCall(SetMemoryGCPrefChangedCallback,
+                                       "javascript.options.mem.gc_max_empty_chunk_count",
+                                       (void *)JSGC_MAX_EMPTY_CHUNK_COUNT);
+
   nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
   if (!obs) {
     MOZ_CRASH();
@@ -3087,16 +3148,6 @@ mozilla::dom::ShutdownJSEnvironment()
   sDidShutdown = true;
 }
 
-class nsJSArgArray;
-
-namespace mozilla {
-template<>
-struct HasDangerousPublicDestructor<nsJSArgArray>
-{
-  static const bool value = true;
-};
-}
-
 // A fast-array class for JS.  This class supports both nsIJSScriptArray and
 // nsIArray.  If it is JS itself providing and consuming this class, all work
 // can be done via nsIJSScriptArray, and avoid the conversion of elements
@@ -3107,7 +3158,7 @@ class nsJSArgArray MOZ_FINAL : public nsIJSArgArray {
 public:
   nsJSArgArray(JSContext *aContext, uint32_t argc, JS::Value *argv,
                nsresult *prv);
-  ~nsJSArgArray();
+
   // nsISupports
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_AMBIGUOUS(nsJSArgArray,
@@ -3122,6 +3173,7 @@ public:
   void ReleaseJSObjects();
 
 protected:
+  ~nsJSArgArray();
   JSContext *mContext;
   JS::Heap<JS::Value> *mArgv;
   uint32_t mArgc;
@@ -3251,13 +3303,11 @@ nsresult NS_CreateJSArgv(JSContext *aContext, uint32_t argc, void *argv,
                          nsIJSArgArray **aArray)
 {
   nsresult rv;
-  nsJSArgArray *ret = new nsJSArgArray(aContext, argc,
-                                       static_cast<JS::Value *>(argv), &rv);
-  if (ret == nullptr)
-    return NS_ERROR_OUT_OF_MEMORY;
+  nsCOMPtr<nsIJSArgArray> ret = new nsJSArgArray(aContext, argc,
+                                                static_cast<JS::Value *>(argv), &rv);
   if (NS_FAILED(rv)) {
-    delete ret;
     return rv;
   }
-  return ret->QueryInterface(NS_GET_IID(nsIArray), (void **)aArray);
+  ret.forget(aArray);
+  return NS_OK;
 }

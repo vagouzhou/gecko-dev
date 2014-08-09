@@ -25,6 +25,7 @@
 #include "mozilla/dom/XMLDocument.h"
 #include "nsIStreamListener.h"
 #include "ChildIterator.h"
+#include "nsITimer.h"
 
 #include "nsXBLBinding.h"
 #include "nsXBLPrototypeBinding.h"
@@ -45,10 +46,10 @@
 #include "nsIScriptContext.h"
 #include "xpcpublic.h"
 #include "jswrapper.h"
-#include "nsCxPusher.h"
 
 #include "nsThreadUtils.h"
 #include "mozilla/dom/NodeListBinding.h"
+#include "mozilla/dom/ScriptSettings.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -370,6 +371,16 @@ nsBindingManager::PostProcessAttachedQueueEvent()
   }
 }
 
+// static
+void
+nsBindingManager::PostPAQEventCallback(nsITimer* aTimer, void* aClosure)
+{
+  nsRefPtr<nsBindingManager> mgr = 
+    already_AddRefed<nsBindingManager>(static_cast<nsBindingManager*>(aClosure));
+  mgr->PostProcessAttachedQueueEvent();
+  NS_RELEASE(aTimer);
+}
+
 void
 nsBindingManager::DoProcessAttachedQueue()
 {
@@ -384,7 +395,19 @@ nsBindingManager::DoProcessAttachedQueue()
     // Someone's doing event processing from inside a constructor.
     // They're evil, but we'll fight back!  Just poll on them being
     // done and repost the attached queue event.
-    PostProcessAttachedQueueEvent();
+    //
+    // But don't poll in a tight loop -- otherwise we keep the Gecko
+    // event loop non-empty and trigger bug 1021240 on OS X.
+    nsresult rv = NS_ERROR_FAILURE;
+    nsCOMPtr<nsITimer> timer = do_CreateInstance(NS_TIMER_CONTRACTID);
+    if (timer) {
+      rv = timer->InitWithFuncCallback(PostPAQEventCallback, this,
+                                       100, nsITimer::TYPE_ONE_SHOT);
+    }
+    if (NS_SUCCEEDED(rv)) {
+      NS_ADDREF_THIS();
+      NS_ADDREF(timer);
+    }
   }
 
   // No matter what, unblock onload for the event that's fired.
@@ -467,7 +490,7 @@ nsBindingManager::PutXBLDocumentInfo(nsXBLDocumentInfo* aDocumentInfo)
   NS_PRECONDITION(aDocumentInfo, "Must have a non-null documentinfo!");
 
   if (!mDocumentTable) {
-    mDocumentTable = new nsRefPtrHashtable<nsURIHashKey,nsXBLDocumentInfo>(16);
+    mDocumentTable = new nsRefPtrHashtable<nsURIHashKey,nsXBLDocumentInfo>();
   }
 
   mDocumentTable->Put(aDocumentInfo->DocumentURI(), aDocumentInfo);
@@ -498,7 +521,8 @@ nsBindingManager::PutLoadingDocListener(nsIURI* aURL, nsIStreamListener* aListen
   NS_PRECONDITION(aListener, "Must have a non-null listener!");
 
   if (!mLoadingDocTable) {
-    mLoadingDocTable = new nsInterfaceHashtable<nsURIHashKey,nsIStreamListener>(16);
+    mLoadingDocTable =
+      new nsInterfaceHashtable<nsURIHashKey,nsIStreamListener>();
   }
   mLoadingDocTable->Put(aURL, aListener);
 
@@ -615,21 +639,9 @@ nsBindingManager::GetBindingImplementation(nsIContent* aContent, REFNSIID aIID,
 
       // We have never made a wrapper for this implementation.
       // Create an XPC wrapper for the script object and hand it back.
-
-      nsIDocument* doc = aContent->OwnerDoc();
-
-      nsCOMPtr<nsIScriptGlobalObject> global =
-        do_QueryInterface(doc->GetWindow());
-      if (!global)
-        return NS_NOINTERFACE;
-
-      nsIScriptContext *context = global->GetContext();
-      if (!context)
-        return NS_NOINTERFACE;
-
-      AutoPushJSContext cx(context->GetNativeContext());
-      if (!cx)
-        return NS_NOINTERFACE;
+      AutoJSAPI jsapi;
+      jsapi.Init();
+      JSContext* cx = jsapi.cx();
 
       nsIXPConnect *xpConnect = nsContentUtils::XPConnect();
 
@@ -643,9 +655,9 @@ nsBindingManager::GetBindingImplementation(nsIContent* aContent, REFNSIID aIID,
       // because they're chrome-only and no Xrays are involved.
       //
       // If there's no separate XBL scope, or if the reflector itself lives in
-      // the XBL scope, we'll end up with the global of the reflector, and this
-      // will all be a no-op.
+      // the XBL scope, we'll end up with the global of the reflector.
       JS::Rooted<JSObject*> xblScope(cx, xpc::GetXBLScopeOrGlobal(cx, jsobj));
+      NS_ENSURE_TRUE(xblScope, NS_ERROR_UNEXPECTED);
       JSAutoCompartment ac(cx, xblScope);
       bool ok = JS_WrapObject(cx, &jsobj);
       NS_ENSURE_TRUE(ok, NS_ERROR_OUT_OF_MEMORY);

@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "cert.h"
 #include "keyhi.h"
 #include "pkix/enumclass.h"
 #include "pkix/pkixtypes.h"
@@ -35,6 +36,16 @@
 #include "seccomon.h"
 
 namespace mozilla { namespace pkix { namespace test {
+
+class TestInput : public Input
+{
+public:
+  template <size_t N>
+  explicit TestInput(const char (&valueString)[N])
+    : Input(reinterpret_cast<const uint8_t(&)[N-1]>(valueString))
+  {
+  }
+};
 
 namespace {
 
@@ -51,6 +62,8 @@ SECITEM_FreeItem_true(SECItem* item)
 
 } // unnamed namespace
 
+typedef ScopedPtr<CERTCertificate, CERT_DestroyCertificate> ScopedCERTCertificate;
+typedef ScopedPtr<CERTCertList, CERT_DestroyCertList> ScopedCERTCertList;
 typedef mozilla::pkix::ScopedPtr<FILE, fclose_void> ScopedFILE;
 typedef mozilla::pkix::ScopedPtr<SECItem, SECITEM_FreeItem_true> ScopedSECItem;
 typedef mozilla::pkix::ScopedPtr<SECKEYPublicKey, SECKEY_DestroyPublicKey>
@@ -62,11 +75,27 @@ FILE* OpenFile(const char* dir, const char* filename, const char* mode);
 
 extern const PRTime ONE_DAY;
 
+// e.g. YMDHMS(2016, 12, 31, 1, 23, 45) => 2016-12-31:01:23:45 (GMT)
+mozilla::pkix::Time YMDHMS(int16_t year, int16_t month, int16_t day,
+                           int16_t hour, int16_t minutes, int16_t seconds);
+
 SECStatus GenerateKeyPair(/*out*/ ScopedSECKEYPublicKey& publicKey,
                           /*out*/ ScopedSECKEYPrivateKey& privateKey);
 
 // The result will be owned by the arena
 const SECItem* ASCIIToDERName(PLArenaPool* arena, const char* cn);
+
+// Replace one substring in item with another of the same length, but only if
+// the substring was found exactly once. The "only once" restriction is helpful
+// for avoiding making multiple changes at once.
+//
+// The string to search for must be 8 or more bytes long so that it is
+// extremely unlikely that there will ever be any false positive matches
+// in digital signatures, keys, hashes, etc.
+SECStatus TamperOnce(SECItem& item, const uint8_t* from, size_t fromLen,
+                     const uint8_t* to, size_t toLen);
+
+Result InitInputFromSECItem(const SECItem* secItem, /*out*/ Input& input);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Encode Certificates

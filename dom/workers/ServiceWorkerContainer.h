@@ -9,6 +9,8 @@
 
 #include "mozilla/DOMEventTargetHelper.h"
 
+#include "ServiceWorkerManager.h"
+
 class nsPIDOMWindow;
 
 namespace mozilla {
@@ -33,12 +35,7 @@ public:
   IMPL_EVENT_HANDLER(reloadpage)
   IMPL_EVENT_HANDLER(error)
 
-  explicit ServiceWorkerContainer(nsPIDOMWindow* aWindow)
-    : mWindow(aWindow)
-  {
-    // FIXME(nsm): Bug 983497. Here the NSW should hook into SWM to be notified of events.
-    SetIsDOMBinding();
-  }
+  explicit ServiceWorkerContainer(nsPIDOMWindow* aWindow);
 
   nsPIDOMWindow*
   GetParentObject() const
@@ -73,7 +70,19 @@ public:
   GetAll(ErrorResult& aRv);
 
   already_AddRefed<Promise>
-  Ready();
+  GetReady(ErrorResult& aRv);
+
+  nsIURI*
+  GetDocumentURI() const
+  {
+    return mWindow->GetDocumentURI();
+  }
+
+  void
+  InvalidateWorkerReference(WhichServiceWorker aWhichOnes);
+
+  already_AddRefed<workers::ServiceWorker>
+  GetWorkerReference(WhichServiceWorker aWhichOne);
 
   // Testing only.
   already_AddRefed<Promise>
@@ -81,16 +90,35 @@ public:
 
   // Testing only.
   void
+  GetScopeForUrl(const nsAString& aUrl, nsString& aScope, ErrorResult& aRv);
+
+  // Testing only.
+  void
   GetControllingWorkerScriptURLForPath(const nsAString& aPath,
                                        nsString& aScriptURL,
                                        ErrorResult& aRv);
 private:
-  ~ServiceWorkerContainer()
-  {
-    // FIXME(nsm): Bug 983497. Unhook from events.
-  }
+  ~ServiceWorkerContainer();
+
+  void
+  StartListeningForEvents();
+
+  void
+  StopListeningForEvents();
 
   nsCOMPtr<nsPIDOMWindow> mWindow;
+
+  // The following properties are cached here to ensure JS equality is satisfied
+  // instead of acquiring a new worker instance from the ServiceWorkerManager
+  // for every access. A null value is considered a cache miss.
+  // These three may change to a new worker at any time.
+  nsRefPtr<ServiceWorker> mInstallingWorker;
+  nsRefPtr<ServiceWorker> mWaitingWorker;
+  nsRefPtr<ServiceWorker> mActiveWorker;
+  // This only changes when a worker hijacks everything in its scope by calling
+  // replace().
+  // FIXME(nsm): Bug 982711. Provide API to let SWM invalidate this.
+  nsRefPtr<ServiceWorker> mControllerWorker;
 };
 
 } // namespace workers

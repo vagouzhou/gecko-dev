@@ -6,8 +6,12 @@
 #define MP4_DEMUXER_H_
 
 #include "nsAutoPtr.h"
-#include "mozilla/gfx/Rect.h"
+#include "nsTArray.h"
 #include "mp4_demuxer/DecoderData.h"
+#include "mp4_demuxer/Interval.h"
+#include "nsISupportsImpl.h"
+
+namespace mozilla { class MediaByteRange; }
 
 namespace mp4_demuxer
 {
@@ -17,12 +21,14 @@ typedef int64_t Microseconds;
 
 class Stream
 {
-
 public:
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(Stream);
+
   virtual bool ReadAt(int64_t offset, void* data, size_t size,
                       size_t* bytes_read) = 0;
   virtual bool Length(int64_t* size) = 0;
 
+protected:
   virtual ~Stream() {}
 };
 
@@ -49,15 +55,23 @@ public:
   MP4Sample* DemuxAudioSample();
   MP4Sample* DemuxVideoSample();
 
+  const CryptoFile& Crypto() { return mCrypto; }
   const AudioDecoderConfig& AudioConfig() { return mAudioConfig; }
   const VideoDecoderConfig& VideoConfig() { return mVideoConfig; }
+
+  void ConvertByteRangesToTime(
+    const nsTArray<mozilla::MediaByteRange>& aByteRanges,
+    nsTArray<Interval<Microseconds> >* aIntervals);
 
 private:
   AudioDecoderConfig mAudioConfig;
   VideoDecoderConfig mVideoConfig;
+  CryptoFile mCrypto;
 
   nsAutoPtr<StageFrightPrivate> mPrivate;
+  nsRefPtr<Stream> mSource;
 };
-}
 
-#endif
+} // namespace mozilla
+
+#endif // MP4_DEMUXER_H_

@@ -167,6 +167,16 @@ bool WindowCapturerWin::BringSelectedWindowToFront() {
   return SetForegroundWindow(window_) != 0;
 }
 
+bool WindowCapturerWin::BringSelectedWindowToFront() {
+  if (!window_)
+    return false;
+
+  if (!IsWindow(window_) || !IsWindowVisible(window_) || IsIconic(window_))
+    return false;
+
+  return SetForegroundWindow(window_) != 0;
+}
+
 void WindowCapturerWin::Start(Callback* callback) {
   assert(!callback_);
   assert(callback);

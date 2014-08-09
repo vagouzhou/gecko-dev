@@ -218,7 +218,7 @@ BaselineCompiler::compile()
         label.fixup(&masm);
         size_t icEntry = icLoadLabels_[i].icEntry;
         ICEntry *entryAddr = &(baselineScript->icEntry(icEntry));
-        Assembler::patchDataWithValueCheck(CodeLocationLabel(code, label),
+        Assembler::PatchDataWithValueCheck(CodeLocationLabel(code, label),
                                            ImmPtr(entryAddr),
                                            ImmPtr((void*)-1));
     }
@@ -227,7 +227,7 @@ BaselineCompiler::compile()
         baselineScript->setModifiesArguments();
 
     // All barriers are emitted off-by-default, toggle them on if needed.
-    if (cx->zone()->needsBarrier())
+    if (cx->zone()->needsIncrementalBarrier())
         baselineScript->toggleBarriers(true);
 
     // All SPS instrumentation is emitted toggled off.  Toggle them on if needed.
@@ -1239,7 +1239,7 @@ static const VMFunction DeepCloneObjectLiteralInfo =
 bool
 BaselineCompiler::emit_JSOP_OBJECT()
 {
-    if (JS::CompartmentOptionsRef(cx).cloneSingletons(cx)) {
+    if (JS::CompartmentOptionsRef(cx).cloneSingletons()) {
         RootedObject obj(cx, script->getObject(GET_UINT32_INDEX(pc)));
         if (!obj)
             return false;
@@ -1260,6 +1260,23 @@ BaselineCompiler::emit_JSOP_OBJECT()
 
     JS::CompartmentOptionsRef(cx).setSingletonsAsValues();
     frame.push(ObjectValue(*script->getObject(pc)));
+    return true;
+}
+
+bool
+BaselineCompiler::emit_JSOP_CALLSITEOBJ()
+{
+    RootedObject cso(cx, script->getObject(pc));
+    RootedObject raw(cx, script->getObject(GET_UINT32_INDEX(pc) + 1));
+    if (!cso || !raw)
+        return false;
+    RootedValue rawValue(cx);
+    rawValue.setObject(*raw);
+
+    if (!ProcessCallSiteObjOperation(cx, cso, raw, rawValue))
+        return false;
+
+    frame.push(ObjectValue(*cso));
     return true;
 }
 
@@ -2367,34 +2384,6 @@ BaselineCompiler::emit_JSOP_INITELEM_INC()
     // Increment index
     Address indexAddr = frame.addressOfStackValue(frame.peek(-1));
     masm.incrementInt32Value(indexAddr);
-    return true;
-}
-
-typedef bool (*SpreadFn)(JSContext *, HandleObject, HandleValue,
-                         HandleValue, MutableHandleValue);
-static const VMFunction SpreadInfo = FunctionInfo<SpreadFn>(js::SpreadOperation);
-
-bool
-BaselineCompiler::emit_JSOP_SPREAD()
-{
-    // Load index and iterator in R0 and R1, but keep values on the stack for
-    // the decompiler.
-    frame.syncStack(0);
-    masm.loadValue(frame.addressOfStackValue(frame.peek(-2)), R0);
-    masm.loadValue(frame.addressOfStackValue(frame.peek(-1)), R1);
-
-    prepareVMCall();
-
-    pushArg(R1);
-    pushArg(R0);
-    masm.extractObject(frame.addressOfStackValue(frame.peek(-3)), R0.scratchReg());
-    pushArg(R0.scratchReg());
-
-    if (!callVM(SpreadInfo))
-        return false;
-
-    frame.popn(2);
-    frame.push(R0);
     return true;
 }
 

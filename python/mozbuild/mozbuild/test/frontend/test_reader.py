@@ -66,13 +66,13 @@ class TestBuildReader(unittest.TestCase):
         reader = self.reader('traversal-all-vars', enable_tests=True)
 
         sandboxes = list(reader.read_topsrcdir())
-        self.assertEqual(len(sandboxes), 6)
+        self.assertEqual(len(sandboxes), 3)
 
     def test_tiers_traversal(self):
         reader = self.reader('traversal-tier-simple')
 
         sandboxes = list(reader.read_topsrcdir())
-        self.assertEqual(len(sandboxes), 4)
+        self.assertEqual(len(sandboxes), 6)
 
         for sandbox in sandboxes:
             self.assertIsInstance(sandbox.metadata, dict)
@@ -245,15 +245,6 @@ class TestBuildReader(unittest.TestCase):
         e = bre.exception
         self.assertIn('A moz.build file called the error() function.', str(e))
         self.assertIn('    Some error.', str(e))
-
-    def test_error_traversal_tools(self):
-        reader = self.reader('reader-error-traversal-tools')
-
-        with self.assertRaises(BuildReaderError) as bre:
-            list(reader.read_topsrcdir())
-
-        e = bre.exception
-        self.assertIn('The DIRS variable is not allowed in such directories.', str(e))
 
     def test_inheriting_variables(self):
         reader = self.reader('inheriting-variables')

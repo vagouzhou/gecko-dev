@@ -33,6 +33,9 @@ const UPDATE_STYLESHEET_THROTTLE_DELAY = 500;
 // Pref which decides if CSS autocompletion is enabled in Style Editor or not.
 const AUTOCOMPLETION_PREF = "devtools.styleeditor.autocompletion-enabled";
 
+// Pref which decides whether updates to the stylesheet use transitions
+const TRANSITION_PREF = "devtools.styleeditor.transitions";
+
 // How long to wait to update linked CSS file after original source was saved
 // to disk. Time in ms.
 const CHECK_LINKED_SHEET_DELAY=500;
@@ -94,6 +97,8 @@ function StyleSheetEditor(styleSheet, win, file, isNew, walker) {
   this._onMediaRulesChanged = this._onMediaRulesChanged.bind(this)
   this.checkLinkedFileForChanges = this.checkLinkedFileForChanges.bind(this);
   this.markLinkedFileBroken = this.markLinkedFileBroken.bind(this);
+  this.saveToFile = this.saveToFile.bind(this);
+  this.updateStyleSheet = this.updateStyleSheet.bind(this);
 
   this._focusOnSourceEditorReady = false;
   this.cssSheet.on("property-change", this._onPropertyChange);
@@ -225,7 +230,8 @@ StyleSheetEditor.prototype = {
   fetchSource: function(callback) {
     return this.styleSheet.getText().then((longStr) => {
       longStr.string().then((source) => {
-        this._state.text = CssLogic.prettifyCSS(source);
+        let ruleCount = this.styleSheet.ruleCount;
+        this._state.text = CssLogic.prettifyCSS(source, ruleCount);
         this.sourceLoaded = true;
 
         if (callback) {
@@ -346,23 +352,18 @@ StyleSheetEditor.prototype = {
       autoCloseBrackets: "{}()[]",
       extraKeys: this._getKeyBindings(),
       contextMenu: "sourceEditorContextMenu",
-      autocomplete: Services.prefs.getBoolPref(AUTOCOMPLETION_PREF)
+      autocomplete: Services.prefs.getBoolPref(AUTOCOMPLETION_PREF),
+      autocompleteOpts: { walker: this.walker }
     };
-    let sourceEditor = new Editor(config);
+    let sourceEditor = this._sourceEditor = new Editor(config);
 
     sourceEditor.on("dirty-change", this._onPropertyChange);
 
     return sourceEditor.appendTo(inputElement).then(() => {
-      sourceEditor.setupAutoCompletion({ walker: this.walker });
-
-      sourceEditor.on("save", () => {
-        this.saveToFile();
-      });
+      sourceEditor.on("save", this.saveToFile);
 
       if (this.styleSheet.update) {
-        sourceEditor.on("change", () => {
-          this.updateStyleSheet();
-        });
+        sourceEditor.on("change", this.updateStyleSheet);
       }
 
       this.sourceEditor = sourceEditor;
@@ -463,7 +464,9 @@ StyleSheetEditor.prototype = {
       this._state.text = this.sourceEditor.getText();
     }
 
-    this.styleSheet.update(this._state.text, true);
+    let transitionsEnabled = Services.prefs.getBoolPref(TRANSITION_PREF);
+
+    this.styleSheet.update(this._state.text, transitionsEnabled);
   },
 
   /**
@@ -623,6 +626,8 @@ StyleSheetEditor.prototype = {
       this.saveToFile();
     };
 
+    bindings["Esc"] = false;
+
     return bindings;
   },
 
@@ -630,8 +635,11 @@ StyleSheetEditor.prototype = {
    * Clean up for this editor.
    */
   destroy: function() {
-    if (this.sourceEditor) {
-      this.sourceEditor.destroy();
+    if (this._sourceEditor) {
+      this._sourceEditor.off("dirty-change", this._onPropertyChange);
+      this._sourceEditor.off("save", this.saveToFile);
+      this._sourceEditor.off("change", this.updateStyleSheet);
+      this._sourceEditor.destroy();
     }
     this.cssSheet.off("property-change", this._onPropertyChange);
     this.cssSheet.off("media-rules-changed", this._onMediaRulesChanged);

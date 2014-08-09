@@ -31,16 +31,17 @@
 #include "nsIXPConnect.h"
 #include "mozilla/unused.h"
 #include "nsContentUtils.h" // for nsAutoScriptBlocker
+#include "nsJSUtils.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "nsPrintfCString.h"
 #include "nsTHashtable.h"
 #include "jsapi.h"
 
 // Initial size for the cache holding visited status observers.
-#define VISIT_OBSERVERS_INITIAL_CACHE_SIZE 128
+#define VISIT_OBSERVERS_INITIAL_CACHE_LENGTH 64
 
-// Initial size for the visits removal hash.
-#define VISITS_REMOVAL_INITIAL_HASH_SIZE 128
+// Initial length for the visits removal hash.
+#define VISITS_REMOVAL_INITIAL_HASH_LENGTH 64
 
 using namespace mozilla::dom;
 using namespace mozilla::ipc;
@@ -326,14 +327,10 @@ GetJSValueAsString(JSContext* aCtx,
     _string.Truncate();
     return;
   }
-  size_t length;
-  const jschar* chars =
-    JS_GetStringCharsZAndLength(aCtx, aValue.toString(), &length);
-  if (!chars) {
+
+  if (!AssignJSString(aCtx, _string, aValue.toString())) {
     _string.SetIsVoid(true);
-    return;
   }
-  _string.Assign(static_cast<const char16_t*>(chars), length);
 }
 
 /**
@@ -1561,8 +1558,10 @@ static PLDHashOperator NotifyVisitRemoval(PlaceHashKey* aEntry,
   const nsTArray<VisitData>& visits = aEntry->visits;
   nsCOMPtr<nsIURI> uri;
   (void)NS_NewURI(getter_AddRefs(uri), visits[0].spec);
-  bool removingPage = visits.Length() == aEntry->visitCount &&
-                      !aEntry->bookmarked;
+  // XXX visitCount should really just be unsigned (bug 1049812)
+  bool removingPage =
+    visits.Length() == static_cast<size_t>(aEntry->visitCount) &&
+    !aEntry->bookmarked;
   // FindRemovableVisits only sets the transition type on the VisitData objects
   // it collects if the visits were filtered by transition type.
   // RemoveVisitsFilter currently only supports filtering by transition type, so
@@ -1587,7 +1586,7 @@ class NotifyRemoveVisits : public nsRunnable
 public:
 
   NotifyRemoveVisits(nsTHashtable<PlaceHashKey>& aPlaces)
-    : mPlaces(VISITS_REMOVAL_INITIAL_HASH_SIZE)
+    : mPlaces(VISITS_REMOVAL_INITIAL_HASH_LENGTH)
     , mHistory(History::GetService())
   {
     MOZ_ASSERT(!NS_IsMainThread(),
@@ -1639,7 +1638,9 @@ static PLDHashOperator ListToBeRemovedPlaceIds(PlaceHashKey* aEntry,
 {
   const nsTArray<VisitData>& visits = aEntry->visits;
   // Only orphan ids should be listed.
-  if (visits.Length() == aEntry->visitCount && !aEntry->bookmarked) {
+  // XXX visitCount should really just be unsigned (bug 1049812)
+  if (visits.Length() == static_cast<size_t>(aEntry->visitCount) &&
+      !aEntry->bookmarked) {
     nsCString* list = static_cast<nsCString*>(aIdsList);
     if (!list->IsEmpty())
       list->Append(',');
@@ -1692,7 +1693,7 @@ public:
 
     // Find all the visits relative to the current filters and whether their
     // pages will be removed or not.
-    nsTHashtable<PlaceHashKey> places(VISITS_REMOVAL_INITIAL_HASH_SIZE);
+    nsTHashtable<PlaceHashKey> places(VISITS_REMOVAL_INITIAL_HASH_LENGTH);
     nsresult rv = FindRemovableVisits(places);
     NS_ENSURE_SUCCESS(rv, rv);
 
@@ -1924,7 +1925,7 @@ History* History::gService = nullptr;
 History::History()
   : mShuttingDown(false)
   , mShutdownMutex("History::mShutdownMutex")
-  , mObservers(VISIT_OBSERVERS_INITIAL_CACHE_SIZE)
+  , mObservers(VISIT_OBSERVERS_INITIAL_CACHE_LENGTH)
   , mRecentlyVisitedURIsNextIndex(0)
 {
   NS_ASSERTION(!gService, "Ruh-roh!  This service has already been created!");
@@ -2226,12 +2227,6 @@ History::FetchPageInfo(VisitData& _place, bool* _exists)
   return NS_OK;
 }
 
-/* static */ size_t
-History::SizeOfEntryExcludingThis(KeyClass* aEntry, mozilla::MallocSizeOf aMallocSizeOf, void *)
-{
-  return aEntry->array.SizeOfExcludingThis(aMallocSizeOf);
-}
-
 MOZ_DEFINE_MALLOC_SIZE_OF(HistoryMallocSizeOf)
 
 NS_IMETHODIMP
@@ -2249,7 +2244,7 @@ size_t
 History::SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOfThis)
 {
   return aMallocSizeOfThis(this) +
-         mObservers.SizeOfExcludingThis(SizeOfEntryExcludingThis, aMallocSizeOfThis);
+         mObservers.SizeOfExcludingThis(aMallocSizeOfThis);
 }
 
 /* static */

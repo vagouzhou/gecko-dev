@@ -58,7 +58,7 @@ let developerHUD = {
       return;
 
     if (!DebuggerServer.initialized) {
-      RemoteDebugger.start();
+      RemoteDebugger.initServer();
     }
 
     // We instantiate a local debugger connection so that watchers can use our
@@ -554,7 +554,7 @@ let memoryWatcher = {
       });
     }
 
-    let timer = setTimeout(() => this.measure(target), 300);
+    let timer = setTimeout(() => this.measure(target), 500);
     this._timers.set(target, timer);
   },
 

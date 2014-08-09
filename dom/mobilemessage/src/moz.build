@@ -19,7 +19,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'android':
         'android/SmsService.cpp',
     ]
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'gonk' and CONFIG['MOZ_B2G_RIL']:
-    EXTRA_JS_MODULES = [
+    EXTRA_JS_MODULES += [
         'gonk/mms_consts.js',
         'gonk/MmsPduHelper.jsm',
         'gonk/MobileMessageDB.jsm',
@@ -42,11 +42,11 @@ EXPORTS.mozilla.dom += [
     'MobileMessageManager.h',
     'SmsFilter.h',
     'SmsMessage.h',
-    'SmsSegmentInfo.h',
 ]
 
 UNIFIED_SOURCES += [
     'Constants.cpp',
+    'DeletedMessageInfo.cpp',
     'DOMMobileMessageError.cpp',
     'ipc/SmsChild.cpp',
     'ipc/SmsIPCService.cpp',
@@ -59,7 +59,6 @@ UNIFIED_SOURCES += [
     'MobileMessageThread.cpp',
     'SmsFilter.cpp',
     'SmsMessage.cpp',
-    'SmsSegmentInfo.cpp',
     'SmsServicesFactory.cpp',
 ]
 
@@ -80,4 +79,4 @@ LOCAL_INCLUDES += [
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
-FINAL_LIBRARY = 'gklayout'
+FINAL_LIBRARY = 'xul'

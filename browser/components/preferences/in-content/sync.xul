@@ -34,7 +34,6 @@
       class="header"
       hidden="true"
       data-category="paneSync">
-  <image class="header-icon"/>
   <label class="header-name">&paneSync.title;</label>
 </hbox>
 
@@ -219,20 +218,14 @@
       <deck id="fxaLoginStatus">
 
         <!-- logged in and verified and all is good -->
-        <hbox>
+        <hbox align="center">
           <label id="fxaEmailAddress1"/>
-          <vbox>
-            <label class="text-link"
-                   onclick="gSyncPane.manageFirefoxAccount();">
-              &manage.label;
-            </label>
-          </vbox>
           <spacer flex="1"/>
-          <vbox>
-            <button id="fxaUnlinkButton"
-                    oncommand="gSyncPane.unlinkFirefoxAccount(true);"
-                    label="&disconnect.label;"/>
-          </vbox>
+          <button oncommand="gSyncPane.manageFirefoxAccount();"
+                  label="&manage.label;"/>
+          <button id="fxaUnlinkButton"
+                  oncommand="gSyncPane.unlinkFirefoxAccount(true);"
+                  label="&disconnect.label;"/>
         </hbox>
 
         <!-- logged in to an unverified account -->
@@ -276,27 +269,16 @@
     <groupbox id="syncOptions">
       <caption><label>&syncBrand.shortName.label;</label></caption>
       <hbox id="fxaSyncEngines">
-        <vbox>
+        <vbox align="start">
           <checkbox label="&engine.tabs.label;"
                     accesskey="&engine.tabs.accesskey;"
                     preference="engine.tabs"/>
           <checkbox label="&engine.bookmarks.label;"
                     accesskey="&engine.bookmarks.accesskey;"
                     preference="engine.bookmarks"/>
-          <hbox>
-            <checkbox id="fxa-pweng-chk"
-                      label="&engine.passwords.label;"
-                      accesskey="&engine.passwords.accesskey;"
-                      preference="engine.passwords"/>
-
-            <vbox id="fxa-pweng-help">
-              <spacer flex="1"/>
-              <hbox id="fxa-pweng-help-link">
-                <image onclick="gSyncUtils.openMPInfoPage(event);" />
-              </hbox>
-              <spacer flex="1"/>
-            </vbox>
-          </hbox>
+          <checkbox label="&engine.passwords.label;"
+                    accesskey="&engine.passwords.accesskey;"
+                    preference="engine.passwords"/>
           <checkbox label="&engine.history.label;"
                     accesskey="&engine.history.accesskey;"
                     preference="engine.history"/>

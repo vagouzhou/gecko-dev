@@ -192,7 +192,7 @@ MediaEngineDefaultVideoSource::Snapshot(uint32_t aDuration, nsIDOMFile** aFile)
   filePicker->AppendFilters(nsIFilePicker::filterImages);
 
   // XXX - This API should be made async
-  PRInt16 dialogReturn;
+  int16_t dialogReturn;
   rv = filePicker->Show(&dialogReturn);
   NS_ENSURE_SUCCESS(rv, rv);
   if (dialogReturn == nsIFilePicker::returnCancel) {
@@ -478,8 +478,14 @@ MediaEngineDefaultAudioSource::Notify(nsITimer* aTimer)
 }
 
 void
-MediaEngineDefault::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >* aVSources) {
+MediaEngineDefault::EnumerateVideoDevices(MediaSourceType aMediaSource,
+                                          nsTArray<nsRefPtr<MediaEngineVideoSource> >* aVSources) {
   MutexAutoLock lock(mMutex);
+
+  // only supports camera sources (for now).  See Bug 1038241
+  if (aMediaSource != MediaSourceType::Camera) {
+    return;
+  }
 
   // We once had code here to find a VideoSource with the same settings and re-use that.
   // This no longer is possible since the resolution is being set in Allocate().
@@ -492,21 +498,12 @@ MediaEngineDefault::EnumerateVideoDevices(nsTArray<nsRefPtr<MediaEngineVideoSour
 }
     
 void
-MediaEngineDefault:: EnumerateScreenDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*){
-    //vagouzhou@gmail.com
-    //TBD , it used by fake, will support it in future.
-}
-    
-void
-MediaEngineDefault::EnumerateApplicationDevices(nsTArray<nsRefPtr<MediaEngineVideoSource> >*){
-    //vagouzhou@gmail.com
-    //TBD , it used by fake, will support it in future.
-}
-
-void
-MediaEngineDefault::EnumerateAudioDevices(nsTArray<nsRefPtr<MediaEngineAudioSource> >* aASources) {
+MediaEngineDefault::EnumerateAudioDevices(MediaSourceType aMediaSource,
+                                          nsTArray<nsRefPtr<MediaEngineAudioSource> >* aASources) {
   MutexAutoLock lock(mMutex);
   int32_t len = mASources.Length();
+
+  // aMediaSource is ignored for audio devices (for now).
 
   for (int32_t i = 0; i < len; i++) {
     nsRefPtr<MediaEngineAudioSource> source = mASources.ElementAt(i);

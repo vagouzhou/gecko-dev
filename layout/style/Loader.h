@@ -11,6 +11,7 @@
 #include "nsIPrincipal.h"
 #include "nsAutoPtr.h"
 #include "nsCompatibility.h"
+#include "nsCycleCollectionParticipant.h"
 #include "nsDataHashtable.h"
 #include "nsRefPtrHashtable.h"
 #include "nsStringFwd.h"
@@ -45,7 +46,7 @@ public:
   typedef URIPrincipalAndCORSModeHashKey* KeyType;
   typedef const URIPrincipalAndCORSModeHashKey* KeyTypePointer;
 
-  URIPrincipalAndCORSModeHashKey(const URIPrincipalAndCORSModeHashKey* aKey)
+  explicit URIPrincipalAndCORSModeHashKey(const URIPrincipalAndCORSModeHashKey* aKey)
     : nsURIHashKey(aKey->mKey), mPrincipal(aKey->mPrincipal),
       mCORSMode(aKey->mCORSMode)
   {
@@ -129,14 +130,15 @@ enum StyleSheetState {
 class Loader MOZ_FINAL {
 public:
   Loader();
-  Loader(nsIDocument*);
+  explicit Loader(nsIDocument*);
 
  private:
   // Private destructor, to discourage deletion outside of Release():
   ~Loader();
 
  public:
-  NS_INLINE_DECL_REFCOUNTING(Loader)
+  NS_INLINE_DECL_CYCLE_COLLECTING_NATIVE_REFCOUNTING(Loader)
+  NS_DECL_CYCLE_COLLECTION_NATIVE_CLASS(Loader)
 
   void DropDocumentReference(); // notification that doc is going away
 
@@ -365,14 +367,6 @@ public:
 
   typedef nsTArray<nsRefPtr<SheetLoadData> > LoadDataArray;
 
-  // Traverse the cached stylesheets we're holding on to.  This should
-  // only be called from the document that owns this loader.
-  void TraverseCachedSheets(nsCycleCollectionTraversalCallback& cb);
-
-  // Unlink the cached stylesheets we're holding on to.  Again, this
-  // should only be called from the document that owns this loader.
-  void UnlinkCachedSheets();
-
   // Measure our size.
   size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const;
 
@@ -497,7 +491,6 @@ private:
   LoadDataArray     mPostedEvents;
 
   // Our array of "global" observers
-  // XXXbz these are strong refs; should we be cycle collecting CSS loaders?
   nsTObserverArray<nsCOMPtr<nsICSSLoaderObserver> > mObservers;
 
   // the load data needs access to the document...

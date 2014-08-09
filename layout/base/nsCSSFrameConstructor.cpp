@@ -62,6 +62,11 @@
 #include "nsBoxLayout.h"
 #include "nsFlexContainerFrame.h"
 #include "nsGridContainerFrame.h"
+#include "nsRubyFrame.h"
+#include "nsRubyBaseFrame.h"
+#include "nsRubyBaseContainerFrame.h"
+#include "nsRubyTextFrame.h"
+#include "nsRubyTextContainerFrame.h"
 #include "nsImageFrame.h"
 #include "nsIObjectLoadingContent.h"
 #include "nsTArray.h"
@@ -1877,6 +1882,15 @@ nsCSSFrameConstructor::GetParentType(nsIAtom* aFrameType)
   if (aFrameType == nsGkAtoms::tableColGroupFrame) {
     return eTypeColGroup;
   }
+  if (aFrameType == nsGkAtoms::rubyBaseContainerFrame) {
+    return eTypeRubyBaseContainer;
+  }
+  if (aFrameType == nsGkAtoms::rubyTextContainerFrame) {
+    return eTypeRubyTextContainer;
+  } 
+  if (aFrameType == nsGkAtoms::rubyFrame) {
+    return eTypeRuby;
+  }
 
   return eTypeBlock;
 }
@@ -2251,7 +2265,7 @@ NeedFrameFor(const nsFrameConstructorState& aState,
   // should be considered ignorable just because they evaluate to
   // whitespace.
 
-  // We could handle all this in CreateNeededTablePseudos or some other place
+  // We could handle all this in CreateNeededPseudos or some other place
   // after we build our frame construction items, but that would involve
   // creating frame construction items for whitespace kids of
   // eExcludesIgnorableWhitespace frames, where we know we'll be dropping them
@@ -4529,6 +4543,21 @@ nsCSSFrameConstructor::FindDisplayData(const nsStyleDisplay* aDisplay,
       FCDATA_DECL(FCDATA_MAY_NEED_SCROLLFRAME, NS_NewGridContainerFrame) },
     { NS_STYLE_DISPLAY_INLINE_GRID,
       FCDATA_DECL(FCDATA_MAY_NEED_SCROLLFRAME, NS_NewGridContainerFrame) },
+    { NS_STYLE_DISPLAY_RUBY,
+      FCDATA_DECL(FCDATA_IS_LINE_PARTICIPANT,
+                  NS_NewRubyFrame) },
+    { NS_STYLE_DISPLAY_RUBY_BASE,
+      FCDATA_DECL(FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRubyBaseContainer),
+                  NS_NewRubyBaseFrame) },
+    { NS_STYLE_DISPLAY_RUBY_BASE_CONTAINER,
+      FCDATA_DECL(FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRuby),
+                  NS_NewRubyBaseContainerFrame) },
+    { NS_STYLE_DISPLAY_RUBY_TEXT,
+      FCDATA_DECL(FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRubyTextContainer),
+                  NS_NewRubyTextFrame) },
+    { NS_STYLE_DISPLAY_RUBY_TEXT_CONTAINER,
+      FCDATA_DECL(FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRuby),
+                  NS_NewRubyTextContainerFrame) },
     { NS_STYLE_DISPLAY_TABLE,
       FULL_CTOR_FCDATA(0, &nsCSSFrameConstructor::ConstructTable) },
     { NS_STYLE_DISPLAY_INLINE_TABLE,
@@ -5267,8 +5296,9 @@ nsCSSFrameConstructor::AddFrameConstructionItems(nsFrameConstructorState& aState
                                     aItems);
 }
 
-/* static */ void
-nsCSSFrameConstructor::SetAsUndisplayedContent(FrameConstructionItemList& aList,
+void
+nsCSSFrameConstructor::SetAsUndisplayedContent(nsFrameConstructorState& aState,
+                                               FrameConstructionItemList& aList,
                                                nsIContent* aContent,
                                                nsStyleContext* aStyleContext,
                                                bool aIsGeneratedContent)
@@ -5279,8 +5309,13 @@ nsCSSFrameConstructor::SetAsUndisplayedContent(FrameConstructionItemList& aList,
     }
     return;
   }
-
   NS_ASSERTION(!aIsGeneratedContent, "Should have had pseudo type");
+
+  if (aState.mCreatingExtraFrames) {
+    MOZ_ASSERT(GetUndisplayedContent(aContent),
+               "should have called SetUndisplayedContent earlier");
+    return;
+  }
   aList.AppendUndisplayedItem(aContent, aStyleContext);
 }
 
@@ -5346,7 +5381,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
   // Pre-check for display "none" - if we find that, don't create
   // any frame at all
   if (NS_STYLE_DISPLAY_NONE == display->mDisplay) {
-    SetAsUndisplayedContent(aItems, aContent, styleContext, isGeneratedContent);
+    SetAsUndisplayedContent(aState, aItems, aContent, styleContext, isGeneratedContent);
     return;
   }
 
@@ -5370,7 +5405,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
         !aContent->IsRootOfNativeAnonymousSubtree()) {
       // No frame for aContent
       if (!isText) {
-        SetAsUndisplayedContent(aItems, aContent, styleContext,
+        SetAsUndisplayedContent(aState, aItems, aContent, styleContext,
                                 isGeneratedContent);
       }
       return;
@@ -5395,7 +5430,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
           IsFrameForSVG(aParentFrame) &&
           !aParentFrame->IsFrameOfType(nsIFrame::eSVGForeignObject)) ||
          (aFlags & ITEM_IS_WITHIN_SVG_TEXT))) {
-      SetAsUndisplayedContent(aItems, element, styleContext,
+      SetAsUndisplayedContent(aState, aItems, element, styleContext,
                               isGeneratedContent);
       return;
     }
@@ -5428,7 +5463,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
     NS_ASSERTION(data, "Should have frame construction data now");
 
     if (data->mBits & FCDATA_SUPPRESS_FRAME) {
-      SetAsUndisplayedContent(aItems, element, styleContext, isGeneratedContent);
+      SetAsUndisplayedContent(aState, aItems, element, styleContext, isGeneratedContent);
       return;
     }
 
@@ -5438,7 +5473,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
          aParentFrame->GetType() != nsGkAtoms::menuFrame)) {
       if (!aState.mPopupItems.containingBlock &&
           !aState.mHavePendingPopupgroup) {
-        SetAsUndisplayedContent(aItems, element, styleContext,
+        SetAsUndisplayedContent(aState, aItems, element, styleContext,
                                 isGeneratedContent);
         return;
       }
@@ -5455,7 +5490,7 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
       aParentFrame->GetType() == nsGkAtoms::tableColGroupFrame &&
       (!(bits & FCDATA_IS_TABLE_PART) ||
        display->mDisplay != NS_STYLE_DISPLAY_TABLE_COLUMN)) {
-    SetAsUndisplayedContent(aItems, aContent, styleContext, isGeneratedContent);
+    SetAsUndisplayedContent(aState, aItems, aContent, styleContext, isGeneratedContent);
     return;
   }
 
@@ -6391,7 +6426,8 @@ nsCSSFrameConstructor::MaybeConstructLazily(Operation aOperation,
 
   if (aOperation == CONTENTINSERT) {
     if (aChild->IsRootOfAnonymousSubtree() ||
-        aChild->HasFlag(NODE_IS_IN_SHADOW_TREE) ||
+        (aChild->HasFlag(NODE_IS_IN_SHADOW_TREE) &&
+         !aChild->IsInNativeAnonymousSubtree()) ||
         aChild->IsEditable() || aChild->IsXUL()) {
       return false;
     }
@@ -6704,10 +6740,13 @@ nsCSSFrameConstructor::ContentAppended(nsIContent*     aContainer,
   }
 #endif // MOZ_XUL
 
-  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE) &&
+      !aContainer->IsInNativeAnonymousSubtree() &&
+      !aFirstNewContent->IsInNativeAnonymousSubtree()) {
     // Recreate frames if content is appended into a ShadowRoot
     // because children of ShadowRoot are rendered in place of children
     // of the host.
+    //XXXsmaug This is super unefficient!
     nsIContent* bindingParent = aContainer->GetBindingParent();
     LAYOUT_PHASE_TEMP_EXIT();
     nsresult rv = RecreateFramesForContent(bindingParent, false);
@@ -7138,10 +7177,14 @@ nsCSSFrameConstructor::ContentRangeInserted(nsIContent*            aContainer,
     return NS_OK;
   }
 
-  if (aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE) &&
+      !aContainer->IsInNativeAnonymousSubtree() &&
+      (!aStartChild || !aStartChild->IsInNativeAnonymousSubtree()) &&
+      (!aEndChild || !aEndChild->IsInNativeAnonymousSubtree())) {
     // Recreate frames if content is inserted into a ShadowRoot
     // because children of ShadowRoot are rendered in place of
     // the children of the host.
+    //XXXsmaug This is super unefficient!
     nsIContent* bindingParent = aContainer->GetBindingParent();
     LAYOUT_PHASE_TEMP_EXIT();
     nsresult rv = RecreateFramesForContent(bindingParent, false);
@@ -7630,10 +7673,13 @@ nsCSSFrameConstructor::ContentRemoved(nsIContent* aContainer,
     }
   }
 
-  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (aContainer && aContainer->HasFlag(NODE_IS_IN_SHADOW_TREE) &&
+      !aContainer->IsInNativeAnonymousSubtree() &&
+      !aChild->IsInNativeAnonymousSubtree()) {
     // Recreate frames if content is removed from a ShadowRoot
     // because it may contain an insertion point which can change
     // how the host is rendered.
+    //XXXsmaug This is super unefficient!
     nsIContent* bindingParent = aContainer->GetBindingParent();
     *aDidReconstruct = true;
     LAYOUT_PHASE_TEMP_EXIT();
@@ -8134,14 +8180,15 @@ nsCSSFrameConstructor::CreateContinuingTableFrame(nsIPresShell*     aPresShell,
       headerFooterFrame = static_cast<nsTableRowGroupFrame*>
                                      (NS_NewTableRowGroupFrame(aPresShell, headerFooterStyleContext));
 
+      nsIContent* headerFooter = rowGroupFrame->GetContent();
+      headerFooterFrame->Init(headerFooter, newFrame, nullptr);
+
       nsFrameConstructorSaveState absoluteSaveState;
       MakeTablePartAbsoluteContainingBlockIfNeeded(state,
                                                    headerFooterStyleContext->StyleDisplay(),
                                                    absoluteSaveState,
                                                    headerFooterFrame);
 
-      nsIContent* headerFooter = rowGroupFrame->GetContent();
-      headerFooterFrame->Init(headerFooter, newFrame, nullptr);
       ProcessChildren(state, headerFooter, rowGroupFrame->StyleContext(),
                       headerFooterFrame, true, childItems, false,
                       nullptr);
@@ -8308,6 +8355,12 @@ nsCSSFrameConstructor::CreateContinuingFrame(nsPresContext*    aPresContext,
   } else if (nsGkAtoms::flexContainerFrame == frameType) {
     newFrame = NS_NewFlexContainerFrame(shell, styleContext);
     newFrame->Init(content, aParentFrame, aFrame);
+    //TODO: Add conditionals for rubyFrame and rubyBaseContainerFrame
+    // once their reflow methods are advanced enough to return
+    // non-complete statuses
+  } else if (nsGkAtoms::rubyTextContainerFrame == frameType) {
+    newFrame = NS_NewRubyTextContainerFrame(shell, styleContext);
+    newFrame->Init(content, aParentFrame, aFrame);
   } else {
     NS_RUNTIMEABORT("unexpected frame type");
   }
@@ -8438,9 +8491,25 @@ nsCSSFrameConstructor::GetInsertionPoint(nsIContent*   aContainer,
       return ::GetContentInsertionFrameFor(aContainer);
     }
 
+    if (nsContentUtils::HasDistributedChildren(aContainer)) {
+      // The container distributes nodes, use the frame of the flattened tree parent.
+      // It may be the case that the node is distributed but not matched to any
+      // insertion points, so there is no flattened parent.
+      nsIContent* flattenedParent = aChildContent->GetFlattenedTreeParent();
+      return flattenedParent ? ::GetContentInsertionFrameFor(flattenedParent) : nullptr;
+    }
+
     insertionElement = bindingManager->FindNestedInsertionPoint(aContainer, aChildContent);
   }
   else {
+    if (nsContentUtils::HasDistributedChildren(aContainer)) {
+      // The container distributes nodes to shadow DOM insertion points.
+      // Return with aMultiple set to true to induce callers to insert children
+      // individually into the node's flattened tree parent.
+      *aMultiple = true;
+      return nullptr;
+    }
+
     bool multiple;
     insertionElement = bindingManager->FindNestedSingleInsertionPoint(aContainer, &multiple);
 
@@ -8976,6 +9045,41 @@ nsCSSFrameConstructor::sPseudoParentData[eParentTypeCount] = {
     FULL_CTOR_FCDATA(FCDATA_SKIP_FRAMESET | FCDATA_USE_CHILD_ITEMS,
                      &nsCSSFrameConstructor::ConstructTable),
     &nsCSSAnonBoxes::table
+  },
+  { // Ruby
+    FCDATA_DECL(FCDATA_IS_LINE_PARTICIPANT |
+                FCDATA_USE_CHILD_ITEMS |
+                FCDATA_SKIP_FRAMESET,
+                NS_NewRubyFrame),
+    &nsCSSAnonBoxes::ruby
+  },
+  { // Ruby Base
+    FCDATA_DECL(FCDATA_USE_CHILD_ITEMS | 
+                FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRubyBaseContainer) |
+                FCDATA_SKIP_FRAMESET,
+                NS_NewRubyBaseFrame),
+    &nsCSSAnonBoxes::rubyBase
+  },
+  { // Ruby Base Container
+    FCDATA_DECL(FCDATA_USE_CHILD_ITEMS | 
+                FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRuby) |
+                FCDATA_SKIP_FRAMESET,
+                NS_NewRubyBaseContainerFrame),
+    &nsCSSAnonBoxes::rubyBaseContainer
+  },
+  { // Ruby Text
+    FCDATA_DECL(FCDATA_USE_CHILD_ITEMS |
+                FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRubyTextContainer) |
+                FCDATA_SKIP_FRAMESET,
+                NS_NewRubyTextFrame),
+    &nsCSSAnonBoxes::rubyText
+  },
+  { // Ruby Text Container
+    FCDATA_DECL(FCDATA_USE_CHILD_ITEMS |
+                FCDATA_DESIRED_PARENT_TYPE_TO_BITS(eTypeRuby) |
+                FCDATA_SKIP_FRAMESET,
+                NS_NewRubyTextContainerFrame),
+    &nsCSSAnonBoxes::rubyTextContainer
   }
 };
 
@@ -9108,9 +9212,9 @@ nsCSSFrameConstructor::CreateNeededAnonFlexOrGridItems(
  * contain only items for frames that can be direct kids of aParentFrame.
  */
 void
-nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
-                                                FrameConstructionItemList& aItems,
-                                                nsIFrame* aParentFrame)
+nsCSSFrameConstructor::CreateNeededPseudos(nsFrameConstructorState& aState,
+                                           FrameConstructionItemList& aItems,
+                                           nsIFrame* aParentFrame)
 {
   ParentType ourParentType = GetParentType(aParentFrame);
   if (aItems.AllWantParentType(ourParentType)) {
@@ -9171,6 +9275,7 @@ nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
           if ((trailingSpaces && ourParentType != eTypeBlock) ||
               (!trailingSpaces && spaceEndIter.item().DesiredParentType() !=
                eTypeBlock)) {
+            //TODO: Add whitespace handling for ruby
             bool updateStart = (iter == endIter);
             endIter.DeleteItemsTo(spaceEndIter);
             NS_ASSERTION(trailingSpaces == endIter.IsDone(), "These should match");
@@ -9210,6 +9315,13 @@ nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
           break;
         }
 
+        // Don't group ruby base boxes and ruby annotation boxes together
+        if (ourParentType == eTypeRuby &&
+            (prevParentType == eTypeRubyTextContainer) !=
+            (groupingParentType == eTypeRubyTextContainer)) {
+          break;
+        }
+
         // Include the whitespace we didn't drop (if any) in the group, since
         // this is not the end of the group.  Note that this doesn't change
         // prevParentType, since if we didn't drop the whitespace then we ended
@@ -9229,9 +9341,6 @@ nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
     // parent type to use depends on ourParentType.
     ParentType wrapperType;
     switch (ourParentType) {
-      case eTypeBlock:
-        wrapperType = eTypeTable;
-        break;
       case eTypeRow:
         // The parent type for a cell is eTypeBlock, since that's what a cell
         // looks like to its kids.
@@ -9245,8 +9354,30 @@ nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
         wrapperType = groupingParentType == eTypeColGroup ?
           eTypeColGroup : eTypeRowGroup;
         break;
-      default:
+      case eTypeColGroup:
         MOZ_CRASH("Colgroups should be suppresing non-col child items");
+      case eTypeRuby:
+        if (groupingParentType == eTypeRubyTextContainer) {
+          wrapperType = eTypeRubyTextContainer;
+        } else {
+          wrapperType = eTypeRubyBaseContainer;
+        } 
+        break;
+      case eTypeRubyBaseContainer:
+        wrapperType = eTypeRubyBase;
+        break;
+      case eTypeRubyTextContainer:
+        wrapperType = eTypeRubyText;
+        break;
+      default: 
+        NS_ASSERTION(ourParentType == eTypeBlock, "Unrecognized parent type");
+        if (IsRubyParentType(groupingParentType)) {
+          wrapperType = eTypeRuby;
+        } else {
+          NS_ASSERTION(IsTableParentType(groupingParentType),
+                       "groupingParentType should be either Ruby or table");
+          wrapperType = eTypeTable;
+        }
     }
 
     const PseudoParentData& pseudoData = sPseudoParentData[wrapperType];
@@ -9255,7 +9386,10 @@ nsCSSFrameConstructor::CreateNeededTablePseudos(nsFrameConstructorState& aState,
     nsIContent* parentContent = aParentFrame->GetContent();
 
     if (pseudoType == nsCSSAnonBoxes::table &&
-        parentStyle->StyleDisplay()->mDisplay == NS_STYLE_DISPLAY_INLINE) {
+        (parentStyle->StyleDisplay()->mDisplay == NS_STYLE_DISPLAY_INLINE ||
+         IsRubyParentType(ourParentType) ||
+         parentStyle->StyleDisplay()->mDisplay == NS_STYLE_DISPLAY_RUBY_BASE ||
+         parentStyle->StyleDisplay()->mDisplay == NS_STYLE_DISPLAY_RUBY_TEXT)) {
       pseudoType = nsCSSAnonBoxes::inlineTable;
     }
 
@@ -9311,7 +9445,7 @@ nsCSSFrameConstructor::ConstructFramesFromItemList(nsFrameConstructorState& aSta
                                                    nsContainerFrame* aParentFrame,
                                                    nsFrameItems& aFrameItems)
 {
-  CreateNeededTablePseudos(aState, aItems, aParentFrame);
+  CreateNeededPseudos(aState, aItems, aParentFrame);
   CreateNeededAnonFlexOrGridItems(aState, aItems, aParentFrame);
 
   aItems.SetTriedConstructingFrames();

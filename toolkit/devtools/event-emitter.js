@@ -24,6 +24,7 @@ module.exports = EventEmitter;
 
 const { Cu, components } = require("chrome");
 const Services = require("Services");
+const promise = require("promise");
 
 /**
  * Decorate an object with event emitter functionality.
@@ -111,7 +112,7 @@ EventEmitter.prototype = {
 
   /**
    * Emit an event.  All arguments to this method will
-   * be sent to listner functions.
+   * be sent to listener functions.
    */
   emit: function EventEmitter_emit(aEvent) {
     this.logEvent(aEvent, arguments);
@@ -153,7 +154,11 @@ EventEmitter.prototype = {
       if (!isWorker) {
         caller = components.stack.caller.caller;
         func = caller.name;
-        path = caller.filename.split(/ -> /)[1] + ":" + caller.lineNumber;
+        let file = caller.filename;
+        if (file.contains(" -> ")) {
+          file = caller.filename.split(/ -> /)[1];
+        }
+        path = file + ":" + caller.lineNumber;
       }
 
       let argOut = "(";

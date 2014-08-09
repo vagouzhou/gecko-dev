@@ -532,8 +532,8 @@ class NodeBuilder
     bool catchClause(HandleValue var, HandleValue guard, HandleValue body, TokenPos *pos,
                      MutableHandleValue dst);
 
-    bool propertyInitializer(HandleValue key, HandleValue val, PropKind kind, TokenPos *pos,
-                             MutableHandleValue dst);
+    bool propertyInitializer(HandleValue key, HandleValue val, PropKind kind, bool isShorthand,
+                             TokenPos *pos, MutableHandleValue dst);
 
 
     /*
@@ -631,6 +631,11 @@ class NodeBuilder
 
     bool templateLiteral(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
 
+    bool taggedTemplate(HandleValue callee, NodeVector &args, TokenPos *pos,
+                        MutableHandleValue dst);
+
+    bool callSiteObj(NodeVector &raw, NodeVector &cooked, TokenPos *pos, MutableHandleValue dst);
+
     bool spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValue dst);
 
     bool objectExpression(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
@@ -665,7 +670,8 @@ class NodeBuilder
 
     bool objectPattern(NodeVector &elts, TokenPos *pos, MutableHandleValue dst);
 
-    bool propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos, MutableHandleValue dst);
+    bool propertyPattern(HandleValue key, HandleValue patt, bool isShorthand, TokenPos *pos,
+                         MutableHandleValue dst);
 };
 
 } /* anonymous namespace */
@@ -1210,13 +1216,42 @@ NodeBuilder::arrayExpression(NodeVector &elts, TokenPos *pos, MutableHandleValue
     return listNode(AST_ARRAY_EXPR, "elements", elts, pos, dst);
 }
 
-#ifdef JS_HAS_TEMPLATE_STRINGS
+bool
+NodeBuilder::callSiteObj(NodeVector &raw, NodeVector &cooked, TokenPos *pos, MutableHandleValue dst)
+{
+    RootedValue rawVal(cx);
+    if (!newArray(raw, &rawVal))
+        return false;
+
+    RootedValue cookedVal(cx);
+    if (!newArray(cooked, &cookedVal))
+        return false;
+
+    return newNode(AST_CALL_SITE_OBJ, pos,
+                   "raw", rawVal,
+                   "cooked", cookedVal,
+                    dst);
+}
+
+bool
+NodeBuilder::taggedTemplate(HandleValue callee, NodeVector &args, TokenPos *pos,
+                            MutableHandleValue dst)
+{
+    RootedValue array(cx);
+    if (!newArray(args, &array))
+        return false;
+
+    return newNode(AST_TAGGED_TEMPLATE, pos,
+                   "callee", callee,
+                   "arguments", array,
+                   dst);
+}
+
 bool
 NodeBuilder::templateLiteral(NodeVector &elts, TokenPos *pos, MutableHandleValue dst)
 {
     return listNode(AST_TEMPLATE_LITERAL, "elements", elts, pos, dst);
 }
-#endif
 
 bool
 NodeBuilder::spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValue dst)
@@ -1227,12 +1262,14 @@ NodeBuilder::spreadExpression(HandleValue expr, TokenPos *pos, MutableHandleValu
 }
 
 bool
-NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos,
+NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, bool isShorthand, TokenPos *pos,
                              MutableHandleValue dst)
 {
     RootedValue kindName(cx);
     if (!atomValue("init", &kindName))
         return false;
+
+    RootedValue isShorthandVal(cx, BooleanValue(isShorthand));
 
     RootedValue cb(cx, callbacks[AST_PROP_PATT]);
     if (!cb.isNull())
@@ -1242,12 +1279,13 @@ NodeBuilder::propertyPattern(HandleValue key, HandleValue patt, TokenPos *pos,
                    "key", key,
                    "value", patt,
                    "kind", kindName,
+                   "shorthand", isShorthandVal,
                    dst);
 }
 
 bool
-NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind, TokenPos *pos,
-                                 MutableHandleValue dst)
+NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind, bool isShorthand,
+                                 TokenPos *pos, MutableHandleValue dst)
 {
     RootedValue kindName(cx);
     if (!atomValue(kind == PROP_INIT
@@ -1258,6 +1296,8 @@ NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind
         return false;
     }
 
+    RootedValue isShorthandVal(cx, BooleanValue(isShorthand));
+
     RootedValue cb(cx, callbacks[AST_PROPERTY]);
     if (!cb.isNull())
         return callback(cb, kindName, key, val, pos, dst);
@@ -1266,6 +1306,7 @@ NodeBuilder::propertyInitializer(HandleValue key, HandleValue val, PropKind kind
                    "key", key,
                    "value", val,
                    "kind", kindName,
+                   "shorthand", isShorthandVal,
                    dst);
 }
 
@@ -2721,6 +2762,7 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
 #endif
 
       case PNK_NEW:
+      case PNK_TAGGED_TEMPLATE:
       case PNK_CALL:
       {
         ParseNode *next = pn->pn_head;
@@ -2742,6 +2784,9 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
                 return false;
             args.infallibleAppend(arg);
         }
+
+        if (pn->getKind() == PNK_TAGGED_TEMPLATE)
+            return builder.taggedTemplate(callee, args, &pn->pn_pos, dst);
 
         return pn->isKind(PNK_NEW)
                ? builder.newExpression(callee, args, &pn->pn_pos, dst)
@@ -2769,6 +2814,34 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
         return expression(pn->pn_left, &left) &&
                expression(pn->pn_right, &right) &&
                builder.memberExpression(true, left, right, &pn->pn_pos, dst);
+      }
+
+      case PNK_CALLSITEOBJ:
+      {
+        NodeVector raw(cx);
+        if (!raw.reserve(pn->pn_head->pn_count))
+            return false;
+        for (ParseNode *next = pn->pn_head->pn_head; next; next = next->pn_next) {
+            JS_ASSERT(pn->pn_pos.encloses(next->pn_pos));
+
+            RootedValue expr(cx);
+            expr.setString(next->pn_atom);
+            raw.infallibleAppend(expr);
+        }
+
+        NodeVector cooked(cx);
+        if (!cooked.reserve(pn->pn_count - 1))
+            return false;
+
+        for (ParseNode *next = pn->pn_head->pn_next; next; next = next->pn_next) {
+            JS_ASSERT(pn->pn_pos.encloses(next->pn_pos));
+
+            RootedValue expr(cx);
+            expr.setString(next->pn_atom);
+            cooked.infallibleAppend(expr);
+        }
+
+        return builder.callSiteObj(raw, cooked, &pn->pn_pos, dst);
       }
 
       case PNK_ARRAY:
@@ -2802,11 +2875,6 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
 
       case PNK_OBJECT:
       {
-        /* The parser notes any uninitialized properties by setting the PNX_DESTRUCT flag. */
-        if (pn->pn_xflags & PNX_DESTRUCT) {
-            JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_BAD_OBJECT_INIT);
-            return false;
-        }
         NodeVector elts(cx);
         if (!elts.reserve(pn->pn_count))
             return false;
@@ -2829,7 +2897,6 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
       case PNK_THIS:
         return builder.thisExpression(&pn->pn_pos, dst);
 
-#ifdef JS_HAS_TEMPLATE_STRINGS
       case PNK_TEMPLATE_STRING_LIST:
       {
         NodeVector elts(cx);
@@ -2847,8 +2914,8 @@ ASTSerializer::expression(ParseNode *pn, MutableHandleValue dst)
 
         return builder.templateLiteral(elts, &pn->pn_pos, dst);
       }
+
       case PNK_TEMPLATE_STRING:
-#endif
       case PNK_STRING:
       case PNK_REGEXP:
       case PNK_NUMBER:
@@ -2924,10 +2991,11 @@ ASTSerializer::property(ParseNode *pn, MutableHandleValue dst)
         LOCAL_NOT_REACHED("unexpected object-literal property");
     }
 
+    bool isShorthand = pn->isKind(PNK_SHORTHAND);
     RootedValue key(cx), val(cx);
     return propertyName(pn->pn_left, &key) &&
            expression(pn->pn_right, &val) &&
-           builder.propertyInitializer(key, val, kind, &pn->pn_pos, dst);
+           builder.propertyInitializer(key, val, kind, isShorthand, &pn->pn_pos, dst);
 }
 
 bool
@@ -2935,9 +3003,7 @@ ASTSerializer::literal(ParseNode *pn, MutableHandleValue dst)
 {
     RootedValue val(cx);
     switch (pn->getKind()) {
-#ifdef JS_HAS_TEMPLATE_STRINGS
       case PNK_TEMPLATE_STRING:
-#endif
       case PNK_STRING:
         val.setString(pn->pn_atom);
         break;
@@ -3016,7 +3082,8 @@ ASTSerializer::objectPattern(ParseNode *pn, VarDeclKind *pkind, MutableHandleVal
         RootedValue key(cx), patt(cx), prop(cx);
         if (!propertyName(next->pn_left, &key) ||
             !pattern(next->pn_right, pkind, &patt) ||
-            !builder.propertyPattern(key, patt, &next->pn_pos, &prop)) {
+            !builder.propertyPattern(key, patt, next->isKind(PNK_SHORTHAND), &next->pn_pos,
+                                     &prop)) {
             return false;
         }
 
@@ -3201,7 +3268,7 @@ ASTSerializer::functionArgs(ParseNode *pn, ParseNode *pnargs, ParseNode *pndestr
             else if (!args.append(node))
                 return false;
             if (arg->pn_dflags & PND_DEFAULT) {
-                ParseNode *expr = arg->isDefn() ? arg->expr() : arg->pn_kid->pn_right;
+                ParseNode *expr = arg->expr();
                 RootedValue def(cx);
                 if (!expression(expr, &def) || !defaults.append(def))
                     return false;

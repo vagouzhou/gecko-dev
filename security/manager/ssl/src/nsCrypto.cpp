@@ -15,6 +15,7 @@
 #include "nsServiceManagerUtils.h"
 
 #ifndef MOZ_DISABLE_CRYPTOLEGACY
+#include "mozilla/dom/ScriptSettings.h"
 #include "nsKeygenHandler.h"
 #include "nsKeygenThread.h"
 #include "nsNSSCertificate.h"
@@ -33,7 +34,7 @@
 #include "nsIDocument.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIScriptContext.h"
-#include "nsIScriptGlobalObject.h"
+#include "nsIGlobalObject.h"
 #include "nsContentUtils.h"
 #include "nsCxPusher.h"
 #include "nsDOMJSUtils.h"
@@ -167,10 +168,8 @@ typedef struct nsKeyPairInfoStr {
 //to the nsCryptoRunnable event.
 class nsCryptoRunArgs : public nsISupports {
 public:
-  nsCryptoRunArgs(JSContext *aCx);
-  nsCOMPtr<nsISupports> m_kungFuDeathGrip;
-  JSContext *m_cx;
-  JS::PersistentRooted<JSObject*> m_scope;
+  nsCryptoRunArgs();
+  nsCOMPtr<nsIGlobalObject> m_globalObject;
   nsXPIDLCString m_jsCallback;
   NS_DECL_ISUPPORTS
 protected:
@@ -184,21 +183,14 @@ protected:
 class nsCryptoRunnable : public nsIRunnable {
 public:
   nsCryptoRunnable(nsCryptoRunArgs *args);
-  virtual ~nsCryptoRunnable();
 
   NS_IMETHOD Run ();
   NS_DECL_ISUPPORTS
 private:
+  virtual ~nsCryptoRunnable();
+
   nsCryptoRunArgs *m_args;
 };
-
-namespace mozilla {
-template<>
-struct HasDangerousPublicDestructor<nsCryptoRunnable>
-{
-  static const bool value = true;
-};
-}
 
 //We're going to inherit the memory passed
 //into us.
@@ -972,13 +964,13 @@ cryptojs_ReadArgsAndGenerateKey(JSContext *cx,
   jsString = JS::ToString(cx, v);
   NS_ENSURE_TRUE(jsString, NS_ERROR_OUT_OF_MEMORY);
   argv[2] = STRING_TO_JSVAL(jsString);
-  nsDependentJSString dependentKeyGenAlg;
-  NS_ENSURE_TRUE(dependentKeyGenAlg.init(cx, jsString), NS_ERROR_UNEXPECTED);
-  nsAutoString keyGenAlg(dependentKeyGenAlg);
+  nsAutoJSString autoJSKeyGenAlg;
+  NS_ENSURE_TRUE(autoJSKeyGenAlg.init(cx, jsString), NS_ERROR_UNEXPECTED);
+  nsAutoString keyGenAlg(autoJSKeyGenAlg);
   keyGenAlg.Trim("\r\n\t ");
   keyGenType->keyGenType = cryptojs_interpret_key_gen_type(keyGenAlg);
   if (keyGenType->keyGenType == invalidKeyGen) {
-    NS_LossyConvertUTF16toASCII keyGenAlgNarrow(dependentKeyGenAlg);
+    NS_LossyConvertUTF16toASCII keyGenAlgNarrow(autoJSKeyGenAlg);
     JS_ReportError(cx, "%s%s%s", JS_ERROR,
                    "invalid key generation argument:",
                    keyGenAlgNarrow.get());
@@ -994,7 +986,7 @@ cryptojs_ReadArgsAndGenerateKey(JSContext *cx,
                                    *slot,willEscrow);
 
   if (rv != NS_OK) {
-    NS_LossyConvertUTF16toASCII keyGenAlgNarrow(dependentKeyGenAlg);
+    NS_LossyConvertUTF16toASCII keyGenAlgNarrow(autoJSKeyGenAlg);
     JS_ReportError(cx,"%s%s%s", JS_ERROR,
                    "could not generate the key for algorithm ",
                    keyGenAlgNarrow.get());
@@ -1050,7 +1042,7 @@ nsSetEscrowAuthority(CRMFCertRequest *certReq, nsKeyPairInfo *keyInfo,
       CRMF_CertRequestIsControlPresent(certReq, crmfPKIArchiveOptionsControl)){
     return NS_ERROR_FAILURE;
   }
-  mozilla::pkix::ScopedCERTCertificate cert(wrappingCert->GetCert());
+  ScopedCERTCertificate cert(wrappingCert->GetCert());
   if (!cert)
     return NS_ERROR_FAILURE;
 
@@ -1849,15 +1841,6 @@ loser:
   return nullptr;
 }
 
-static nsISupports *
-GetISupportsFromContext(JSContext *cx)
-{
-    if (JS::ContextOptionsRef(cx).privateIsNSISupports())
-        return static_cast<nsISupports *>(JS_GetContextPrivate(cx));
-
-    return nullptr;
-}
-
 //The top level method which is a member of nsIDOMCrypto
 //for generate a base64 encoded CRMF request.
 CRMFObject*
@@ -1895,14 +1878,14 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
     return nullptr;
   }
 
-  JS::RootedObject script_obj(aContext, GetWrapper());
-  if (MOZ_UNLIKELY(!script_obj)) {
+  nsCOMPtr<nsIGlobalObject> globalObject = do_QueryInterface(GetParentObject());
+  if (MOZ_UNLIKELY(!globalObject)) {
     aRv.Throw(NS_ERROR_UNEXPECTED);
     return nullptr;
   }
 
   nsCOMPtr<nsIContentSecurityPolicy> csp;
-  if (!nsContentUtils::GetContentSecurityPolicy(aContext, getter_AddRefs(csp))) {
+  if (!nsContentUtils::GetContentSecurityPolicy(getter_AddRefs(csp))) {
     NS_ERROR("Error: failed to get CSP");
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
@@ -1950,7 +1933,7 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
       aRv.Throw(NS_ERROR_FAILURE);
       return nullptr;
     }
-    mozilla::pkix::ScopedCERTCertificate cert(
+    ScopedCERTCertificate cert(
       CERT_NewTempCertificate(CERT_GetDefaultCertDB(),
                               &certDer, nullptr, false, true));
     if (!cert) {
@@ -2043,20 +2026,18 @@ nsCrypto::GenerateCRMFRequest(JSContext* aContext,
   //
 
   MOZ_ASSERT(nsContentUtils::GetCurrentJSContext());
-  nsCryptoRunArgs *args = new nsCryptoRunArgs(aContext);
+  nsCryptoRunArgs *args = new nsCryptoRunArgs();
 
-  args->m_kungFuDeathGrip = GetISupportsFromContext(aContext);
-  args->m_scope      = JS_GetParent(script_obj);
+  args->m_globalObject = globalObject;
   if (!aJsCallback.IsVoid()) {
     args->m_jsCallback = aJsCallback;
   }
 
-  nsCryptoRunnable *cryptoRunnable = new nsCryptoRunnable(args);
+  nsRefPtr<nsCryptoRunnable> cryptoRunnable(new nsCryptoRunnable(args));
 
   nsresult rv = NS_DispatchToMainThread(cryptoRunnable);
   if (NS_FAILED(rv)) {
     aRv.Throw(rv);
-    delete cryptoRunnable;
   }
 
   return newObject;
@@ -2156,7 +2137,7 @@ nsP12Runnable::Run()
   return NS_OK;
 }
 
-nsCryptoRunArgs::nsCryptoRunArgs(JSContext *cx) : m_cx(cx), m_scope(cx) {}
+nsCryptoRunArgs::nsCryptoRunArgs() {}
 
 nsCryptoRunArgs::~nsCryptoRunArgs() {}
 
@@ -2180,10 +2161,12 @@ NS_IMETHODIMP
 nsCryptoRunnable::Run()
 {
   nsNSSShutDownPreventionLock locker;
-  AutoPushJSContext cx(m_args->m_cx);
-  JSAutoRequest ar(cx);
-  JS::Rooted<JSObject*> scope(cx, m_args->m_scope);
-  JSAutoCompartment ac(cx, scope);
+
+  // We're going to run script via JS_EvaluateScript, so we need an
+  // AutoEntryScript. This is Gecko specific and not on a standards track.
+  AutoEntryScript aes(m_args->m_globalObject);
+  JSContext* cx = aes.cx();
+  JS::RootedObject scope(cx, JS::CurrentGlobalOrNull(cx));
 
   bool ok =
     JS_EvaluateScript(cx, scope, m_args->m_jsCallback,
@@ -2199,8 +2182,7 @@ nsCertAlreadyExists(SECItem *derCert)
   CERTCertDBHandle *handle = CERT_GetDefaultCertDB();
   bool retVal = false;
 
-  mozilla::pkix::ScopedCERTCertificate cert(
-    CERT_FindCertByDERCert(handle, derCert));
+  ScopedCERTCertificate cert(CERT_FindCertByDERCert(handle, derCert));
   if (cert) {
     if (cert->isperm && !cert->nickname && !cert->emailAddr) {
       //If the cert doesn't have a nickname or email addr, it is
@@ -2361,8 +2343,7 @@ nsCrypto::ImportUserCertificates(const nsAString& aNickname,
 
   //Import the root chain into the cert db.
  {
-  mozilla::pkix::ScopedCERTCertList
-    caPubs(CMMF_CertRepContentGetCAPubs(certRepContent));
+  ScopedCERTCertList caPubs(CMMF_CertRepContentGetCAPubs(certRepContent));
   if (caPubs) {
     int32_t numCAs = nsCertListCount(caPubs.get());
     

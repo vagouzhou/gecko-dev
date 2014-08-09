@@ -33,6 +33,7 @@
 #include "nsSize.h"                     // for nsIntSize
 #include "nsTArray.h"                   // for nsAutoTArray, nsTArray, etc
 #include "nsXULAppAPI.h"                // for XRE_GetProcessType, etc
+#include "mozilla/ReentrantMonitor.h"
 
 struct nsIntPoint;
 
@@ -253,13 +254,22 @@ ShadowLayerForwarder::InsertAfter(ShadowableLayer* aContainer,
                                   ShadowableLayer* aChild,
                                   ShadowableLayer* aAfter)
 {
-  if (aAfter)
+  if (!aChild->HasShadow()) {
+    return;
+  }
+
+  while (aAfter && !aAfter->HasShadow()) {
+    aAfter = aAfter->AsLayer()->GetPrevSibling() ? aAfter->AsLayer()->GetPrevSibling()->AsShadowableLayer() : nullptr;
+  }
+
+  if (aAfter) {
     mTxn->AddEdit(OpInsertAfter(nullptr, Shadow(aContainer),
                                 nullptr, Shadow(aChild),
                                 nullptr, Shadow(aAfter)));
-  else
+  } else {
     mTxn->AddEdit(OpPrependChild(nullptr, Shadow(aContainer),
                                  nullptr, Shadow(aChild)));
+  }
 }
 void
 ShadowLayerForwarder::RemoveChild(ShadowableLayer* aContainer,
@@ -267,6 +277,10 @@ ShadowLayerForwarder::RemoveChild(ShadowableLayer* aContainer,
 {
   MOZ_LAYERS_LOG(("[LayersForwarder] OpRemoveChild container=%p child=%p\n",
                   aContainer->AsLayer(), aChild->AsLayer()));
+
+  if (!aChild->HasShadow()) {
+    return;
+  }
 
   mTxn->AddEdit(OpRemoveChild(nullptr, Shadow(aContainer),
                               nullptr, Shadow(aChild)));
@@ -276,6 +290,14 @@ ShadowLayerForwarder::RepositionChild(ShadowableLayer* aContainer,
                                       ShadowableLayer* aChild,
                                       ShadowableLayer* aAfter)
 {
+  if (!aChild->HasShadow()) {
+    return;
+  }
+
+  while (aAfter && !aAfter->HasShadow()) {
+    aAfter = aAfter->AsLayer()->GetPrevSibling() ? aAfter->AsLayer()->GetPrevSibling()->AsShadowableLayer() : nullptr;
+  }
+
   if (aAfter) {
     MOZ_LAYERS_LOG(("[LayersForwarder] OpRepositionChild container=%p child=%p after=%p",
                    aContainer->AsLayer(), aChild->AsLayer(), aAfter->AsLayer()));
@@ -452,11 +474,42 @@ ShadowLayerForwarder::RemoveTextureFromCompositableAsync(AsyncTransactionTracker
                                         aAsyncTransactionTracker);
 }
 
+bool
+ShadowLayerForwarder::InWorkerThread()
+{
+  return GetMessageLoop()->id() == MessageLoop::current()->id();
+}
+
+static void RemoveTextureWorker(TextureClient* aTexture, ReentrantMonitor* aBarrier, bool* aDone)
+{
+  aTexture->ForceRemove();
+
+  ReentrantMonitorAutoEnter autoMon(*aBarrier);
+  *aDone = true;
+  aBarrier->NotifyAll();
+}
+
 void
 ShadowLayerForwarder::RemoveTexture(TextureClient* aTexture)
 {
   MOZ_ASSERT(aTexture);
-  aTexture->ForceRemove();
+  if (InWorkerThread()) {
+    aTexture->ForceRemove();
+    return;
+  }
+
+  ReentrantMonitor barrier("ShadowLayerForwarder::RemoveTexture Lock");
+  ReentrantMonitorAutoEnter autoMon(barrier);
+  bool done = false;
+
+  GetMessageLoop()->PostTask(
+    FROM_HERE,
+    NewRunnableFunction(&RemoveTextureWorker, aTexture, &barrier, &done));
+
+  // Wait until the TextureClient has been ForceRemoved on the worker thread
+  while (!done) {
+    barrier.Wait();
+  }
 }
 
 bool
@@ -465,6 +518,7 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies,
                                      uint64_t aId,
                                      bool aScheduleComposite,
                                      uint32_t aPaintSequenceNumber,
+                                     bool aIsRepeatTransaction,
                                      bool* aSent)
 {
   *aSent = false;
@@ -503,6 +557,10 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies,
   for (ShadowableLayerSet::const_iterator it = mTxn->mMutants.begin();
        it != mTxn->mMutants.end(); ++it) {
     ShadowableLayer* shadow = *it;
+
+    if (!shadow->HasShadow()) {
+      continue;
+    }
     Layer* mutant = shadow->AsLayer();
     NS_ABORT_IF_FALSE(!!mutant, "unshadowable layer?");
 
@@ -582,7 +640,7 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies,
         !mShadowManager->IPCOpen() ||
         !mShadowManager->SendUpdate(cset, aId, targetConfig, mIsFirstPaint,
                                     aScheduleComposite, aPaintSequenceNumber,
-                                    aReplies)) {
+                                    aIsRepeatTransaction, aReplies)) {
       MOZ_LAYERS_LOG(("[LayersForwarder] WARNING: sending transaction failed!"));
       return false;
     }
@@ -594,7 +652,8 @@ ShadowLayerForwarder::EndTransaction(InfallibleTArray<EditReply>* aReplies,
     if (!HasShadowManager() ||
         !mShadowManager->IPCOpen() ||
         !mShadowManager->SendUpdateNoSwap(cset, aId, targetConfig, mIsFirstPaint,
-                                          aPaintSequenceNumber, aScheduleComposite)) {
+                                          aScheduleComposite, aPaintSequenceNumber,
+                                          aIsRepeatTransaction)) {
       MOZ_LAYERS_LOG(("[LayersForwarder] WARNING: sending transaction failed!"));
       return false;
     }

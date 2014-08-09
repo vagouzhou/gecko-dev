@@ -83,6 +83,7 @@ const PREFS_WHITELIST = [
 const PREFS_BLACKLIST = [
   /^network[.]proxy[.]/,
   /[.]print_to_filename$/,
+  /^print[.]macosx[.]pagesetup/,
 ];
 
 this.Troubleshoot = {
@@ -144,6 +145,22 @@ let dataProviders = {
       data.supportURL = urlFormatter.formatURLPref("app.support.baseURL");
     }
     catch (e) {}
+
+    data.numTotalWindows = 0;
+    data.numRemoteWindows = 0;
+    let winEnumer = Services.ww.getWindowEnumerator("navigator:browser");
+    while (winEnumer.hasMoreElements()) {
+      data.numTotalWindows++;
+      let remote = winEnumer.getNext().
+                   QueryInterface(Ci.nsIInterfaceRequestor).
+                   getInterface(Ci.nsIWebNavigation).
+                   QueryInterface(Ci.nsILoadContext).
+                   useRemoteTabs;
+      if (remote) {
+        data.numRemoteWindows++;
+      }
+    }
+
     done(data);
   },
 
@@ -318,6 +335,7 @@ let dataProviders = {
       adapterDescription: null,
       adapterVendorID: null,
       adapterDeviceID: null,
+      adapterSubsysID: null,
       adapterRAM: null,
       adapterDriver: "adapterDrivers",
       adapterDriverVersion: "driverVersion",
@@ -326,6 +344,7 @@ let dataProviders = {
       adapterDescription2: null,
       adapterVendorID2: null,
       adapterDeviceID2: null,
+      adapterSubsysID2: null,
       adapterRAM2: null,
       adapterDriver2: "adapterDrivers2",
       adapterDriverVersion2: "driverVersion2",
@@ -376,9 +395,9 @@ let dataProviders = {
         // OpenGL feature, because that's what's going to get used.  In all
         // other cases we want to report on the ANGLE feature.
         gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_ANGLE) !=
-          Ci.nsIGfxInfo.FEATURE_NO_INFO &&
+          Ci.nsIGfxInfo.FEATURE_STATUS_OK &&
         gfxInfo.getFeatureStatus(Ci.nsIGfxInfo.FEATURE_WEBGL_OPENGL) ==
-          Ci.nsIGfxInfo.FEATURE_NO_INFO ?
+          Ci.nsIGfxInfo.FEATURE_STATUS_OK ?
         Ci.nsIGfxInfo.FEATURE_WEBGL_OPENGL :
         Ci.nsIGfxInfo.FEATURE_WEBGL_ANGLE;
 #else

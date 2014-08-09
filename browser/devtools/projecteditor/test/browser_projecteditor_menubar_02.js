@@ -82,7 +82,7 @@ let test = asyncTest(function*() {
   let editor = projecteditor.currentEditor;
 
   editor.editor.focus();
-  EventUtils.synthesizeKey("foo", { }, projecteditor.window);
+  EventUtils.synthesizeKey("f", { }, projecteditor.window);
 
   yield openAndCloseMenu(fileMenu);
   yield openAndCloseMenu(editMenu);
@@ -99,28 +99,10 @@ let test = asyncTest(function*() {
 });
 
 function openAndCloseMenu(menu) {
-  let shown = onPopupShow(menu)
+  let shown = onPopupShow(menu);
   EventUtils.synthesizeMouseAtCenter(menu, {}, menu.ownerDocument.defaultView);
   yield shown;
-  let hidden = onPopupHidden(menu)
+  let hidden = onPopupHidden(menu);
   EventUtils.synthesizeMouseAtCenter(menu, {}, menu.ownerDocument.defaultView);
   yield hidden;
-}
-
-function onPopupShow(menu) {
-  let defer = promise.defer();
-  menu.addEventListener("popupshown", function onpopupshown() {
-    menu.removeEventListener("popupshown", onpopupshown);
-    defer.resolve();
-  });
-  return defer.promise;
-}
-
-function onPopupHidden(menu) {
-  let defer = promise.defer();
-  menu.addEventListener("popuphidden", function onpopupshown() {
-    menu.removeEventListener("popuphidden", onpopupshown);
-    defer.resolve();
-  });
-  return defer.promise;
 }

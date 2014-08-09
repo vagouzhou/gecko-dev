@@ -339,6 +339,9 @@ public:
     return Notify(aCx, Killing);
   }
 
+  // We can assume that an nsPIDOMWindow will be available for Suspend, Resume
+  // and SynchronizeAndResume as these are only used for globals going in and
+  // out of the bfcache.
   bool
   Suspend(JSContext* aCx, nsPIDOMWindow* aWindow);
 
@@ -346,8 +349,7 @@ public:
   Resume(JSContext* aCx, nsPIDOMWindow* aWindow);
 
   bool
-  SynchronizeAndResume(JSContext* aCx, nsPIDOMWindow* aWindow,
-                       nsIScriptContext* aScriptContext);
+  SynchronizeAndResume(JSContext* aCx, nsPIDOMWindow* aWindow);
 
   bool
   Terminate(JSContext* aCx)
@@ -391,10 +393,8 @@ public:
   GetInnerWindowId();
 
   void
-  UpdateRuntimeAndContextOptions(JSContext* aCx,
-                                 const JS::RuntimeOptions& aRuntimeOptions,
-                                 const JS::ContextOptions& aContentCxOptions,
-                                 const JS::ContextOptions& aChromeCxOptions);
+  UpdateRuntimeOptions(JSContext* aCx,
+                       const JS::RuntimeOptions& aRuntimeOptions);
 
   void
   UpdatePreference(JSContext* aCx, WorkerPreference aPref, bool aValue);
@@ -927,11 +927,7 @@ public:
   }
 
   void
-  UpdateRuntimeAndContextOptionsInternal(
-                                    JSContext* aCx,
-                                    const JS::RuntimeOptions& aRuntimeOptions,
-                                    const JS::ContextOptions& aContentCxOptions,
-                                    const JS::ContextOptions& aChromeCxOptions);
+  UpdateRuntimeOptionsInternal(JSContext* aCx, const JS::RuntimeOptions& aRuntimeOptions);
 
   void
   UpdatePreferenceInternal(JSContext* aCx, WorkerPreference aPref, bool aValue);
@@ -1037,6 +1033,13 @@ public:
   {
     AssertIsOnWorkerThread();
     return mPreferences[WORKERPREF_DUMP];
+  }
+
+  bool
+  DOMFetchEnabled() const
+  {
+    AssertIsOnWorkerThread();
+    return mPreferences[WORKERPREF_DOM_FETCH];
   }
 
   bool
@@ -1188,7 +1191,7 @@ public:
               ErrorResult& rv);
 
   static bool
-  WorkerAvailable(JSContext* /* unused */, JSObject* /* unused */);
+  WorkerAvailable(JSContext* aCx, JSObject* /* unused */);
 
 private:
   ChromeWorkerPrivate() MOZ_DELETE;

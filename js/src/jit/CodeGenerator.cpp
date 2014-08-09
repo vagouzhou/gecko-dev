@@ -16,6 +16,7 @@
 #include "jsnum.h"
 #include "jsprf.h"
 
+#include "asmjs/AsmJSModule.h"
 #include "builtin/Eval.h"
 #include "builtin/TypedObject.h"
 #ifdef JSGC_GENERATIONAL
@@ -767,9 +768,13 @@ CodeGenerator::visitTypeObjectDispatch(LTypeObjectDispatch *lir)
     Register temp = ToRegister(lir->temp());
 
     // Hold the incoming TypeObject.
+
     masm.loadPtr(Address(input, JSObject::offsetOfType()), temp);
 
     // Compare TypeObjects.
+
+    MacroAssembler::BranchGCPtr lastBranch;
+    LBlock *lastBlock = nullptr;
     InlinePropertyTable *propTable = mir->propTable();
     for (size_t i = 0; i < mir->numCases(); i++) {
         JSFunction *func = mir->getCase(i);
@@ -779,16 +784,35 @@ CodeGenerator::visitTypeObjectDispatch(LTypeObjectDispatch *lir)
         for (size_t j = 0; j < propTable->numEntries(); j++) {
             if (propTable->getFunction(j) != func)
                 continue;
+
+            if (lastBranch.isInitialized())
+                lastBranch.emit(masm);
+
             types::TypeObject *typeObj = propTable->getTypeObject(j);
-            masm.branchPtr(Assembler::Equal, temp, ImmGCPtr(typeObj), target->label());
+            lastBranch = MacroAssembler::BranchGCPtr(Assembler::Equal, temp, ImmGCPtr(typeObj),
+                                                     target->label());
+            lastBlock = target;
             found = true;
         }
         JS_ASSERT(found);
     }
 
     // Unknown function: jump to fallback block.
+
     LBlock *fallback = skipTrivialBlocks(mir->getFallback())->lir();
-    masm.jump(fallback->label());
+    if (!lastBranch.isInitialized()) {
+        if (!isNextBlock(fallback))
+            masm.jump(fallback->label());
+        return true;
+    }
+
+    lastBranch.invertCondition();
+    lastBranch.relink(fallback->label());
+    lastBranch.emit(masm);
+
+    if (!isNextBlock(lastBlock))
+        masm.jump(lastBlock->label());
+
     return true;
 }
 
@@ -1537,7 +1561,6 @@ CodeGenerator::visitMoveGroup(LMoveGroup *group)
         // No bogus moves.
         JS_ASSERT(*from != *to);
         JS_ASSERT(!from->isConstant());
-
         MoveOp::Type moveType;
         switch (type) {
           case LDefinition::OBJECT:
@@ -1548,10 +1571,12 @@ CodeGenerator::visitMoveGroup(LMoveGroup *group)
 #else
           case LDefinition::BOX:
 #endif
-          case LDefinition::GENERAL: moveType = MoveOp::GENERAL; break;
-          case LDefinition::INT32:   moveType = MoveOp::INT32;   break;
-          case LDefinition::FLOAT32: moveType = MoveOp::FLOAT32; break;
-          case LDefinition::DOUBLE:  moveType = MoveOp::DOUBLE;  break;
+          case LDefinition::GENERAL:    moveType = MoveOp::GENERAL;   break;
+          case LDefinition::INT32:      moveType = MoveOp::INT32;     break;
+          case LDefinition::FLOAT32:    moveType = MoveOp::FLOAT32;   break;
+          case LDefinition::DOUBLE:     moveType = MoveOp::DOUBLE;    break;
+          case LDefinition::INT32X4:    moveType = MoveOp::INT32X4;   break;
+          case LDefinition::FLOAT32X4:  moveType = MoveOp::FLOAT32X4; break;
           default: MOZ_ASSUME_UNREACHABLE("Unexpected move type");
         }
 
@@ -3099,10 +3124,11 @@ CodeGenerator::maybeCreateScriptCounts()
             // Find a PC offset in the outermost script to use. If this block
             // is from an inlined script, find a location in the outer script
             // to associate information about the inlining with.
-            MResumePoint *resume = block->entryResumePoint();
-            while (resume->caller())
-                resume = resume->caller();
-            offset = script->pcToOffset(resume->pc());
+            if (MResumePoint *resume = block->entryResumePoint()) {
+                while (resume->caller())
+                    resume = resume->caller();
+                offset = script->pcToOffset(resume->pc());
+            }
         }
 
         if (!counts->block(i).init(block->id(), offset, block->numSuccessors())) {
@@ -3110,7 +3136,7 @@ CodeGenerator::maybeCreateScriptCounts()
             return nullptr;
         }
         for (size_t j = 0; j < block->numSuccessors(); j++)
-            counts->block(i).setSuccessor(j, block->getSuccessor(j)->id());
+            counts->block(i).setSuccessor(j, skipTrivialBlocks(block->getSuccessor(j))->id());
     }
 
     scriptCounts_ = counts;
@@ -5503,7 +5529,7 @@ CodeGenerator::visitNotV(LNotV *lir)
     Label *ifFalsy;
 
     OutOfLineTestObjectWithLabels *ool = nullptr;
-    MDefinition *operand = lir->mir()->operand();
+    MDefinition *operand = lir->mir()->input();
     // Unfortunately, it's possible that someone (e.g. phi elimination) switched
     // out our operand after we did cacheOperandMightEmulateUndefined.  So we
     // might think it can emulate undefined _and_ know that it can't be an
@@ -5900,7 +5926,7 @@ CodeGenerator::emitArrayPopShift(LInstruction *lir, const MArrayPopShift *mir, R
     }
 
     // VM call if a write barrier is necessary.
-    masm.branchTestNeedsBarrier(Assembler::NonZero, ool->entry());
+    masm.branchTestNeedsIncrementalBarrier(Assembler::NonZero, ool->entry());
 
     // Load elements and length.
     masm.loadPtr(Address(obj, JSObject::offsetOfElements()), elementsTemp);
@@ -6163,7 +6189,7 @@ CodeGenerator::visitIteratorStart(LIteratorStart *lir)
         masm.branchPtr(Assembler::NotEqual, objAddr, obj, ool->entry());
 #else
         Label noBarrier;
-        masm.branchTestNeedsBarrier(Assembler::Zero, &noBarrier);
+        masm.branchTestNeedsIncrementalBarrier(Assembler::Zero, &noBarrier);
 
         Address objAddr(niTemp, offsetof(NativeIterator, obj));
         masm.branchPtr(Assembler::NotEqual, objAddr, obj, ool->entry());
@@ -6483,31 +6509,33 @@ CodeGenerator::visitRestPar(LRestPar *lir)
 }
 
 bool
-CodeGenerator::generateAsmJS(Label *stackOverflowLabel)
+CodeGenerator::generateAsmJS(AsmJSFunctionLabels *labels)
 {
     IonSpew(IonSpew_Codegen, "# Emitting asm.js code");
 
-    // AsmJS doesn't do profiler instrumentation.
+    // AsmJS doesn't do SPS instrumentation.
     sps_.disable();
 
-    // The caller (either another asm.js function or the external-entry
-    // trampoline) has placed all arguments in registers and on the stack
-    // according to the system ABI. The MAsmJSParameters which represent these
-    // parameters have been useFixed()ed to these ABI-specified positions.
-    // Thus, there is nothing special to do in the prologue except (possibly)
-    // bump the stack.
-    if (!generateAsmJSPrologue(stackOverflowLabel))
-        return false;
+    if (!omitOverRecursedCheck())
+        labels->overflowThunk.construct();
+
+    GenerateAsmJSFunctionPrologue(masm, frameSize(), labels);
+
     if (!generateBody())
         return false;
-    if (!generateEpilogue())
-        return false;
+
+    masm.bind(&returnLabel_);
+    GenerateAsmJSFunctionEpilogue(masm, frameSize(), labels);
+
 #if defined(JS_ION_PERF)
     // Note the end of the inline code and start of the OOL code.
     gen->perfSpewer().noteEndInlineCode(masm);
 #endif
+
     if (!generateOutOfLineCode())
         return false;
+
+    masm.bind(&labels->end);
 
     // The only remaining work needed to compile this function is to patch the
     // switch-statement jump tables (the entries of the table need the absolute
@@ -6723,7 +6751,7 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
         ionScript->setHasUncompiledCallTarget();
 
     invalidateEpilogueData_.fixup(&masm);
-    Assembler::patchDataWithValueCheck(CodeLocationLabel(code, invalidateEpilogueData_),
+    Assembler::PatchDataWithValueCheck(CodeLocationLabel(code, invalidateEpilogueData_),
                                        ImmPtr(ionScript),
                                        ImmPtr((void*)-1));
 
@@ -6745,7 +6773,7 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
 
     for (size_t i = 0; i < ionScriptLabels_.length(); i++) {
         ionScriptLabels_[i].fixup(&masm);
-        Assembler::patchDataWithValueCheck(CodeLocationLabel(code, ionScriptLabels_[i]),
+        Assembler::PatchDataWithValueCheck(CodeLocationLabel(code, ionScriptLabels_[i]),
                                            ImmPtr(ionScript),
                                            ImmPtr((void*)-1));
     }
@@ -6777,20 +6805,20 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
     if (callTargets.length() > 0)
         ionScript->copyCallTargetEntries(callTargets.begin());
     if (patchableBackedges_.length() > 0)
-        ionScript->copyPatchableBackedges(cx, code, patchableBackedges_.begin());
+        ionScript->copyPatchableBackedges(cx, code, patchableBackedges_.begin(), masm);
 
 #ifdef JS_TRACE_LOGGING
     TraceLogger *logger = TraceLoggerForMainThread(cx->runtime());
     for (uint32_t i = 0; i < patchableTraceLoggers_.length(); i++) {
         patchableTraceLoggers_[i].fixup(&masm);
-        Assembler::patchDataWithValueCheck(CodeLocationLabel(code, patchableTraceLoggers_[i]),
+        Assembler::PatchDataWithValueCheck(CodeLocationLabel(code, patchableTraceLoggers_[i]),
                                            ImmPtr(logger),
                                            ImmPtr(nullptr));
     }
     uint32_t scriptId = TraceLogCreateTextId(logger, script);
     for (uint32_t i = 0; i < patchableTLScripts_.length(); i++) {
         patchableTLScripts_[i].fixup(&masm);
-        Assembler::patchDataWithValueCheck(CodeLocationLabel(code, patchableTLScripts_[i]),
+        Assembler::PatchDataWithValueCheck(CodeLocationLabel(code, patchableTLScripts_[i]),
                                            ImmPtr((void *) uintptr_t(scriptId)),
                                            ImmPtr((void *)0));
     }
@@ -6801,7 +6829,7 @@ CodeGenerator::link(JSContext *cx, types::CompilerConstraintList *constraints)
         // The correct state for prebarriers is unknown until the end of compilation,
         // since a GC can occur during code generation. All barriers are emitted
         // off-by-default, and are toggled on here if necessary.
-        if (cx->zone()->needsBarrier())
+        if (cx->zone()->needsIncrementalBarrier())
             ionScript->toggleBarriers(true);
         break;
       case ParallelExecution:
@@ -7769,8 +7797,9 @@ CodeGenerator::emitLoadElementT(LLoadElementT *lir, const T &source)
 {
     if (LIRGenerator::allowTypedElementHoleCheck()) {
         if (lir->mir()->needsHoleCheck()) {
-            Assembler::Condition cond = masm.testMagic(Assembler::Equal, source);
-            if (!bailoutIf(cond, lir->snapshot()))
+            Label bail;
+            masm.branchTestMagic(Assembler::Equal, source, &bail);
+            if (!bailoutFrom(&bail, lir->snapshot()))
                 return false;
         }
     } else {
@@ -7869,8 +7898,8 @@ CodeGenerator::visitLoadTypedArrayElement(LLoadTypedArrayElement *lir)
     Register temp = lir->temp()->isBogusTemp() ? InvalidReg : ToRegister(lir->temp());
     AnyRegister out = ToAnyRegister(lir->output());
 
-    int arrayType = lir->mir()->arrayType();
-    int width = TypedArrayObject::slotWidth(arrayType);
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
 
     Label fail;
     if (lir->index()->isConstant()) {
@@ -7908,8 +7937,8 @@ CodeGenerator::visitLoadTypedArrayElementHole(LLoadTypedArrayElementHole *lir)
     masm.bind(&inbounds);
     masm.loadPtr(Address(object, TypedArrayObject::dataOffset()), scratch);
 
-    int arrayType = lir->mir()->arrayType();
-    int width = TypedArrayObject::slotWidth(arrayType);
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
 
     Label fail;
     if (key.isConstant()) {
@@ -7931,11 +7960,9 @@ CodeGenerator::visitLoadTypedArrayElementHole(LLoadTypedArrayElementHole *lir)
 
 template <typename T>
 static inline void
-StoreToTypedArray(MacroAssembler &masm, int arrayType, const LAllocation *value, const T &dest)
+StoreToTypedArray(MacroAssembler &masm, Scalar::Type arrayType, const LAllocation *value, const T &dest)
 {
-    if (arrayType == ScalarTypeDescr::TYPE_FLOAT32 ||
-        arrayType == ScalarTypeDescr::TYPE_FLOAT64)
-    {
+    if (arrayType == Scalar::Float32 || arrayType == Scalar::Float64) {
         masm.storeToTypedFloatArray(arrayType, ToFloatRegister(value), dest);
     } else {
         if (value->isConstant())
@@ -7951,8 +7978,8 @@ CodeGenerator::visitStoreTypedArrayElement(LStoreTypedArrayElement *lir)
     Register elements = ToRegister(lir->elements());
     const LAllocation *value = lir->value();
 
-    int arrayType = lir->mir()->arrayType();
-    int width = TypedArrayObject::slotWidth(arrayType);
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
 
     if (lir->index()->isConstant()) {
         Address dest(elements, ToInt32(lir->index()) * width);
@@ -7971,8 +7998,8 @@ CodeGenerator::visitStoreTypedArrayElementHole(LStoreTypedArrayElementHole *lir)
     Register elements = ToRegister(lir->elements());
     const LAllocation *value = lir->value();
 
-    int arrayType = lir->mir()->arrayType();
-    int width = TypedArrayObject::slotWidth(arrayType);
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
 
     bool guardLength = true;
     if (lir->index()->isConstant() && lir->length()->isConstant()) {
@@ -8549,12 +8576,22 @@ CodeGenerator::visitAsmJSCall(LAsmJSCall *ins)
 
 #if defined(JS_CODEGEN_ARM)
     if (!UseHardFpABI() && mir->callee().which() == MAsmJSCall::Callee::Builtin) {
+        // The soft ABI passes floating point arguments in GPRs. Since basically
+        // nothing is set up to handle this, the values are placed in the
+        // corresponding VFP registers, then transferred to GPRs immediately
+        // before the call. The mapping is sN <-> rN, where double registers
+        // can be treated as their two component single registers.
         for (unsigned i = 0, e = ins->numOperands(); i < e; i++) {
             LAllocation *a = ins->getOperand(i);
             if (a->isFloatReg()) {
                 FloatRegister fr = ToFloatRegister(a);
-                int srcId = fr.code() * 2;
-                masm.ma_vxfer(fr, Register::FromCode(srcId), Register::FromCode(srcId+1));
+                if (fr.isDouble()) {
+                    uint32_t srcId = fr.singleOverlay().id();
+                    masm.ma_vxfer(fr, Register::FromCode(srcId), Register::FromCode(srcId + 1));
+                } else {
+                    uint32_t srcId = fr.id();
+                    masm.ma_vxfer(fr, Register::FromCode(srcId));
+                }
             }
         }
     }
@@ -8563,13 +8600,13 @@ CodeGenerator::visitAsmJSCall(LAsmJSCall *ins)
     if (mir->spIncrement())
         masm.freeStack(mir->spIncrement());
 
-    JS_ASSERT((AsmJSFrameSize + masm.framePushed()) % StackAlignment == 0);
+    JS_ASSERT((sizeof(AsmJSFrame) + masm.framePushed()) % StackAlignment == 0);
 
 #ifdef DEBUG
     Label ok;
     JS_ASSERT(IsPowerOfTwo(StackAlignment));
     masm.branchTestPtr(Assembler::Zero, StackPointer, Imm32(StackAlignment - 1), &ok);
-    masm.assumeUnreachable("Stack should be aligned.");
+    masm.breakpoint();
     masm.bind(&ok);
 #endif
 
@@ -8582,7 +8619,7 @@ CodeGenerator::visitAsmJSCall(LAsmJSCall *ins)
         masm.call(mir->desc(), ToRegister(ins->getOperand(mir->dynamicCalleeOperandIndex())));
         break;
       case MAsmJSCall::Callee::Builtin:
-        masm.call(mir->desc(), AsmJSImmPtr(callee.builtin()));
+        masm.call(AsmJSImmPtr(callee.builtin()));
         break;
     }
 
@@ -8794,6 +8831,25 @@ CodeGenerator::visitInterruptCheck(LInterruptCheck *lir)
     AbsoluteAddress interruptAddr(GetIonContext()->runtime->addressOfInterrupt());
     masm.branch32(Assembler::NotEqual, interruptAddr, Imm32(0), ool->entry());
     masm.bind(ool->rejoin());
+    return true;
+}
+
+bool
+CodeGenerator::visitAsmJSInterruptCheck(LAsmJSInterruptCheck *lir)
+{
+    Register scratch = ToRegister(lir->scratch());
+    masm.movePtr(AsmJSImmPtr(AsmJSImm_RuntimeInterrupt), scratch);
+    masm.load8ZeroExtend(Address(scratch, 0), scratch);
+    Label rejoin;
+    masm.branch32(Assembler::Equal, scratch, Imm32(0), &rejoin);
+    {
+        uint32_t stackFixup = ComputeByteAlignment(masm.framePushed() + sizeof(AsmJSFrame),
+                                                   StackAlignment);
+        masm.reserveStack(stackFixup);
+        masm.call(lir->funcDesc(), lir->interruptExit());
+        masm.freeStack(stackFixup);
+    }
+    masm.bind(&rejoin);
     return true;
 }
 

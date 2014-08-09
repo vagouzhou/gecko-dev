@@ -59,16 +59,11 @@ leak:event_base_once
 # Bug 1021854 - nsFileStreamBase::DoOpen() leaking fds. bc1, oth
 leak:nsLocalFile::OpenNSPRFileDesc
 
-# Bug 1021932 - AllocateArrayBufferContents leaks. m1
-# Bug 1023583 - Leak of array buffer data involving web audio and XHR::OnStopRequest(). m1
 # Bug 1023585 - Leak of array buffer in JSStructuredCloneWriter::transferOwnership(). m1
 leak:AllocateArrayBufferContents
 
 # Bug 1022010 - Small leak under _render_glyph_outline. bc1
 leak:_render_glyph_outline
-
-# Bug 1022954 - ScriptSource leaks sourceMapURL_ sometimes. dt
-leak:ScriptSource::setSourceMapURL
 
 # Bug 1023548 - Small leak under SECITEM_AllocItem_Util. bc1, bc3
 leak:SECITEM_AllocItem_Util

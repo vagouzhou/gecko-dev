@@ -865,6 +865,8 @@ nsPlaintextEditor::UpdateIMEComposition(nsIDOMEvent* aDOMTextEvent)
   nsresult rv = GetSelection(getter_AddRefs(selection));
   NS_ENSURE_SUCCESS(rv, rv);
 
+  NotifyEditorObservers(eNotifyEditorObserversOfBefore);
+
   nsRefPtr<nsCaret> caretP = ps->GetCaret();
 
   {
@@ -885,7 +887,7 @@ nsPlaintextEditor::UpdateIMEComposition(nsIDOMEvent* aDOMTextEvent)
   // notified at followed compositionend event.
   // NOTE: We must notify after the auto batch will be gone.
   if (IsIMEComposing()) {
-    NotifyEditorObservers();
+    NotifyEditorObservers(eNotifyEditorObserversOfEnd);
   }
 
   return rv;
@@ -1100,6 +1102,8 @@ nsPlaintextEditor::Undo(uint32_t aCount)
 
   ForceCompositionEnd();
 
+  NotifyEditorObservers(eNotifyEditorObserversOfBefore);
+
   nsAutoRules beginRulesSniffing(this, EditAction::undo, nsIEditor::eNone);
 
   nsTextRulesInfo ruleInfo(EditAction::undo);
@@ -1112,8 +1116,8 @@ nsPlaintextEditor::Undo(uint32_t aCount)
     result = nsEditor::Undo(aCount);
     result = mRules->DidDoAction(selection, &ruleInfo, result);
   } 
-   
-  NotifyEditorObservers();
+
+  NotifyEditorObservers(eNotifyEditorObserversOfEnd);
   return result;
 }
 
@@ -1127,6 +1131,8 @@ nsPlaintextEditor::Redo(uint32_t aCount)
 
   ForceCompositionEnd();
 
+  NotifyEditorObservers(eNotifyEditorObserversOfBefore);
+
   nsAutoRules beginRulesSniffing(this, EditAction::redo, nsIEditor::eNone);
 
   nsTextRulesInfo ruleInfo(EditAction::redo);
@@ -1139,8 +1145,8 @@ nsPlaintextEditor::Redo(uint32_t aCount)
     result = nsEditor::Redo(aCount);
     result = mRules->DidDoAction(selection, &ruleInfo, result);
   } 
-   
-  NotifyEditorObservers();
+
+  NotifyEditorObservers(eNotifyEditorObserversOfEnd);
   return result;
 }
 
@@ -1357,14 +1363,9 @@ nsPlaintextEditor::PasteAsQuotation(int32_t aSelectionType)
                                    &len);
     if (NS_FAILED(rv) || !flav)
     {
-#ifdef DEBUG_akkana
-      printf("PasteAsPlaintextQuotation: GetAnyTransferData failed, %d\n", rv);
-#endif
       return rv;
     }
-#ifdef DEBUG_clipboard
-    printf("Got flavor [%s]\n", flav);
-#endif
+
     if (0 == nsCRT::strcmp(flav, kUnicodeMime) ||
         0 == nsCRT::strcmp(flav, kMozTextInternal))
     {
@@ -1473,10 +1474,6 @@ nsPlaintextEditor::Rewrap(bool aRespectNewlines)
   if (wrapCol <= 0)
     wrapCol = 72;
 
-#ifdef DEBUG_akkana
-  printf("nsPlaintextEditor::Rewrap to %ld columns\n", (long)wrapCol);
-#endif
-
   nsAutoString current;
   bool isCollapsed;
   rv = SharedOutputString(nsIDocumentEncoder::OutputFormatted
@@ -1499,10 +1496,6 @@ nsPlaintextEditor::Rewrap(bool aRespectNewlines)
 NS_IMETHODIMP    
 nsPlaintextEditor::StripCites()
 {
-#ifdef DEBUG_akkana
-  printf("nsPlaintextEditor::StripCites()\n");
-#endif
-
   nsAutoString current;
   bool isCollapsed;
   nsresult rv = SharedOutputString(nsIDocumentEncoder::OutputFormatted,

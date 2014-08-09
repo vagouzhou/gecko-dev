@@ -690,20 +690,8 @@
      *   nuses: (argc+2)
      */ \
     macro(JSOP_NEW,       82, js_new_str,   NULL,         3, -1,  1,  JOF_UINT16|JOF_INVOKE|JOF_TYPESET) \
-    /*
-     * Pops the top three values on the stack as 'iterator', 'index' and 'obj',
-     * iterates over 'iterator' and stores the iteration values as 'index + i'
-     * elements of 'obj', pushes 'obj' and 'index + iteration count' onto the
-     * stack.
-     *
-     * This opcode is used in Array literals with spread and spreadcall
-     * arguments as well as in destructing assignment with rest element.
-     *   Category: Literals
-     *   Type: Array
-     *   Operands:
-     *   Stack: obj, index, iterator => obj, (index + iteration count)
-     */ \
-    macro(JSOP_SPREAD,    83, "spread",     NULL,         1,  3,  2,  JOF_BYTE|JOF_ELEM|JOF_SET) \
+    \
+    macro(JSOP_UNUSED83,  83, "unused83",   NULL,         1,  0,  0,  JOF_BYTE) \
     \
     /*
      * Fast get op for function arguments and local variables.
@@ -895,7 +883,17 @@
      */ \
     macro(JSOP_INITELEM_SETTER, 100, "initelem_setter",   NULL, 1,  3,  1, JOF_BYTE|JOF_ELEM|JOF_SET|JOF_DETECTING) \
     \
-    macro(JSOP_UNUSED101,  101, "unused101",   NULL,         1,  0,  0,  JOF_BYTE) \
+    /*
+     * Pushes the call site object specified by objectIndex onto the stack. Defines the raw
+     * property specified by objectIndex + 1 on the call site object and freezes both the call site
+     * object as well as its raw property.
+     *   Category: Literals
+     *   Type: Object
+     *   Operands: uint32_t objectIndex
+     *   Stack: => obj
+     */ \
+    macro(JSOP_CALLSITEOBJ,     101, "callsiteobj",     NULL,         5,  0,  1,  JOF_OBJECT) \
+    \
     macro(JSOP_UNUSED102,  102, "unused102",   NULL,         1,  0,  0,  JOF_BYTE) \
     macro(JSOP_UNUSED103,  103, "unused103",   NULL,         1,  0,  0,  JOF_BYTE) \
     macro(JSOP_UNUSED104,  104, "unused104",   NULL,         1,  0,  0,  JOF_BYTE) \

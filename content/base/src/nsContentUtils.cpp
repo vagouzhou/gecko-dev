@@ -34,11 +34,13 @@
 #include "mozilla/AutoRestore.h"
 #include "mozilla/Base64.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/dom/DocumentFragment.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/HTMLMediaElement.h"
 #include "mozilla/dom/HTMLTemplateElement.h"
 #include "mozilla/dom/HTMLContentElement.h"
+#include "mozilla/dom/HTMLShadowElement.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/dom/TextDecoder.h"
 #include "mozilla/dom/TouchEvent.h"
@@ -484,7 +486,7 @@ nsContentUtils::Init()
     };
 
     PL_DHashTableInit(&sEventListenerManagersHash, &hash_table_ops,
-                      nullptr, sizeof(EventListenerManagerMapEntry), 16);
+                      nullptr, sizeof(EventListenerManagerMapEntry));
 
     RegisterStrongMemoryReporter(new DOMEventListenerManagersHashReporter());
   }
@@ -624,8 +626,8 @@ nsContentUtils::InitializeEventTable() {
   NS_ASSERTION(!sStringEventTable, "EventTable already initialized!");
 
   static const EventNameMapping eventArray[] = {
-#define EVENT(name_,  _id, _type, _struct)          \
-    { nsGkAtoms::on##name_, _id, _type, _struct },
+#define EVENT(name_,  _id, _type, _class)          \
+    { nsGkAtoms::on##name_, _id, _type, _class },
 #define WINDOW_ONLY_EVENT EVENT
 #define NON_IDL_EVENT EVENT
 #include "mozilla/EventNameList.h"
@@ -635,9 +637,9 @@ nsContentUtils::InitializeEventTable() {
   };
 
   sAtomEventTable = new nsDataHashtable<nsISupportsHashKey, EventNameMapping>(
-      int(ArrayLength(eventArray) / 0.75) + 1);
+      ArrayLength(eventArray));
   sStringEventTable = new nsDataHashtable<nsStringHashKey, EventNameMapping>(
-      int(ArrayLength(eventArray) / 0.75) + 1);
+      ArrayLength(eventArray));
   sUserDefinedEvents = new nsCOMArray<nsIAtom>(64);
 
   // Subtract one from the length because of the trailing null
@@ -657,9 +659,9 @@ nsContentUtils::InitializeTouchEventTable()
   if (!sEventTableInitialized && sAtomEventTable && sStringEventTable) {
     sEventTableInitialized = true;
     static const EventNameMapping touchEventArray[] = {
-#define EVENT(name_,  _id, _type, _struct)
-#define TOUCH_EVENT(name_,  _id, _type, _struct)      \
-      { nsGkAtoms::on##name_, _id, _type, _struct },
+#define EVENT(name_,  _id, _type, _class)
+#define TOUCH_EVENT(name_,  _id, _type, _class)      \
+      { nsGkAtoms::on##name_, _id, _type, _class },
 #include "mozilla/EventNameList.h"
 #undef TOUCH_EVENT
 #undef EVENT
@@ -765,15 +767,71 @@ nsContentUtils::IsAutocompleteEnabled(nsIDOMHTMLInputElement* aInput)
 
 nsContentUtils::AutocompleteAttrState
 nsContentUtils::SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
-                                           nsAString& aResult)
+                                               nsAString& aResult,
+                                               AutocompleteAttrState aCachedState)
 {
-  AutocompleteAttrState state = InternalSerializeAutocompleteAttribute(aAttr, aResult);
-  if (state == eAutocompleteAttrState_Valid) {
-    ASCIIToLower(aResult);
-  } else {
-    aResult.Truncate();
+  if (!aAttr ||
+      aCachedState == nsContentUtils::eAutocompleteAttrState_Invalid) {
+    return aCachedState;
   }
+
+  if (aCachedState == nsContentUtils::eAutocompleteAttrState_Valid) {
+    uint32_t atomCount = aAttr->GetAtomCount();
+    for (uint32_t i = 0; i < atomCount; i++) {
+      if (i != 0) {
+        aResult.Append(' ');
+      }
+      aResult.Append(nsDependentAtomString(aAttr->AtomAt(i)));
+    }
+    nsContentUtils::ASCIIToLower(aResult);
+    return aCachedState;
+  }
+
+  aResult.Truncate();
+
+  mozilla::dom::AutocompleteInfo info;
+  AutocompleteAttrState state =
+    InternalSerializeAutocompleteAttribute(aAttr, info);
+  if (state == eAutocompleteAttrState_Valid) {
+    // Concatenate the info fields.
+    aResult = info.mSection;
+
+    if (!info.mAddressType.IsEmpty()) {
+      if (!aResult.IsEmpty()) {
+        aResult += ' ';
+      }
+      aResult += info.mAddressType;
+    }
+
+    if (!info.mContactType.IsEmpty()) {
+      if (!aResult.IsEmpty()) {
+        aResult += ' ';
+      }
+      aResult += info.mContactType;
+    }
+
+    if (!info.mFieldName.IsEmpty()) {
+      if (!aResult.IsEmpty()) {
+        aResult += ' ';
+      }
+      aResult += info.mFieldName;
+    }
+  }
+
   return state;
+}
+
+nsContentUtils::AutocompleteAttrState
+nsContentUtils::SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
+                                               mozilla::dom::AutocompleteInfo& aInfo,
+                                               AutocompleteAttrState aCachedState)
+{
+  if (!aAttr ||
+      aCachedState == nsContentUtils::eAutocompleteAttrState_Invalid) {
+    return aCachedState;
+  }
+
+  return InternalSerializeAutocompleteAttribute(aAttr, aInfo);
 }
 
 /**
@@ -783,7 +841,7 @@ nsContentUtils::SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
  */
 nsContentUtils::AutocompleteAttrState
 nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrVal,
-                                                   nsAString& aResult)
+                                                       mozilla::dom::AutocompleteInfo& aInfo)
 {
   // No sandbox attribute so we are done
   if (!aAttrVal) {
@@ -800,6 +858,7 @@ nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrV
   AutocompleteCategory category;
   nsAttrValue enumValue;
 
+  nsAutoString str;
   bool result = enumValue.ParseEnumValue(tokenString, kAutocompleteFieldNameTable, false);
   if (result) {
     // Off/Automatic/Normal categories.
@@ -808,7 +867,9 @@ nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrV
       if (numTokens > 1) {
         return eAutocompleteAttrState_Invalid;
       }
-      enumValue.ToString(aResult);
+      enumValue.ToString(str);
+      ASCIIToLower(str);
+      aInfo.mFieldName.Assign(str);
       return eAutocompleteAttrState_Valid;
     }
 
@@ -836,7 +897,9 @@ nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrV
     category = eAutocompleteCategory_CONTACT;
   }
 
-  enumValue.ToString(aResult);
+  enumValue.ToString(str);
+  ASCIIToLower(str);
+  aInfo.mFieldName.Assign(str);
 
   // We are done if this was the only token.
   if (numTokens == 1) {
@@ -850,10 +913,10 @@ nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrV
     nsAttrValue contactFieldHint;
     result = contactFieldHint.ParseEnumValue(tokenString, kAutocompleteContactFieldHintTable, false);
     if (result) {
-      aResult.Insert(' ', 0);
       nsAutoString contactFieldHintString;
       contactFieldHint.ToString(contactFieldHintString);
-      aResult.Insert(contactFieldHintString, 0);
+      ASCIIToLower(contactFieldHintString);
+      aInfo.mContactType.Assign(contactFieldHintString);
       if (index == 0) {
         return eAutocompleteAttrState_Valid;
       }
@@ -865,15 +928,20 @@ nsContentUtils::InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrV
   // Check for billing/shipping tokens
   nsAttrValue fieldHint;
   if (fieldHint.ParseEnumValue(tokenString, kAutocompleteFieldHintTable, false)) {
-    aResult.Insert(' ', 0);
     nsString fieldHintString;
     fieldHint.ToString(fieldHintString);
-    aResult.Insert(fieldHintString, 0);
+    ASCIIToLower(fieldHintString);
+    aInfo.mAddressType.Assign(fieldHintString);
     if (index == 0) {
       return eAutocompleteAttrState_Valid;
     }
     --index;
   }
+
+  // Clear the fields as the autocomplete attribute is invalid.
+  aInfo.mAddressType.Truncate();
+  aInfo.mContactType.Truncate();
+  aInfo.mFieldName.Truncate();
 
   return eAutocompleteAttrState_Invalid;
 }
@@ -1869,24 +1937,6 @@ nsContentUtils::InProlog(nsINode *aNode)
   nsIContent* root = doc->GetRootElement();
 
   return !root || doc->IndexOf(aNode) < doc->IndexOf(root);
-}
-
-JSContext *
-nsContentUtils::GetContextFromDocument(nsIDocument *aDocument)
-{
-  nsCOMPtr<nsIScriptGlobalObject> sgo =  do_QueryInterface(aDocument->GetScopeObject());
-  if (!sgo) {
-    // No script global, no context.
-    return nullptr;
-  }
-
-  nsIScriptContext *scx = sgo->GetContext();
-  if (!scx) {
-    // No context left in the scope...
-    return nullptr;
-  }
-
-  return scx->GetNativeContext();
 }
 
 //static
@@ -3535,25 +3585,25 @@ nsContentUtils::GetEventId(nsIAtom* aName)
 }
 
 // static
-uint32_t
-nsContentUtils::GetEventCategory(const nsAString& aName)
+mozilla::EventClassID
+nsContentUtils::GetEventClassID(const nsAString& aName)
 {
   EventNameMapping mapping;
   if (sStringEventTable->Get(aName, &mapping))
-    return mapping.mStructType;
+    return mapping.mEventClassID;
 
-  return NS_EVENT;
+  return eBasicEventClass;
 }
 
 nsIAtom*
 nsContentUtils::GetEventIdAndAtom(const nsAString& aName,
-                                  uint32_t aEventStruct,
+                                  mozilla::EventClassID aEventClassID,
                                   uint32_t* aEventID)
 {
   EventNameMapping mapping;
   if (sStringEventTable->Get(aName, &mapping)) {
-    *aEventID =
-      mapping.mStructType == aEventStruct ? mapping.mId : NS_USER_DEFINED_EVENT;
+    *aEventID = mapping.mEventClassID == aEventClassID ? mapping.mId :
+                                                         NS_USER_DEFINED_EVENT;
     return mapping.mAtom;
   }
 
@@ -3572,7 +3622,7 @@ nsContentUtils::GetEventIdAndAtom(const nsAString& aName,
   mapping.mAtom = atom;
   mapping.mId = NS_USER_DEFINED_EVENT;
   mapping.mType = EventNameType_None;
-  mapping.mStructType = NS_EVENT_NULL;
+  mapping.mEventClassID = eBasicEventClass;
   sStringEventTable->Put(aName, mapping);
   return mapping.mAtom;
 }
@@ -3893,6 +3943,7 @@ nsContentUtils::MaybeFireNodeRemoved(nsINode* aChild, nsINode* aParent,
   // than fire DOMNodeRemoved in all corner cases. We also rely on it for
   // nsAutoScriptBlockerSuppressNodeRemoved.
   if (!IsSafeToRunScript()) {
+    WarnScriptWasIgnored(aOwnerDoc);
     return;
   }
 
@@ -4529,7 +4580,7 @@ nsContentUtils::IsInSameAnonymousTree(const nsINode* aNode,
   // For nodes in a shadow tree, it is insufficient to simply compare
   // the binding parent because a node may host multiple ShadowRoots,
   // thus nodes in different shadow tree may have the same binding parent.
-  if (aNode->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (aNode->IsInShadowTree()) {
     return nodeAsContent->GetContainingShadow() ==
       aContent->GetContainingShadow();
   }
@@ -4827,7 +4878,7 @@ nsContentUtils::GetAccelKeyCandidates(nsIDOMKeyEvent* aDOMKeyEvent,
   WidgetKeyboardEvent* nativeKeyEvent =
     aDOMKeyEvent->GetInternalNSEvent()->AsKeyboardEvent();
   if (nativeKeyEvent) {
-    NS_ASSERTION(nativeKeyEvent->eventStructType == NS_KEY_EVENT,
+    NS_ASSERTION(nativeKeyEvent->mClass == eKeyboardEventClass,
                  "wrong type of native event");
     // nsShortcutCandidate::mCharCode is a candidate charCode.
     // nsShoftcutCandidate::mIgnoreShift means the mCharCode should be tried to
@@ -4971,10 +5022,11 @@ nsContentUtils::GetAccessKeyCandidates(WidgetKeyboardEvent* aNativeKeyEvent,
 void
 nsContentUtils::AddScriptBlocker()
 {
+  MOZ_ASSERT(NS_IsMainThread());
   if (!sScriptBlockerCount) {
-    NS_ASSERTION(sRunnersCountAtFirstBlocker == 0,
-                 "Should not already have a count");
-    sRunnersCountAtFirstBlocker = sBlockedScriptRunners->Length();
+    MOZ_ASSERT(sRunnersCountAtFirstBlocker == 0,
+               "Should not already have a count");
+    sRunnersCountAtFirstBlocker = sBlockedScriptRunners ? sBlockedScriptRunners->Length() : 0;
   }
   ++sScriptBlockerCount;
 }
@@ -4987,10 +5039,15 @@ static bool sRemovingScriptBlockers = false;
 void
 nsContentUtils::RemoveScriptBlocker()
 {
+  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(!sRemovingScriptBlockers);
   NS_ASSERTION(sScriptBlockerCount != 0, "Negative script blockers");
   --sScriptBlockerCount;
   if (sScriptBlockerCount) {
+    return;
+  }
+
+  if (!sBlockedScriptRunners) {
     return;
   }
 
@@ -5021,6 +5078,25 @@ nsContentUtils::RemoveScriptBlocker()
   sRemovingScriptBlockers = true;
 #endif
   sBlockedScriptRunners->RemoveElementsAt(originalFirstBlocker, blockersCount);
+}
+
+/* static */
+void
+nsContentUtils::WarnScriptWasIgnored(nsIDocument* aDocument)
+{
+  nsAutoString msg;
+  if (aDocument) {
+    nsCOMPtr<nsIURI> uri = aDocument->GetDocumentURI();
+    if (uri) {
+      nsCString spec;
+      uri->GetSpec(spec);
+      msg.Append(NS_ConvertUTF8toUTF16(spec));
+      msg.AppendLiteral(" : ");
+    }
+  }
+  msg.AppendLiteral("Unable to run script because scripts are blocked internally.");
+
+  LogSimpleConsoleError(msg, "DOM");
 }
 
 /* static */
@@ -6358,11 +6434,9 @@ nsContentUtils::FindInternalContentViewer(const char* aType,
 }
 
 bool
-nsContentUtils::GetContentSecurityPolicy(JSContext* aCx,
-                                         nsIContentSecurityPolicy** aCSP)
+nsContentUtils::GetContentSecurityPolicy(nsIContentSecurityPolicy** aCSP)
 {
   NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
-  MOZ_ASSERT(aCx == GetCurrentJSContext());
 
   nsCOMPtr<nsIContentSecurityPolicy> csp;
   nsresult rv = SubjectPrincipal()->GetCsp(getter_AddRefs(csp));
@@ -6429,15 +6503,35 @@ bool
 nsContentUtils::SetUpChannelOwner(nsIPrincipal* aLoadingPrincipal,
                                   nsIChannel* aChannel,
                                   nsIURI* aURI,
-                                  bool aSetUpForAboutBlank,
-                                  bool aForceOwner)
+                                  bool aInheritForAboutBlank,
+                                  bool aIsSandboxed,
+                                  bool aForceInherit)
 {
+  nsCOMPtr<nsIPrincipal> loadingPrincipal = aLoadingPrincipal;
+  if (!loadingPrincipal) {
+    if (!aIsSandboxed) {
+      // Nothing to do here
+      return false;
+    }
+
+    // Go ahead and create a nullprincipal to use as our loading principal,
+    // since we need to make sure to sandbox the load but we have no clue who's
+    // loading us.
+    loadingPrincipal = do_CreateInstance(NS_NULLPRINCIPAL_CONTRACTID);
+    if (!loadingPrincipal) {
+      NS_RUNTIMEABORT("Failed to create a principal?");
+    }
+  }
+
+  // If we're sandboxed, make sure to clear any owner the channel
+  // might already have.
+  if (aIsSandboxed) {
+    aChannel->SetOwner(nullptr);
+  }
+
+  // Set the loadInfo of the channel, but only tell the channel to
+  // inherit if it can't provide its own security context.
   //
-  // Set the owner of the channel, but only for channels that can't
-  // provide their own security context.
-  //
-  // XXX: It seems wrong that the owner is ignored - even if one is
-  //      supplied) unless the URI is javascript or data or about:blank.
   // XXX: If this is ever changed, check all callers for what owners
   //      they're passing in.  In particular, see the code and
   //      comments in nsDocShell::LoadURI where we fall back on
@@ -6445,57 +6539,40 @@ nsContentUtils::SetUpChannelOwner(nsIPrincipal* aLoadingPrincipal,
   //      very wrong if this code changed anything but channels that
   //      can't provide their own security context!
   //
-  //      (Currently chrome URIs set the owner when they are created!
-  //      So setting a nullptr owner would be bad!)
-  //
-  // If aForceOwner is true, the owner will be set, even for a channel that
-  // can provide its own security context. This is used for the HTML5 IFRAME
-  // sandbox attribute, so we can force the channel (and its document) to
-  // explicitly have a null principal.
-  bool inherit;
-  // We expect URIInheritsSecurityContext to return success for an
-  // about:blank URI, so don't call NS_IsAboutBlank() if this call fails.
-  // This condition needs to match the one in nsDocShell::InternalLoad where
-  // we're checking for things that will use the owner.
-  if (aForceOwner || ((NS_SUCCEEDED(URIInheritsSecurityContext(aURI, &inherit)) &&
-      (inherit || (aSetUpForAboutBlank && NS_IsAboutBlank(aURI)))))) {
-#ifdef DEBUG
-    // Assert that aForceOwner is only set for null principals for non-srcdoc
-    // loads.  (Strictly speaking not all uses of about:srcdoc would be 
-    // srcdoc loads, but the URI is non-resolvable in cases where it is not).
-    if (aForceOwner) {
-      nsAutoCString uriStr;
-      aURI->GetSpec(uriStr);
-      if(!uriStr.EqualsLiteral("about:srcdoc") &&
-         !uriStr.EqualsLiteral("view-source:about:srcdoc")) {
-        nsCOMPtr<nsIURI> ownerURI;
-        nsresult rv = aLoadingPrincipal->GetURI(getter_AddRefs(ownerURI));
-        MOZ_ASSERT(NS_SUCCEEDED(rv) && SchemeIs(ownerURI, NS_NULLPRINCIPAL_SCHEME));
-      }
-    }
-#endif
-    aChannel->SetOwner(aLoadingPrincipal);
-    return true;
+  // If aForceInherit is true, we will inherit, even for a channel that
+  // can provide its own security context. This is used for srcdoc loads.
+  bool inherit = aForceInherit;
+  if (!inherit) {
+    bool uriInherits;
+    // We expect URIInheritsSecurityContext to return success for an
+    // about:blank URI, so don't call NS_IsAboutBlank() if this call fails.
+    // This condition needs to match the one in nsDocShell::InternalLoad where
+    // we're checking for things that will use the owner.
+    inherit =
+      (NS_SUCCEEDED(URIInheritsSecurityContext(aURI, &uriInherits)) &&
+       (uriInherits || (aInheritForAboutBlank && NS_IsAboutBlank(aURI)))) ||
+      //
+      // file: uri special-casing
+      //
+      // If this is a file: load opened from another file: then it may need
+      // to inherit the owner from the referrer so they can script each other.
+      // If we don't set the owner explicitly then each file: gets an owner
+      // based on its own codebase later.
+      //
+      (URIIsLocalFile(aURI) &&
+       NS_SUCCEEDED(loadingPrincipal->CheckMayLoad(aURI, false, false)) &&
+       // One more check here.  CheckMayLoad will always return true for the
+       // system principal, but we do NOT want to inherit in that case.
+       !IsSystemPrincipal(loadingPrincipal));
   }
 
-  //
-  // file: uri special-casing
-  //
-  // If this is a file: load opened from another file: then it may need
-  // to inherit the owner from the referrer so they can script each other.
-  // If we don't set the owner explicitly then each file: gets an owner
-  // based on its own codebase later.
-  //
-  if (URIIsLocalFile(aURI) && aLoadingPrincipal &&
-      NS_SUCCEEDED(aLoadingPrincipal->CheckMayLoad(aURI, false, false)) &&
-      // One more check here.  CheckMayLoad will always return true for the
-      // system principal, but we do NOT want to inherit in that case.
-      !IsSystemPrincipal(aLoadingPrincipal)) {
-    aChannel->SetOwner(aLoadingPrincipal);
-    return true;
-  }
-
-  return false;
+  nsCOMPtr<nsILoadInfo> loadInfo =
+    new LoadInfo(loadingPrincipal,
+                 inherit ?
+                   LoadInfo::eInheritPrincipal : LoadInfo::eDontInheritPrincipal,
+                 aIsSandboxed ? LoadInfo::eSandboxed : LoadInfo::eNotSandboxed);
+  aChannel->SetLoadInfo(loadInfo);
+  return inherit && !aIsSandboxed;
 }
 
 /* static */
@@ -6804,6 +6881,103 @@ nsContentUtils::IsContentInsertionPoint(const nsIContent* aContent)
   }
 
   return false;
+}
+
+// static
+bool
+nsContentUtils::HasDistributedChildren(nsIContent* aContent)
+{
+  if (!aContent) {
+    return false;
+  }
+
+  if (aContent->GetShadowRoot()) {
+    // Children of a shadow root host are distributed
+    // to content insertion points in the shadow root.
+    return true;
+  }
+
+  ShadowRoot* shadow = ShadowRoot::FromNode(aContent);
+  if (shadow) {
+    // Children of a shadow root are distributed to
+    // the shadow insertion point of the younger shadow root.
+    return shadow->GetYoungerShadow();
+  }
+
+  HTMLShadowElement* shadowEl = HTMLShadowElement::FromContent(aContent);
+  if (shadowEl && shadowEl->IsInsertionPoint()) {
+    // Children of a shadow insertion points are distributed
+    // to the insertion points in the older shadow root.
+    return shadow->GetOlderShadow();
+  }
+
+  HTMLContentElement* contentEl = HTMLContentElement::FromContent(aContent);
+  if (contentEl && contentEl->IsInsertionPoint()) {
+    // Children of a content insertion point are distributed to the
+    // content insertion point if the content insertion point does
+    // not match any nodes (fallback content).
+    return contentEl->MatchedNodes().IsEmpty();
+  }
+
+  return false;
+}
+
+// static
+bool
+nsContentUtils::IsForbiddenRequestHeader(const nsACString& aHeader)
+{
+  if (IsForbiddenSystemRequestHeader(aHeader)) {
+    return true;
+  }
+
+  return StringBeginsWith(aHeader, NS_LITERAL_CSTRING("proxy-"),
+                          nsCaseInsensitiveCStringComparator()) ||
+         StringBeginsWith(aHeader, NS_LITERAL_CSTRING("sec-"),
+                          nsCaseInsensitiveCStringComparator());
+}
+
+// static
+bool
+nsContentUtils::IsForbiddenSystemRequestHeader(const nsACString& aHeader)
+{
+  static const char *kInvalidHeaders[] = {
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length",
+    "cookie", "cookie2", "content-transfer-encoding", "date", "dnt",
+    "expect", "host", "keep-alive", "origin", "referer", "te", "trailer",
+    "transfer-encoding", "upgrade", "user-agent", "via"
+  };
+  for (uint32_t i = 0; i < ArrayLength(kInvalidHeaders); ++i) {
+    if (aHeader.LowerCaseEqualsASCII(kInvalidHeaders[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// static
+bool
+nsContentUtils::IsForbiddenResponseHeader(const nsACString& aHeader)
+{
+  return (aHeader.LowerCaseEqualsASCII("set-cookie") ||
+          aHeader.LowerCaseEqualsASCII("set-cookie2"));
+}
+
+// static
+bool
+nsContentUtils::IsAllowedNonCorsContentType(const nsACString& aHeaderValue)
+{
+  nsAutoCString contentType;
+  nsAutoCString unused;
+
+  nsresult rv = NS_ParseContentType(aHeaderValue, contentType, unused);
+  if (NS_FAILED(rv)) {
+    return false;
+  }
+
+  return contentType.LowerCaseEqualsLiteral("text/plain") ||
+         contentType.LowerCaseEqualsLiteral("application/x-www-form-urlencoded") ||
+         contentType.LowerCaseEqualsLiteral("multipart/form-data");
 }
 
 bool

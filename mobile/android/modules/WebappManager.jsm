@@ -178,13 +178,14 @@ this.WebappManager = {
     this._deleteAppcachePath(aData.app.manifest);
 
     DOMApplicationRegistry.registryReady.then(() => {
-      DOMApplicationRegistry.confirmInstall(aData, file, (function(aManifest) {
-        this._postInstall(aData.profilePath, aManifest, aData.app.origin, aData.app.apkPackageName);
+      DOMApplicationRegistry.confirmInstall(aData, file, (function(aApp, aManifest) {
+        this._postInstall(aData.profilePath, aManifest, aData.app.origin,
+                          aData.app.apkPackageName, aData.app.manifestURL);
       }).bind(this));
     });
   },
 
-  _postInstall: function(aProfilePath, aNewManifest, aOrigin, aApkPackageName) {
+  _postInstall: function(aProfilePath, aNewManifest, aOrigin, aApkPackageName, aManifestURL) {
     // aOrigin may now point to the app: url that hosts this app.
     sendMessageToJava({
       type: "Webapps:Postinstall",
@@ -194,17 +195,16 @@ this.WebappManager = {
 
     let file = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsILocalFile);
     file.initWithPath(aProfilePath);
-    let localeManifest = new ManifestHelper(aNewManifest, aOrigin);
+    let localeManifest = new ManifestHelper(aNewManifest, aOrigin, aManifestUrl);
     this.writeDefaultPrefs(file, localeManifest);
   },
 
-  launch: function({ manifestURL, origin }) {
-    debug("launchWebapp: " + manifestURL);
+  launch: function({ apkPackageName }) {
+    debug("launch: " + apkPackageName);
 
     sendMessageToJava({
-      type: "Webapps:Open",
-      manifestURL: manifestURL,
-      origin: origin
+      type: "Webapps:Launch",
+      packageName: apkPackageName,
     });
   },
 
@@ -334,7 +334,7 @@ this.WebappManager = {
       yield this._autoUpdatePackagedApp(aData, aOldApp);
     }
 
-    this._postInstall(aData.profilePath, aData.manifest, aOldApp.origin, aOldApp.apkPackageName);
+    this._postInstall(aData.profilePath, aData.manifest, aOldApp.origin, aOldApp.apkPackageName, aOldApp.manifestURL);
   }).bind(this)); },
 
   _autoUpdatePackagedApp: Task.async(function*(aData, aOldApp) {

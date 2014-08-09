@@ -62,7 +62,7 @@ class TabChildGlobal : public DOMEventTargetHelper,
                        public nsIGlobalObject
 {
 public:
-  TabChildGlobal(TabChildBase* aTabChild);
+  explicit TabChildGlobal(TabChildBase* aTabChild);
   void Init();
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(TabChildGlobal, DOMEventTargetHelper)
@@ -139,12 +139,15 @@ public:
 
   nsCOMPtr<nsIContentFrameMessageManager> mMessageManager;
   nsRefPtr<TabChildBase> mTabChild;
+
+protected:
+  ~TabChildGlobal();
 };
 
 class ContentListener MOZ_FINAL : public nsIDOMEventListener
 {
 public:
-  ContentListener(TabChild* aTabChild) : mTabChild(aTabChild) {}
+  explicit ContentListener(TabChild* aTabChild) : mTabChild(aTabChild) {}
   NS_DECL_ISUPPORTS
   NS_DECL_NSIDOMEVENTLISTENER
 protected:
@@ -162,8 +165,9 @@ class TabChildBase : public nsISupports,
 {
 public:
     TabChildBase();
+
     NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-    NS_DECL_CYCLE_COLLECTION_CLASS(TabChildBase)
+    NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(TabChildBase)
 
     virtual nsIWebNavigation* WebNavigation() = 0;
     virtual nsIWidget* WebWidget() = 0;
@@ -174,7 +178,7 @@ public:
     // viewport data on a document may have changed. If it didn't
     // change, this function doesn't do anything.  However, it should
     // not be called all the time as it is fairly expensive.
-    bool HandlePossibleViewportChange();
+    bool HandlePossibleViewportChange(const ScreenIntSize& aOldScreenSize);
     virtual bool DoUpdateZoomConstraints(const uint32_t& aPresShellId,
                                          const mozilla::layers::FrameMetrics::ViewID& aViewId,
                                          const bool& aIsRoot,
@@ -185,7 +189,7 @@ public:
                                                 nsIWidget* aWidget);
 
 protected:
-    ~TabChildBase() {}
+    virtual ~TabChildBase();
     CSSSize GetPageSize(nsCOMPtr<nsIDocument> aDocument, const CSSSize& aViewport);
 
     // Get the DOMWindowUtils for the top-level window in this tab.
@@ -257,8 +261,6 @@ public:
     static already_AddRefed<TabChild>
     Create(nsIContentChild* aManager, const TabContext& aContext, uint32_t aChromeFlags);
 
-    virtual ~TabChild();
-
     bool IsRootContentDocument();
 
     const uint64_t Id() const {
@@ -316,7 +318,7 @@ public:
                                          const FileDescriptor& aFileDescriptor)
                                          MOZ_OVERRIDE;
     virtual bool RecvShow(const nsIntSize& size) MOZ_OVERRIDE;
-    virtual bool RecvUpdateDimensions(const nsRect& rect,
+    virtual bool RecvUpdateDimensions(const nsIntRect& rect,
                                       const nsIntSize& size,
                                       const ScreenOrientation& orientation) MOZ_OVERRIDE;
     virtual bool RecvUpdateFrame(const mozilla::layers::FrameMetrics& aFrameMetrics) MOZ_OVERRIDE;
@@ -383,13 +385,6 @@ public:
     virtual PColorPickerChild*
     AllocPColorPickerChild(const nsString& title, const nsString& initialColor) MOZ_OVERRIDE;
     virtual bool DeallocPColorPickerChild(PColorPickerChild* actor) MOZ_OVERRIDE;
-
-#ifdef DEBUG
-    virtual PContentPermissionRequestChild*
-    SendPContentPermissionRequestConstructor(PContentPermissionRequestChild* aActor,
-                                             const InfallibleTArray<PermissionRequest>& aRequests,
-                                             const IPC::Principal& aPrincipal);
-#endif /* DEBUG */
 
     virtual PContentPermissionRequestChild*
     AllocPContentPermissionRequestChild(const InfallibleTArray<PermissionRequest>& aRequests,
@@ -482,6 +477,8 @@ public:
     virtual bool RecvUIResolutionChanged() MOZ_OVERRIDE;
 
 protected:
+    virtual ~TabChild();
+
     virtual PRenderFrameChild* AllocPRenderFrameChild(ScrollingBehavior* aScrolling,
                                                       TextureFactoryIdentifier* aTextureFactoryIdentifier,
                                                       uint64_t* aLayersId,
@@ -496,6 +493,8 @@ protected:
                                                   bool* /* aAllowed */) MOZ_OVERRIDE;
 
     virtual bool DeallocPIndexedDBChild(PIndexedDBChild* aActor) MOZ_OVERRIDE;
+
+    virtual bool RecvRequestNotifyAfterRemotePaint();
 
 private:
     /**
@@ -551,6 +550,9 @@ private:
 
     bool HasValidInnerSize();
 
+    void SendPendingTouchPreventedResponse(bool aPreventDefault,
+                                           const ScrollableLayerGuid& aGuid);
+
     class CachedFileDescriptorInfo;
     class CachedFileDescriptorCallbackRunnable;
 
@@ -583,10 +585,12 @@ private:
     bool mTriedBrowserInit;
     ScreenOrientation mOrientation;
     bool mUpdateHitRegion;
-    bool mContextMenuHandled;
-    bool mLongTapEventHandled;
-    bool mWaitingTouchListeners;
+    bool mPendingTouchPreventedResponse;
+    ScrollableLayerGuid mPendingTouchPreventedGuid;
     void FireSingleTapEvent(LayoutDevicePoint aPoint);
+
+    bool mTouchEndCancelled;
+    bool mEndTouchIsClick;
 
     bool mIgnoreKeyPressEvent;
     nsRefPtr<ActiveElementManager> mActiveElementManager;

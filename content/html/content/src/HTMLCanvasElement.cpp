@@ -37,7 +37,7 @@
 #include "ActiveLayerTracker.h"
 
 #ifdef MOZ_WEBGL
-#include "../canvas/src/WebGL2Context.h"
+#include "WebGL2Context.h"
 #endif
 
 using namespace mozilla::layers;
@@ -293,7 +293,7 @@ HTMLCanvasElement::CopyInnerTo(Element* aDest)
 
 nsresult HTMLCanvasElement::PreHandleEvent(EventChainPreVisitor& aVisitor)
 {
-  if (aVisitor.mEvent->eventStructType == NS_MOUSE_EVENT) {
+  if (aVisitor.mEvent->mClass == eMouseEventClass) {
     WidgetMouseEventBase* evt = (WidgetMouseEventBase*)aVisitor.mEvent;
     if (mCurrentContext) {
       nsIFrame *frame = GetPrimaryFrame();
@@ -440,7 +440,7 @@ HTMLCanvasElement::ParseParams(JSContext* aCx,
   *usingCustomParseOptions = false;
   if (aParams.Length() == 0 && aEncoderOptions.isString()) {
     NS_NAMED_LITERAL_STRING(mozParseOptions, "-moz-parse-options:");
-    nsDependentJSString paramString;
+    nsAutoJSString paramString;
     if (!paramString.init(aCx, aEncoderOptions.toString())) {
       return NS_ERROR_FAILURE;
     }

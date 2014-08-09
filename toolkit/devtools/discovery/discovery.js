@@ -39,10 +39,9 @@ const UDPSocket = CC("@mozilla.org/network/udp-socket;1",
                      "nsIUDPSocket",
                      "init");
 
-// TODO Bug 1027456: May need to reserve these with IANA
 const SCAN_PORT = 50624;
 const UPDATE_PORT = 50625;
-const ADDRESS = "224.0.0.200";
+const ADDRESS = "224.0.0.115";
 const REPLY_TIMEOUT = 5000;
 
 const { XPCOMUtils } = Cu.import("resource://gre/modules/XPCOMUtils.jsm", {});
@@ -135,12 +134,111 @@ Transport.prototype = {
 
 };
 
+/**
+ * Manages the local device's name.  The name can be generated in serveral
+ * platform-specific ways (see |_generate|).  The aim is for each device on the
+ * same local network to have a unique name.  If the Settings API is available,
+ * the name is saved there to persist across reboots.
+ */
+function LocalDevice() {
+  this._name = LocalDevice.UNKNOWN;
+  if ("@mozilla.org/settingsService;1" in Cc) {
+    this._settings =
+      Cc["@mozilla.org/settingsService;1"].getService(Ci.nsISettingsService);
+    Services.obs.addObserver(this, "mozsettings-changed", false);
+  }
+  this._get(); // Trigger |_get| to load name eagerly
+}
+
+LocalDevice.SETTING = "devtools.discovery.device";
+LocalDevice.UNKNOWN = "unknown";
+
+LocalDevice.prototype = {
+
+  _get: function() {
+    if (!this._settings) {
+      // Without Settings API, just generate a name and stop, since the value
+      // can't be persisted.
+      this._generate();
+      return;
+    }
+    // Initial read of setting value
+    this._settings.createLock().get(LocalDevice.SETTING, {
+      handle: (_, name) => {
+        if (name && name !== LocalDevice.UNKNOWN) {
+          this._name = name;
+          log("Device: " + this._name);
+          return;
+        }
+        // No existing name saved, so generate one.
+        this._generate();
+      },
+      handleError: () => log("Failed to get device name setting")
+    });
+  },
+
+  /**
+   * Generate a new device name from various platform-specific properties.
+   * Triggers the |name| setter to persist if needed.
+   */
+  _generate: function() {
+    if (Services.appinfo.widgetToolkit == "gonk") {
+      // For Gonk devices, create one from the device name plus a little
+      // randomness.  The goal is just to distinguish devices in an office
+      // environment where many people may have the same device model for
+      // testing purposes (which would otherwise all report the same name).
+      let name = libcutils.property_get("ro.product.device");
+      // Pick a random number from [0, 2^32)
+      let randomID = Math.floor(Math.random() * Math.pow(2, 32));
+      // To hex and zero pad
+      randomID = ("00000000" + randomID.toString(16)).slice(-8);
+      this.name = name + "-" + randomID;
+    } else {
+      this.name = sysInfo.get("host");
+    }
+  },
+
+  /**
+   * Observe any changes that might be made via the Settings app
+   */
+  observe: function(subject, topic, data) {
+    if (topic !== "mozsettings-changed") {
+      return;
+    }
+    let setting = JSON.parse(data);
+    if (setting.key !== LocalDevice.SETTING) {
+      return;
+    }
+    this._name = setting.value;
+    log("Device: " + this._name);
+  },
+
+  get name() {
+    return this._name;
+  },
+
+  set name(name) {
+    if (!this._settings) {
+      this._name = name;
+      log("Device: " + this._name);
+      return;
+    }
+    // Persist to Settings API
+    // The new value will be seen and stored by the observer above
+    this._settings.createLock().set(LocalDevice.SETTING, name, {
+      handle: () => {},
+      handleError: () => log("Failed to set device name setting")
+    });
+  }
+
+};
+
 function Discovery() {
   EventEmitter.decorate(this);
 
   this.localServices = {};
   this.remoteServices = {};
-  this.device = { name: "unknown" };
+  this.device = new LocalDevice();
   this.replyTimeout = REPLY_TIMEOUT;
 
   // Defaulted to Transport, but can be altered by tests
@@ -158,7 +256,7 @@ function Discovery() {
   this._onRemoteUpdate = this._onRemoteUpdate.bind(this);
   this._purgeMissingDevices = this._purgeMissingDevices.bind(this);
 
-  this._getSystemInfo();
+  Services.obs.addObserver(this, "network-active-changed", false);
 }
 
 Discovery.prototype = {
@@ -237,24 +335,6 @@ Discovery.prototype = {
       setTimeout(this._purgeMissingDevices, this.replyTimeout);
   },
 
-  /**
-   * Determine a unique name to identify the current device.
-   */
-  _getSystemInfo: function() {
-    // TODO Bug 1027787: Uniquify device name somehow?
-    try {
-      if (Services.appinfo.widgetToolkit == "gonk") {
-        this.device.name = libcutils.property_get("ro.product.device");
-      } else {
-        this.device.name = sysInfo.get("host");
-      }
-      log("Device: " + this.device.name);
-    } catch(e) {
-      log("Failed to get system info");
-      this.device.name = "unknown";
-    }
-  },
-
   get Transport() {
     return this._factories.Transport;
   },
@@ -295,6 +375,35 @@ Discovery.prototype = {
     this._transports.update = null;
   },
 
+  observe: function(subject, topic, data) {
+    if (topic !== "network-active-changed") {
+      return;
+    }
+    let activeNetwork = subject;
+    if (!activeNetwork) {
+      log("No active network");
+      return;
+    }
+    activeNetwork = activeNetwork.QueryInterface(Ci.nsINetworkInterface);
+    log("Active network changed to: " + activeNetwork.type);
+    // UDP sockets go down when the device goes offline, so we'll restart them
+    // when the active network goes back to WiFi.
+    if (activeNetwork.type === Ci.nsINetworkInterface.NETWORK_TYPE_WIFI) {
+      this._restartListening();
+    }
+  },
+
+  _restartListening: function() {
+    if (this._transports.scan) {
+      this._stopListeningForScan();
+      this._startListeningForScan();
+    }
+    if (this._transports.update) {
+      this._stopListeningForUpdate();
+      this._startListeningForUpdate();
+    }
+  },
+
   /**
    * When sending message, we can use either transport, so just pick the first
    * one currently alive.
@@ -328,6 +437,9 @@ Discovery.prototype = {
 
     let remoteDevice = update.device;
     let remoteHost = update.from;
+
+    // Record the reply as received so it won't be purged as missing
+    this._expectingReplies.from.delete(remoteDevice);
 
     // First, loop over the known services
     for (let service in this.remoteServices) {

@@ -19,17 +19,19 @@
         </menulist>
       </popupnotificationcontent>
 
-      <popupnotificationcontent id="webRTC-selectScreen" orient="vertical">
+      <popupnotificationcontent id="webRTC-selectWindowOrScreen" orient="vertical">
         <separator class="thin"/>
-        <label value="&getUserMedia.selectScreen.label;"
-               accesskey="&getUserMedia.selectScreen.accesskey;"
-               control="webRTC-selectScreen-menulist"/>
-        <menulist id="webRTC-selectScreen-menulist">
-          <menupopup id="webRTC-selectScreen-menupopup"/>
+        <label value="&getUserMedia.selectWindowOrScreen.label;"
+               accesskey="&getUserMedia.selectWindowOrScreen.accesskey;"
+               control="webRTC-selectWindow-menulist"/>
+        <menulist id="webRTC-selectWindow-menulist"
+                  oncommand="gWebRTCUI.updateMainActionLabel(this);">
+          <menupopup id="webRTC-selectWindow-menupopup"/>
         </menulist>
+        <description id="webRTC-all-windows-shared" hidden="true">&getUserMedia.allWindowsShared.message;</description>
       </popupnotificationcontent>
 
-      <popupnotificationcontent id="webRTC-selectApplication" orient="vertical">
+<popupnotificationcontent id="webRTC-selectApplication" orient="vertical">
         <separator class="thin"/>
         <label value="&getUserMedia.selectApplication.label;"
                accesskey="&getUserMedia.selectApplication.accesskey;"

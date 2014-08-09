@@ -9,6 +9,7 @@
  * Copyright © 2012 W3C® (MIT, ERCIM, Keio), All Rights Reserved. W3C
  * liability, trademark and document use rules apply.
  */
+
  dictionary MediaTrackConstraints : MediaTrackConstraintSet {
     sequence<DOMString> require;
     sequence<MediaTrackConstraintSet> advanced;
@@ -21,7 +22,6 @@
 // TODO(jib): Remove in 6+ weeks (Bug 997365)
 dictionary MobileLegacyMediaTrackConstraintSet {
     VideoFacingModeEnum facingMode;
-    MozMediaSourceEnum mozMediaSource;
 };
 
 interface MediaStreamTrack {

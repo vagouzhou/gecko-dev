@@ -61,6 +61,19 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     // as needed.
     void setVariable(uint32_t slot);
 
+    enum ReferencesType {
+        RefType_AssertNoUses = 1 << 0,
+        RefType_DiscardOperands = 1 << 1,
+        RefType_DiscardResumePoint = 1 << 2,
+        RefType_Default = RefType_AssertNoUses | RefType_DiscardOperands | RefType_DiscardResumePoint
+    };
+
+    // Remove all references to an instruction such that it can be removed from
+    // the list of instruction, without keeping any dangling pointer to it. This
+    // includes the operands of the instruction, and the resume point if
+    // present.
+    void prepareForDiscard(MInstruction *ins, ReferencesType refType = RefType_Default);
+
   public:
     ///////////////////////////////////////////////////////
     ////////// BEGIN GRAPH BUILDING INSTRUCTIONS //////////
@@ -176,6 +189,10 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     bool addPredecessor(TempAllocator &alloc, MBasicBlock *pred);
     bool addPredecessorPopN(TempAllocator &alloc, MBasicBlock *pred, uint32_t popped);
 
+    // Add a predecessor which won't introduce any new phis to this block.
+    // This may be called after the contents of this block have been built.
+    void addPredecessorSameInputsAs(MBasicBlock *pred, MBasicBlock *existingPred);
+
     // Stranger utilities used for inlining.
     bool addPredecessorWithoutPhis(MBasicBlock *pred);
     void inheritSlots(MBasicBlock *parent);
@@ -238,6 +255,10 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     void discardAllPhis();
     void discardAllResumePoints(bool discardEntry = true);
 
+    // Same as |void discard(MInstruction *ins)| but assuming that
+    // all operands are already discarded.
+    void discardIgnoreOperands(MInstruction *ins);
+
     // Discards a phi instruction and updates predecessor successorWithPhis.
     MPhiIterator discardPhiAt(MPhiIterator &at);
 
@@ -279,6 +300,16 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
 
     MBasicBlock *getPredecessor(uint32_t i) const {
         return predecessors_[i];
+    }
+    size_t indexForPredecessor(MBasicBlock *block) const {
+        // This should only be called before critical edge splitting.
+        JS_ASSERT(!block->successorWithPhis());
+
+        for (size_t i = 0; i < predecessors_.length(); i++) {
+            if (predecessors_[i] == block)
+                return i;
+        }
+        MOZ_CRASH();
     }
 #ifdef DEBUG
     bool hasLastIns() const {
@@ -440,7 +471,7 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
         entryResumePoint_ = nullptr;
     }
     MResumePoint *callerResumePoint() {
-        return entryResumePoint()->caller();
+        return entryResumePoint() ? entryResumePoint()->caller() : nullptr;
     }
     void setCallerResumePoint(MResumePoint *caller) {
         entryResumePoint()->setCaller(caller);
@@ -516,22 +547,22 @@ class MBasicBlock : public TempObject, public InlineListNode<MBasicBlock>
     InlineForwardList<MResumePoint> resumePoints_;
     FixedList<MDefinition *> slots_;
     uint32_t stackPosition_;
-    jsbytecode *pc_;
     uint32_t id_;
     uint32_t domIndex_; // Index in the dominator tree.
+    uint32_t numDominated_;
+    jsbytecode *pc_;
     LBlock *lir_;
     MResumePoint *entryResumePoint_;
     MBasicBlock *successorWithPhis_;
     uint32_t positionInPhiSuccessor_;
-    Kind kind_;
     uint32_t loopDepth_;
+    Kind kind_ : 8;
 
     // Utility mark for traversal algorithms.
     bool mark_;
 
     Vector<MBasicBlock *, 1, IonAllocPolicy> immediatelyDominated_;
     MBasicBlock *immediateDominator_;
-    size_t numDominated_;
 
     BytecodeSite trackedSite_;
 
@@ -699,8 +730,8 @@ class MIRGraph
 
 class MDefinitionIterator
 {
-
   friend class MBasicBlock;
+  friend class MNodeIterator;
 
   private:
     MBasicBlock *block_;
@@ -752,6 +783,94 @@ class MDefinitionIterator
 
     MDefinition *operator ->() {
         return getIns();
+    }
+};
+
+// Iterates on all resume points, phis, and instructions of a MBasicBlock.
+// Resume points are visited as long as the instruction which holds it is not
+// discarded.
+class MNodeIterator
+{
+  private:
+    // Last instruction which holds a resume point. To handle the entry point
+    // resume point, it is set to the last instruction, assuming that the last
+    // instruction is not discarded before we visit it.
+    MInstruction *last_;
+
+    // Definition iterator which is one step ahead when visiting resume points.
+    // This is in order to avoid incrementing the iterator while it is settled
+    // on a discarded instruction.
+    MDefinitionIterator defIter_;
+
+    MBasicBlock *block() const {
+        return defIter_.block_;
+    }
+
+    bool atResumePoint() const {
+        return last_ && !last_->isDiscarded();
+    }
+
+    MNode *getNode() {
+        if (!atResumePoint())
+            return *defIter_;
+
+        // We use the last instruction as a sentinelle to iterate over the entry
+        // resume point of the basic block, before even starting to iterate on
+        // the instruction list.  Otherwise, the last_ corresponds to the
+        // previous instruction.
+        if (last_ != block()->lastIns())
+            return last_->resumePoint();
+        return block()->entryResumePoint();
+    }
+
+    void next() {
+        if (!atResumePoint()) {
+            if (defIter_->isInstruction() && defIter_->toInstruction()->resumePoint()) {
+                // In theory, we could but in practice this does not happen.
+                MOZ_ASSERT(*defIter_ != block()->lastIns());
+                last_ = defIter_->toInstruction();
+            }
+
+            defIter_++;
+        } else {
+            last_ = nullptr;
+        }
+    }
+
+    bool more() const {
+        return defIter_ || atResumePoint();
+    }
+
+  public:
+    explicit MNodeIterator(MBasicBlock *block)
+      : last_(block->entryResumePoint() ? block->lastIns() : nullptr),
+        defIter_(block)
+    {
+        MOZ_ASSERT(bool(block->entryResumePoint()) == atResumePoint());
+
+        // We use the last instruction to check for the entry resume point,
+        // assert that no control instruction has any resume point.  If so, then
+        // we need to handle this case in this iterator.
+        MOZ_ASSERT(!block->lastIns()->resumePoint());
+    }
+
+    MNodeIterator operator ++(int) {
+        MNodeIterator old(*this);
+        if (more())
+            next();
+        return old;
+    }
+
+    operator bool() const {
+        return more();
+    }
+
+    MNode *operator *() {
+        return getNode();
+    }
+
+    MNode *operator ->() {
+        return getNode();
     }
 
 };

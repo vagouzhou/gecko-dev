@@ -24,8 +24,6 @@ enum OptimizationLevel
     Optimization_Count
 };
 
-#ifdef JS_ION
-
 #ifdef DEBUG
 inline const char *
 OptimizationLevelString(OptimizationLevel level)
@@ -90,6 +88,9 @@ class OptimizationInfo
 
     // The maximum inlining depth.
     uint32_t maxInlineDepth_;
+
+    // Toggles whether scalar replacement is used.
+    bool scalarReplacement_;
 
     // The maximum inlining depth for functions.
     //
@@ -165,6 +166,10 @@ class OptimizationInfo
         return js_JitOptions.forcedRegisterAllocator;
     }
 
+    bool scalarReplacementEnabled() const {
+        return scalarReplacement_ && !js_JitOptions.disableScalarReplacement;
+    }
+
     uint32_t smallFunctionMaxInlineDepth() const {
         return smallFunctionMaxInlineDepth_;
     }
@@ -213,8 +218,6 @@ class OptimizationInfos
 };
 
 extern OptimizationInfos js_IonOptimizations;
-
-#endif // JS_ION
 
 } // namespace jit
 } // namespace js

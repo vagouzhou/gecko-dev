@@ -192,7 +192,7 @@ class ViECapturer
   CaptureCapability requested_capability_;
 
   scoped_ptr<OveruseFrameDetector> overuse_detector_;
-          const Config & config_;
+  const Config & config_;
 };
 
 }  // namespace webrtc

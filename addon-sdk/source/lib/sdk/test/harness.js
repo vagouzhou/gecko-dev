@@ -18,6 +18,7 @@ const system = require("../system");
 const memory = require('../deprecated/memory');
 const { gc: gcPromise } = require('./memory');
 const { defer } = require('../core/promise');
+const { extend } = require('../core/heritage');
 
 // Trick manifest builder to make it think we need these modules ?
 const unit = require("../deprecated/unit-test");
@@ -30,8 +31,7 @@ function emptyPromise() {
   return promise;
 }
 
-var cService = Cc['@mozilla.org/consoleservice;1'].getService()
-               .QueryInterface(Ci.nsIConsoleService);
+var cService = Cc['@mozilla.org/consoleservice;1'].getService(Ci.nsIConsoleService);
 
 // The console used to log messages
 var testConsole;
@@ -164,8 +164,8 @@ function reportMemoryUsage() {
     mgr.getReportsForThisProcess(logReporter, null, /* anonymize = */ false);
 
     var weakrefs = [info.weakref.get()
-                    for each (info in memory.getObjects())];
-    weakrefs = [weakref for each (weakref in weakrefs) if (weakref)];
+                    for (info of memory.getObjects())];
+    weakrefs = [weakref for (weakref of weakrefs) if (weakref)];
     print("Tracked memory objects in testing sandbox: " + weakrefs.length + "\n");
   }));
 }
@@ -227,7 +227,7 @@ function cleanup() {
 
     if (profileMemory) {
       gWeakrefInfo = [{ weakref: info.weakref, bin: info.bin }
-                      for each (info in memory.getObjects())];
+                      for (info of memory.getObjects())];
     }
 
     loader.unload();
@@ -261,7 +261,7 @@ function cleanup() {
     console.exception(e);
   };
 
-  setTimeout(require('@test/options').checkMemory ? checkMemory : showResults, 1);
+  setTimeout(require("./options").checkMemory ? checkMemory : showResults, 1);
 
   // dump the coverobject
   if (Object.keys(coverObject).length){
@@ -392,7 +392,7 @@ function nextIteration(tests) {
 
     reportMemoryUsage().then(_ => {
       let testRun = [];
-      for each (let test in tests.testRunSummary) {
+      for (let test of tests.testRunSummary) {
         let testCopy = {};
         for (let info in test) {
           testCopy[info] = test[info];
@@ -446,7 +446,7 @@ var consoleListener = {
       return;
     this.errorsLogged++;
     var message = object.QueryInterface(Ci.nsIConsoleMessage).message;
-    var pointless = [err for each (err in POINTLESS_ERRORS)
+    var pointless = [err for (err of POINTLESS_ERRORS)
                          if (message.indexOf(err) >= 0)];
     if (pointless.length == 0 && message)
       testConsole.log(message);
@@ -454,7 +454,7 @@ var consoleListener = {
 };
 
 function TestRunnerConsole(base, options) {
-  this.__proto__ = {
+  let proto = extend(base, {
     errorsLogged: 0,
     warn: function warn() {
       this.errorsLogged++;
@@ -471,8 +471,8 @@ function TestRunnerConsole(base, options) {
         if (first == "pass:")
           print(".");
     },
-    __proto__: base
-  };
+  });
+  return Object.create(proto);
 }
 
 function stringify(arg) {

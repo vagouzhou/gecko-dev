@@ -1184,7 +1184,7 @@ StorageActors.createActor({
       principal = Services.scriptSecurityManager.getCodebasePrincipal(uri);
     }
 
-    return indexedDB.openForPrincipal(principal, name);
+    return require("indexedDB").openForPrincipal(principal, name);
   },
 
   /**
@@ -1702,8 +1702,6 @@ let StorageFront = exports.StorageFront = protocol.FrontClass(StorageActor, {
   initialize: function(client, tabForm) {
     protocol.Front.prototype.initialize.call(this, client);
     this.actorID = tabForm.storageActor;
-
-    client.addActorPool(this);
     this.manage(this);
   }
 });

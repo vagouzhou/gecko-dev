@@ -41,7 +41,7 @@ public:
 
   // nsIStyleSheetLinkingElement  
   NS_IMETHOD SetStyleSheet(mozilla::CSSStyleSheet* aStyleSheet) MOZ_OVERRIDE;
-  NS_IMETHOD GetStyleSheet(nsIStyleSheet*& aStyleSheet) MOZ_OVERRIDE;
+  NS_IMETHOD_(mozilla::CSSStyleSheet*) GetStyleSheet() MOZ_OVERRIDE;
   NS_IMETHOD InitStyleLinkElement(bool aDontLoadStyle) MOZ_OVERRIDE;
   NS_IMETHOD UpdateStyleSheet(nsICSSLoaderObserver* aObserver,
                               bool* aWillNotify,
@@ -61,10 +61,13 @@ public:
     eHTMLIMPORT =   0x00000020
   };
 
-  // The return value is a bitwise or of 0 or more RelValues
-  static uint32_t ParseLinkTypes(const nsAString& aTypes);
+  // The return value is a bitwise or of 0 or more RelValues.
+  // aPrincipal is used to check if HTML imports is enabled for the
+  // provided principal.
+  static uint32_t ParseLinkTypes(const nsAString& aTypes,
+                                 nsIPrincipal* aPrincipal);
 
-  static bool IsImportEnabled();
+  static bool IsImportEnabled(nsIPrincipal* aPrincipal);
   
   void UpdateStyleSheetInternal()
   {

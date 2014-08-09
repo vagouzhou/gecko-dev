@@ -16,67 +16,68 @@
 
 namespace webrtc {
 
-	namespace {
+namespace {
 
-		class AppCapturerNull : public AppCapturer {
-		public:
-			AppCapturerNull();
-			virtual ~AppCapturerNull();
+class AppCapturerNull : public AppCapturer {
+public:
+  AppCapturerNull();
+  virtual ~AppCapturerNull();
 
-			// AppCapturer interface.
-			//AppCapturer Interfaces
-			virtual bool GetAppList(AppList* apps) OVERRIDE;
-			virtual bool SelectApp(ProcessId processId) OVERRIDE;
-			virtual bool BringAppToFront()	OVERRIDE;
+  // AppCapturer interface.
+  virtual bool GetAppList(AppList* apps) OVERRIDE;
+  virtual bool SelectApp(ProcessId id) OVERRIDE;
+  virtual bool BringAppToFront()	OVERRIDE;
 
-			// DesktopCapturer interface.
-			virtual void Start(Callback* callback) OVERRIDE;
-			virtual void Capture(const DesktopRegion& region) OVERRIDE;
+  // DesktopCapturer interface.
+  virtual void Start(Callback* callback) OVERRIDE;
+  virtual void Capture(const DesktopRegion& region) OVERRIDE;
 
-		private:
-			Callback* callback_;
+private:
+  Callback* callback_;
 
-			DISALLOW_COPY_AND_ASSIGN(AppCapturerNull);
-		};
+  DISALLOW_COPY_AND_ASSIGN(AppCapturerNull);
+};
 
-		AppCapturerNull::AppCapturerNull()
-			: callback_(NULL) {
-		}
+AppCapturerNull::AppCapturerNull()
+  : callback_(NULL) {
+}
 
-		AppCapturerNull::~AppCapturerNull() {
-		}
+AppCapturerNull::~AppCapturerNull() {
+}
 
-		bool AppCapturerNull::GetAppList(AppList* apps) {
-			// Not implemented yet.
-			return false;
-		}
-		bool SelectApp(ProcessId processId) {
-			// Not implemented yet.
-			return false;
-		}
-		bool BringAppToFront()	{
-			// Not implemented yet.
-			return false;
-		}
+bool AppCapturerNull::GetAppList(AppList* apps) {
+  // Not implemented yet: See Bug 1036653
+  return false;
+}
 
-		// DesktopCapturer interface.
-		void AppCapturerNull::Start(Callback* callback) {
-			assert(!callback_);
-			assert(callback);
+bool AppCapturerNull::SelectApp(ProcessId id) {
+  // Not implemented yet: See Bug 1036653
+  return false;
+}
 
-			callback_ = callback;
-		}
+bool AppCapturerNull::BringAppToFront() {
+  // Not implemented yet: See Bug 1036653
+  return false;
+}
 
-		void AppCapturerNull::Capture(const DesktopRegion& region) {
-			// Not implemented yet.
-			callback_->OnCaptureCompleted(NULL);
-		}
+// DesktopCapturer interface.
+void AppCapturerNull::Start(Callback* callback) {
+  assert(!callback_);
+  assert(callback);
 
-	}  // namespace
+  callback_ = callback;
+}
 
-	// static
-	AppCapturer* AppCapturer::Create(const DesktopCaptureOptions& options) {
-		return new AppCapturerNull();
-	}
+void AppCapturerNull::Capture(const DesktopRegion& region) {
+  // Not implemented yet: See Bug 1036653
+  callback_->OnCaptureCompleted(NULL);
+}
+
+}  // namespace
+
+// static
+AppCapturer* AppCapturer::Create(const DesktopCaptureOptions& options) {
+  return new AppCapturerNull();
+}
 
 }  // namespace webrtc

@@ -4,58 +4,62 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-PARALLEL_DIRS += [
+DIRS += [
   'encoder',
   'gmp',
   'mediasource',
   'ogg',
+  'systemservices',
   'webaudio',
   'webvtt'
 ]
 
-TEST_TOOL_DIRS += ['compiledtest']
+TEST_DIRS += ['compiledtest']
 
 if CONFIG['MOZ_RAW']:
-    PARALLEL_DIRS += ['raw']
+    DIRS += ['raw']
 
 if CONFIG['MOZ_WAVE']:
-    PARALLEL_DIRS += ['wave']
+    DIRS += ['wave']
 
 if CONFIG['MOZ_WEBM']:
-    PARALLEL_DIRS += ['webm']
+    DIRS += ['webm']
 
 if CONFIG['MOZ_GSTREAMER']:
-    PARALLEL_DIRS += ['gstreamer']
+    DIRS += ['gstreamer']
 
 if CONFIG['MOZ_DIRECTSHOW']:
-    PARALLEL_DIRS += ['directshow']
+    DIRS += ['directshow']
 
-if CONFIG['MOZ_MEDIA_PLUGINS']:
-    PARALLEL_DIRS += ['plugins']
+if CONFIG['MOZ_ANDROID_OMX']:
+    DIRS += ['android']
 
 if CONFIG['MOZ_WMF']:
-    PARALLEL_DIRS += ['wmf']
+    DIRS += ['wmf']
 
 if CONFIG['MOZ_FMP4']:
-    PARALLEL_DIRS += ['fmp4']
+    DIRS += ['fmp4']
 
 if CONFIG['MOZ_APPLEMEDIA']:
-    PARALLEL_DIRS += ['apple']
+    DIRS += ['apple']
 
-PARALLEL_DIRS += ['webrtc']
+DIRS += ['webrtc']
 
 if CONFIG['MOZ_OMX_DECODER']:
-    PARALLEL_DIRS += ['omx']
-    PARALLEL_DIRS += ['omx/mediaresourcemanager']
+    DIRS += ['omx']
+    DIRS += ['omx/mediaresourcemanager']
 
-PARALLEL_DIRS += ['webspeech']
+DIRS += ['webspeech']
 
-PARALLEL_DIRS += ['eme']
+if CONFIG['MOZ_EME']:
+    DIRS += ['eme']
 
 TEST_DIRS += [
-    'test',
     'gtest',
 ]
+
+MOCHITEST_MANIFESTS += ['test/mochitest.ini']
+MOCHITEST_CHROME_MANIFESTS += ['test/chrome.ini']
 
 EXPORTS += [
     'AbstractMediaDecoder.h',
@@ -91,6 +95,8 @@ EXPORTS += [
     'MediaSegment.h',
     'MediaStreamGraph.h',
     'MediaTaskQueue.h',
+    'MediaTrack.h',
+    'MediaTrackList.h',
     'MP3FrameParser.h',
     'nsIDocumentActivity.h',
     'RtspMediaResource.h',
@@ -107,6 +113,8 @@ EXPORTS += [
 
 EXPORTS.mozilla.dom += [
     'AudioStreamTrack.h',
+    'AudioTrack.h',
+    'AudioTrackList.h',
     'MediaStreamTrack.h',
     'TextTrack.h',
     'TextTrackCue.h',
@@ -115,6 +123,8 @@ EXPORTS.mozilla.dom += [
     'TextTrackRegion.h',
     'VideoPlaybackQuality.h',
     'VideoStreamTrack.h',
+    'VideoTrack.h',
+    'VideoTrackList.h',
 ]
 
 UNIFIED_SOURCES += [
@@ -127,6 +137,8 @@ UNIFIED_SOURCES += [
     'AudioSink.cpp',
     'AudioStream.cpp',
     'AudioStreamTrack.cpp',
+    'AudioTrack.cpp',
+    'AudioTrackList.cpp',
     'BufferDecoder.cpp',
     'DOMMediaStream.cpp',
     'EncodedBufferCache.cpp',
@@ -136,12 +148,15 @@ UNIFIED_SOURCES += [
     'MediaDecoder.cpp',
     'MediaDecoderReader.cpp',
     'MediaDecoderStateMachine.cpp',
+    'MediaDecoderStateMachineScheduler.cpp',
     'MediaRecorder.cpp',
     'MediaResource.cpp',
     'MediaShutdownManager.cpp',
     'MediaStreamGraph.cpp',
     'MediaStreamTrack.cpp',
     'MediaTaskQueue.cpp',
+    'MediaTrack.cpp',
+    'MediaTrackList.cpp',
     'MP3FrameParser.cpp',
     'RtspMediaResource.cpp',
     'SharedThreadPool.cpp',
@@ -155,6 +170,8 @@ UNIFIED_SOURCES += [
     'VideoPlaybackQuality.cpp',
     'VideoSegment.cpp',
     'VideoStreamTrack.cpp',
+    'VideoTrack.cpp',
+    'VideoTrackList.cpp',
     'VideoUtils.cpp',
     'WebVTTListener.cpp',
 ]
@@ -176,7 +193,7 @@ MSVC_ENABLE_PGO = True
 
 include('/ipc/chromium/chromium-config.mozbuild')
 
-FINAL_LIBRARY = 'gklayout'
+FINAL_LIBRARY = 'xul'
 LOCAL_INCLUDES += [
     '/content/base/src',
     '/layout/generic',
@@ -196,3 +213,6 @@ if CONFIG['MOZ_OMX_DECODER']:
 
 if CONFIG['ANDROID_VERSION'] > '15':
     DEFINES['MOZ_OMX_WEBM_DECODER'] = True
+
+CFLAGS += CONFIG['GSTREAMER_CFLAGS']
+CXXFLAGS += CONFIG['GSTREAMER_CFLAGS']

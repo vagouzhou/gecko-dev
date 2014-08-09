@@ -22,6 +22,7 @@ function pushPrefEnv(aPrefs) {
   let deferred = Promise.defer();
 
   SpecialPowers.pushPrefEnv(aPrefs, function() {
+    ok(true, "preferences pushed: " + JSON.stringify(aPrefs));
     deferred.resolve();
   });
 
@@ -361,9 +362,17 @@ function deleteMessagesById(aMessageIds) {
     return [];
   }
 
+  let promises = [];
+  promises.push(waitForManagerEvent("deleted"));
+
   let request = manager.delete(aMessageIds);
-  return wrapDomRequestAsPromise(request)
-      .then((aEvent) => { return aEvent.target.result; });
+  promises.push(wrapDomRequestAsPromise(request));
+
+  return Promise.all(promises)
+    .then((aResults) => {
+      return { deletedInfo: aResults[0],
+               deletedFlags: aResults[1].target.result };
+    });
 }
 
 /**
@@ -553,22 +562,12 @@ function compareSmsMessage(aFrom, aTo) {
 }
 
 /**
- * Flush permission settings and call |finish()|.
+ * Wait for pending emulator transactions and call |finish()|.
  */
 function cleanUp() {
   ok(true, ":: CLEANING UP ::");
 
-  waitFor(function() {
-    SpecialPowers.flushPermissions(function() {
-      ok(true, "permissions flushed");
-
-      SpecialPowers.flushPrefEnv(function() {
-        ok(true, "preferences flushed");
-
-        finish();
-      })
-    });
-  }, function() {
+  waitFor(finish, function() {
     return pendingEmulatorCmdCount === 0;
   });
 }

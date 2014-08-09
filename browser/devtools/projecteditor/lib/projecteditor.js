@@ -62,6 +62,7 @@ require("projecteditor/plugins/status-bar/plugin");
  *   - "onEditorCursorActivity": When there is cursor activity in a text editor
  *   - "onCommand": When a command happens
  *   - "onEditorDestroyed": When editor is destroyed
+ *   - "onContextMenuOpen": When the context menu is opened on the project tree
  *
  * The events can be bound like so:
  *   projecteditor.on("onEditorCreated", (editor) => { });
@@ -87,6 +88,7 @@ var ProjectEditor = Class({
     this._onEditorActivated = this._onEditorActivated.bind(this);
     this._onEditorDeactivated = this._onEditorDeactivated.bind(this);
     this._updateMenuItems = this._updateMenuItems.bind(this);
+    this._updateContextMenuItems = this._updateContextMenuItems.bind(this);
     this.destroy = this.destroy.bind(this);
     this.menubar = options.menubar || null;
     this.menuindex = options.menuindex || null;
@@ -173,6 +175,12 @@ var ProjectEditor = Class({
 
   _buildMenubar: function() {
 
+    this.contextMenuPopup = this.document.getElementById("context-menu-popup");
+    this.contextMenuPopup.addEventListener("popupshowing", this._updateContextMenuItems);
+
+    this.textEditorContextMenuPopup = this.document.getElementById("texteditor-context-popup");
+    this.textEditorContextMenuPopup.addEventListener("popupshowing", this._updateMenuItems);
+
     this.editMenu = this.document.getElementById("edit-menu");
     this.fileMenu = this.document.getElementById("file-menu");
 
@@ -189,6 +197,7 @@ var ProjectEditor = Class({
       body.appendChild(this.editorCommandset);
       body.appendChild(this.editorKeyset);
       body.appendChild(this.contextMenuPopup);
+      body.appendChild(this.textEditorContextMenuPopup);
 
       let index = this.menuindex || 0;
       this.menubar.insertBefore(this.editMenu, this.menubar.children[index]);
@@ -230,8 +239,6 @@ var ProjectEditor = Class({
     this.editorCommandset = this.document.getElementById("editMenuCommands");
     this.editorKeyset = this.document.getElementById("editMenuKeys");
 
-    this.contextMenuPopup = this.document.getElementById("context-menu-popup");
-
     this.projectEditorCommandset.addEventListener("command", (evt) => {
       evt.stopPropagation();
       evt.preventDefault();
@@ -270,6 +277,15 @@ var ProjectEditor = Class({
   },
 
   /**
+   * Enable / disable necessary context menu items by passing an event
+   * onto plugins.
+   */
+  _updateContextMenuItems: function() {
+    let resource = this.projectTree.getSelectedResource();
+    this.pluginDispatch("onContextMenuOpen", resource);
+  },
+
+  /**
    * Destroy all objects on the iframe unload event.
    */
   destroy: function() {
@@ -301,6 +317,7 @@ var ProjectEditor = Class({
     this.editorCommandset.remove();
     this.editorKeyset.remove();
     this.contextMenuPopup.remove();
+    this.textEditorContextMenuPopup.remove();
     this.editMenu.remove();
     this.fileMenu.remove();
 
@@ -374,8 +391,9 @@ var ProjectEditor = Class({
    *                 The file to be opened.
    */
   openResource: function(resource) {
-    this.shells.open(resource);
+    let shell = this.shells.open(resource);
     this.projectTree.selectResource(resource);
+    shell.editor.focus();
   },
 
   /**
@@ -534,6 +552,10 @@ var ProjectEditor = Class({
     this._editorListenAndDispatch(editor, "cursorActivity", "onEditorCursorActivity");
     this._editorListenAndDispatch(editor, "load", "onEditorLoad");
     this._editorListenAndDispatch(editor, "save", "onEditorSave");
+
+    editor.on("focus", () => {
+      this.projectTree.selectResource(this.resourceFor(editor));
+    });
   },
 
   /**
@@ -572,8 +594,6 @@ var ProjectEditor = Class({
    *                All remaining parameters are passed into the handler.
    */
   pluginDispatch: function(handler, ...args) {
-    // XXX: Memory leak when console.log an Editor here
-    // console.log("DISPATCHING EVENT TO PLUGIN", handler, args);
     emit(this, handler, ...args);
     this.plugins.forEach(plugin => {
       try {
@@ -596,8 +616,6 @@ var ProjectEditor = Class({
    *               Which plugin method to call
    */
   _editorListenAndDispatch: function(editor, event, handler) {
-    /// XXX: Uncommenting this line also causes memory leak.
-    // console.log("Binding listen and dispatch", editor);
     editor.on(event, (...args) => {
       this.pluginDispatch(handler, editor, this.resourceFor(editor), ...args);
     });

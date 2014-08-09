@@ -12,6 +12,7 @@
 
 #include "mozilla/dom/ElementInlines.h"
 
+#include "AnimationCommon.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/dom/Attr.h"
 #include "nsDOMAttributeMap.h"
@@ -307,7 +308,7 @@ Element::LockedStyleStates() const
 void
 Element::NotifyStyleStateChange(EventStates aStates)
 {
-  nsIDocument* doc = GetCurrentDoc();
+  nsIDocument* doc = GetComposedDoc();
   if (doc) {
     nsIPresShell *presShell = doc->GetShell();
     if (presShell) {
@@ -751,7 +752,7 @@ void
 Element::AddToIdTable(nsIAtom* aId)
 {
   NS_ASSERTION(HasID(), "Node doesn't have an ID?");
-  if (HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (IsInShadowTree()) {
     ShadowRoot* containingShadow = GetContainingShadow();
     containingShadow->AddToIdTable(this, aId);
   } else {
@@ -770,7 +771,7 @@ Element::RemoveFromIdTable()
   }
 
   nsIAtom* id = DoGetID();
-  if (HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  if (IsInShadowTree()) {
     ShadowRoot* containingShadow = GetContainingShadow();
     // Check for containingShadow because it may have
     // been deleted during unlinking.
@@ -1232,7 +1233,7 @@ Element::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     if (aParent->HasFlag(NODE_CHROME_ONLY_ACCESS)) {
       SetFlags(NODE_CHROME_ONLY_ACCESS);
     }
-    if (aParent->HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+    if (aParent->IsInShadowTree()) {
       ClearSubtreeRootPointer();
       SetFlags(NODE_IS_IN_SHADOW_TREE);
     }
@@ -1291,7 +1292,7 @@ Element::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                NODE_NEEDS_FRAME | NODE_DESCENDANTS_NEED_FRAMES |
                // And the restyle bits
                ELEMENT_ALL_RESTYLE_FLAGS);
-  } else if (!HasFlag(NODE_IS_IN_SHADOW_TREE)) {
+  } else if (!IsInShadowTree()) {
     // If we're not in the doc and not in a shadow tree,
     // update our subtree pointer.
     SetSubtreeRootPointer(aParent->SubtreeRoot());
@@ -1727,7 +1728,7 @@ Element::DispatchClickEvent(nsPresContext* aPresContext,
     clickCount = sourceMouseEvent->clickCount;
     pressure = sourceMouseEvent->pressure;
     inputSource = sourceMouseEvent->inputSource;
-  } else if (aSourceEvent->eventStructType == NS_KEY_EVENT) {
+  } else if (aSourceEvent->mClass == eKeyboardEventClass) {
     inputSource = nsIDOMMouseEvent::MOZ_SOURCE_KEYBOARD;
   }
   event.pressure = pressure;
@@ -1745,7 +1746,7 @@ Element::DispatchClickEvent(nsPresContext* aPresContext,
 nsIFrame*
 Element::GetPrimaryFrame(mozFlushType aType)
 {
-  nsIDocument* doc = GetCurrentDoc();
+  nsIDocument* doc = GetComposedDoc();
   if (!doc) {
     return nullptr;
   }
@@ -2735,8 +2736,7 @@ Element::SetTokenList(nsIAtom* aAtom, nsIVariant* aValue)
 }
 
 bool
-Element::MozMatchesSelector(const nsAString& aSelector,
-                            ErrorResult& aError)
+Element::Matches(const nsAString& aSelector, ErrorResult& aError)
 {
   nsCSSSelectorList* selectorList = ParseSelectorList(aSelector, aError);
   if (!selectorList) {
@@ -2862,6 +2862,30 @@ void
 Element::MozRequestPointerLock()
 {
   OwnerDoc()->RequestPointerLock(this);
+}
+
+void
+Element::GetAnimationPlayers(nsTArray<nsRefPtr<ElementAnimation> >& aPlayers)
+{
+  nsIAtom* properties[] = { nsGkAtoms::transitionsProperty,
+                            nsGkAtoms::animationsProperty };
+  for (size_t propIdx = 0; propIdx < MOZ_ARRAY_LENGTH(properties);
+       propIdx++) {
+    ElementAnimationCollection* collection =
+      static_cast<ElementAnimationCollection*>(
+        GetProperty(properties[propIdx]));
+    if (!collection) {
+      continue;
+    }
+    for (size_t animIdx = 0;
+         animIdx < collection->mAnimations.Length();
+         animIdx++) {
+      ElementAnimation* anim = collection->mAnimations[animIdx];
+      if (anim->IsCurrent()) {
+        aPlayers.AppendElement(anim);
+      }
+    }
+  }
 }
 
 NS_IMETHODIMP

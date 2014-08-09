@@ -7,6 +7,8 @@
 #ifndef jit_mips_Architecture_mips_h
 #define jit_mips_Architecture_mips_h
 
+#include "mozilla/MathAlgorithms.h"
+
 #include <limits.h>
 #include <stdint.h>
 
@@ -186,8 +188,8 @@ class Registers
 
     // Registers returned from a JS -> JS call.
     static const uint32_t JSCallMask =
-        (1 << Registers::v0) |
-        (1 << Registers::v1);
+        (1 << Registers::a2) |
+        (1 << Registers::a3);
 
     // Registers returned from a JS -> C call.
     static const uint32_t CallMask =

@@ -117,6 +117,7 @@ XPCOMUtils.defineLazyModuleGetter(this, "CharsetMenu",
   ["FeedHandler", ["Feeds:Subscribe"], "chrome://browser/content/FeedHandler.js"],
   ["Feedback", ["Feedback:Show"], "chrome://browser/content/Feedback.js"],
   ["SelectionHandler", ["TextSelection:Get"], "chrome://browser/content/SelectionHandler.js"],
+  ["Notifications", ["Notification:Event"], "chrome://browser/content/Notifications.jsm"],
 ].forEach(function (aScript) {
   let [name, notifications, script] = aScript;
   XPCOMUtils.defineLazyGetter(window, name, function() {
@@ -190,7 +191,7 @@ function doChangeMaxLineBoxWidth(aWidth) {
   gReflowPending = null;
   let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
   let docShell = webNav.QueryInterface(Ci.nsIDocShell);
-  let docViewer = docShell.contentViewer.QueryInterface(Ci.nsIMarkupDocumentViewer);
+  let docViewer = docShell.contentViewer;
 
   let range = null;
   if (BrowserApp.selectedTab._mReflozPoint) {
@@ -303,6 +304,19 @@ var BrowserApp = {
         BrowserApp.deck.removeEventListener("DOMContentLoaded", BrowserApp_delayedStartup, false);
         Services.obs.notifyObservers(window, "browser-delayed-startup-finished", "");
         sendMessageToJava({ type: "Gecko:DelayedStartup" });
+
+        // Queue up some other performance-impacting initializations
+        Services.tm.mainThread.dispatch(function() {
+          // Init LoginManager
+          Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
+        }, Ci.nsIThread.DISPATCH_NORMAL);
+
+#ifdef MOZ_SAFE_BROWSING
+        Services.tm.mainThread.dispatch(function() {
+          // Bug 778855 - Perf regression if we do this here. To be addressed in bug 779008.
+          SafeBrowsing.init();
+        }, Ci.nsIThread.DISPATCH_NORMAL);
+#endif
       } catch(ex) { console.log(ex); }
     }, false);
 
@@ -399,9 +413,6 @@ var BrowserApp = {
     ShumwayUtils.init();
 #endif
 
-    // Init LoginManager
-    Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
-
     let url = null;
     let pinned = false;
     if ("arguments" in window) {
@@ -440,11 +451,6 @@ var BrowserApp = {
 
     // notify java that gecko has loaded
     sendMessageToJava({ type: "Gecko:Ready" });
-
-#ifdef MOZ_SAFE_BROWSING
-    // Bug 778855 - Perf regression if we do this here. To be addressed in bug 779008.
-    setTimeout(function() { SafeBrowsing.init(); }, 5000);
-#endif
   },
 
   get _startupStatus() {
@@ -1020,9 +1026,6 @@ var BrowserApp = {
     evt.initUIEvent("TabClose", true, false, window, tabIndex);
     aTab.browser.dispatchEvent(evt);
 
-    aTab.destroy();
-    this._tabs.splice(tabIndex, 1);
-
     if (aShowUndoToast) {
       // Get a title for the undo close toast. Fall back to the URL if there is no title.
       let ss = Cc["@mozilla.org/browser/sessionstore;1"].getService(Ci.nsISessionStore);
@@ -1043,11 +1046,14 @@ var BrowserApp = {
           label: Strings.browser.GetStringFromName("undoCloseToast.action2"),
           callback: function() {
             UITelemetry.addEvent("undo.1", "toast", null, "closetab");
-            ss.undoCloseTab(window, 0);
+            ss.undoCloseTab(window, closedTabData);
           }
         }
       });
     }
+
+    aTab.destroy();
+    this._tabs.splice(tabIndex, 1);
   },
 
   // Use this method to select a tab from JS. This method sends a message
@@ -1112,7 +1118,7 @@ var BrowserApp = {
     aTab.browser.dispatchEvent(evt);
   },
 
-  quit: function quit() {
+  quit: function quit(aClear = {}) {
     // Figure out if there's at least one other browser window around.
     let lastBrowser = true;
     let e = Services.wm.getEnumerator("navigator:browser");
@@ -1132,8 +1138,10 @@ var BrowserApp = {
       Services.obs.notifyObservers(null, "browser-lastwindow-close-granted", null);
     }
 
-    window.QueryInterface(Ci.nsIDOMChromeWindow).minimize();
-    window.close();
+    BrowserApp.sanitize(aClear, function() {
+      window.QueryInterface(Ci.nsIDOMChromeWindow).minimize();
+      window.close();
+    });
   },
 
   saveAsPDF: function saveAsPDF(aBrowser) {
@@ -1387,33 +1395,46 @@ var BrowserApp = {
     }
   },
 
-  sanitize: function (aItems) {
-    let json = JSON.parse(aItems);
+  sanitize: function (aItems, callback) {
     let success = true;
 
-    for (let key in json) {
-      if (!json[key])
+    for (let key in aItems) {
+      if (!aItems[key])
         continue;
 
-      try {
-        switch (key) {
-          case "cookies_sessions":
-            Sanitizer.clearItem("cookies");
-            Sanitizer.clearItem("sessions");
-            break;
-          default:
-            Sanitizer.clearItem(key);
-        }
-      } catch (e) {
-        dump("sanitize error: " + e);
-        success = false;
+      key = key.replace("private.data.", "");
+
+      var promises = [];
+      switch (key) {
+        case "cookies_sessions":
+          promises.push(Sanitizer.clearItem("cookies"));
+          promises.push(Sanitizer.clearItem("sessions"));
+          break;
+        default:
+          promises.push(Sanitizer.clearItem(key));
       }
     }
 
-    sendMessageToJava({
-      type: "Sanitize:Finished",
-      success: success
-    });
+    Promise.all(promises).then(function() {
+      sendMessageToJava({
+        type: "Sanitize:Finished",
+        success: true
+      });
+
+      if (callback) {
+        callback();
+      }
+    }).catch(function(err) {
+      sendMessageToJava({
+        type: "Sanitize:Finished",
+        error: err,
+        success: false
+      });
+
+      if (callback) {
+        callback();
+      }
+    })
   },
 
   getFocusedInput: function(aBrowser, aOnlyInputElements = false) {
@@ -1521,15 +1542,8 @@ var BrowserApp = {
       case "Tab:Load": {
         let data = JSON.parse(aData);
         let url = data.url;
-        let flags;
-
-        if (/^[0-9]+$/.test(url)) {
-          // If the query is a number, force a search (see bug 993705; workaround for bug 693808).
-          url = URIFixup.keywordToURI(url).spec;
-        } else {
-          flags |= Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_THIRD_PARTY_FIXUP |
-                   Ci.nsIWebNavigation.LOAD_FLAGS_FIXUP_SCHEME_TYPOS;
-        }
+        let flags = Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_THIRD_PARTY_FIXUP
+                  | Ci.nsIWebNavigation.LOAD_FLAGS_FIXUP_SCHEME_TYPOS;
 
         // Pass LOAD_FLAGS_DISALLOW_INHERIT_OWNER to prevent any loads from
         // inheriting the currently loaded document's principal.
@@ -1594,11 +1608,12 @@ var BrowserApp = {
           type: "Search:Keyword",
           identifier: engine.identifier,
           name: engine.name,
+          query: aData
         });
         break;
 
       case "Browser:Quit":
-        this.quit();
+        this.quit(aData ? JSON.parse(aData) : null);
         break;
 
       case "SaveAs:PDF":
@@ -1616,7 +1631,7 @@ var BrowserApp = {
         break;
 
       case "Sanitize:ClearData":
-        this.sanitize(aData);
+        this.sanitize(JSON.parse(aData));
         break;
 
       case "FullScreen:Exit":
@@ -1635,7 +1650,7 @@ var BrowserApp = {
       case "Passwords:Init": {
         let storage = Cc["@mozilla.org/login-manager/storage/mozStorage;1"].
                       getService(Ci.nsILoginManagerStorage);
-        storage.init();
+        storage.initialize();
         Services.obs.removeObserver(this, "Passwords:Init");
         break;
       }
@@ -3066,6 +3081,39 @@ function Tab(aURL, aParams) {
   this.create(aURL, aParams);
 }
 
+/*
+ * Sanity limit for URIs passed to UI code.
+ *
+ * 2000 is the typical industry limit, largely due to older IE versions.
+ *
+ * We use 25000, so we'll allow almost any value through.
+ *
+ * Still, this truncation doesn't affect history, so this is only a practical
+ * concern in two ways: the truncated value is used when editing URIs, and as
+ * the key for favicon fetches.
+ */
+const MAX_URI_LENGTH = 25000;
+
+/*
+ * Similar restriction for titles. This is only a display concern.
+ */
+const MAX_TITLE_LENGTH = 255;
+
+/**
+ * Ensure that a string is of a sane length.
+ */
+function truncate(text, max) {
+  if (!text || !max) {
+    return text;
+  }
+
+  if (text.length <= max) {
+    return text;
+  }
+
+  return text.slice(0, max) + "…";
+}
+
 Tab.prototype = {
   create: function(aURL, aParams) {
     if (this.browser)
@@ -3124,11 +3172,14 @@ Tab.prototype = {
         this.id = aParams.tabID;
         stub = true;
       } else {
-        let jni = new JNI();
-        let cls = jni.findClass("org/mozilla/gecko/Tabs");
-        let method = jni.getStaticMethodID(cls, "getNextTabId", "()I");
-        this.id = jni.callStaticIntMethod(cls, method);
-        jni.close();
+        let jenv = JNI.GetForThread();
+        let jTabs = JNI.LoadClass(jenv, "org.mozilla.gecko.Tabs", {
+          static_methods: [
+            { name: "getNextTabId", sig: "()I" }
+          ],
+        });
+        this.id = jTabs.getNextTabId();
+        JNI.UnloadClasses(jenv);
       }
 
       this.desktopMode = ("desktopMode" in aParams) ? aParams.desktopMode : false;
@@ -3136,12 +3187,12 @@ Tab.prototype = {
       let message = {
         type: "Tab:Added",
         tabID: this.id,
-        uri: uri,
+        uri: truncate(uri, MAX_URI_LENGTH),
         parentId: ("parentId" in aParams) ? aParams.parentId : -1,
         tabIndex: ("tabIndex" in aParams) ? aParams.tabIndex : -1,
         external: ("external" in aParams) ? aParams.external : false,
         selected: ("selected" in aParams) ? aParams.selected : true,
-        title: title,
+        title: truncate(title, MAX_TITLE_LENGTH),
         delayLoad: aParams.delayLoad || false,
         desktopMode: this.desktopMode,
         isPrivate: isPrivate,
@@ -3163,6 +3214,8 @@ Tab.prototype = {
     this.browser.addEventListener("DOMContentLoaded", this, true);
     this.browser.addEventListener("DOMFormHasPassword", this, true);
     this.browser.addEventListener("DOMLinkAdded", this, true);
+    this.browser.addEventListener("DOMLinkChanged", this, true);
+    this.browser.addEventListener("DOMMetaAdded", this, false);
     this.browser.addEventListener("DOMTitleChanged", this, true);
     this.browser.addEventListener("DOMWindowClose", this, true);
     this.browser.addEventListener("DOMWillOpenModalDialog", this, true);
@@ -3188,7 +3241,7 @@ Tab.prototype = {
       this.browser.__SS_data = {
         entries: [{
           url: aURL,
-          title: title
+          title: truncate(title, MAX_TITLE_LENGTH)
         }],
         index: 1
       };
@@ -3243,7 +3296,7 @@ Tab.prototype = {
     // Reflow was completed, so now re-enable painting.
     let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
     let docShell = webNav.QueryInterface(Ci.nsIDocShell);
-    let docViewer = docShell.contentViewer.QueryInterface(Ci.nsIMarkupDocumentViewer);
+    let docViewer = docShell.contentViewer;
     docViewer.resumePainting();
 
     BrowserApp.selectedTab._mReflozPositioned = false;
@@ -3335,6 +3388,8 @@ Tab.prototype = {
     this.browser.removeEventListener("DOMContentLoaded", this, true);
     this.browser.removeEventListener("DOMFormHasPassword", this, true);
     this.browser.removeEventListener("DOMLinkAdded", this, true);
+    this.browser.removeEventListener("DOMLinkChanged", this, true);
+    this.browser.removeEventListener("DOMMetaAdded", this, false);
     this.browser.removeEventListener("DOMTitleChanged", this, true);
     this.browser.removeEventListener("DOMWindowClose", this, true);
     this.browser.removeEventListener("DOMWillOpenModalDialog", this, true);
@@ -3495,7 +3550,7 @@ Tab.prototype = {
         BrowserApp.selectedTab.probablyNeedRefloz) {
       let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
       let docShell = webNav.QueryInterface(Ci.nsIDocShell);
-      docViewer = docShell.contentViewer.QueryInterface(Ci.nsIMarkupDocumentViewer);
+      docViewer = docShell.contentViewer;
       docViewer.pausePainting();
 
       BrowserApp.selectedTab.performReflowOnZoom(aViewport);
@@ -3678,6 +3733,25 @@ Tab.prototype = {
     }
   },
 
+  // These constants are used to prioritize high quality metadata over low quality data, so that
+  // we can collect data as we find meta tags, and replace low quality metadata with higher quality
+  // matches. For instance a msApplicationTile icon is a better tile image than an og:image tag.
+  METADATA_GOOD_MATCH: 10,
+  METADATA_NORMAL_MATCH: 1,
+
+  addMetadata: function(type, value, quality = 1) {
+    if (!this.metatags) {
+      this.metatags = {
+        url: this.browser.currentURI.spec
+      };
+    }
+
+    if (!this.metatags[type] || this.metatags[type + "_quality"] < quality) {
+      this.metatags[type] = value;
+      this.metatags[type + "_quality"] = quality;
+    }
+  },
+
   handleEvent: function(aEvent) {
     switch (aEvent.type) {
       case "DOMContentLoaded": {
@@ -3712,8 +3786,11 @@ Tab.prototype = {
           type: "DOMContentLoaded",
           tabID: this.id,
           bgColor: backgroundColor,
-          errorType: errorType
+          errorType: errorType,
+          metadata: this.metatags
         });
+
+        this.metatags = null;
 
         // Attach a listener to watch for "click" events bubbling up from error
         // pages and other similar page. This lets us fix bugs like 401575 which
@@ -3748,7 +3825,23 @@ Tab.prototype = {
         break;
       }
 
-      case "DOMLinkAdded": {
+      case "DOMMetaAdded":
+        let target = aEvent.originalTarget;
+        let browser = BrowserApp.getBrowserForDocument(target.ownerDocument);
+
+        switch (target.name) {
+          case "msapplication-TileImage":
+            this.addMetadata("tileImage", browser.currentURI.resolve(target.content), this.METADATA_GOOD_MATCH);
+            break;
+          case "msapplication-TileColor":
+            this.addMetadata("tileColor", target.content, this.METADATA_GOOD_MATCH);
+            break;
+        }
+
+        break;
+
+      case "DOMLinkAdded":
+      case "DOMLinkChanged": {
         let target = aEvent.originalTarget;
         if (!target.href || target.disabled)
           return;
@@ -3797,7 +3890,7 @@ Tab.prototype = {
             size: maxSize
           };
           sendMessageToJava(json);
-        } else if (list.indexOf("[alternate]") != -1) {
+        } else if (list.indexOf("[alternate]") != -1 && aEvent.type == "DOMLinkAdded") {
           let type = target.type.toLowerCase().replace(/^\s+|\s*(?:;.*)?$/g, "");
           let isFeed = (type == "application/rss+xml" || type == "application/atom+xml");
 
@@ -3818,7 +3911,7 @@ Tab.prototype = {
             };
             sendMessageToJava(json);
           } catch (e) {}
-        } else if (list.indexOf("[search]" != -1)) {
+        } else if (list.indexOf("[search]" != -1) && aEvent.type == "DOMLinkAdded") {
           let type = target.type && target.type.toLowerCase();
 
           // Replace all starting or trailing spaces or spaces before "*;" globally w/ "".
@@ -3887,7 +3980,7 @@ Tab.prototype = {
         sendMessageToJava({
           type: "DOMTitleChanged",
           tabID: this.id,
-          title: aEvent.target.title.substring(0, 255)
+          title: truncate(aEvent.target.title, MAX_TITLE_LENGTH)
         });
         break;
       }
@@ -4076,7 +4169,7 @@ Tab.prototype = {
       let message = {
         type: "Content:StateChange",
         tabID: this.id,
-        uri: uri,
+        uri: truncate(uri, MAX_URI_LENGTH),
         state: aStateFlags,
         restoring: restoring,
         success: success
@@ -4142,7 +4235,7 @@ Tab.prototype = {
     let message = {
       type: "Content:LocationChange",
       tabID: this.id,
-      uri: fixedURI.spec,
+      uri: truncate(fixedURI.spec, MAX_URI_LENGTH),
       userSearch: this.userSearch || "",
       baseDomain: baseDomain,
       contentType: (contentType ? contentType : ""),
@@ -4157,6 +4250,13 @@ Tab.prototype = {
     if (!sameDocument) {
       // XXX This code assumes that this is the earliest hook we have at which
       // browser.contentDocument is changed to the new document we're loading
+
+      // We have a new browser and a new window, so the old browserWidth and
+      // browserHeight are no longer valid.  We need to force-set the browser
+      // size to ensure it sets the CSS viewport size before the document
+      // has a chance to check it.
+      this.setBrowserSize(kDefaultCSSViewportWidth, kDefaultCSSViewportHeight, true);
+
       this.contentDocumentIsDisplayed = false;
       this.hasTouchListener = false;
     } else {
@@ -4460,9 +4560,11 @@ Tab.prototype = {
     });
   },
 
-  setBrowserSize: function(aWidth, aHeight) {
-    if (fuzzyEquals(this.browserWidth, aWidth) && fuzzyEquals(this.browserHeight, aHeight)) {
-      return;
+  setBrowserSize: function(aWidth, aHeight, aForce) {
+    if (!aForce) {
+      if (fuzzyEquals(this.browserWidth, aWidth) && fuzzyEquals(this.browserHeight, aHeight)) {
+        return;
+      }
     }
 
     this.browserWidth = aWidth;
@@ -4824,6 +4926,11 @@ var BrowserEventHandler = {
   },
 
   onDoubleTap: function(aData) {
+    let metadata = BrowserApp.selectedTab.metadata;
+    if (!metadata.allowDoubleTapZoom) {
+      return;
+    }
+
     let data = JSON.parse(aData);
     let element = ElementTouchHelper.anyElementFromPoint(data.x, data.y);
 
@@ -4846,7 +4953,7 @@ var BrowserEventHandler = {
       // Before we perform a reflow on zoom, let's disable painting.
       let webNav = BrowserApp.selectedTab.window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIWebNavigation);
       let docShell = webNav.QueryInterface(Ci.nsIDocShell);
-      let docViewer = docShell.contentViewer.QueryInterface(Ci.nsIMarkupDocumentViewer);
+      let docViewer = docShell.contentViewer;
       docViewer.pausePainting();
 
       BrowserApp.selectedTab.probablyNeedRefloz = true;
@@ -4875,14 +4982,14 @@ var BrowserEventHandler = {
    * <video>, <object>, <embed>, <applet>, <canvas>, <img>, <media>, <pre>
    */
   _shouldSuppressReflowOnZoom: function(aElement) {
-    if (aElement instanceof Ci.nsIDOMHTMLVideoElement ||
-        aElement instanceof Ci.nsIDOMHTMLObjectElement ||
-        aElement instanceof Ci.nsIDOMHTMLEmbedElement ||
-        aElement instanceof Ci.nsIDOMHTMLAppletElement ||
-        aElement instanceof Ci.nsIDOMHTMLCanvasElement ||
-        aElement instanceof Ci.nsIDOMHTMLImageElement ||
-        aElement instanceof Ci.nsIDOMHTMLMediaElement ||
-        aElement instanceof Ci.nsIDOMHTMLPreElement) {
+    if (aElement instanceof HTMLVideoElement ||
+        aElement instanceof HTMLObjectElement ||
+        aElement instanceof HTMLEmbedElement ||
+        aElement instanceof HTMLAppletElement ||
+        aElement instanceof HTMLCanvasElement ||
+        aElement instanceof HTMLImageElement ||
+        aElement instanceof HTMLMediaElement ||
+        aElement instanceof HTMLPreElement) {
       return true;
     }
 
@@ -5914,7 +6021,7 @@ var XPInstallObserver = {
         break;
       case "addon-install-blocked":
         let installInfo = aSubject.QueryInterface(Ci.amIWebInstallInfo);
-        let win = installInfo.originatingWindow;
+        let win = installInfo.originator;
         let tab = BrowserApp.getTabForWindow(win.top);
         if (!tab)
           return;
@@ -6821,7 +6928,7 @@ var SearchEngines = {
     };
     SelectionHandler.addAction({
       id: "search_add_action",
-      label: Strings.browser.GetStringFromName("contextmenu.addSearchEngine"),
+      label: Strings.browser.GetStringFromName("contextmenu.addSearchEngine2"),
       icon: "drawable://ab_add_search_engine",
       selector: filter,
       action: function(aElement) {
@@ -6882,13 +6989,7 @@ var SearchEngines = {
     });
 
     // Send a speculative connection to the default engine.
-    let connector = Services.io.QueryInterface(Ci.nsISpeculativeConnect);
-    let searchURI = Services.search.defaultEngine.getSubmission("dummy").uri;
-    let callbacks = window.QueryInterface(Ci.nsIInterfaceRequestor)
-                          .getInterface(Ci.nsIWebNavigation).QueryInterface(Ci.nsILoadContext);
-    try {
-      connector.speculativeConnect(searchURI, callbacks);
-    } catch (e) {}
+    Services.search.defaultEngine.speculativeConnect({window: window});
   },
 
   // Helper method to extract the engine name from a JSON. Simplifies the observe function.
@@ -7032,7 +7133,7 @@ var SearchEngines = {
     }
 
     // prompt user for name of search engine
-    let promptTitle = Strings.browser.GetStringFromName("contextmenu.addSearchEngine");
+    let promptTitle = Strings.browser.GetStringFromName("contextmenu.addSearchEngine2");
     let title = { value: (aElement.ownerDocument.title || docURI.host) };
     if (!Services.prompt.prompt(null, promptTitle, null, title, null, {}))
       return;
@@ -7064,6 +7165,7 @@ var SearchEngines = {
             name = title.value + " " + i;
 
           Services.search.addEngineWithDetails(name, favicon, null, null, method, formURL);
+          NativeWindow.toast.show(Strings.browser.formatStringFromName("alertSearchEngineAddedToast", [name], 1), "long");
           let engine = Services.search.getEngineByName(name);
           engine.wrappedJSObject._queryCharset = charset;
           for (let i = 0; i < formData.length; ++i) {
@@ -7212,7 +7314,7 @@ var RemoteDebugger = {
   },
 
   _stop: function rd_start() {
-    DebuggerServer.closeListener();
+    DebuggerServer.closeAllListeners();
     dump("Remote debugger stopped");
   }
 };
@@ -7337,8 +7439,8 @@ let Reader = {
           sendMessageToJava({
             type: "Reader:Added",
             result: result,
-            title: article.title,
-            url: url,
+            title: truncate(article.title, MAX_TITLE_LENGTH),
+            url: truncate(url, MAX_URI_LENGTH),
             length: article.length,
             excerpt: article.excerpt
           });

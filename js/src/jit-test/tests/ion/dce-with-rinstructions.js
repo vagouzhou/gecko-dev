@@ -321,6 +321,40 @@ function rstring_length(i) {
     return i;
 }
 
+var uceFault_arguments_length_1 = eval(uneval(uceFault).replace('uceFault', 'uceFault_arguments_length_1'));
+function rarguments_length_1(i) {
+    var x = arguments.length;
+    if (uceFault_arguments_length_1(i) || uceFault_arguments_length_1(i))
+        assertEq(x, 1);
+    return i;
+}
+
+var uceFault_arguments_length_3 = eval(uneval(uceFault).replace('uceFault', 'uceFault_arguments_length_3'));
+function rarguments_length_3(i) {
+    var x = arguments.length;
+    if (uceFault_arguments_length_3(i) || uceFault_arguments_length_3(i))
+        assertEq(x, 3);
+    return i;
+}
+
+function ret_argumentsLength() { return arguments.length; }
+
+var uceFault_inline_arguments_length_1 = eval(uneval(uceFault).replace('uceFault', 'uceFault_inline_arguments_length_1'));
+function rinline_arguments_length_1(i) {
+    var x = ret_argumentsLength.apply(this, arguments);
+    if (uceFault_inline_arguments_length_1(i) || uceFault_inline_arguments_length_1(i))
+        assertEq(x, 1);
+    return i;
+}
+
+var uceFault_inline_arguments_length_3 = eval(uneval(uceFault).replace('uceFault', 'uceFault_inline_arguments_length_3'));
+function rinline_arguments_length_3(i) {
+    var x = ret_argumentsLength.apply(this, arguments);
+    if (uceFault_inline_arguments_length_3(i) || uceFault_inline_arguments_length_3(i))
+        assertEq(x, 3);
+    return i;
+}
+
 var uceFault_floor_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_floor_number'));
 function rfloor_number(i) {
     var x = Math.floor(i + 0.1111);
@@ -419,6 +453,224 @@ function rpowhalf_object(i) {
     return i;
 }
 
+var uceFault_min_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_min_number'));
+function rmin_number(i) {
+    var x = Math.min(i, i-1, i-2.1);
+    if (uceFault_min_number(i) || uceFault_min_number(i))
+        assertEq(x, i-2.1);
+    return i;
+}
+
+var uceFault_min_object = eval(uneval(uceFault).replace('uceFault', 'uceFault_min_object'));
+function rmin_object(i) {
+    var t = i;
+    var o = { valueOf: function () { return t; } };
+    var x = Math.min(o, o-1, o-2.1)
+    t = 1000;
+    if (uceFault_min_object(i) || uceFault_min_object(i))
+        assertEq(x, i-2.1);
+    return i;
+}
+
+var uceFault_max_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_max_number'));
+function rmax_number(i) {
+    var x = Math.max(i, i-1, i-2.1);
+    if (uceFault_max_number(i) || uceFault_max_number(i))
+        assertEq(x, i);
+    return i;
+}
+
+var uceFault_max_object = eval(uneval(uceFault).replace('uceFault', 'uceFault_max_object'));
+function rmax_object(i) {
+    var t = i;
+    var o = { valueOf: function () { return t; } };
+    var x = Math.max(o, o-1, o-2.1)
+    t = 1000;
+    if (uceFault_max_object(i) || uceFault_max_object(i))
+        assertEq(x, i);
+    return i;
+}
+
+var uceFault_abs = eval(uneval(uceFault).replace('uceFault', 'uceFault_abs'));
+function rabs_number(i) {
+    var x = Math.abs(i-42);
+    if (uceFault_abs(i) || uceFault_abs(i))
+        assertEq(x, 57);
+    return i;
+}
+
+var uceFault_abs_object = eval(uneval(uceFault).replace('uceFault', 'uceFault_abs_object'));
+function rabs_object(i) {
+    var t = -i;
+    var o = { valueOf: function() { return t; } };
+    var x = Math.abs(o); /* computed with t == i, not 1000 */
+    t = 1000;
+    if(uceFault_abs_object(i) || uceFault_abs_object(i))
+        assertEq(x, 99);
+    return i;
+}
+
+var uceFault_sqrt_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_sqrt_number'));
+function rsqrt_number(i) {
+    var x = Math.sqrt(i);
+    if (uceFault_sqrt_number(i) || uceFault_sqrt_number(i))
+        assertEq(x, Math.sqrt(99));
+    return i;
+}
+
+var uceFault_sqrt_float = eval(uneval(uceFault).replace('uceFault', 'uceFault_sqrt_float'));
+function rsqrt_float(i) {
+    var x = Math.fround(Math.sqrt(Math.fround(i)));
+    if (uceFault_sqrt_float(i) || uceFault_sqrt_float(i))
+        assertEq(x, Math.fround(Math.sqrt(Math.fround(99)))); /* != 9.9498743710662 (when computed with double sqrt) */
+    return i;
+}
+
+var uceFault_sqrt_object = eval(uneval(uceFault).replace('uceFault', 'uceFault_sqrt_object'));
+function rsqrt_object(i) {
+    var t = i;
+    var o = { valueOf: function () { return t; } };
+    var x = Math.sqrt(o); /* computed with t == i, not 1.5 */
+    t = 1.5;
+    if (uceFault_sqrt_object(i) || uceFault_sqrt_object(i))
+        assertEq(x, Math.sqrt(99));
+    return i;
+}
+
+var uceFault_atan2_number = eval(uneval(uceFault).replace('uceFault', 'uceFault_atan2_number'));
+function ratan2_number(i) {
+    var x = Math.atan2(i, i+1);
+    if (uceFault_atan2_number(i) || uceFault_atan2_number(i))
+        assertEq(x, Math.atan2(99, 100));
+    return i;
+}
+
+var uceFault_atan2_object = eval(uneval(uceFault).replace('uceFault', 'uceFault_atan2_object'));
+function ratan2_object(i) {
+    var t = i;
+    var o = { valueOf: function () { return t; } };
+    var x = Math.atan2(o, o+1);
+    t = 1000;
+    if (uceFault_atan2_object(i) || uceFault_atan2_object(i))
+        assertEq(x, Math.atan2(i, i+1));
+    return i;
+}
+
+var uceFault_str_split = eval(uneval(uceFault).replace('uceFault', 'uceFault_str_split'))
+function rstr_split(i) {
+    var x = "str01234567899876543210rts".split("" + i);
+    if (uceFault_str_split(i) || uceFault_str_split(i)) {
+        assertEq(x[0], "str012345678");
+    }
+    return i;
+}
+
+var uceFault_regexp_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_test'))
+function rregexp_test(i) {
+    var re = new RegExp("str\\d+" + i + "\\d+rts");
+    var res = re.test("str01234567899876543210rts");
+    if (uceFault_regexp_test(i) || uceFault_regexp_test(i)) {
+        assertEq(res, true);
+    }
+    return i;
+}
+
+var uceFault_regexp_y_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_y_test'))
+function rregexp_y_test(i) {
+    var re = new RegExp("str\\d+" + (i % 10), "y");
+    var res = re.test("str00123456789");
+    if (uceFault_regexp_y_test(i) || uceFault_regexp_y_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, false);
+    return i;
+}
+
+var uceFault_regexp_y_literal_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_y_literal_test'))
+function rregexp_y_literal_test(i) {
+    var re = /str\d*0/y;
+    var res = re.test("str00123456789");
+    if (uceFault_regexp_y_literal_test(i) || uceFault_regexp_y_literal_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, false);
+    return i;
+}
+
+var uceFault_regexp_g_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_g_test'))
+function rregexp_g_test(i) {
+    var re = new RegExp("str\\d+" + (i % 10), "g");
+    var res = re.test("str00123456789str00123456789");
+    if (uceFault_regexp_g_test(i) || uceFault_regexp_g_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, false);
+    return i;
+}
+
+var uceFault_regexp_g_literal_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_g_literal_test'))
+function rregexp_g_literal_test(i) {
+    var re = /str\d*0/g;
+    var res = re.test("str00123456789str00123456789");
+    if (uceFault_regexp_g_literal_test(i) || uceFault_regexp_g_literal_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, false);
+    return i;
+}
+
+var uceFault_regexp_i_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_i_test'))
+function rregexp_i_test(i) {
+    var re = new RegExp("str\\d+" + (i % 10), "i");
+    var res = re.test("STR00123456789");
+    if (uceFault_regexp_i_test(i) || uceFault_regexp_i_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, true);
+    return i;
+}
+
+var uceFault_regexp_i_literal_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_i_literal_test'))
+function rregexp_i_literal_test(i) {
+    var re = /str\d*0/i;
+    var res = re.test("STR00123456789");
+    if (uceFault_regexp_i_literal_test(i) || uceFault_regexp_i_literal_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, true);
+    return i;
+}
+
+var uceFault_regexp_m_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_m_test'))
+function rregexp_m_test(i) {
+    var re = new RegExp("^str\\d+" + (i % 10), "m");
+    var res = re.test("abc\nstr00123456789");
+    if (uceFault_regexp_m_test(i) || uceFault_regexp_m_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, true);
+    return i;
+}
+
+var uceFault_regexp_m_literal_test = eval(uneval(uceFault).replace('uceFault', 'uceFault_regexp_m_literal_test'))
+function rregexp_m_literal_test(i) {
+    var re = /^str\d*0/m;
+    var res = re.test("abc\nstr00123456789");
+    if (uceFault_regexp_m_literal_test(i) || uceFault_regexp_m_literal_test(i)) {
+        assertEq(res, true);
+    }
+
+    assertEq(re.lastIndex == 0, true);
+    return i;
+}
+
 for (i = 0; i < 100; i++) {
     rbitnot_number(i);
     rbitnot_object(i);
@@ -453,6 +705,10 @@ for (i = 0; i < 100; i++) {
     rconcat_string(i);
     rconcat_number(i);
     rstring_length(i);
+    rarguments_length_1(i);
+    rarguments_length_3(i, 0, 1);
+    rinline_arguments_length_1(i);
+    rinline_arguments_length_3(i, 0, 1);
     rfloor_number(i);
     rfloor_object(i);
     rround_number(i);
@@ -464,6 +720,27 @@ for (i = 0; i < 100; i++) {
     rpow_object(i);
     rpowhalf_number(i);
     rpowhalf_object(i);
+    rmin_number(i);
+    rmin_object(i);
+    rmax_number(i);
+    rmax_object(i);
+    rabs_number(i);
+    rabs_object(i);
+    rsqrt_number(i);
+    rsqrt_float(i);
+    rsqrt_object(i);
+    ratan2_number(i);
+    ratan2_object(i);
+    rstr_split(i);
+    rregexp_test(i);
+    rregexp_y_test(i);
+    rregexp_y_literal_test(i);
+    rregexp_g_test(i);
+    rregexp_g_literal_test(i);
+    rregexp_i_test(i);
+    rregexp_i_literal_test(i);
+    rregexp_m_test(i);
+    rregexp_m_literal_test(i);
 }
 
 // Test that we can refer multiple time to the same recover instruction, as well

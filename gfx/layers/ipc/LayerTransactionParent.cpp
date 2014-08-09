@@ -11,7 +11,6 @@
 #include "ImageLayers.h"                // for ImageLayer
 #include "Layers.h"                     // for Layer, ContainerLayer, etc
 #include "ShadowLayerParent.h"          // for ShadowLayerParent
-#include "gfx3DMatrix.h"                // for gfx3DMatrix
 #include "gfxPoint3D.h"                 // for gfxPoint3D
 #include "CompositableTransactionParent.h"  // for EditReplyVector
 #include "ShadowLayersManager.h"        // for ShadowLayersManager
@@ -185,10 +184,11 @@ LayerTransactionParent::RecvUpdateNoSwap(const InfallibleTArray<Edit>& cset,
                                          const TargetConfig& targetConfig,
                                          const bool& isFirstPaint,
                                          const bool& scheduleComposite,
-                                         const uint32_t& paintSequenceNumber)
+                                         const uint32_t& paintSequenceNumber,
+                                         const bool& isRepeatTransaction)
 {
   return RecvUpdate(cset, aTransactionId, targetConfig, isFirstPaint,
-                    scheduleComposite, paintSequenceNumber, nullptr);
+      scheduleComposite, paintSequenceNumber, isRepeatTransaction, nullptr);
 }
 
 bool
@@ -198,6 +198,7 @@ LayerTransactionParent::RecvUpdate(const InfallibleTArray<Edit>& cset,
                                    const bool& isFirstPaint,
                                    const bool& scheduleComposite,
                                    const uint32_t& paintSequenceNumber,
+                                   const bool& isRepeatTransaction,
                                    InfallibleTArray<EditReply>* reply)
 {
   profiler_tracing("Paint", "Composite", TRACING_INTERVAL_START);
@@ -352,6 +353,7 @@ LayerTransactionParent::RecvUpdate(const InfallibleTArray<Edit>& cset,
         containerLayer->SetPreScale(attrs.preXScale(), attrs.preYScale());
         containerLayer->SetInheritedScale(attrs.inheritedXScale(), attrs.inheritedYScale());
         containerLayer->SetBackgroundColor(attrs.backgroundColor().value());
+        containerLayer->SetContentDescription(attrs.contentDescription());
         break;
       }
       case Specific::TColorLayerAttributes: {
@@ -540,7 +542,7 @@ LayerTransactionParent::RecvUpdate(const InfallibleTArray<Edit>& cset,
   }
 
   mShadowLayersManager->ShadowLayersUpdated(this, aTransactionId, targetConfig,
-                                            isFirstPaint, scheduleComposite, paintSequenceNumber);
+      isFirstPaint, scheduleComposite, paintSequenceNumber, isRepeatTransaction);
 
   {
     AutoResolveRefLayers resolve(mShadowLayersManager->GetCompositionManager(this));
@@ -629,8 +631,7 @@ LayerTransactionParent::RecvGetAnimationTransform(PLayerParent* aParent,
   // from the shadow transform by undoing the translations in
   // AsyncCompositionManager::SampleValue.
 
-  gfx3DMatrix transform;
-  gfx::To3DMatrix(layer->AsLayerComposite()->GetShadowTransform(), transform);
+  Matrix4x4 transform = layer->AsLayerComposite()->GetShadowTransform();
   if (ContainerLayer* c = layer->AsContainerLayer()) {
     // Undo the scale transform applied by AsyncCompositionManager::SampleValue
     transform.ScalePost(1.0f/c->GetInheritedXScale(),
@@ -657,12 +658,12 @@ LayerTransactionParent::RecvGetAnimationTransform(PLayerParent* aParent,
 
   // Undo the translation to the origin of the reference frame applied by
   // AsyncCompositionManager::SampleValue
-  transform.Translate(-scaledOrigin);
+  transform.Translate(-scaledOrigin.x, -scaledOrigin.y, -scaledOrigin.z);
 
   // Undo the rebasing applied by
   // nsDisplayTransform::GetResultingTransformMatrixInternal
-  transform = nsLayoutUtils::ChangeMatrixBasis(-scaledOrigin - transformOrigin,
-                                               transform);
+  gfxPoint3D basis = -scaledOrigin - transformOrigin;
+  transform.ChangeBasis(basis.x, basis.y, basis.z);
 
   // Convert to CSS pixels (this undoes the operations performed by
   // nsStyleTransformMatrix::ProcessTranslatePart which is called from

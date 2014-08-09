@@ -83,10 +83,10 @@ class nsTHashtable
   typedef mozilla::fallible_t fallible_t;
 
 public:
-  // Separate constructors instead of default aInitSize parameter since
+  // Separate constructors instead of default aInitLength parameter since
   // otherwise the default no-arg constructor isn't found.
-  nsTHashtable() { Init(PL_DHASH_MIN_SIZE); }
-  explicit nsTHashtable(uint32_t aInitSize) { Init(aInitSize); }
+  nsTHashtable() { Init(PL_DHASH_DEFAULT_INITIAL_LENGTH); }
+  explicit nsTHashtable(uint32_t aInitLength) { Init(aInitLength); }
 
   /**
    * destructor, cleans up and deallocates
@@ -262,6 +262,15 @@ public:
   }
 
   /**
+   * If the EntryType defines SizeOfExcludingThis, there's no need to define a new
+   * SizeOfEntryExcludingThisFun.
+   */
+  size_t SizeOfExcludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+  {
+    return SizeOfExcludingThis(BasicSizeOfEntryExcludingThisFun, aMallocSizeOf);
+  }
+
+  /**
    * Like SizeOfExcludingThis, but includes sizeof(*this).
    */
   size_t SizeOfIncludingThis(SizeOfEntryExcludingThisFun aSizeOfEntryExcludingThis,
@@ -270,6 +279,15 @@ public:
   {
     return aMallocSizeOf(this) +
       SizeOfExcludingThis(aSizeOfEntryExcludingThis, aMallocSizeOf, aUserArg);
+  }
+
+  /**
+   * If the EntryType defines SizeOfExcludingThis, there's no need to define a new
+   * SizeOfEntryExcludingThisFun.
+   */
+  size_t SizeOfIncludingThis(mozilla::MallocSizeOf aMallocSizeOf) const
+  {
+    return SizeOfIncludingThis(BasicSizeOfEntryExcludingThisFun, aMallocSizeOf);
   }
 
 #ifdef DEBUG
@@ -344,9 +362,17 @@ private:
 
   /**
    * Initialize the table.
-   * @param aInitSize the initial number of buckets in the hashtable
+   * @param aInitLength the initial number of buckets in the hashtable
    */
-  void Init(uint32_t aInitSize);
+  void Init(uint32_t aInitLength);
+
+  /**
+   * An implementation of SizeOfEntryExcludingThisFun that calls SizeOfExcludingThis()
+   * on each entry.
+   */
+  static size_t BasicSizeOfEntryExcludingThisFun(EntryType* aEntry,
+                                                 mozilla::MallocSizeOf aMallocSizeOf,
+                                                 void*);
 
   // assignment operator, not implemented
   nsTHashtable<EntryType>& operator=(nsTHashtable<EntryType>& aToEqual) MOZ_DELETE;
@@ -379,7 +405,7 @@ nsTHashtable<EntryType>::~nsTHashtable()
 
 template<class EntryType>
 void
-nsTHashtable<EntryType>::Init(uint32_t aInitSize)
+nsTHashtable<EntryType>::Init(uint32_t aInitLength)
 {
   static const PLDHashTableOps sOps =
   {
@@ -393,7 +419,17 @@ nsTHashtable<EntryType>::Init(uint32_t aInitSize)
     s_InitEntry
   };
 
-  PL_DHashTableInit(&mTable, &sOps, nullptr, sizeof(EntryType), aInitSize);
+  PL_DHashTableInit(&mTable, &sOps, nullptr, sizeof(EntryType), aInitLength);
+}
+
+// static
+template<class EntryType>
+size_t
+nsTHashtable<EntryType>::BasicSizeOfEntryExcludingThisFun(EntryType* aEntry,
+                                                          mozilla::MallocSizeOf aMallocSizeOf,
+                                                          void*)
+{
+  return aEntry->SizeOfExcludingThis(aMallocSizeOf);
 }
 
 // static definitions

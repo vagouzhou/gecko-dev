@@ -37,13 +37,13 @@ public final class GeckoProfile {
     private static final String GUEST_PROFILE = "guest";
 
     private static HashMap<String, GeckoProfile> sProfileCache = new HashMap<String, GeckoProfile>();
-    private static String sDefaultProfileName = null;
+    private static String sDefaultProfileName;
 
     // Caches the guest profile dir.
-    private static File sGuestDir = null;
-    private static GeckoProfile sGuestProfile = null;
+    private static File sGuestDir;
+    private static GeckoProfile sGuestProfile;
 
-    public static boolean sIsUsingCustomProfile = false;
+    public static boolean sIsUsingCustomProfile;
 
     private final String mName;
     private final File mMozillaDir;
@@ -64,7 +64,7 @@ public final class GeckoProfile {
     // These are volatile for an incremental improvement in thread safety,
     // but this is not a complete solution for concurrency.
     private volatile LockState mLocked = LockState.UNDEFINED;
-    private volatile boolean mInGuestMode = false;
+    private volatile boolean mInGuestMode;
 
     // Constants to cache whether or not a profile is "locked".
     private enum LockState {
@@ -200,6 +200,13 @@ public final class GeckoProfile {
             getGuestDir(context).mkdir();
             GeckoProfile profile = getGuestProfile(context);
             profile.lock();
+
+            /*
+             * Now do the things that createProfileDirectory normally does --
+             * right now that's kicking off DB init.
+             */
+            profile.enqueueInitialization();
+
             return profile;
         } catch (Exception ex) {
             Log.e(LOGTAG, "Error creating guest profile", ex);
@@ -675,6 +682,11 @@ public final class GeckoProfile {
 
                 final ContentResolver cr = context.getContentResolver();
 
+                // We pass the number of added bookmarks to ensure that the
+                // indices of the distribution and default bookmarks are
+                // contiguous. Because there are always at least as many
+                // bookmarks as there are favicons, we can also guarantee that
+                // the favicon IDs won't overlap.
                 final int offset = BrowserDB.addDistributionBookmarks(cr, distribution, 0);
                 BrowserDB.addDefaultBookmarks(context, cr, offset);
             }

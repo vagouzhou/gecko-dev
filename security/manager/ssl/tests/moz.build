@@ -7,11 +7,11 @@
 DIRS += ['unit']
 
 TEST_DIRS += [
-	'gtest',
-	'mochitest',
+    'gtest',
+    'mochitest',
 ]
 
-TEST_TOOL_DIRS += [
+TEST_DIRS += [
   'compiled',
 ]
 

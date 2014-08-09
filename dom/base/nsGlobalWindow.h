@@ -512,6 +512,9 @@ public:
 
   static bool IsChromeWindow(JSContext* /* unused */, JSObject* aObj);
 
+  static bool IsShowModalDialogEnabled(JSContext* /* unused */ = nullptr,
+                                       JSObject* /* unused */ = nullptr);
+
   bool DoNewResolve(JSContext* aCx, JS::Handle<JSObject*> aObj,
                     JS::Handle<jsid> aId,
                     JS::MutableHandle<JSPropertyDescriptor> aDesc);
@@ -520,7 +523,7 @@ public:
                            mozilla::ErrorResult& aRv);
 
   // Object Management
-  nsGlobalWindow(nsGlobalWindow *aOuterWindow);
+  explicit nsGlobalWindow(nsGlobalWindow *aOuterWindow);
 
   static nsGlobalWindow *FromSupports(nsISupports *supports)
   {
@@ -827,7 +830,7 @@ public:
   }
   void GetName(nsAString& aName, mozilla::ErrorResult& aError);
   void SetName(const nsAString& aName, mozilla::ErrorResult& aError);
-  nsIDOMLocation* GetLocation(mozilla::ErrorResult& aError);
+  nsLocation* GetLocation(mozilla::ErrorResult& aError);
   nsHistory* GetHistory(mozilla::ErrorResult& aError);
   mozilla::dom::BarProp* GetLocationbar(mozilla::ErrorResult& aError);
   mozilla::dom::BarProp* GetMenubar(mozilla::ErrorResult& aError);
@@ -915,8 +918,8 @@ public:
             mozilla::ErrorResult& aError);
   void Btoa(const nsAString& aBinaryData, nsAString& aAsciiBase64String,
             mozilla::ErrorResult& aError);
-  nsIDOMStorage* GetSessionStorage(mozilla::ErrorResult& aError);
-  nsIDOMStorage* GetLocalStorage(mozilla::ErrorResult& aError);
+  mozilla::dom::DOMStorage* GetSessionStorage(mozilla::ErrorResult& aError);
+  mozilla::dom::DOMStorage* GetLocalStorage(mozilla::ErrorResult& aError);
   mozilla::dom::Selection* GetSelection(mozilla::ErrorResult& aError);
   mozilla::dom::indexedDB::IDBFactory* GetIndexedDB(mozilla::ErrorResult& aError);
   already_AddRefed<nsICSSDeclaration>
@@ -1545,8 +1548,8 @@ protected:
   // it wouldn't see the ~External function's declaration.
   nsCOMPtr<nsISupports>         mExternal;
 
-  nsCOMPtr<nsIDOMStorage>      mLocalStorage;
-  nsCOMPtr<nsIDOMStorage>      mSessionStorage;
+  nsRefPtr<mozilla::dom::DOMStorage> mLocalStorage;
+  nsRefPtr<mozilla::dom::DOMStorage> mSessionStorage;
 
   // These member variable are used only on inner windows.
   nsRefPtr<mozilla::EventListenerManager> mListenerManager;
@@ -1663,7 +1666,7 @@ public:
   // nsIDOMChromeWindow interface
   NS_DECL_NSIDOMCHROMEWINDOW
 
-  nsGlobalChromeWindow(nsGlobalWindow *aOuterWindow)
+  explicit nsGlobalChromeWindow(nsGlobalWindow *aOuterWindow)
     : nsGlobalWindow(aOuterWindow),
       mGroupMessageManagers(1)
   {
@@ -1682,6 +1685,7 @@ public:
     return PL_DHASH_NEXT;
   }
 
+protected:
   ~nsGlobalChromeWindow()
   {
     NS_ABORT_IF_FALSE(mCleanMessageManager,
@@ -1698,6 +1702,7 @@ public:
     mCleanMessageManager = false;
   }
 
+public:
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(nsGlobalChromeWindow,
                                            nsGlobalWindow)
 
@@ -1728,7 +1733,7 @@ class nsGlobalModalWindow : public nsGlobalWindow,
                             public nsIDOMModalContentWindow
 {
 public:
-  nsGlobalModalWindow(nsGlobalWindow *aOuterWindow)
+  explicit nsGlobalModalWindow(nsGlobalWindow *aOuterWindow)
     : nsGlobalWindow(aOuterWindow)
   {
     mIsModalContentWindow = true;
@@ -1736,6 +1741,9 @@ public:
 
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_NSIDOMMODALCONTENTWINDOW
+
+protected:
+  ~nsGlobalModalWindow() {}
 };
 
 /* factory function */

@@ -327,12 +327,19 @@ nsScriptLoader::StartLoad(nsScriptLoadRequest *aRequest, const nsAString &aType,
   NS_ENSURE_SUCCESS(rv, rv);
 
   nsIScriptElement *script = aRequest->mElement;
-  if (aScriptFromHead &&
-      !(script && (script->GetScriptAsync() || script->GetScriptDeferred()))) {
-    nsCOMPtr<nsIHttpChannelInternal>
-      internalHttpChannel(do_QueryInterface(channel));
-    if (internalHttpChannel)
+  nsCOMPtr<nsIHttpChannelInternal>
+    internalHttpChannel(do_QueryInterface(channel));
+
+  if (internalHttpChannel) {
+    if (aScriptFromHead &&
+        !(script && (script->GetScriptAsync() || script->GetScriptDeferred()))) {
+      // synchronous head scripts block lading of most other non js/css
+      // content such as images
       internalHttpChannel->SetLoadAsBlocking(true);
+    } else if (!(script && script->GetScriptDeferred())) {
+      // other scripts are neither blocked nor prioritized unless marked deferred
+      internalHttpChannel->SetLoadUnblocked(true);
+    }
   }
 
   nsCOMPtr<nsIHttpChannel> httpChannel(do_QueryInterface(channel));
@@ -895,7 +902,7 @@ nsScriptLoader::AttemptAsyncScriptParse(nsScriptLoadRequest* aRequest)
   JSContext* cx = jsapi.cx();
   JS::Rooted<JSObject*> global(cx, globalObject->GetGlobalJSObject());
   JS::CompileOptions options(cx);
-  FillCompileOptionsForRequest(aRequest, global, &options);
+  FillCompileOptionsForRequest(jsapi, aRequest, global, &options);
 
   if (!JS::CanCompileOffThread(cx, options, aRequest->mScriptTextLength)) {
     return NS_ERROR_FAILURE;
@@ -1066,7 +1073,8 @@ nsScriptLoader::GetScriptGlobalObject()
 }
 
 void
-nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
+nsScriptLoader::FillCompileOptionsForRequest(const AutoJSAPI &jsapi,
+                                             nsScriptLoadRequest *aRequest,
                                              JS::Handle<JSObject *> aScopeChain,
                                              JS::CompileOptions *aOptions)
 {
@@ -1085,15 +1093,9 @@ nsScriptLoader::FillCompileOptionsForRequest(nsScriptLoadRequest *aRequest,
     aOptions->setOriginPrincipals(nsJSPrincipals::get(aRequest->mOriginPrincipal));
   }
 
-  AutoJSContext cx;
+  JSContext* cx = jsapi.cx();
   JS::Rooted<JS::Value> elementVal(cx);
   MOZ_ASSERT(aRequest->mElement);
-  // XXXbz this is super-fragile, because the code that _uses_ the
-  // JS::CompileOptions is nowhere near us, but we have to coordinate
-  // compartments with it... and in particular, it will compile in the
-  // compartment of aScopeChain, so we want to wrap into that compartment as
-  // well.
-  JSAutoCompartment ac(cx, aScopeChain);
   if (NS_SUCCEEDED(nsContentUtils::WrapNative(cx, aRequest->mElement,
                                               &elementVal,
                                               /* aAllowWrapping = */ true))) {
@@ -1165,7 +1167,7 @@ nsScriptLoader::EvaluateScript(nsScriptLoadRequest* aRequest,
     }
 
     JS::CompileOptions options(entryScript.cx());
-    FillCompileOptionsForRequest(aRequest, global, &options);
+    FillCompileOptionsForRequest(entryScript, aRequest, global, &options);
     rv = nsJSUtils::EvaluateString(entryScript.cx(), aSrcBuf, global, options,
                                    aOffThreadToken);
   }
@@ -1407,6 +1409,16 @@ nsScriptLoader::OnStreamComplete(nsIStreamLoader* aLoader,
   nsresult rv = PrepareLoadedRequest(request, aLoader, aStatus, aStringLen,
                                      aString);
   if (NS_FAILED(rv)) {
+    /*
+     * Handle script not loading error because source was a tracking URL.
+     * We make a note of this script node by including it in a dedicated
+     * array of blocked tracking nodes under its parent document.
+     */
+    if (rv == NS_ERROR_TRACKING_URI) {
+      nsCOMPtr<nsIContent> cont = do_QueryInterface(request->mElement);
+      mDocument->AddBlockedTrackingNode(cont);
+    }
+
     if (mDeferRequests.RemoveElement(request) ||
         mAsyncRequests.RemoveElement(request) ||
         mNonAsyncExternalScriptInsertedRequests.RemoveElement(request) ||
@@ -1422,7 +1434,7 @@ nsScriptLoader::OnStreamComplete(nsIStreamLoader* aLoader,
     }
     rv = NS_OK;
   } else {
-    NS_Free(const_cast<uint8_t *>(aString));
+    moz_free(const_cast<uint8_t *>(aString));
     rv = NS_SUCCESS_ADOPTED_DATA;
   }
 
@@ -1476,9 +1488,11 @@ nsScriptLoader::PrepareLoadedRequest(nsScriptLoadRequest* aRequest,
     }
 
     nsAutoCString sourceMapURL;
-    httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("X-SourceMap"), sourceMapURL);
-    aRequest->mHasSourceMapURL = true;
-    aRequest->mSourceMapURL = NS_ConvertUTF8toUTF16(sourceMapURL);
+    rv = httpChannel->GetResponseHeader(NS_LITERAL_CSTRING("X-SourceMap"), sourceMapURL);
+    if (NS_SUCCEEDED(rv)) {
+      aRequest->mHasSourceMapURL = true;
+      aRequest->mSourceMapURL = NS_ConvertUTF8toUTF16(sourceMapURL);
+    }
   }
 
   nsCOMPtr<nsIChannel> channel = do_QueryInterface(req);

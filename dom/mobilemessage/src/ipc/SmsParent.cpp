@@ -15,7 +15,6 @@
 #include "MmsMessage.h"
 #include "nsIMobileMessageDatabaseService.h"
 #include "SmsFilter.h"
-#include "SmsSegmentInfo.h"
 #include "MobileMessageThread.h"
 #include "nsIDOMFile.h"
 #include "mozilla/dom/ipc/Blob.h"
@@ -26,6 +25,7 @@
 #include "nsCxPusher.h"
 #include "xpcpublic.h"
 #include "nsServiceManagerUtils.h"
+#include "DeletedMessageInfo.h"
 
 namespace mozilla {
 namespace dom {
@@ -179,6 +179,7 @@ SmsParent::SmsParent()
   obs->AddObserver(this, kSilentSmsReceivedObserverTopic, false);
   obs->AddObserver(this, kSmsReadSuccessObserverTopic, false);
   obs->AddObserver(this, kSmsReadErrorObserverTopic, false);
+  obs->AddObserver(this, kSmsDeletedObserverTopic, false);
 }
 
 void
@@ -199,6 +200,7 @@ SmsParent::ActorDestroy(ActorDestroyReason why)
   obs->RemoveObserver(this, kSilentSmsReceivedObserverTopic);
   obs->RemoveObserver(this, kSmsReadSuccessObserverTopic);
   obs->RemoveObserver(this, kSmsReadErrorObserverTopic);
+  obs->RemoveObserver(this, kSmsDeletedObserverTopic);
 }
 
 NS_IMETHODIMP
@@ -324,6 +326,17 @@ SmsParent::Observe(nsISupports* aSubject, const char* aTopic,
     return NS_OK;
   }
 
+  if (!strcmp(aTopic, kSmsDeletedObserverTopic)) {
+    nsCOMPtr<nsIDeletedMessageInfo> deletedInfo = do_QueryInterface(aSubject);
+    if (!deletedInfo) {
+      NS_ERROR("Got a 'sms-deleted' topic without a valid message!");
+      return NS_OK;
+    }
+
+    unused << SendNotifyDeletedMessageInfo(
+      static_cast<DeletedMessageInfo*>(deletedInfo.get())->GetData());
+    return NS_OK;
+  }
 
   return NS_OK;
 }
@@ -698,10 +711,13 @@ SmsRequestParent::NotifyMarkMessageReadFailed(int32_t aError)
 }
 
 NS_IMETHODIMP
-SmsRequestParent::NotifySegmentInfoForTextGot(nsIDOMMozSmsSegmentInfo *aInfo)
+SmsRequestParent::NotifySegmentInfoForTextGot(int32_t aSegments,
+                                              int32_t aCharsPerSegment,
+                                              int32_t aCharsAvailableInLastSegment)
 {
-  SmsSegmentInfo* info = static_cast<SmsSegmentInfo*>(aInfo);
-  return SendReply(ReplyGetSegmentInfoForText(info->GetData()));
+  return SendReply(ReplyGetSegmentInfoForText(aSegments,
+                                              aCharsPerSegment,
+                                              aCharsAvailableInLastSegment));
 }
 
 NS_IMETHODIMP

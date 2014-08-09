@@ -119,6 +119,16 @@ ValueNumberer::VisibleValues::clear()
     set_.clear();
 }
 
+#ifdef DEBUG
+// Test whether a given value is in the set.
+bool
+ValueNumberer::VisibleValues::has(const MDefinition *def) const
+{
+    Ptr p = set_.lookup(def);
+    return p && *p == def;
+}
+#endif
+
 // Test whether the value would be needed if it had no uses.
 static bool
 DeadIfUnused(const MDefinition *def)
@@ -132,15 +142,6 @@ static bool
 IsDead(const MDefinition *def)
 {
     return !def->hasUses() && DeadIfUnused(def);
-}
-
-// Test whether the given definition will no longer be needed after its user
-// is deleted. TODO: This misses cases where the definition is used multiple
-// times by the same user (bug 1031396).
-static bool
-WillBecomeDead(const MDefinition *def)
-{
-    return def->hasOneUse() && DeadIfUnused(def);
 }
 
 // Call MDefinition::replaceAllUsesWith, and add some GVN-specific asserts.
@@ -215,21 +216,19 @@ IsDominatorRefined(MBasicBlock *block)
 bool
 ValueNumberer::deleteDefsRecursively(MDefinition *def)
 {
-    def->setInWorklist();
-    return deadDefs_.append(def) && processDeadDefs();
+    return deleteDef(def) && processDeadDefs();
 }
 
-// Assuming phi is dead, push each dead operand of phi not dominated by the phi
-// to the delete worklist.
+// Assuming phi is dead, discard its operands. If an operand which is not
+// dominated by the phi becomes dead, push it to the delete worklist.
 bool
-ValueNumberer::pushDeadPhiOperands(MPhi *phi, const MBasicBlock *phiBlock)
+ValueNumberer::discardPhiOperands(MPhi *phi, const MBasicBlock *phiBlock)
 {
-    for (size_t o = 0, e = phi->numOperands(); o != e; ++o) {
+    // MPhi saves operands in a vector so we iterate in reverse.
+    for (int o = phi->numOperands() - 1; o >= 0; --o) {
         MDefinition *op = phi->getOperand(o);
-        if (WillBecomeDead(op) && !op->isInWorklist() &&
-            !phiBlock->dominates(phiBlock->getPredecessor(o)))
-        {
-            op->setInWorklist();
+        phi->removeOperand(o);
+        if (IsDead(op) && !phiBlock->dominates(op->block())) {
             if (!deadDefs_.append(op))
                 return false;
         } else {
@@ -239,19 +238,43 @@ ValueNumberer::pushDeadPhiOperands(MPhi *phi, const MBasicBlock *phiBlock)
     return true;
 }
 
-// Assuming ins is dead, push each dead operand of ins to the delete worklist.
+// Assuming ins is dead, discard its operands. If an operand becomes dead, push
+// it to the delete worklist.
 bool
-ValueNumberer::pushDeadInsOperands(MInstruction *ins)
+ValueNumberer::discardInsOperands(MInstruction *ins)
 {
     for (size_t o = 0, e = ins->numOperands(); o != e; ++o) {
         MDefinition *op = ins->getOperand(o);
-        if (WillBecomeDead(op) && !op->isInWorklist()) {
-            op->setInWorklist();
+        ins->discardOperand(o);
+        if (IsDead(op)) {
             if (!deadDefs_.append(op))
                 return false;
         } else {
            op->setUseRemovedUnchecked();
         }
+    }
+    return true;
+}
+
+bool
+ValueNumberer::deleteDef(MDefinition *def)
+{
+    IonSpew(IonSpew_GVN, "    Deleting %s%u", def->opName(), def->id());
+    MOZ_ASSERT(IsDead(def), "Deleting non-dead definition");
+    MOZ_ASSERT(!values_.has(def), "Deleting an instruction still in the set");
+
+    if (def->isPhi()) {
+        MPhi *phi = def->toPhi();
+        MBasicBlock *phiBlock = phi->block();
+        if (!discardPhiOperands(phi, phiBlock))
+             return false;
+        MPhiIterator at(phiBlock->phisBegin(phi));
+        phiBlock->discardPhiAt(at);
+    } else {
+        MInstruction *ins = def->toInstruction();
+        if (!discardInsOperands(ins))
+             return false;
+        ins->block()->discardIgnoreOperands(ins);
     }
     return true;
 }
@@ -262,25 +285,10 @@ ValueNumberer::processDeadDefs()
 {
     while (!deadDefs_.empty()) {
         MDefinition *def = deadDefs_.popCopy();
-        IonSpew(IonSpew_GVN, "    Deleting %s%u", def->opName(), def->id());
-        MOZ_ASSERT(def->isInWorklist(), "Deleting value not on the worklist");
-        MOZ_ASSERT(IsDead(def), "Deleting non-dead definition");
 
         values_.forget(def);
-
-        if (def->isPhi()) {
-            MPhi *phi = def->toPhi();
-            MBasicBlock *phiBlock = phi->block();
-            if (!pushDeadPhiOperands(phi, phiBlock))
-                 return false;
-            MPhiIterator at(phiBlock->phisBegin(phi));
-            phiBlock->discardPhiAt(at);
-        } else {
-            MInstruction *ins = def->toInstruction();
-            if (!pushDeadInsOperands(ins))
-                 return false;
-            ins->block()->discard(ins);
-        }
+        if (!deleteDef(def))
+            return false;
     }
     return true;
 }
@@ -396,7 +404,6 @@ ValueNumberer::leader(MDefinition *def)
             MDefinition *rep = *p;
             if (rep->block()->dominates(def->block())) {
                 // We found a dominating congruent value.
-                MOZ_ASSERT(!rep->isInWorklist(), "Dead value in set");
                 return rep;
             }
 
@@ -461,6 +468,12 @@ ValueNumberer::visitDefinition(MDefinition *def)
         IonSpew(IonSpew_GVN, "    Folded %s%u to %s%u",
                 def->opName(), def->id(), sim->opName(), sim->id());
         ReplaceAllUsesWith(def, sim);
+
+        // The node's foldsTo said |def| can be replaced by |rep|. If |def| is a
+        // guard, then either |rep| is also a guard, or a guard isn't actually
+        // needed, so we can clear |def|'s guard flag and let it be deleted.
+        def->setNotGuardUnchecked();
+
         if (IsDead(def) && !deleteDefsRecursively(def))
             return false;
         def = sim;
@@ -477,10 +490,9 @@ ValueNumberer::visitDefinition(MDefinition *def)
                     def->opName(), def->id(), rep->opName(), rep->id());
             ReplaceAllUsesWith(def, rep);
 
-            // This is effectively what the old GVN did. It allows isGuard()
-            // instructions to be deleted if they are redundant, and the
-            // replacement is not even guaranteed to have isGuard() set.
-            // TODO: Clean this up (bug 1031410).
+            // The node's congruentTo said |def| is congruent to |rep|, and it's
+            // dominated by |rep|. If |def| is a guard, it's covered by |rep|,
+            // so we can clear |def|'s guard flag and let it be deleted.
             def->setNotGuardUnchecked();
 
             if (IsDead(def) && !deleteDefsRecursively(def))
@@ -541,9 +553,9 @@ ValueNumberer::visitControlInstruction(MBasicBlock *block, const MBasicBlock *do
         }
     }
 
-    if (!pushDeadInsOperands(control))
+    if (!discardInsOperands(control))
         return false;
-    block->discardLastIns();
+    block->discardIgnoreOperands(control);
     block->end(newControl);
     return processDeadDefs();
 }

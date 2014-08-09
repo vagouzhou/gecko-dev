@@ -383,7 +383,7 @@ MarkStack::setBaseCapacity(JSGCMode mode)
         baseCapacity_ = INCREMENTAL_MARK_STACK_BASE_CAPACITY;
         break;
       default:
-        MOZ_ASSUME_UNREACHABLE("bad gc mode");
+        MOZ_CRASH("bad gc mode");
     }
 
     if (baseCapacity_ > maxCapacity_)
@@ -662,7 +662,20 @@ GCMarker::appendGrayRoot(void *thing, JSGCTraceKind kind)
 
     Zone *zone = static_cast<Cell *>(thing)->tenuredZone();
     if (zone->isCollecting()) {
-        zone->maybeAlive = true;
+        // See the comment on SetMaybeAliveFlag to see why we only do this for
+        // objects and scripts. We rely on gray root buffering for this to work,
+        // but we only need to worry about uncollected dead compartments during
+        // incremental GCs (when we do gray root buffering).
+        switch (kind) {
+          case JSTRACE_OBJECT:
+            static_cast<JSObject *>(thing)->compartment()->maybeAlive = true;
+            break;
+          case JSTRACE_SCRIPT:
+            static_cast<JSScript *>(thing)->compartment()->maybeAlive = true;
+            break;
+          default:
+            break;
+        }
         if (!zone->gcGrayRoots.append(root)) {
             resetBufferedGrayRoots();
             grayBufferState = GRAY_BUFFER_FAILED;

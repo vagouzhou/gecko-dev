@@ -118,7 +118,7 @@ Bindings::initWithTemporaryStorage(ExclusiveContext *cx, InternalBindingsHandle 
     // Start with the empty shape and then append one shape per aliased binding.
     RootedShape shape(cx,
         EmptyShape::getInitialShape(cx, &CallObject::class_, TaggedProto(nullptr), nullptr, nullptr,
-                                    nfixed, BaseShape::VAROBJ | BaseShape::DELEGATE));
+                                    nfixed, BaseShape::QUALIFIED_VAROBJ | BaseShape::DELEGATE));
     if (!shape)
         return false;
 
@@ -141,7 +141,7 @@ Bindings::initWithTemporaryStorage(ExclusiveContext *cx, InternalBindingsHandle 
 #endif
 
         StackBaseShape stackBase(cx, &CallObject::class_, nullptr, nullptr,
-                                 BaseShape::VAROBJ | BaseShape::DELEGATE);
+                                 BaseShape::QUALIFIED_VAROBJ | BaseShape::DELEGATE);
 
         UnownedBaseShape *base = BaseShape::getUnowned(cx, stackBase);
         if (!base)
@@ -503,7 +503,7 @@ FindScopeObjectIndex(JSScript *script, NestedScopeObject &scope)
             return i;
     }
 
-    MOZ_ASSUME_UNREACHABLE("Scope not found");
+    MOZ_CRASH("Scope not found");
 }
 
 static bool
@@ -700,7 +700,7 @@ js::XDRScript(XDRState<mode> *xdr, HandleObject enclosingScope, HandleScript enc
             CompileOptions options(cx);
             options.setOriginPrincipals(xdr->originPrincipals());
             ss->initFromOptions(cx, options);
-            sourceObject = ScriptSourceObject::create(cx, ss, options);
+            sourceObject = ScriptSourceObject::create(cx, ss);
             if (!sourceObject)
                 return false;
         } else {
@@ -865,7 +865,7 @@ js::XDRScript(XDRState<mode> *xdr, HandleObject enclosingScope, HandleScript enc
             else if (obj->is<JSObject>() || obj->is<ArrayObject>())
                 classk = CK_JSObject;
             else
-                MOZ_ASSUME_UNREACHABLE("Cannot encode this class of object.");
+                MOZ_CRASH("Cannot encode this class of object.");
         }
 
         if (!xdr->codeEnum32(&classk))
@@ -1017,7 +1017,6 @@ js::XDRScript(XDRState<mode> *xdr, HandleObject enclosingScope, HandleScript enc
         scriptp.set(script);
 
         /* see BytecodeEmitter::tellDebuggerAboutCompiledScript */
-        CallNewScriptHook(cx, script, fun);
         if (!fun) {
             RootedGlobalObject global(cx, script->compileAndGo() ? &script->global() : nullptr);
             Debugger::onNewScript(cx, script, global);
@@ -1241,66 +1240,26 @@ JSScript::destroyScriptCounts(FreeOp *fop)
 }
 
 void
-ScriptSourceObject::setSource(ScriptSource *source)
-{
-    if (source)
-        source->incref();
-    if (this->source())
-        this->source()->decref();
-    setReservedSlot(SOURCE_SLOT, PrivateValue(source));
-}
-
-JSObject *
-ScriptSourceObject::element() const
-{
-    return getReservedSlot(ELEMENT_SLOT).toObjectOrNull();
-}
-
-void
-ScriptSourceObject::initElement(HandleObject element)
-{
-    JS_ASSERT(getReservedSlot(ELEMENT_SLOT).isNull());
-    setReservedSlot(ELEMENT_SLOT, ObjectOrNullValue(element));
-}
-
-const Value &
-ScriptSourceObject::elementAttributeName() const
-{
-    const Value &prop = getReservedSlot(ELEMENT_PROPERTY_SLOT);
-    JS_ASSERT(prop.isUndefined() || prop.isString());
-    return prop;
-}
-
-void
-ScriptSourceObject::initIntroductionScript(JSScript *script)
-{
-    JS_ASSERT(!getReservedSlot(INTRODUCTION_SCRIPT_SLOT).toPrivate());
-
-    // There is no equivalent of cross-compartment wrappers for scripts. If
-    // the introduction script would be in a different compartment from the
-    // compiled code, we would be creating a cross-compartment script
-    // reference, which would be bogus. In that case, just don't bother to
-    // retain the introduction script.
-    if (script && script->compartment() == compartment())
-        setReservedSlot(INTRODUCTION_SCRIPT_SLOT, PrivateValue(script));
-}
-
-void
 ScriptSourceObject::trace(JSTracer *trc, JSObject *obj)
 {
     ScriptSourceObject *sso = static_cast<ScriptSourceObject *>(obj);
 
-    if (JSScript *script = sso->introductionScript()) {
-        MarkScriptUnbarriered(trc, &script, "ScriptSourceObject introductionScript");
-        sso->setReservedSlot(INTRODUCTION_SCRIPT_SLOT, PrivateValue(script));
+    // Don't trip over the poison 'not yet initialized' values.
+    if (!sso->getReservedSlot(INTRODUCTION_SCRIPT_SLOT).isMagic(JS_GENERIC_MAGIC)) {
+        JSScript *script = sso->introductionScript();
+        if (script) {
+            MarkScriptUnbarriered(trc, &script, "ScriptSourceObject introductionScript");
+            sso->setReservedSlot(INTRODUCTION_SCRIPT_SLOT, PrivateValue(script));
+        }
     }
 }
 
 void
 ScriptSourceObject::finalize(FreeOp *fop, JSObject *obj)
 {
-    // ScriptSource::setSource automatically takes care of the refcount
-    obj->as<ScriptSourceObject>().setSource(nullptr);
+    ScriptSourceObject *sso = &obj->as<ScriptSourceObject>();
+    sso->source()->decref();
+    sso->setReservedSlot(SOURCE_SLOT, PrivateValue(nullptr));
 }
 
 const Class ScriptSourceObject::class_ = {
@@ -1322,26 +1281,59 @@ const Class ScriptSourceObject::class_ = {
 };
 
 ScriptSourceObject *
-ScriptSourceObject::create(ExclusiveContext *cx, ScriptSource *source,
-                           const ReadOnlyCompileOptions &options)
+ScriptSourceObject::create(ExclusiveContext *cx, ScriptSource *source)
 {
     RootedObject object(cx, NewObjectWithGivenProto(cx, &class_, nullptr, cx->global()));
     if (!object)
         return nullptr;
     RootedScriptSource sourceObject(cx, &object->as<ScriptSourceObject>());
 
-    source->incref();
-    sourceObject->initSlot(SOURCE_SLOT, PrivateValue(source));
-    sourceObject->initSlot(ELEMENT_SLOT, ObjectOrNullValue(options.element()));
-    if (options.elementAttributeName())
-        sourceObject->initSlot(ELEMENT_PROPERTY_SLOT, StringValue(options.elementAttributeName()));
-    else
-        sourceObject->initSlot(ELEMENT_PROPERTY_SLOT, UndefinedValue());
+    source->incref();    // The matching decref is in ScriptSourceObject::finalize.
+    sourceObject->initReservedSlot(SOURCE_SLOT, PrivateValue(source));
 
-    sourceObject->initSlot(INTRODUCTION_SCRIPT_SLOT, PrivateValue(nullptr));
-    sourceObject->initIntroductionScript(options.introductionScript());
+    // The remaining slots should eventually be populated by a call to
+    // initFromOptions. Poison them until that point.
+    sourceObject->initReservedSlot(ELEMENT_SLOT, MagicValue(JS_GENERIC_MAGIC));
+    sourceObject->initReservedSlot(ELEMENT_PROPERTY_SLOT, MagicValue(JS_GENERIC_MAGIC));
+    sourceObject->initReservedSlot(INTRODUCTION_SCRIPT_SLOT, MagicValue(JS_GENERIC_MAGIC));
 
     return sourceObject;
+}
+
+/* static */ bool
+ScriptSourceObject::initFromOptions(JSContext *cx, HandleScriptSource source,
+                                    const ReadOnlyCompileOptions &options)
+{
+    assertSameCompartment(cx, source);
+
+    RootedValue element(cx, ObjectOrNullValue(options.element()));
+    if (!cx->compartment()->wrap(cx, &element))
+        return false;
+    source->setReservedSlot(ELEMENT_SLOT, element);
+
+    RootedValue elementAttributeName(cx);
+    if (options.elementAttributeName())
+        elementAttributeName = StringValue(options.elementAttributeName());
+    else
+        elementAttributeName = UndefinedValue();
+    if (!cx->compartment()->wrap(cx, &elementAttributeName))
+        return false;
+    source->setReservedSlot(ELEMENT_PROPERTY_SLOT, elementAttributeName);
+
+    // There is no equivalent of cross-compartment wrappers for scripts. If the
+    // introduction script and ScriptSourceObject are in different compartments,
+    // we would be creating a cross-compartment script reference, which is
+    // forbidden. In that case, simply don't bother to retain the introduction
+    // script.
+    if (options.introductionScript() &&
+        options.introductionScript()->compartment() == cx->compartment())
+    {
+        source->setReservedSlot(INTRODUCTION_SCRIPT_SLOT, PrivateValue(options.introductionScript()));
+    } else {
+        source->setReservedSlot(INTRODUCTION_SCRIPT_SLOT, UndefinedValue());
+    }
+
+    return true;
 }
 
 /* static */ bool
@@ -1502,7 +1494,6 @@ ScriptSource::chars(JSContext *cx, UncompressedSourceCache::AutoHoldEntry &holde
         return uncompressedChars();
 
       case DataCompressed: {
-#ifdef USE_ZLIB
         if (const jschar *decompressed = cx->runtime()->uncompressedSourceCache.lookup(this, holder))
             return decompressed;
 
@@ -1527,9 +1518,6 @@ ScriptSource::chars(JSContext *cx, UncompressedSourceCache::AutoHoldEntry &holde
         }
 
         return decompressed;
-#else
-        MOZ_CRASH();
-#endif
       }
 
       case DataParent:
@@ -1542,6 +1530,17 @@ ScriptSource::chars(JSContext *cx, UncompressedSourceCache::AutoHoldEntry &holde
 
 JSFlatString *
 ScriptSource::substring(JSContext *cx, uint32_t start, uint32_t stop)
+{
+    JS_ASSERT(start <= stop);
+    UncompressedSourceCache::AutoHoldEntry holder;
+    const jschar *chars = this->chars(cx, holder);
+    if (!chars)
+        return nullptr;
+    return NewStringCopyN<CanGC>(cx, chars + start, stop - start);
+}
+
+JSFlatString *
+ScriptSource::substringDontDeflate(JSContext *cx, uint32_t start, uint32_t stop)
 {
     JS_ASSERT(start <= stop);
     UncompressedSourceCache::AutoHoldEntry holder;
@@ -1650,13 +1649,10 @@ ScriptSource::setSourceCopy(ExclusiveContext *cx, SourceBufferHolder &srcBuf,
     //    thread (see HelperThreadState::canStartParseTask) which would cause a
     //    deadlock if there wasn't a second helper thread that could make
     //    progress on our compression task.
-#if defined(JS_THREADSAFE) && defined(USE_ZLIB)
     bool canCompressOffThread =
         HelperThreadState().cpuCount > 1 &&
-        HelperThreadState().threadCount >= 2;
-#else
-    bool canCompressOffThread = false;
-#endif
+        HelperThreadState().threadCount >= 2 &&
+        CanUseExtraThreads();
     const size_t TINY_SCRIPT = 256;
     const size_t HUGE_SCRIPT = 5 * 1024 * 1024;
     if (TINY_SCRIPT <= srcBuf.length() && srcBuf.length() < HUGE_SCRIPT && canCompressOffThread) {
@@ -1673,7 +1669,6 @@ ScriptSource::setSourceCopy(ExclusiveContext *cx, SourceBufferHolder &srcBuf,
 SourceCompressionTask::ResultType
 SourceCompressionTask::work()
 {
-#ifdef USE_ZLIB
     // Try to keep the maximum memory usage down by only allocating half the
     // size of the string, first.
     size_t inputBytes = ss->length() * sizeof(jschar);
@@ -1719,9 +1714,6 @@ SourceCompressionTask::work()
     }
     compressedBytes = comp.outWritten();
     compressedHash = CompressedSourceHasher::computeHash(compressed, compressedBytes);
-#else
-    MOZ_CRASH();
-#endif
 
     // Shrink the buffer to the size of the compressed data.
     if (void *newCompressed = js_realloc(compressed, compressedBytes))
@@ -1760,11 +1752,6 @@ ScriptSource::~ScriptSource()
         break;
     }
 
-    if (introducerFilename_ != filename_)
-        js_free(introducerFilename_);
-    js_free(filename_);
-    js_free(displayURL_);
-    js_free(sourceMapURL_);
     if (originPrincipals_)
         JS_DropPrincipals(TlsPerThreadData.get()->runtimeFromMainThread(), originPrincipals_);
 }
@@ -1777,7 +1764,9 @@ ScriptSource::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
         info->uncompressed += mallocSizeOf(uncompressedChars());
     else if (dataType == DataCompressed)
         info->compressed += mallocSizeOf(compressedData());
-    info->misc += mallocSizeOf(this) + mallocSizeOf(filename_);
+    info->misc += mallocSizeOf(this) +
+                  mallocSizeOf(filename_.get()) +
+                  mallocSizeOf(introducerFilename_.get());
     info->numScripts++;
 }
 
@@ -1865,21 +1854,18 @@ ScriptSource::performXDR(XDRState<mode> *xdr)
         return false;
 
     if (haveSourceMap) {
-        uint32_t sourceMapURLLen = (mode == XDR_DECODE) ? 0 : js_strlen(sourceMapURL_);
+        uint32_t sourceMapURLLen = (mode == XDR_DECODE) ? 0 : js_strlen(sourceMapURL_.get());
         if (!xdr->codeUint32(&sourceMapURLLen))
             return false;
 
         if (mode == XDR_DECODE) {
-            size_t byteLen = (sourceMapURLLen + 1) * sizeof(jschar);
-            sourceMapURL_ = static_cast<jschar *>(xdr->cx()->malloc_(byteLen));
+            sourceMapURL_ = xdr->cx()->template make_pod_array<jschar>(sourceMapURLLen + 1);
             if (!sourceMapURL_)
                 return false;
         }
-        if (!xdr->codeChars(sourceMapURL_, sourceMapURLLen)) {
-            if (mode == XDR_DECODE) {
-                js_free(sourceMapURL_);
+        if (!xdr->codeChars(sourceMapURL_.get(), sourceMapURLLen)) {
+            if (mode == XDR_DECODE)
                 sourceMapURL_ = nullptr;
-            }
             return false;
         }
         sourceMapURL_[sourceMapURLLen] = '\0';
@@ -1890,21 +1876,18 @@ ScriptSource::performXDR(XDRState<mode> *xdr)
         return false;
 
     if (haveDisplayURL) {
-        uint32_t displayURLLen = (mode == XDR_DECODE) ? 0 : js_strlen(displayURL_);
+        uint32_t displayURLLen = (mode == XDR_DECODE) ? 0 : js_strlen(displayURL_.get());
         if (!xdr->codeUint32(&displayURLLen))
             return false;
 
         if (mode == XDR_DECODE) {
-            size_t byteLen = (displayURLLen + 1) * sizeof(jschar);
-            displayURL_ = static_cast<jschar *>(xdr->cx()->malloc_(byteLen));
+            displayURL_ = xdr->cx()->template make_pod_array<jschar>(displayURLLen + 1);
             if (!displayURL_)
                 return false;
         }
-        if (!xdr->codeChars(displayURL_, displayURLLen)) {
-            if (mode == XDR_DECODE) {
-                js_free(displayURL_);
+        if (!xdr->codeChars(displayURL_.get(), displayURLLen)) {
+            if (mode == XDR_DECODE)
                 displayURL_ = nullptr;
-            }
             return false;
         }
         displayURL_[displayURLLen] = '\0';
@@ -1980,18 +1963,16 @@ ScriptSource::initFromOptions(ExclusiveContext *cx, const ReadOnlyCompileOptions
                                                    options.introductionType);
         if (!formatted)
             return false;
-        filename_ = formatted;
+        filename_.reset(formatted);
     } else if (options.filename()) {
         if (!setFilename(cx, options.filename()))
             return false;
     }
 
     if (options.introducerFilename()) {
-        introducerFilename_ = js_strdup(cx, options.introducerFilename());
+        introducerFilename_ = DuplicateString(cx, options.introducerFilename());
         if (!introducerFilename_)
             return false;
-    } else {
-        introducerFilename_ = filename_;
     }
 
     return true;
@@ -2001,10 +1982,8 @@ bool
 ScriptSource::setFilename(ExclusiveContext *cx, const char *filename)
 {
     JS_ASSERT(!filename_);
-    filename_ = js_strdup(cx, filename);
-    if (!filename_)
-        return false;
-    return true;
+    filename_ = DuplicateString(cx, filename);
+    return filename_ != nullptr;
 }
 
 bool
@@ -2015,7 +1994,7 @@ ScriptSource::setDisplayURL(ExclusiveContext *cx, const jschar *displayURL)
         if (cx->isJSContext() &&
             !JS_ReportErrorFlagsAndNumber(cx->asJSContext(), JSREPORT_WARNING,
                                           js_GetErrorMessage, nullptr,
-                                          JSMSG_ALREADY_HAS_PRAGMA, filename_,
+                                          JSMSG_ALREADY_HAS_PRAGMA, filename_.get(),
                                           "//# sourceURL"))
         {
             return false;
@@ -2024,17 +2003,9 @@ ScriptSource::setDisplayURL(ExclusiveContext *cx, const jschar *displayURL)
     size_t len = js_strlen(displayURL) + 1;
     if (len == 1)
         return true;
-    displayURL_ = js_strdup(cx, displayURL);
-    if (!displayURL_)
-        return false;
-    return true;
-}
 
-const jschar *
-ScriptSource::displayURL()
-{
-    JS_ASSERT(hasDisplayURL());
-    return displayURL_;
+    displayURL_ = DuplicateString(cx, displayURL);
+    return displayURL_ != nullptr;
 }
 
 bool
@@ -2042,30 +2013,23 @@ ScriptSource::setSourceMapURL(ExclusiveContext *cx, const jschar *sourceMapURL)
 {
     JS_ASSERT(sourceMapURL);
     if (hasSourceMapURL()) {
-        if (cx->isJSContext() &&
-            !JS_ReportErrorFlagsAndNumber(cx->asJSContext(), JSREPORT_WARNING,
-                                          js_GetErrorMessage, nullptr,
-                                          JSMSG_ALREADY_HAS_PRAGMA, filename_,
-                                          "//# sourceMappingURL"))
-        {
-            return false;
+        // Warn about the replacement, but use the new one.
+        if (cx->isJSContext()) {
+            JS_ReportErrorFlagsAndNumber(cx->asJSContext(), JSREPORT_WARNING,
+                                         js_GetErrorMessage, nullptr,
+                                         JSMSG_ALREADY_HAS_PRAGMA, filename_.get(),
+                                         "//# sourceMappingURL");
         }
+
+        sourceMapURL_ = nullptr;
     }
 
     size_t len = js_strlen(sourceMapURL) + 1;
     if (len == 1)
         return true;
-    sourceMapURL_ = js_strdup(cx, sourceMapURL);
-    if (!sourceMapURL_)
-        return false;
-    return true;
-}
 
-const jschar *
-ScriptSource::sourceMapURL()
-{
-    JS_ASSERT(hasSourceMapURL());
-    return sourceMapURL_;
+    sourceMapURL_ = DuplicateString(cx, sourceMapURL);
+    return sourceMapURL_ != nullptr;
 }
 
 size_t
@@ -2649,32 +2613,6 @@ JSScript::uninlinedGlobal() const
 }
 
 void
-js::CallNewScriptHook(JSContext *cx, HandleScript script, HandleFunction fun)
-{
-    if (script->selfHosted())
-        return;
-
-    JS_ASSERT(!script->isActiveEval());
-    if (JSNewScriptHook hook = cx->runtime()->debugHooks.newScriptHook) {
-        AutoKeepAtoms keepAtoms(cx->perThreadData);
-        hook(cx, script->filename(), script->lineno(), script, fun,
-             cx->runtime()->debugHooks.newScriptHookData);
-    }
-}
-
-void
-js::CallDestroyScriptHook(FreeOp *fop, JSScript *script)
-{
-    if (script->selfHosted())
-        return;
-
-    // The hook will only call into JS if a GC is not running.
-    if (JSDestroyScriptHook hook = fop->runtime()->debugHooks.destroyScriptHook)
-        hook(fop, script, fop->runtime()->debugHooks.destroyScriptHookData);
-    script->clearTraps(fop);
-}
-
-void
 JSScript::finalize(FreeOp *fop)
 {
     // NOTE: this JSScript may be partially initialized at this point.  E.g. we
@@ -2682,15 +2620,12 @@ JSScript::finalize(FreeOp *fop)
     // JSScript::Create(), but not yet finished initializing it with
     // fullyInitFromEmitter() or fullyInitTrivial().
 
-    CallDestroyScriptHook(fop, this);
     fop->runtime()->spsProfiler.onScriptFinalized(this);
 
     if (types)
         types->destroy();
 
-#ifdef JS_ION
     jit::DestroyIonScripts(fop, this);
-#endif
 
     destroyScriptCounts(fop);
     destroyDebugScript(fop);
@@ -3164,7 +3099,6 @@ js::CloneFunctionScript(JSContext *cx, HandleFunction original, HandleFunction c
     cscript->setFunction(clone);
 
     script = clone->nonLazyScript();
-    CallNewScriptHook(cx, script, clone);
     RootedGlobalObject global(cx, script->compileAndGo() ? &script->global() : nullptr);
     Debugger::onNewScript(cx, script, global);
 
@@ -3204,7 +3138,6 @@ JSScript::destroyDebugScript(FreeOp *fop)
             if (BreakpointSite *site = getBreakpointSite(pc)) {
                 /* Breakpoints are swept before finalization. */
                 JS_ASSERT(site->firstBreakpoint() == nullptr);
-                site->clearTrap(fop, nullptr, nullptr);
                 JS_ASSERT(getBreakpointSite(pc) == nullptr);
             }
         }
@@ -3262,10 +3195,8 @@ JSScript::setNewStepMode(FreeOp *fop, uint32_t newValue)
     debug->stepMode = newValue;
 
     if (!prior != !newValue) {
-#ifdef JS_ION
         if (hasBaselineScript())
             baseline->toggleDebugTraps(this, nullptr);
-#endif
 
         if (!stepModeEnabled() && !debug->numSites)
             fop->free_(releaseDebugScript());
@@ -3375,20 +3306,7 @@ JSScript::hasBreakpointsAt(jsbytecode *pc)
     if (!site)
         return false;
 
-    return site->enabledCount > 0 || site->trapHandler;
-}
-
-void
-JSScript::clearTraps(FreeOp *fop)
-{
-    if (!hasAnyBreakpointsOrStepMode())
-        return;
-
-    for (jsbytecode *pc = code(); pc < codeEnd(); pc++) {
-        BreakpointSite *site = getBreakpointSite(pc);
-        if (site)
-            site->clearTrap(fop);
-    }
+    return site->enabledCount > 0;
 }
 
 void
@@ -3446,17 +3364,7 @@ JSScript::markChildren(JSTracer *trc)
 
     bindings.trace(trc);
 
-    if (hasAnyBreakpointsOrStepMode()) {
-        for (unsigned i = 0; i < length(); i++) {
-            BreakpointSite *site = debugScript()->breakpoints[i];
-            if (site && site->trapHandler)
-                MarkValue(trc, &site->trapClosure, "trap closure");
-        }
-    }
-
-#ifdef JS_ION
     jit::TraceIonScripts(trc, this);
-#endif
 }
 
 void
@@ -3549,12 +3457,7 @@ void
 JSScript::setArgumentsHasVarBinding()
 {
     argsHasVarBinding_ = true;
-#ifdef JS_ION
     needsArgsAnalysis_ = true;
-#else
-    // The arguments analysis is performed by IonBuilder.
-    needsArgsObj_ = true;
-#endif
 }
 
 void
@@ -3620,7 +3523,6 @@ JSScript::argumentsOptimizationFailed(JSContext *cx, HandleScript script)
 
     script->needsArgsObj_ = true;
 
-#ifdef JS_ION
     /*
      * Since we can't invalidate baseline scripts, set a flag that's checked from
      * JIT code to indicate the arguments optimization failed and JSOP_ARGUMENTS
@@ -3628,7 +3530,6 @@ JSScript::argumentsOptimizationFailed(JSContext *cx, HandleScript script)
      */
     if (script->hasBaselineScript())
         script->baselineScript()->setNeedsArgsObj();
-#endif
 
     /*
      * By design, the arguments optimization is only made when there are no
@@ -3868,7 +3769,6 @@ LazyScript::staticLevel(JSContext *cx) const
 void
 JSScript::updateBaselineOrIonRaw()
 {
-#ifdef JS_ION
     if (hasIonScript()) {
         baselineOrIonRaw = ion->method()->raw();
         baselineOrIonSkipArgCheck = ion->method()->raw() + ion->getSkipArgCheckEntryOffset();
@@ -3879,7 +3779,6 @@ JSScript::updateBaselineOrIonRaw()
         baselineOrIonRaw = nullptr;
         baselineOrIonSkipArgCheck = nullptr;
     }
-#endif
 }
 
 bool

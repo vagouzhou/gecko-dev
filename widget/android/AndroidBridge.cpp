@@ -1001,7 +1001,7 @@ AndroidBridge::InitCamera(const nsCString& contentType, uint32_t camera, uint32_
 
     AutoLocalJNIFrame jniFrame(env, 1);
     jintArray arr = mozilla::widget::android::GeckoAppShell::InitCameraWrapper
-      (NS_ConvertUTF8toUTF16(contentType), (int32_t) camera, (int32_t) width, (int32_t) height);
+      (NS_ConvertUTF8toUTF16(contentType), (int32_t) camera, (int32_t) *width, (int32_t) *height);
 
     if (!arr)
         return false;
@@ -1065,11 +1065,7 @@ AndroidBridge::GetSegmentInfoForText(const nsAString& aText,
 #else
     ALOG_BRIDGE("AndroidBridge::GetSegmentInfoForText");
 
-    dom::mobilemessage::SmsSegmentInfoData data;
-
-    data.segments() = 0;
-    data.charsPerSegment() = 0;
-    data.charsAvailableInLastSegment() = 0;
+    int32_t segments, charsPerSegment, charsAvailableInLastSegment;
 
     JNIEnv *env = GetJNIEnv();
 
@@ -1086,17 +1082,18 @@ AndroidBridge::GetSegmentInfoForText(const nsAString& aText,
 
     jint* info = env->GetIntArrayElements(arr, JNI_FALSE);
 
-    data.segments() = info[0]; // msgCount
-    data.charsPerSegment() = info[2]; // codeUnitsRemaining
+    segments = info[0]; // msgCount
+    charsPerSegment = info[2]; // codeUnitsRemaining
     // segmentChars = (codeUnitCount + codeUnitsRemaining) / msgCount
-    data.charsAvailableInLastSegment() = (info[1] + info[2]) / info[0];
+    charsAvailableInLastSegment = (info[1] + info[2]) / info[0];
 
     env->ReleaseIntArrayElements(arr, info, JNI_ABORT);
 
     // TODO Bug 908598 - Should properly use |QueueSmsRequest(...)| to queue up
     // the nsIMobileMessageCallback just like other functions.
-    nsCOMPtr<nsIDOMMozSmsSegmentInfo> info = new SmsSegmentInfo(data);
-    return aRequest->NotifySegmentInfoForTextGot(info);
+    return aRequest->NotifySegmentInfoForTextGot(segments,
+                                                 charsPerSegment,
+                                                 charsAvailableInLastSegment);
 #endif
 }
 
@@ -1588,14 +1585,8 @@ NS_IMETHODIMP nsAndroidBridge::HandleGeckoMessage(JS::HandleValue val,
     }
     JS::RootedString jsonStr(cx, val.toString());
 
-    size_t strLen = 0;
-    const jschar* strChar = JS_GetStringCharsAndLength(cx, jsonStr, &strLen);
-    if (!strChar) {
-        return NS_ERROR_UNEXPECTED;
-    }
-
     JS::RootedValue jsonVal(cx);
-    if (!JS_ParseJSON(cx, strChar, strLen, &jsonVal) || !jsonVal.isObject()) {
+    if (!JS_ParseJSON(cx, jsonStr, &jsonVal) || !jsonVal.isObject()) {
         return NS_ERROR_INVALID_ARG;
     }
 
@@ -2139,5 +2130,16 @@ nsresult AndroidBridge::InputStreamRead(jobject obj, char *aBuf, uint32_t aCount
         return NS_OK;
     }
     *aRead = read;
+    return NS_OK;
+}
+
+nsresult AndroidBridge::GetExternalPublicDirectory(const nsAString& aType, nsAString& aPath) {
+    AutoLocalJNIFrame frame(1);
+    const jstring path = GeckoAppShell::GetExternalPublicDirectory(aType);
+    if (!path) {
+        return NS_ERROR_NOT_AVAILABLE;
+    }
+    nsJNIString pathStr(path, frame.GetEnv());
+    aPath.Assign(pathStr);
     return NS_OK;
 }

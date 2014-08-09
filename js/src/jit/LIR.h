@@ -205,7 +205,7 @@ class LUse : public LAllocation
     static const uint32_t POLICY_BITS = 3;
     static const uint32_t POLICY_SHIFT = 0;
     static const uint32_t POLICY_MASK = (1 << POLICY_BITS) - 1;
-    static const uint32_t REG_BITS = 5;
+    static const uint32_t REG_BITS = 6;
     static const uint32_t REG_SHIFT = POLICY_SHIFT + POLICY_BITS;
     static const uint32_t REG_MASK = (1 << REG_BITS) - 1;
 
@@ -215,7 +215,7 @@ class LUse : public LAllocation
     static const uint32_t USED_AT_START_MASK = (1 << USED_AT_START_BITS) - 1;
 
   public:
-    // Virtual registers get the remaining 20 bits.
+    // Virtual registers get the remaining 19 bits.
     static const uint32_t VREG_BITS = DATA_BITS - (USED_AT_START_SHIFT + USED_AT_START_BITS);
     static const uint32_t VREG_SHIFT = USED_AT_START_SHIFT + USED_AT_START_BITS;
     static const uint32_t VREG_MASK = (1 << VREG_BITS) - 1;
@@ -388,7 +388,7 @@ class LDefinition
     //   * Physical registers.
     LAllocation output_;
 
-    static const uint32_t TYPE_BITS = 3;
+    static const uint32_t TYPE_BITS = 4;
     static const uint32_t TYPE_SHIFT = 0;
     static const uint32_t TYPE_MASK = (1 << TYPE_BITS) - 1;
     static const uint32_t POLICY_BITS = 2;
@@ -433,6 +433,8 @@ class LDefinition
         SLOTS,      // Slots/elements pointer that may be moved by minor GCs (GPR).
         FLOAT32,    // 32-bit floating-point value (FPU).
         DOUBLE,     // 64-bit floating-point value (FPU).
+        INT32X4,    // SIMD data containing four 32-bit integers (FPU).
+        FLOAT32X4,  // SIMD data containing four 32-bit floats (FPU).
 #ifdef JS_NUNBOX32
         // A type virtual register must be followed by a payload virtual
         // register, as both will be tracked as a single gcthing.
@@ -446,6 +448,7 @@ class LDefinition
     void set(uint32_t index, Type type, Policy policy) {
         JS_STATIC_ASSERT(MAX_VIRTUAL_REGISTERS <= VREG_MASK);
         bits_ = (index << VREG_SHIFT) | (policy << POLICY_SHIFT) | (type << TYPE_SHIFT);
+        JS_ASSERT_IF(!SupportsSimd, !isSimdType());
     }
 
   public:
@@ -482,9 +485,12 @@ class LDefinition
     Type type() const {
         return (Type)((bits_ >> TYPE_SHIFT) & TYPE_MASK);
     }
+    bool isSimdType() const {
+        return type() == INT32X4 || type() == FLOAT32X4;
+    }
     bool isCompatibleReg(const AnyRegister &r) const {
         if (isFloatReg() && r.isFloat()) {
-#if defined(JS_CODEGEN_ARM) && defined(EVERYONE_KNOWS_ABOUT_ALIASING)
+#if defined(JS_CODEGEN_ARM)
             if (type() == FLOAT32)
                 return r.fpu().isSingle();
             return r.fpu().isDouble();
@@ -505,7 +511,7 @@ class LDefinition
     }
 
     bool isFloatReg() const {
-        return type() == FLOAT32 || type() == DOUBLE;
+        return type() == FLOAT32 || type() == DOUBLE || isSimdType();
     }
     uint32_t virtualRegister() const {
         return (bits_ >> VREG_SHIFT) & VREG_MASK;
@@ -569,6 +575,10 @@ class LDefinition
             return LDefinition::GENERAL;
           case MIRType_ForkJoinContext:
             return LDefinition::GENERAL;
+          case MIRType_Int32x4:
+            return LDefinition::INT32X4;
+          case MIRType_Float32x4:
+            return LDefinition::FLOAT32X4;
           default:
             MOZ_ASSUME_UNREACHABLE("unexpected type");
         }
@@ -965,12 +975,22 @@ class LRecoverInfo : public TempObject
     {
       private:
         MNode **it_;
+        MNode **end_;
         size_t op_;
 
       public:
-        explicit OperandIter(MNode **it)
-          : it_(it), op_(0)
-        { }
+        explicit OperandIter(LRecoverInfo *recoverInfo)
+          : it_(recoverInfo->begin()), end_(recoverInfo->end()), op_(0)
+        {
+            settle();
+        }
+
+        void settle() {
+            while ((*it_)->numOperands() == 0) {
+                ++it_;
+                op_ = 0;
+            }
+        }
 
         MDefinition *operator *() {
             return (*it_)->getOperand(op_);
@@ -985,11 +1005,14 @@ class LRecoverInfo : public TempObject
                 op_ = 0;
                 ++it_;
             }
+            if (!*this)
+                settle();
+
             return *this;
         }
 
-        bool operator !=(const OperandIter &where) const {
-            return it_ != where.it_ || op_ != where.op_;
+        operator bool() const {
+            return it_ == end_;
         }
 
 #ifdef DEBUG
@@ -1415,7 +1438,7 @@ class LSafepoint : public TempObject
         // In general, pointer arithmetic on code is bad, but in this case,
         // getting the return address from a call instruction, stepping over pools
         // would be wrong.
-        return osiCallPointOffset_ + Assembler::patchWrite_NearCallSize();
+        return osiCallPointOffset_ + Assembler::PatchWrite_NearCallSize();
     }
     uint32_t osiCallPointOffset() const {
         return osiCallPointOffset_;
@@ -1666,6 +1689,8 @@ LAllocation::toRegister() const
 # include "jit/arm/LIR-arm.h"
 #elif defined(JS_CODEGEN_MIPS)
 # include "jit/mips/LIR-mips.h"
+#elif defined(JS_CODEGEN_NONE)
+# include "jit/none/LIR-none.h"
 #else
 # error "Unknown architecture!"
 #endif

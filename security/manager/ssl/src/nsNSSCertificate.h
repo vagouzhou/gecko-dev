@@ -7,8 +7,6 @@
 #define _NS_NSSCERTIFICATE_H_
 
 #include "nsIX509Cert.h"
-#include "nsIX509Cert2.h"
-#include "nsIX509Cert3.h"
 #include "nsIX509CertDB.h"
 #include "nsIX509CertList.h"
 #include "nsIASN1Object.h"
@@ -18,14 +16,16 @@
 #include "nsISimpleEnumerator.h"
 #include "nsISerializable.h"
 #include "nsIClassInfo.h"
-#include "pkix/pkixtypes.h"
+#include "ScopedNSSTypes.h"
 #include "certt.h"
+
+namespace mozilla { namespace pkix { class DERArray; } }
 
 class nsAutoString;
 class nsINSSComponent;
 class nsIASN1Sequence;
 
-class nsNSSCertificate : public nsIX509Cert3,
+class nsNSSCertificate : public nsIX509Cert,
                          public nsIIdentityInfo,
                          public nsISerializable,
                          public nsIClassInfo,
@@ -34,8 +34,6 @@ class nsNSSCertificate : public nsIX509Cert3,
 public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIX509CERT
-  NS_DECL_NSIX509CERT2
-  NS_DECL_NSIX509CERT3
   NS_DECL_NSIIDENTITYINFO
   NS_DECL_NSISERIALIZABLE
   NS_DECL_NSICLASSINFO
@@ -44,7 +42,6 @@ public:
 
   nsNSSCertificate(CERTCertificate* cert, SECOidTag* evOidPolicy = nullptr);
   nsNSSCertificate();
-  virtual ~nsNSSCertificate();
   nsresult FormatUIStrings(const nsAutoString& nickname,
                            nsAutoString& nickWithSerial,
                            nsAutoString& details);
@@ -53,7 +50,9 @@ public:
   static nsNSSCertificate* ConstructFromDER(char* certDER, int derLen);
 
 private:
-  mozilla::pkix::ScopedCERTCertificate mCert;
+  virtual ~nsNSSCertificate();
+
+  mozilla::ScopedCERTCertificate mCert;
   bool             mPermDelete;
   uint32_t         mCertType;
   nsresult CreateASN1Struct(nsIASN1Object** aRetVal);
@@ -75,12 +74,12 @@ private:
 };
 
 namespace mozilla {
-template<>
-struct HasDangerousPublicDestructor<nsNSSCertificate>
-{
-  static const bool value = true;
-};
-}
+
+SECStatus ConstructCERTCertListFromReversedDERArray(
+            const mozilla::pkix::DERArray& certArray,
+            /*out*/ mozilla::ScopedCERTCertList& certList);
+
+} // namespcae mozilla
 
 class nsNSSCertList: public nsIX509CertList,
                      public nsNSSShutDownObject
@@ -90,7 +89,7 @@ public:
   NS_DECL_NSIX509CERTLIST
 
   // certList is adopted
-  nsNSSCertList(mozilla::pkix::ScopedCERTCertList& certList,
+  nsNSSCertList(mozilla::ScopedCERTCertList& certList,
                 const nsNSSShutDownPreventionLock& proofOfLock);
 
   nsNSSCertList();
@@ -103,7 +102,7 @@ private:
    virtual void virtualDestroyNSSReference();
    void destructorSafeDestroyNSSReference();
 
-   mozilla::pkix::ScopedCERTCertList mCertList;
+   mozilla::ScopedCERTCertList mCertList;
 
    nsNSSCertList(const nsNSSCertList&) MOZ_DELETE;
    void operator=(const nsNSSCertList&) MOZ_DELETE;
@@ -123,7 +122,7 @@ private:
    virtual void virtualDestroyNSSReference();
    void destructorSafeDestroyNSSReference();
 
-   mozilla::pkix::ScopedCERTCertList mCertList;
+   mozilla::ScopedCERTCertList mCertList;
 
    nsNSSCertListEnumerator(const nsNSSCertListEnumerator&) MOZ_DELETE;
    void operator=(const nsNSSCertListEnumerator&) MOZ_DELETE;

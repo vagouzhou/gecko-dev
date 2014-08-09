@@ -7,6 +7,7 @@
 #include "MediaOmxDecoder.h"
 #include "MediaOmxReader.h"
 #include "MediaDecoderStateMachine.h"
+#include "VideoUtils.h"
 
 #include "OmxDecoder.h"
 
@@ -55,14 +56,11 @@ void MediaOmxDecoder::SetCanOffloadAudio(bool aCanOffloadAudio)
   mCanOffloadAudio = aCanOffloadAudio;
 }
 
-void MediaOmxDecoder::MetadataLoaded(int aChannels,
-                                     int aRate,
-                                     bool aHasAudio,
-                                     bool aHasVideo,
+void MediaOmxDecoder::MetadataLoaded(MediaInfo* aInfo,
                                      MetadataTags* aTags)
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MediaDecoder::MetadataLoaded(aChannels, aRate, aHasAudio, aHasVideo, aTags);
+  MediaDecoder::MetadataLoaded(aInfo, aTags);
 
   ReentrantMonitorAutoEnter mon(GetReentrantMonitor());
   if (!mCanOffloadAudio || mFallbackToStateMachine || mOutputStreams.Length() ||
@@ -114,7 +112,9 @@ void MediaOmxDecoder::ResumeStateMachine()
 
   mFallbackToStateMachine = true;
   mAudioOffloadPlayer = nullptr;
-  mRequestedSeekTarget = SeekTarget(mCurrentTime, SeekTarget::Accurate);
+  int64_t timeUsecs = 0;
+  SecondsToUsecs(mCurrentTime, timeUsecs);
+  mRequestedSeekTarget = SeekTarget(timeUsecs, SeekTarget::Accurate);
 
   mNextState = mPlayState;
   ChangeState(PLAY_STATE_LOADING);

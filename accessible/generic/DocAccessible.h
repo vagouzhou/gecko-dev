@@ -26,7 +26,7 @@ class nsAccessiblePivot;
 
 class nsIScrollableView;
 
-const uint32_t kDefaultCacheSize = 256;
+const uint32_t kDefaultCacheLength = 128;
 
 namespace mozilla {
 namespace a11y {
@@ -58,7 +58,6 @@ public:
 
   DocAccessible(nsIDocument* aDocument, nsIContent* aRootContent,
                 nsIPresShell* aPresShell);
-  virtual ~DocAccessible();
 
   // nsIAccessible
   NS_IMETHOD TakeFocus(void);
@@ -311,6 +310,7 @@ public:
   void RecreateAccessible(nsIContent* aContent);
 
 protected:
+  virtual ~DocAccessible();
 
   void LastRelease();
 

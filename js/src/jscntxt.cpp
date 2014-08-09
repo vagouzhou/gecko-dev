@@ -39,9 +39,7 @@
 #include "jswatchpoint.h"
 
 #include "gc/Marking.h"
-#ifdef JS_ION
 #include "jit/Ion.h"
-#endif
 #include "js/CharacterEncoding.h"
 #include "js/OldDebugAPI.h"
 #include "vm/Debugger.h"
@@ -191,9 +189,7 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
      * of the struct.
      */
     if (!rt->haveCreatedContext) {
-#ifdef JS_THREADSAFE
         JS_BeginRequest(cx);
-#endif
         bool ok = rt->initializeAtoms(cx);
         if (ok)
             ok = rt->initSelfHosting(cx);
@@ -201,9 +197,8 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
         if (ok && !rt->parentRuntime)
             ok = rt->transformToPermanentAtoms();
 
-#ifdef JS_THREADSAFE
         JS_EndRequest(cx);
-#endif
+
         if (!ok) {
             DestroyContext(cx, DCM_NEW_FAILED);
             return nullptr;
@@ -227,10 +222,8 @@ js::DestroyContext(JSContext *cx, DestroyContextMode mode)
     JSRuntime *rt = cx->runtime();
     JS_AbortIfWrongThread(rt);
 
-#ifdef JS_THREADSAFE
     if (cx->outstandingRequests != 0)
         MOZ_CRASH();
-#endif
 
     cx->checkNoGCRooters();
 
@@ -303,27 +296,10 @@ ReportError(JSContext *cx, const char *message, JSErrorReport *reportp,
 
     /*
      * Call the error reporter only if an exception wasn't raised.
-     *
-     * If an exception was raised, then we call the debugErrorHook
-     * (if present) to give it a chance to see the error before it
-     * propagates out of scope.  This is needed for compatibility
-     * with the old scheme.
      */
     if (!JS_IsRunning(cx) || !js_ErrorToException(cx, message, reportp, callback, userRef)) {
         if (message)
             CallErrorReporter(cx, message, reportp);
-    } else if (JSDebugErrorHook hook = cx->runtime()->debugHooks.debugErrorHook) {
-        /*
-         * If we've already chewed up all the C stack, don't call into the
-         * error reporter since this may trigger an infinite recursion where
-         * the reporter triggers an over-recursion.
-         */
-        int stackDummy;
-        if (!JS_CHECK_STACK_SIZE(GetNativeStackLimit(cx), &stackDummy))
-            return;
-
-        if (cx->errorReporter)
-            hook(cx, message, reportp, cx->runtime()->debugHooks.debugErrorHookData);
     }
 }
 
@@ -391,8 +367,7 @@ js_ReportOutOfMemory(ThreadSafeContext *cxArg)
     }
 
     /* Get the message for this error, but we don't expand any arguments. */
-    const JSErrorFormatString *efs =
-        js_GetLocalizedErrorMessage(cx, nullptr, nullptr, JSMSG_OUT_OF_MEMORY);
+    const JSErrorFormatString *efs = js_GetErrorMessage(nullptr, JSMSG_OUT_OF_MEMORY);
     const char *msg = efs ? efs->format : "Out of memory";
 
     /* Fill out the report, but don't do anything that requires allocation. */
@@ -485,18 +460,18 @@ checkReportFlags(JSContext *cx, unsigned *flags)
         JSScript *script = cx->currentScript();
         if (script && script->strict())
             *flags &= ~JSREPORT_WARNING;
-        else if (cx->options().extraWarnings())
+        else if (cx->compartment()->options().extraWarnings(cx))
             *flags |= JSREPORT_WARNING;
         else
             return true;
     } else if (JSREPORT_IS_STRICT(*flags)) {
         /* Warning/error only when JSOPTION_STRICT is set. */
-        if (!cx->options().extraWarnings())
+        if (!cx->compartment()->options().extraWarnings(cx))
             return true;
     }
 
     /* Warnings become errors when JSOPTION_WERROR is set. */
-    if (JSREPORT_IS_WARNING(*flags) && cx->options().werror())
+    if (JSREPORT_IS_WARNING(*flags) && cx->runtime()->options().werror())
         *flags &= ~JSREPORT_WARNING;
 
     return false;
@@ -637,16 +612,6 @@ js::PrintError(JSContext *cx, FILE *file, const char *message, JSErrorReport *re
     return true;
 }
 
-char *
-js_strdup(ExclusiveContext *cx, const char *s)
-{
-    size_t n = strlen(s) + 1;
-    void *p = cx->malloc_(n);
-    if (!p)
-        return nullptr;
-    return (char *)js_memcpy(p, s, n);
-}
-
 /*
  * The arguments from ap need to be packaged up into an array and stored
  * into the report struct.
@@ -671,13 +636,14 @@ js_ExpandErrorArguments(ExclusiveContext *cx, JSErrorCallback callback,
 
     *messagep = nullptr;
 
-    /* Most calls supply js_GetErrorMessage; if this is so, assume nullptr. */
-    if (!callback || callback == js_GetErrorMessage) {
-        efs = js_GetLocalizedErrorMessage(cx, userRef, nullptr, errorNumber);
-    } else {
+    if (!callback)
+        callback = js_GetErrorMessage;
+
+    {
         AutoSuppressGC suppressGC(cx);
-        efs = callback(userRef, nullptr, errorNumber);
+        efs = callback(userRef, errorNumber);
     }
+
     if (efs) {
         reportp->exnType = efs->exnType;
 
@@ -778,7 +744,7 @@ js_ExpandErrorArguments(ExclusiveContext *cx, JSErrorCallback callback,
              */
             if (efs->format) {
                 size_t len;
-                *messagep = js_strdup(cx, efs->format);
+                *messagep = DuplicateString(cx, efs->format).release();
                 if (!*messagep)
                     goto error;
                 len = strlen(*messagep);
@@ -902,14 +868,6 @@ js::CallErrorReporter(JSContext *cx, const char *message, JSErrorReport *reportp
     JS_ASSERT(message);
     JS_ASSERT(reportp);
 
-    // If debugErrorHook is present, give it a chance to veto sending the error
-    // on to the regular ErrorReporter.
-    if (cx->errorReporter) {
-        JSDebugErrorHook hook = cx->runtime()->debugHooks.debugErrorHook;
-        if (hook && !hook(cx, message, reportp, cx->runtime()->debugHooks.debugErrorHookData))
-            return;
-    }
-
     if (JSErrorReporter onError = cx->errorReporter)
         onError(cx, message, reportp);
 }
@@ -1004,9 +962,9 @@ const JSErrorFormatString js_ErrorFormatString[JSErr_Limit] = {
 };
 
 JS_FRIEND_API(const JSErrorFormatString *)
-js_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber)
+js_GetErrorMessage(void *userRef, const unsigned errorNumber)
 {
-    if ((errorNumber > 0) && (errorNumber < JSErr_Limit))
+    if (errorNumber > 0 && errorNumber < JSErr_Limit)
         return &js_ErrorFormatString[errorNumber];
     return nullptr;
 }
@@ -1014,7 +972,7 @@ js_GetErrorMessage(void *userRef, const char *locale, const unsigned errorNumber
 bool
 js::InvokeInterruptCallback(JSContext *cx)
 {
-    JS_ASSERT_REQUEST_DEPTH(cx);
+    JS_ASSERT(cx->runtime()->requestDepth >= 1);
 
     JSRuntime *rt = cx->runtime();
     JS_ASSERT(rt->interrupt);
@@ -1030,15 +988,11 @@ js::InvokeInterruptCallback(JSContext *cx)
 
     js::gc::GCIfNeeded(cx);
 
-#ifdef JS_ION
-#ifdef JS_THREADSAFE
     rt->interruptPar = false;
-#endif
 
     // A worker thread may have requested an interrupt after finishing an Ion
     // compilation.
     jit::AttachFinishedCompilations(cx);
-#endif
 
     // Important: Additional callbacks can occur inside the callback handler
     // if it re-enters the JS engine. The embedding must ensure that the
@@ -1149,9 +1103,7 @@ JSContext::JSContext(JSRuntime *rt)
     errorReporter(nullptr),
     data(nullptr),
     data2(nullptr),
-#ifdef JS_THREADSAFE
     outstandingRequests(0),
-#endif
     iterValue(MagicValue(JS_NO_ITER_VALUE)),
     jitIsBroken(false),
 #ifdef MOZ_TRACE_JSCALLS
@@ -1159,10 +1111,6 @@ JSContext::JSContext(JSRuntime *rt)
 #endif
     innermostGenerator_(nullptr)
 {
-#ifdef DEBUG
-    stackIterAssertionEnabled = true;
-#endif
-
     JS_ASSERT(static_cast<ContextFriendFields*>(this) ==
               ContextFriendFields::get(this));
 }
@@ -1384,7 +1332,7 @@ JSContext::findVersion() const
     return runtime()->defaultVersion();
 }
 
-#if defined JS_THREADSAFE && defined DEBUG
+#ifdef DEBUG
 
 JS::AutoCheckRequestDepth::AutoCheckRequestDepth(JSContext *cx)
     : cx(cx)

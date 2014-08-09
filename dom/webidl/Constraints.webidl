@@ -14,10 +14,12 @@ enum VideoFacingModeEnum {
     "right"
 };
 
-enum MozMediaSourceEnum {
+enum MediaSourceEnum {
     "camera",
     "screen",
-    "application"
+    "application",
+    "window",
+    "browser"
 };
 
 dictionary ConstrainLongRange {

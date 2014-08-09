@@ -773,11 +773,6 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
   nsIAtom* frameType = aFrame->GetType();
   bool isText = frameType == nsGkAtoms::textFrame;
   
-  // Compute the available size for the frame. This available width
-  // includes room for the side margins.
-  // For now, set the available height to unconstrained always.
-  nsSize availSize(mBlockReflowState->ComputedWidth(), NS_UNCONSTRAINEDSIZE);
-
   // Inline-ish and text-ish things don't compute their width;
   // everything else does.  We need to give them an available width that
   // reflects the space left on the line.
@@ -790,6 +785,11 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
   // Setup reflow state for reflowing the frame
   Maybe<nsHTMLReflowState> reflowStateHolder;
   if (!isText) {
+    // Compute the available size for the frame. This available width
+    // includes room for the side margins.
+    // For now, set the available block-size to unconstrained always.
+    LogicalSize availSize = mBlockReflowState->ComputedSize(frameWM);
+    availSize.BSize(frameWM) = NS_UNCONSTRAINEDSIZE;
     reflowStateHolder.construct(mPresContext, *psd->mReflowState,
                                 aFrame, availSize);
     nsHTMLReflowState& reflowState = reflowStateHolder.ref();
@@ -837,8 +837,8 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
   // Adjust spacemanager coordinate system for the frame.
   nsHTMLReflowMetrics metrics(lineWM);
 #ifdef DEBUG
-  metrics.Width() = nscoord(0xdeadbeef);
-  metrics.Height() = nscoord(0xdeadbeef);
+  metrics.ISize(lineWM) = nscoord(0xdeadbeef);
+  metrics.BSize(lineWM) = nscoord(0xdeadbeef);
 #endif
   nsRect physicalBounds = pfd->mBounds.GetPhysicalRect(lineWM, mContainerWidth);
   nscoord tx = physicalBounds.x;
@@ -931,16 +931,21 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
 
   mFloatManager->Translate(-tx, -ty);
 
-  NS_ASSERTION(metrics.Width() >= 0, "bad width");
-  NS_ASSERTION(metrics.Height() >= 0,"bad height");
-  if (metrics.Width() < 0) metrics.Width() = 0;
-  if (metrics.Height() < 0) metrics.Height() = 0;
+  NS_ASSERTION(metrics.ISize(lineWM) >= 0, "bad inline size");
+  NS_ASSERTION(metrics.BSize(lineWM) >= 0,"bad block size");
+  if (metrics.ISize(lineWM) < 0) {
+    metrics.ISize(lineWM) = 0;
+  }
+  if (metrics.BSize(lineWM) < 0) {
+    metrics.BSize(lineWM) = 0;
+  }
 
 #ifdef DEBUG
   // Note: break-before means ignore the reflow metrics since the
   // frame will be reflowed another time.
   if (!NS_INLINE_IS_BREAK_BEFORE(aReflowStatus)) {
-    if (CRAZY_SIZE(metrics.Width()) || CRAZY_SIZE(metrics.Height())) {
+    if (CRAZY_SIZE(metrics.ISize(lineWM)) ||
+        CRAZY_SIZE(metrics.BSize(lineWM))) {
       printf("nsLineLayout: ");
       nsFrame::ListTag(stdout, aFrame);
       printf(" metrics=%d,%d!\n", metrics.Width(), metrics.Height());
@@ -965,7 +970,7 @@ nsLineLayout::ReflowFrame(nsIFrame* aFrame,
   pfd->mBounds.BSize(lineWM) = metrics.BSize(lineWM);
 
   // Size the frame, but |RelativePositionFrames| will size the view.
-  aFrame->SetSize(nsSize(metrics.Width(), metrics.Height()));
+  aFrame->SetRect(lineWM, pfd->mBounds, mContainerWidth);
 
   // Tell the frame that we're done reflowing it
   aFrame->DidReflow(mPresContext,

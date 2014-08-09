@@ -170,7 +170,7 @@ ExecutionModeString(ExecutionMode mode)
       case ArgumentsUsageAnalysis:
         return "ArgumentsUsageAnalysis";
       default:
-        MOZ_ASSUME_UNREACHABLE("Invalid ExecutionMode");
+        MOZ_CRASH("Invalid ExecutionMode");
     }
 }
 
@@ -624,6 +624,9 @@ class TypeSet
     // Create a new TemporaryTypeSet where undefined and/or null has been filtered out.
     TemporaryTypeSet *filter(LifoAlloc *alloc, bool filterUndefined, bool filterNull) const;
 
+    // Create a new TemporaryTypeSet where the type has been set to object.
+    TemporaryTypeSet *cloneObjectsOnly(LifoAlloc *alloc);
+
     // Trigger a read barrier on all the contents of a type set.
     static void readBarrier(const TypeSet *types);
 
@@ -746,7 +749,7 @@ class TemporaryTypeSet : public TypeSet
     JSObject *getCommonPrototype();
 
     /* Get the typed array type of all objects in this set, or TypedArrayObject::TYPE_MAX. */
-    int getTypedArrayType();
+    Scalar::Type getTypedArrayType();
 
     /* Whether all objects have JSCLASS_IS_DOMJSCLASS set. */
     bool isDOMClass();

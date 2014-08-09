@@ -70,8 +70,11 @@ public:
   NS_IMETHOD_(void) Release(void);
 
   DOMStorageCache(const nsACString* aScope);
+
+protected:
   virtual ~DOMStorageCache();
 
+public:
   void Init(DOMStorageManager* aManager, bool aPersistent, nsIPrincipal* aPrincipal,
             const nsACString& aQuotaScope);
 
@@ -95,7 +98,7 @@ public:
   nsresult RemoveItem(const DOMStorage* aStorage, const nsAString& aKey, nsString& aOld);
   nsresult Clear(const DOMStorage* aStorage);
 
-  nsTArray<nsString>* GetKeys(const DOMStorage* aStorage);
+  void GetKeys(const DOMStorage* aStorage, nsTArray<nsString>& aKeys);
 
   // Whether the principal equals principal the cache was created for
   bool CheckPrincipal(nsIPrincipal* aPrincipal) const;

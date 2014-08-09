@@ -39,12 +39,14 @@ public:
     MOZ_COUNT_CTOR(RemoveTextureFromCompositableTracker);
   }
 
+protected:
   ~RemoveTextureFromCompositableTracker()
   {
     MOZ_COUNT_DTOR(RemoveTextureFromCompositableTracker);
     ReleaseTextureClient();
   }
 
+public:
   virtual void Complete() MOZ_OVERRIDE
   {
     ReleaseTextureClient();
@@ -129,14 +131,16 @@ public:
 
   TemporaryRef<BufferTextureClient>
   CreateBufferTextureClient(gfx::SurfaceFormat aFormat,
-                            TextureFlags aFlags = TextureFlags::DEFAULT,
-                            gfx::BackendType aMoz2dBackend = gfx::BackendType::NONE);
+                            gfx::IntSize aSize,
+                            gfx::BackendType aMoz2dBackend = gfx::BackendType::NONE,
+                            TextureFlags aFlags = TextureFlags::DEFAULT);
 
   TemporaryRef<TextureClient>
   CreateTextureClientForDrawing(gfx::SurfaceFormat aFormat,
+                                gfx::IntSize aSize,
+                                gfx::BackendType aMoz2DBackend,
                                 TextureFlags aTextureFlags,
-                                gfx::BackendType aMoz2dBackend,
-                                const gfx::IntSize& aSizeHint);
+                                TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
 
   virtual void SetDescriptorFromReply(TextureIdentifier aTextureId,
                                       const SurfaceDescriptor& aDescriptor)
@@ -224,6 +228,8 @@ public:
   static void HoldUntilComplete(PCompositableChild* aActor, AsyncTransactionTracker* aTracker);
 
   static uint64_t GetTrackersHolderId(PCompositableChild* aActor);
+
+  TextureFlags GetTextureFlags() const { return mTextureFlags; }
 
 protected:
   CompositableChild* mCompositableChild;

@@ -32,6 +32,10 @@
 #include "nsCycleCollectionParticipant.h"
 #include "nsNullPrincipal.h"
 #include "ScriptSettings.h"
+#include "mozilla/dom/LocationBinding.h"
+
+using namespace mozilla;
+using namespace mozilla::dom;
 
 static nsresult
 GetDocumentCharacterSetForURI(const nsAString& aHref, nsACString& aCharset)
@@ -52,30 +56,45 @@ GetDocumentCharacterSetForURI(const nsAString& aHref, nsACString& aCharset)
   return NS_OK;
 }
 
-nsLocation::nsLocation(nsIDocShell *aDocShell)
+nsLocation::nsLocation(nsPIDOMWindow* aWindow, nsIDocShell *aDocShell)
+  : mInnerWindow(aWindow)
 {
   MOZ_ASSERT(aDocShell);
+  MOZ_ASSERT(mInnerWindow->IsInnerWindow());
+  SetIsDOMBinding();
 
   mDocShell = do_GetWeakReference(aDocShell);
-  nsCOMPtr<nsIDOMWindow> outer = aDocShell->GetWindow();
-  mOuter = do_GetWeakReference(outer);
 }
 
 nsLocation::~nsLocation()
 {
+  RemoveURLSearchParams();
 }
-
-DOMCI_DATA(Location, nsLocation)
 
 // QueryInterface implementation for nsLocation
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(nsLocation)
   NS_WRAPPERCACHE_INTERFACE_MAP_ENTRY
   NS_INTERFACE_MAP_ENTRY(nsIDOMLocation)
-  NS_INTERFACE_MAP_ENTRY(nsISupports)
-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(Location)
+  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMLocation)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_0(nsLocation)
+NS_IMPL_CYCLE_COLLECTION_CLASS(nsLocation)
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsLocation)
+  tmp->RemoveURLSearchParams();
+
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mInnerWindow);
+  NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(nsLocation)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mSearchParams)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mInnerWindow)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTION_TRACE_WRAPPERCACHE(nsLocation)
+
 NS_IMPL_CYCLE_COLLECTING_ADDREF(nsLocation)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(nsLocation)
 
@@ -729,6 +748,102 @@ nsLocation::SetProtocol(const nsAString& aProtocol)
   return SetURI(uri);
 }
 
+void
+nsLocation::GetUsername(nsAString& aUsername, ErrorResult& aError)
+{
+  if (!CallerSubsumes()) {
+    aError.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    return;
+  }
+
+  aUsername.Truncate();
+  nsCOMPtr<nsIURI> uri;
+  nsresult result = GetURI(getter_AddRefs(uri));
+  if (uri) {
+    nsAutoCString username;
+    result = uri->GetUsername(username);
+    if (NS_SUCCEEDED(result)) {
+      CopyUTF8toUTF16(username, aUsername);
+    }
+  }
+}
+
+void
+nsLocation::SetUsername(const nsAString& aUsername, ErrorResult& aError)
+{
+  if (!CallerSubsumes()) {
+    aError.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    return;
+  }
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = GetWritableURI(getter_AddRefs(uri));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aError.Throw(rv);
+    return;
+  }
+
+  if (!uri) {
+    return;
+  }
+
+  rv = uri->SetUsername(NS_ConvertUTF16toUTF8(aUsername));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aError.Throw(rv);
+    return;
+  }
+
+  rv = SetURI(uri);
+}
+
+void
+nsLocation::GetPassword(nsAString& aPassword, ErrorResult& aError)
+{
+  if (!CallerSubsumes()) {
+    aError.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    return;
+  }
+
+  aPassword.Truncate();
+  nsCOMPtr<nsIURI> uri;
+  nsresult result = GetURI(getter_AddRefs(uri));
+  if (uri) {
+    nsAutoCString password;
+    result = uri->GetPassword(password);
+    if (NS_SUCCEEDED(result)) {
+      CopyUTF8toUTF16(password, aPassword);
+    }
+  }
+}
+
+void
+nsLocation::SetPassword(const nsAString& aPassword, ErrorResult& aError)
+{
+  if (!CallerSubsumes()) {
+    aError.Throw(NS_ERROR_DOM_SECURITY_ERR);
+    return;
+  }
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = GetWritableURI(getter_AddRefs(uri));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aError.Throw(rv);
+    return;
+  }
+
+  if (!uri) {
+    return;
+  }
+
+  rv = uri->SetPassword(NS_ConvertUTF16toUTF8(aPassword));
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    aError.Throw(rv);
+    return;
+  }
+
+  rv = SetURI(uri);
+}
+
 NS_IMETHODIMP
 nsLocation::GetSearch(nsAString& aSearch)
 {
@@ -760,6 +875,17 @@ nsLocation::GetSearch(nsAString& aSearch)
 
 NS_IMETHODIMP
 nsLocation::SetSearch(const nsAString& aSearch)
+{
+  nsresult rv = SetSearchInternal(aSearch);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
+
+  return NS_OK;
+}
+
+nsresult
+nsLocation::SetSearchInternal(const nsAString& aSearch)
 {
   if (!CallerSubsumes())
     return NS_ERROR_DOM_SECURITY_ERR;
@@ -918,8 +1044,12 @@ nsLocation::GetSourceBaseURL(JSContext* cx, nsIURI** sourceURL)
 bool
 nsLocation::CallerSubsumes()
 {
-  // Get the principal associated with the location object.
-  nsCOMPtr<nsIDOMWindow> outer = do_QueryReferent(mOuter);
+  // Get the principal associated with the location object.  Note that this is
+  // the principal of the page which will actually be navigated, not the
+  // principal of the Location object itself.  This is why we need this check
+  // even though we only allow limited cross-origin access to Location objects
+  // in general.
+  nsCOMPtr<nsIDOMWindow> outer = mInnerWindow->GetOuterWindow();
   if (MOZ_UNLIKELY(!outer))
     return false;
   nsCOMPtr<nsIScriptObjectPrincipal> sop = do_QueryInterface(outer);
@@ -927,4 +1057,126 @@ nsLocation::CallerSubsumes()
   nsresult rv = nsContentUtils::SubjectPrincipal()->SubsumesConsideringDomain(sop->GetPrincipal(), &subsumes);
   NS_ENSURE_SUCCESS(rv, false);
   return subsumes;
+}
+
+JSObject*
+nsLocation::WrapObject(JSContext* aCx)
+{
+  return LocationBinding::Wrap(aCx, this);
+}
+
+URLSearchParams*
+nsLocation::GetDocShellSearchParams()
+{
+  nsCOMPtr<nsIDocShell> docShell = GetDocShell();
+  if (!docShell) {
+    return nullptr;
+  }
+
+  return docShell->GetURLSearchParams();
+}
+
+URLSearchParams*
+nsLocation::SearchParams()
+{
+  if (!mSearchParams) {
+    // We must register this object to the URLSearchParams of the docshell in
+    // order to receive updates.
+    nsRefPtr<URLSearchParams> searchParams = GetDocShellSearchParams();
+    if (searchParams) {
+      searchParams->AddObserver(this);
+    }
+
+    mSearchParams = new URLSearchParams();
+    mSearchParams->AddObserver(this);
+    UpdateURLSearchParams();
+  }
+
+  return mSearchParams;
+}
+
+void
+nsLocation::SetSearchParams(URLSearchParams& aSearchParams)
+{
+  if (mSearchParams) {
+    mSearchParams->RemoveObserver(this);
+  }
+
+  // the observer will be cleared using the cycle collector.
+  mSearchParams = &aSearchParams;
+  mSearchParams->AddObserver(this);
+
+  nsAutoString search;
+  mSearchParams->Serialize(search);
+  SetSearchInternal(search);
+
+  // We don't need to inform the docShell about this new SearchParams because
+  // setting the new value the docShell will refresh its value automatically.
+}
+
+void
+nsLocation::URLSearchParamsUpdated(URLSearchParams* aSearchParams)
+{
+  MOZ_ASSERT(mSearchParams);
+
+  // This change comes from content.
+  if (aSearchParams == mSearchParams) {
+    nsAutoString search;
+    mSearchParams->Serialize(search);
+    SetSearchInternal(search);
+    return;
+  }
+
+  // This change comes from the docShell.
+#ifdef DEBUG
+  {
+    nsRefPtr<URLSearchParams> searchParams = GetDocShellSearchParams();
+    MOZ_ASSERT(searchParams);
+    MOZ_ASSERT(aSearchParams == searchParams);
+  }
+#endif
+
+  nsAutoString search;
+  aSearchParams->Serialize(search);
+  mSearchParams->ParseInput(NS_ConvertUTF16toUTF8(search), this);
+}
+
+void
+nsLocation::UpdateURLSearchParams()
+{
+  if (!mSearchParams) {
+    return;
+  }
+
+  nsAutoCString search;
+
+  nsCOMPtr<nsIURI> uri;
+  nsresult rv = GetURI(getter_AddRefs(uri));
+  if (NS_WARN_IF(NS_FAILED(rv)) || NS_WARN_IF(!uri)) {
+    return;
+  }
+
+  nsCOMPtr<nsIURL> url(do_QueryInterface(uri));
+  if (url) {
+    nsresult rv = url->GetQuery(search);
+    if (NS_FAILED(rv)) {
+      NS_WARNING("Failed to get the query from a nsIURL.");
+    }
+  }
+
+  mSearchParams->ParseInput(search, this);
+}
+
+void
+nsLocation::RemoveURLSearchParams()
+{
+  if (mSearchParams) {
+    mSearchParams->RemoveObserver(this);
+    mSearchParams = nullptr;
+
+    nsRefPtr<URLSearchParams> docShellSearchParams = GetDocShellSearchParams();
+    if (docShellSearchParams) {
+      docShellSearchParams->RemoveObserver(this);
+    }
+  }
 }

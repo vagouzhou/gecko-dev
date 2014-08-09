@@ -1,8 +1,11 @@
+/** @jsx React.DOM */
+
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-/* global loop:true */
+/*jshint newcap:false*/
+/*global loop:true, React */
 
 var loop = loop || {};
 loop.panel = (function(_, mozL10n) {
@@ -19,146 +22,262 @@ loop.panel = (function(_, mozL10n) {
   var router;
 
   /**
-   * Do not disturb panel subview.
+   * Availability drop down menu subview.
    */
-  var DoNotDisturbView = sharedViews.BaseView.extend({
-    template: _.template([
-      '<label>',
-      '  <input type="checkbox" <%- checked %>>',
-      '  <span data-l10n-id="do_not_disturb"></span>',
-      '</label>',
-    ].join('')),
-
-    events: {
-      "click input[type=checkbox]": "toggle"
+  var AvailabilityDropdown = React.createClass({displayName: 'AvailabilityDropdown',
+    getInitialState: function() {
+      return {
+        doNotDisturb: navigator.mozLoop.doNotDisturb,
+        showMenu: false
+      };
     },
 
-    /**
-     * Toggles mozLoop activation status.
-     */
-    toggle: function() {
-      navigator.mozLoop.doNotDisturb = !navigator.mozLoop.doNotDisturb;
-      this.render();
+    showDropdownMenu: function() {
+      this.setState({showMenu: true});
+    },
+
+    hideDropdownMenu: function() {
+      this.setState({showMenu: false});
+    },
+
+    // XXX target event can either be the li, the span or the i tag
+    // this makes it easier to figure out the target by making a
+    // closure with the desired status already passed in.
+    changeAvailability: function(newAvailabilty) {
+      return function(event) {
+        // Note: side effect!
+        switch (newAvailabilty) {
+          case 'available':
+            this.setState({doNotDisturb: false});
+            navigator.mozLoop.doNotDisturb = false;
+            break;
+          case 'do-not-disturb':
+            this.setState({doNotDisturb: true});
+            navigator.mozLoop.doNotDisturb = true;
+            break;
+        }
+        this.hideDropdownMenu();
+      }.bind(this);
     },
 
     render: function() {
-      this.$el.html(this.template({
-        checked: navigator.mozLoop.doNotDisturb ? "checked" : ""
-      }));
-      return this;
+      // XXX https://github.com/facebook/react/issues/310 for === htmlFor
+      var cx = React.addons.classSet;
+      var availabilityStatus = cx({
+        'status': true,
+        'status-dnd': this.state.doNotDisturb,
+        'status-available': !this.state.doNotDisturb
+      });
+      var availabilityDropdown = cx({
+        'dnd-menu': true,
+        'hide': !this.state.showMenu
+      });
+      var availabilityText = this.state.doNotDisturb ?
+                              __("display_name_dnd_status") :
+                              __("display_name_available_status");
+
+      return (
+        React.DOM.div({className: "footer component-spacer"}, 
+          React.DOM.div({className: "do-not-disturb"}, 
+            React.DOM.p({className: "dnd-status", onClick: this.showDropdownMenu}, 
+              React.DOM.span(null, availabilityText), 
+              React.DOM.i({className: availabilityStatus})
+            ), 
+            React.DOM.ul({className: availabilityDropdown, 
+                onMouseLeave: this.hideDropdownMenu}, 
+              React.DOM.li({onClick: this.changeAvailability("available"), 
+                  className: "dnd-menu-item dnd-make-available"}, 
+                React.DOM.i({className: "status status-available"}), 
+                React.DOM.span(null, __("display_name_available_status"))
+              ), 
+              React.DOM.li({onClick: this.changeAvailability("do-not-disturb"), 
+                  className: "dnd-menu-item dnd-make-unavailable"}, 
+                React.DOM.i({className: "status status-dnd"}), 
+                React.DOM.span(null, __("display_name_dnd_status"))
+              )
+            )
+          )
+        )
+      );
+    }
+  });
+
+  var ToSView = React.createClass({displayName: 'ToSView',
+    getInitialState: function() {
+      return {seenToS: navigator.mozLoop.getLoopCharPref('seenToS')};
+    },
+
+    render: function() {
+      if (this.state.seenToS == "unseen") {
+        var terms_of_use_url = navigator.mozLoop.getLoopCharPref('legal.ToS_url');
+        var privacy_notice_url = navigator.mozLoop.getLoopCharPref('legal.privacy_url');
+        var tosHTML = __("legal_text_and_links2", {
+          "terms_of_use": React.renderComponentToStaticMarkup(
+            React.DOM.a({href: terms_of_use_url, target: "_blank"}, 
+              __("legal_text_tos")
+            )
+          ),
+          "privacy_notice": React.renderComponentToStaticMarkup(
+            React.DOM.a({href: privacy_notice_url, target: "_blank"}, 
+              __("legal_text_privacy")
+            )
+          ),
+        });
+        navigator.mozLoop.setLoopCharPref('seenToS', 'seen');
+        return React.DOM.p({className: "terms-service", 
+                  dangerouslySetInnerHTML: {__html: tosHTML}});
+      } else {
+        return React.DOM.div(null);
+      }
+    }
+  });
+
+  var PanelLayout = React.createClass({displayName: 'PanelLayout',
+    propTypes: {
+      summary: React.PropTypes.string.isRequired
+    },
+
+    render: function() {
+      return (
+        React.DOM.div({className: "component-spacer share generate-url"}, 
+          React.DOM.div({className: "description"}, 
+            React.DOM.p({className: "description-content"}, this.props.summary)
+          ), 
+          React.DOM.div({className: "action"}, 
+            this.props.children
+          )
+        )
+      );
+    }
+  });
+
+  var CallUrlResult = React.createClass({displayName: 'CallUrlResult',
+    propTypes: {
+      callUrl:  React.PropTypes.string,
+      notifier: React.PropTypes.object.isRequired,
+      client:   React.PropTypes.object.isRequired
+    },
+
+    getInitialState: function() {
+      return {
+        pending: false,
+        copied: false,
+        callUrl: this.props.callUrl || ""
+      };
+    },
+
+    /**
+    * Returns a random 5 character string used to identify
+    * the conversation.
+    * XXX this will go away once the backend changes
+    * @note:
+    * - When we get back a callUrl we use setLoopCharPref to store the token
+    *   (the last fragment of the URL) so that it can be used to ignore&block
+    *   the call. The preference is used by the conversation router.
+    */
+    conversationIdentifier: function() {
+      return Math.random().toString(36).substring(5);
+    },
+
+    componentDidMount: function() {
+      this.setState({pending: true});
+      this.props.client.requestCallUrl(this.conversationIdentifier(),
+                                       this._onCallUrlReceived);
+    },
+
+    _onCallUrlReceived: function(err, callUrlData) {
+      this.props.notifier.clear();
+
+      if (err) {
+        this.props.notifier.errorL10n("unable_retrieve_url");
+        this.setState(this.getInitialState());
+      } else {
+        try {
+          var callUrl = new window.URL(callUrlData.callUrl);
+          // XXX the current server vers does not implement the callToken field
+          // but it exists in the API. This workaround should be removed in the future
+          var token = callUrlData.callToken ||
+                      callUrl.pathname.split('/').pop();
+
+          navigator.mozLoop.setLoopCharPref('loopToken', token);
+          this.setState({pending: false, copied: false, callUrl: callUrl.href});
+        } catch(e) {
+          console.log(e);
+          this.props.notifier.errorL10n("unable_retrieve_url");
+          this.setState(this.getInitialState());
+        }
+      }
+    },
+
+    _generateMailTo: function() {
+      return encodeURI([
+        "mailto:?subject=" + __("share_email_subject2") + "&",
+        "body=" + __("share_email_body", {callUrl: this.state.callUrl})
+      ].join(""));
+    },
+
+    handleEmailButtonClick: function(event) {
+      // Note: side effect
+      document.location = event.target.dataset.mailto;
+    },
+
+    handleCopyButtonClick: function(event) {
+      // XXX the mozLoop object should be passed as a prop, to ease testing and
+      //     using a fake implementation in UI components showcase.
+      navigator.mozLoop.copyString(this.state.callUrl);
+      this.setState({copied: true});
+    },
+
+    render: function() {
+      // XXX setting elem value from a state (in the callUrl input)
+      // makes it immutable ie read only but that is fine in our case.
+      // readOnly attr will suppress a warning regarding this issue
+      // from the react lib.
+      var cx = React.addons.classSet;
+      return (
+        PanelLayout({summary: __("share_link_header_text")}, 
+          React.DOM.div({className: "invite"}, 
+            React.DOM.input({type: "url", value: this.state.callUrl, readOnly: "true", 
+                   className: cx({pending: this.state.pending})}), 
+            React.DOM.p({className: "button-group url-actions"}, 
+              React.DOM.button({className: "btn btn-email", disabled: !this.state.callUrl, 
+                onClick: this.handleEmailButtonClick, 
+                'data-mailto': this._generateMailTo()}, 
+                __("share_button")
+              ), 
+              React.DOM.button({className: "btn btn-copy", disabled: !this.state.callUrl, 
+                onClick: this.handleCopyButtonClick}, 
+                this.state.copied ? __("copied_url_button") :
+                                     __("copy_url_button")
+              )
+            )
+          )
+        )
+      );
     }
   });
 
   /**
    * Panel view.
    */
-  var PanelView = sharedViews.BaseView.extend({
-    template: _.template([
-      '<div class="description">',
-      '  <p data-l10n-id="get_link_to_share"></p>',
-      '</div>',
-      '<div class="action">',
-      '  <form class="invite">',
-      '    <input type="text" name="caller" data-l10n-id="caller" required>',
-      '    <button type="submit" class="get-url btn btn-success"',
-      '       data-l10n-id="get_a_call_url"></button>',
-      '  </form>',
-      '  <p class="result hide">',
-      '    <input id="call-url" type="url" readonly>',
-      '    <a class="go-back btn btn-info" href="" data-l10n-id="new_url"></a>',
-      '  </p>',
-      '  <p class="dnd"></p>',
-      '</div>',
-    ].join("")),
-
-    className: "share generate-url",
-
-    /**
-     * Do not disturb view.
-     * @type {DoNotDisturbView|undefined}
-     */
-    dndView: undefined,
-
-    events: {
-      "keyup input[name=caller]": "changeButtonState",
-      "submit form.invite": "getCallUrl",
-      "click a.go-back": "goBack"
-    },
-
-    initialize: function(options) {
-      options = options || {};
-      if (!options.notifier) {
-        throw new Error("missing required notifier");
-      }
-      this.notifier = options.notifier;
-      this.client = new loop.shared.Client({
-        baseServerUrl: navigator.mozLoop.serverUrl
-      });
-    },
-
-    getNickname: function() {
-      return this.$("input[name=caller]").val();
-    },
-
-    getCallUrl: function(event) {
-      this.notifier.clear();
-      event.preventDefault();
-      var callback = function(err, callUrlData) {
-        this.clearPending();
-        if (err) {
-          this.notifier.errorL10n("unable_retrieve_url");
-          this.render();
-          return;
-        }
-        this.onCallUrlReceived(callUrlData);
-      }.bind(this);
-
-      this.setPending();
-      this.client.requestCallUrl(this.getNickname(), callback);
-    },
-
-    goBack: function(event) {
-      event.preventDefault();
-      this.$(".action .result").hide();
-      this.$(".action .invite").show();
-      this.$(".description p").text(__("get_link_to_share"));
-      this.changeButtonState();
-    },
-
-    onCallUrlReceived: function(callUrlData) {
-      this.notifier.clear();
-      this.$(".action .invite").hide();
-      this.$(".action .invite input").val("");
-      this.$(".action .result input").val(callUrlData.call_url);
-      this.$(".action .result").show();
-      this.$(".description p").text(__("share_link_url"));
-    },
-
-    setPending: function() {
-      this.$("[name=caller]").addClass("pending");
-      this.$(".get-url").addClass("disabled").attr("disabled", "disabled");
-    },
-
-    clearPending: function() {
-      this.$("[name=caller]").removeClass("pending");
-      this.changeButtonState();
-    },
-
-    changeButtonState: function() {
-      var enabled = !!this.$("input[name=caller]").val();
-      if (enabled) {
-        this.$(".get-url").removeClass("disabled")
-            .removeAttr("disabled", "disabled");
-      } else {
-        this.$(".get-url").addClass("disabled").attr("disabled", "disabled");
-      }
+  var PanelView = React.createClass({displayName: 'PanelView',
+    propTypes: {
+      notifier: React.PropTypes.object.isRequired,
+      client: React.PropTypes.object.isRequired,
+      // Mostly used for UI components showcase and unit tests
+      callUrl: React.PropTypes.string
     },
 
     render: function() {
-      this.$el.html(this.template());
-      // Do not Disturb sub view
-      this.dndView = new DoNotDisturbView({el: this.$(".dnd")}).render();
-      return this;
+      return (
+        React.DOM.div(null, 
+          CallUrlResult({client: this.props.client, 
+                         notifier: this.props.notifier, 
+                         callUrl: this.props.callUrl}), 
+          ToSView(null), 
+          AvailabilityDropdown(null)
+        )
+      );
     }
   });
 
@@ -182,7 +301,8 @@ loop.panel = (function(_, mozL10n) {
 
       this._registerVisibilityChangeEvent();
 
-      this.on("panel:open panel:closed", this.reset, this);
+      this.on("panel:open panel:closed", this.clearNotifications, this);
+      this.on("panel:open", this.reset, this);
     },
 
     /**
@@ -195,6 +315,8 @@ loop.panel = (function(_, mozL10n) {
      * @link  http://www.w3.org/TR/page-visibility/
      */
     _registerVisibilityChangeEvent: function() {
+      // XXX pass in the visibility status to detect when to generate a new
+      // panel view
       this.document.addEventListener("visibilitychange", function(event) {
         this.trigger(event.currentTarget.hidden ? "panel:closed"
                                                 : "panel:open");
@@ -208,14 +330,20 @@ loop.panel = (function(_, mozL10n) {
       this.reset();
     },
 
+    clearNotifications: function() {
+      this._notifier.clear();
+    },
+
     /**
      * Resets this router to its initial state.
      */
     reset: function() {
-      // purge pending notifications
       this._notifier.clear();
-      // reset home view
-      this.loadView(new PanelView({notifier: this._notifier}));
+      var client = new loop.Client({
+        baseServerUrl: navigator.mozLoop.serverUrl
+      });
+      this.loadReactComponent(PanelView({client: client, 
+                                         notifier: this._notifier}));
     }
   });
 
@@ -241,8 +369,10 @@ loop.panel = (function(_, mozL10n) {
 
   return {
     init: init,
+    AvailabilityDropdown: AvailabilityDropdown,
+    CallUrlResult: CallUrlResult,
     PanelView: PanelView,
-    DoNotDisturbView: DoNotDisturbView,
-    PanelRouter: PanelRouter
+    PanelRouter: PanelRouter,
+    ToSView: ToSView
   };
 })(_, document.mozL10n);

@@ -25,7 +25,7 @@ class nsIDocShell;
 class nsIDocShellTreeItem;
 class imgIContainer;
 class EnterLeaveDispatcher;
-class nsIMarkupDocumentViewer;
+class nsIContentViewer;
 class nsIScrollableFrame;
 class nsITimer;
 class nsPresContext;
@@ -648,7 +648,7 @@ protected:
 
   void DoScrollHistory(int32_t direction);
   void DoScrollZoom(nsIFrame *aTargetFrame, int32_t adjustment);
-  nsresult GetMarkupDocumentViewer(nsIMarkupDocumentViewer** aMv);
+  nsresult GetContentViewer(nsIContentViewer** aCv);
   nsresult ChangeTextSize(int32_t change);
   nsresult ChangeFullZoom(int32_t change);
 
@@ -702,7 +702,7 @@ protected:
   private:
     DeltaAccumulator() :
       mX(0.0), mY(0.0), mPendingScrollAmountX(0.0), mPendingScrollAmountY(0.0),
-      mHandlingDeltaMode(UINT32_MAX), mHandlingPixelOnlyDevice(false)
+      mHandlingDeltaMode(UINT32_MAX), mIsNoLineOrPageDeltaDevice(false)
     {
     }
 
@@ -718,7 +718,7 @@ protected:
     TimeStamp mLastTime;
 
     uint32_t mHandlingDeltaMode;
-    bool mHandlingPixelOnlyDevice;
+    bool mIsNoLineOrPageDeltaDevice;
 
     static DeltaAccumulator* sInstance;
   };

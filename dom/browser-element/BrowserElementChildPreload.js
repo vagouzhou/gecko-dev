@@ -108,6 +108,13 @@ const OBSERVED_EVENTS = [
   'activity-done'
 ];
 
+const COMMAND_MAP = {
+  'cut': 'cmd_cut',
+  'copy': 'cmd_copy',
+  'paste': 'cmd_paste',
+  'selectall': 'cmd_selectAll'
+};
+
 /**
  * The BrowserElementChild implements one half of <iframe mozbrowser>.
  * (The other half is, unsurprisingly, BrowserElementParent.)
@@ -186,8 +193,23 @@ BrowserElementChild.prototype = {
                      /* wantsUntrusted = */ false);
 
     addEventListener('DOMMetaAdded',
-                     this._metaAddedHandler.bind(this),
+                     this._metaChangedHandler.bind(this),
                      /* useCapture = */ true,
+                     /* wantsUntrusted = */ false);
+
+    addEventListener('DOMMetaChanged',
+                     this._metaChangedHandler.bind(this),
+                     /* useCapture = */ true,
+                     /* wantsUntrusted = */ false);
+
+    addEventListener('DOMMetaRemoved',
+                     this._metaChangedHandler.bind(this),
+                     /* useCapture = */ true,
+                     /* wantsUntrusted = */ false);
+
+    addEventListener('mozselectionchange',
+                     this._selectionChangeHandler.bind(this),
+                     /* useCapture = */ false,
                      /* wantsUntrusted = */ false);
 
     // This listens to unload events from our message manager, but /not/ from
@@ -220,13 +242,15 @@ BrowserElementChild.prototype = {
       "go-forward": this._recvGoForward,
       "reload": this._recvReload,
       "stop": this._recvStop,
+      "zoom": this._recvZoom,
       "unblock-modal-prompt": this._recvStopWaiting,
       "fire-ctx-callback": this._recvFireCtxCallback,
       "owner-visibility-change": this._recvOwnerVisibilityChange,
       "exit-fullscreen": this._recvExitFullscreen.bind(this),
       "activate-next-paint-listener": this._activateNextPaintListener.bind(this),
       "set-input-method-active": this._recvSetInputMethodActive.bind(this),
-      "deactivate-next-paint-listener": this._deactivateNextPaintListener.bind(this)
+      "deactivate-next-paint-listener": this._deactivateNextPaintListener.bind(this),
+      "do-command": this._recvDoCommand
     }
 
     addMessageListener("browser-element-api:call", function(aMessage) {
@@ -338,6 +362,15 @@ BrowserElementChild.prototype = {
         args.promptType == 'custom-prompt') {
       return returnValue;
     }
+  },
+
+  _isCommandEnabled: function(cmd) {
+    let command = COMMAND_MAP[cmd];
+    if (!command) {
+      return false;
+    }
+
+    return docShell.isCommandEnabled(command);
   },
 
   /**
@@ -459,13 +492,16 @@ BrowserElementChild.prototype = {
     }
   },
 
+  _maybeCopyAttribute: function(src, target, attribute) {
+    if (src.getAttribute(attribute)) {
+      target[attribute] = src.getAttribute(attribute);
+    }
+  },
+
   _iconChangedHandler: function(e) {
     debug('Got iconchanged: (' + e.target.href + ')');
     let icon = { href: e.target.href };
-    if (e.target.getAttribute('sizes')) {
-      icon.sizes = e.target.getAttribute('sizes');
-    }
-
+    this._maybeCopyAttribute(e.target, icon, 'sizes');
     sendAsyncMsg('iconchange', icon);
   },
 
@@ -499,7 +535,8 @@ BrowserElementChild.prototype = {
     }
 
     let handlers = {
-      'icon': this._iconChangedHandler,
+      'icon': this._iconChangedHandler.bind(this),
+      'apple-touch-icon': this._iconChangedHandler.bind(this),
       'search': this._openSearchHandler,
       'manifest': this._manifestChangedHandler
     };
@@ -513,7 +550,7 @@ BrowserElementChild.prototype = {
     }, this);
   },
 
-  _metaAddedHandler: function(e) {
+  _metaChangedHandler: function(e) {
     let win = e.target.ownerDocument.defaultView;
     // Ignore metas which don't come from the top-level
     // <iframe mozbrowser> window.
@@ -526,39 +563,112 @@ BrowserElementChild.prototype = {
       return;
     }
 
-    debug('Got metaAdded: (' + e.target.name + ') ' + e.target.content);
-    if (e.target.name == 'application-name') {
-      let meta = { name: e.target.name,
-                   content: e.target.content };
+    debug('Got metaChanged: (' + e.target.name + ') ' + e.target.content);
 
-      let lang;
-      let elm;
+    let handlers = {
+      'theme-color': this._themeColorChangedHandler,
+      'application-name': this._applicationNameChangedHandler
+    };
 
-      for (elm = e.target;
-           !lang && elm && elm.nodeType == e.target.ELEMENT_NODE;
-           elm = elm.parentNode) {
-        if (elm.hasAttribute('lang')) {
-          lang = elm.getAttribute('lang');
-          continue;
-        }
-
-        if (elm.hasAttributeNS('http://www.w3.org/XML/1998/namespace', 'lang')) {
-          lang = elm.getAttributeNS('http://www.w3.org/XML/1998/namespace', 'lang');
-          continue;
-        }
-      }
-
-      // No lang has been detected.
-      if (!lang && elm.nodeType == e.target.DOCUMENT_NODE) {
-        lang = elm.contentLanguage;
-      }
-
-      if (lang) {
-        meta.lang = lang;
-      }
-
-      sendAsyncMsg('metachange', meta);
+    let handler = handlers[e.target.name];
+    if (handler) {
+      handler(e.type, e.target);
     }
+  },
+
+  _applicationNameChangedHandler: function(eventType, target) {
+    if (eventType !== 'DOMMetaAdded') {
+      // Bug 1037448 - Decide what to do when <meta name="application-name">
+      // changes
+      return;
+    }
+
+    let meta = { name: 'application-name',
+                 content: target.content };
+
+    let lang;
+    let elm;
+
+    for (elm = target;
+         !lang && elm && elm.nodeType == target.ELEMENT_NODE;
+         elm = elm.parentNode) {
+      if (elm.hasAttribute('lang')) {
+        lang = elm.getAttribute('lang');
+        continue;
+      }
+
+      if (elm.hasAttributeNS('http://www.w3.org/XML/1998/namespace', 'lang')) {
+        lang = elm.getAttributeNS('http://www.w3.org/XML/1998/namespace', 'lang');
+        continue;
+      }
+    }
+
+    // No lang has been detected.
+    if (!lang && elm.nodeType == target.DOCUMENT_NODE) {
+      lang = elm.contentLanguage;
+    }
+
+    if (lang) {
+      meta.lang = lang;
+    }
+
+    sendAsyncMsg('metachange', meta);
+  },
+
+  _selectionChangeHandler: function(e) {
+    let isMouseUp = e.reason & Ci.nsISelectionListener.MOUSEUP_REASON;
+    let isSelectAll = e.reason & Ci.nsISelectionListener.SELECTALL_REASON;
+    // When selectall happened, gecko will first collapse the range then
+    // select all. So we will receive two selection change events with
+    // SELECTALL_REASON. We filter first event by check the length of
+    // selectedText.
+    if (!(isMouseUp || (isSelectAll && e.selectedText.length > 0))) {
+      return;
+    }
+
+    e.stopPropagation();
+    let boundingClientRect = e.boundingClientRect;
+    let zoomFactor = content.screen.width / content.innerWidth;
+
+    let detail = {
+      rect: {
+        width: boundingClientRect.width,
+        height: boundingClientRect.height,
+        top: boundingClientRect.top,
+        bottom: boundingClientRect.bottom,
+        left: boundingClientRect.left,
+        right: boundingClientRect.right,
+      },
+      commands: {
+        canSelectAll: this._isCommandEnabled("selectall"),
+        canCut: this._isCommandEnabled("cut"),
+        canCopy: this._isCommandEnabled("copy"),
+        canPaste: this._isCommandEnabled("paste"),
+      },
+      zoomFactor: zoomFactor,
+    };
+
+    // Get correct geometry information if we have nested <iframe mozbrowser>
+    let currentWindow = e.target.defaultView;
+    while (currentWindow.realFrameElement) {
+      let currentRect = currentWindow.realFrameElement.getBoundingClientRect();
+      detail.rect.top += currentRect.top;
+      detail.rect.bottom += currentRect.top;
+      detail.rect.left += currentRect.left;
+      detail.rect.right += currentRect.left;
+      currentWindow = currentWindow.realFrameElement.ownerDocument.defaultView;
+    }
+
+    sendAsyncMsg("selectionchange", detail);
+  },
+
+  _themeColorChangedHandler: function(eventType, target) {
+    let meta = {
+      name: 'theme-color',
+      content: target.content,
+      type: eventType.replace('DOMMeta', '').toLowerCase()
+    };
+    sendAsyncMsg('metachange', meta);
   },
 
   _addMozAfterPaintHandler: function(callback) {
@@ -868,14 +978,8 @@ BrowserElementChild.prototype = {
   },
 
   _buildMenuObj: function(menu, idPrefix) {
-    function maybeCopyAttribute(src, target, attribute) {
-      if (src.getAttribute(attribute)) {
-        target[attribute] = src.getAttribute(attribute);
-      }
-    }
-
     var menuObj = {type: 'menu', items: []};
-    maybeCopyAttribute(menu, menuObj, 'label');
+    this._maybeCopyAttribute(menu, menuObj, 'label');
 
     for (var i = 0, child; child = menu.children[i++];) {
       if (child.nodeName === 'MENU') {
@@ -883,8 +987,8 @@ BrowserElementChild.prototype = {
       } else if (child.nodeName === 'MENUITEM') {
         var id = this._ctxCounter + '_' + idPrefix + i;
         var menuitem = {id: id, type: 'menuitem'};
-        maybeCopyAttribute(child, menuitem, 'label');
-        maybeCopyAttribute(child, menuitem, 'icon');
+        this._maybeCopyAttribute(child, menuitem, 'label');
+        this._maybeCopyAttribute(child, menuitem, 'icon');
         this._ctxHandlers[id] = child;
         menuObj.items.push(menuitem);
       }
@@ -992,6 +1096,16 @@ BrowserElementChild.prototype = {
   _recvStop: function(data) {
     let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
     webNav.stop(webNav.STOP_NETWORK);
+  },
+
+  _recvZoom: function(data) {
+    docShell.contentViewer.fullZoom = data.json.zoom;
+  },
+
+  _recvDoCommand: function(data) {
+    if (this._isCommandEnabled(data.json.command)) {
+      docShell.doCommand(COMMAND_MAP[data.json.command]);
+    }
   },
 
   _recvSetInputMethodActive: function(data) {

@@ -83,13 +83,13 @@ GetWindowFromGlobal(JSObject* aGlobal)
 }
 
 bool
-WindowNamedPropertiesHandler::getOwnPropertyDescriptor(JSContext* aCx,
-                                                       JS::Handle<JSObject*> aProxy,
-                                                       JS::Handle<jsid> aId,
-                                                       JS::MutableHandle<JSPropertyDescriptor> aDesc)
-                                                       const
+WindowNamedPropertiesHandler::getOwnPropDescriptor(JSContext* aCx,
+                                                   JS::Handle<JSObject*> aProxy,
+                                                   JS::Handle<jsid> aId,
+                                                   bool /* unused */,
+                                                   JS::MutableHandle<JSPropertyDescriptor> aDesc)
+                                                   const
 {
-  // Note: The infallibleInit call below depends on this check.
   if (!JSID_IS_STRING(aId)) {
     // Nothing to do if we're resolving a non-string property.
     return true;
@@ -100,8 +100,10 @@ WindowNamedPropertiesHandler::getOwnPropertyDescriptor(JSContext* aCx,
     return true;
   }
 
-  nsDependentJSString str;
-  str.infallibleInit(aId);
+  nsAutoJSString str;
+  if (!str.init(aCx, JSID_TO_STRING(aId))) {
+    return false;
+  }
 
   // Grab the DOM window.
   nsGlobalWindow* win = GetWindowFromGlobal(global);

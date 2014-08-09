@@ -17,6 +17,7 @@
 #include "mozilla/gfx/Types.h"          // for Filter
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/layers/CompositorTypes.h"  // for TextureInfo, etc
+#include "mozilla/layers/Effects.h"     // for Texture Effect
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
 #include "mozilla/layers/TextureHost.h" // for TextureHost
 #include "mozilla/mozalloc.h"           // for operator delete
@@ -35,14 +36,6 @@ class DataSourceSurface;
 }
 
 namespace layers {
-
-// Some properties of a Layer required for tiling
-struct TiledLayerProperties
-{
-  nsIntRegion mVisibleRegion;
-  nsIntRegion mValidRegion;
-  CSSToScreenScale mEffectiveResolution;
-};
 
 class Layer;
 class SurfaceDescriptor;
@@ -120,8 +113,7 @@ public:
                          const gfx::Matrix4x4& aTransform,
                          const gfx::Filter& aFilter,
                          const gfx::Rect& aClipRect,
-                         const nsIntRegion* aVisibleRegion = nullptr,
-                         TiledLayerProperties* aLayerProperties = nullptr) = 0;
+                         const nsIntRegion* aVisibleRegion = nullptr) = 0;
 
   /**
    * Update the content host.
@@ -234,7 +226,7 @@ public:
   // detached in any case. if aLayer is null, then we will only detach if we are
   // not async.
   // Only force detach if the IPDL tree is being shutdown.
-  void Detach(Layer* aLayer = nullptr, AttachFlags aFlags = NO_FLAGS)
+  virtual void Detach(Layer* aLayer = nullptr, AttachFlags aFlags = NO_FLAGS)
   {
     if (!mKeepAttached ||
         aLayer == mLayer ||
@@ -289,6 +281,14 @@ public:
 
   void SetAsyncID(uint64_t aID) { mAsyncID = aID; }
 
+  virtual bool Lock() { return false; }
+
+  virtual void Unlock() { }
+
+  virtual TemporaryRef<TexturedEffect> GenEffect(const gfx::Filter& aFilter) {
+    return nullptr;
+  }
+
 protected:
   TextureInfo mTextureInfo;
   uint64_t mAsyncID;
@@ -299,6 +299,29 @@ protected:
   uint32_t mFlashCounter; // used when the pref "layers.flash-borders" is true.
   bool mAttached;
   bool mKeepAttached;
+};
+
+class AutoLockCompositableHost MOZ_FINAL
+{
+public:
+  AutoLockCompositableHost(CompositableHost* aHost)
+    : mHost(aHost)
+  {
+    mSucceeded = mHost->Lock();
+  }
+
+  ~AutoLockCompositableHost()
+  {
+    if (mSucceeded) {
+      mHost->Unlock();
+    }
+  }
+
+  bool Failed() const { return !mSucceeded; }
+
+private:
+  RefPtr<CompositableHost> mHost;
+  bool mSucceeded;
 };
 
 /**

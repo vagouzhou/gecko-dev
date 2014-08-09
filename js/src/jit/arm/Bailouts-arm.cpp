@@ -7,6 +7,7 @@
 #include "jscntxt.h"
 #include "jscompartment.h"
 
+#include "jit/arm/Assembler-arm.h"
 #include "jit/Bailouts.h"
 #include "jit/JitCompartment.h"
 
@@ -19,9 +20,9 @@ namespace jit {
 class BailoutStack
 {
     uintptr_t frameClassId_;
-    // This is pushed in the bailout handler.  Both entry points into the handler
+    // This is pushed in the bailout handler. Both entry points into the handler
     // inserts their own value int lr, which is then placed onto the stack along
-    // with frameClassId_ above.  This should be migrated to ip.
+    // with frameClassId_ above. This should be migrated to ip.
   public:
     union {
         uintptr_t frameSize_;
@@ -29,7 +30,7 @@ class BailoutStack
     };
 
   protected: // Silence Clang warning about unused private fields.
-    mozilla::Array<double, FloatRegisters::Total> fpregs_;
+    mozilla::Array<double, FloatRegisters::TotalPhys> fpregs_;
     mozilla::Array<uintptr_t, Registers::Total> regs_;
 
     uintptr_t snapshotOffset_;
@@ -96,7 +97,7 @@ IonBailoutIterator::IonBailoutIterator(const JitActivationIterator &activations,
     JSRuntime *rt = activation->compartment()->runtimeFromMainThread();
     JitCode *code = rt->jitRuntime()->getBailoutTable(bailout->frameClass());
     uintptr_t tableOffset = bailout->tableOffset();
-    uintptr_t tableStart = reinterpret_cast<uintptr_t>(code->raw());
+    uintptr_t tableStart = reinterpret_cast<uintptr_t>(Assembler::BailoutTableStart(code->raw()));
 
     JS_ASSERT(tableOffset >= tableStart &&
               tableOffset < tableStart + code->instructionsSize());

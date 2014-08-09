@@ -695,6 +695,7 @@ WebConsoleFrame.prototype = {
       }, this);
 
       aButton.setAttribute("checked", someChecked);
+      aButton.setAttribute("aria-pressed", someChecked);
     }, this);
 
     if (!this.owner._browserConsole) {
@@ -834,12 +835,14 @@ WebConsoleFrame.prototype = {
           Array.forEach(buttons, (button) => {
             if (button !== target) {
               button.setAttribute("checked", false);
+              button.setAttribute("aria-pressed", false);
               this._setMenuState(button, false);
             }
           });
           state = true;
         }
         target.setAttribute("checked", state);
+        target.setAttribute("aria-pressed", state);
 
         // This is a filter button with a drop-down, and the user clicked the
         // main part of the button. Go through all the severities and toggle
@@ -888,6 +891,7 @@ WebConsoleFrame.prototype = {
         }
         let toolbarButton = menuPopup.parentNode;
         toolbarButton.setAttribute("checked", someChecked);
+        toolbarButton.setAttribute("aria-pressed", someChecked);
         break;
       }
     }
@@ -3260,6 +3264,12 @@ JSTerm.prototype = {
       return;
     }
 
+    let selectedNodeActor = null;
+    let inspectorSelection = this.hud.owner.getInspectorSelection();
+    if (inspectorSelection) {
+      selectedNodeActor = inspectorSelection.nodeFront.actorID;
+    }
+
     let message = new Messages.Simple(aExecuteString, {
       category: "input",
       severity: "log",
@@ -3267,7 +3277,11 @@ JSTerm.prototype = {
     this.hud.output.addMessage(message);
     let onResult = this._executeResultCallback.bind(this, message, aCallback);
 
-    let options = { frame: this.SELECTED_FRAME };
+    let options = {
+      frame: this.SELECTED_FRAME,
+      selectedNodeActor: selectedNodeActor,
+    };
+
     this.requestEvaluation(aExecuteString, options).then(onResult, onResult);
 
     // Append a new value in the history of executed code, or overwrite the most
@@ -3297,6 +3311,9 @@ JSTerm.prototype = {
    *        user-selected stackframe.
    *        If you do not provide a |frame| the string will be evaluated in the
    *        global content window.
+   *        - selectedNodeActor: tells the NodeActor ID of the current selection in
+   *        the Inspector, if such a selection exists. This is used by helper
+   *        functions that can evaluate on the current selection.
    * @return object
    *         A promise object that is resolved when the server response is
    *         received.
@@ -3322,6 +3339,7 @@ JSTerm.prototype = {
     let evalOptions = {
       bindObjectActor: aOptions.bindObjectActor,
       frameActor: frameActor,
+      selectedNodeActor: aOptions.selectedNodeActor,
     };
 
     this.webConsoleClient.evaluateJS(aString, onResult, evalOptions);
@@ -4017,7 +4035,25 @@ JSTerm.prototype = {
         break;
 
       case Ci.nsIDOMKeyEvent.DOM_VK_HOME:
+        if (this.autocompletePopup.isOpen) {
+          this.autocompletePopup.selectedIndex = 0;
+          aEvent.preventDefault();
+        } else if (this.inputNode.value.length <= 0) {
+          this.hud.outputNode.parentNode.scrollTop = 0;
+          aEvent.preventDefault();
+        }
+        break;
+
       case Ci.nsIDOMKeyEvent.DOM_VK_END:
+        if (this.autocompletePopup.isOpen) {
+          this.autocompletePopup.selectedIndex = this.autocompletePopup.itemCount - 1;
+          aEvent.preventDefault();
+        } else if (this.inputNode.value.length <= 0) {
+          this.hud.outputNode.parentNode.scrollTop = this.hud.outputNode.parentNode.scrollHeight;
+          aEvent.preventDefault();
+        }
+        break;
+
       case Ci.nsIDOMKeyEvent.DOM_VK_LEFT:
         if (this.autocompletePopup.isOpen || this.lastCompletion.value) {
           this.clearCompletion();

@@ -161,7 +161,7 @@ AutoCxPusher::~AutoCxPusher()
 }
 
 bool
-AutoCxPusher::IsStackTop()
+AutoCxPusher::IsStackTop() const
 {
   uint32_t currentDepth = XPCJSRuntime::Get()->GetJSContextStack()->Count();
   MOZ_ASSERT(currentDepth >= mStackDepthAfterPush);
@@ -251,13 +251,6 @@ ThreadsafeAutoSafeJSContext::operator JSContext*() const
     return mCx;
   } else {
     return mAutoSafeJSContext.ref();
-  }
-}
-
-AutoPushJSContext::AutoPushJSContext(JSContext *aCx) : mCx(aCx)
-{
-  if (mCx && mCx != nsXPConnect::XPConnect()->GetCurrentJSContext()) {
-    mPusher.construct(mCx);
   }
 }
 

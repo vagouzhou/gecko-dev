@@ -21,6 +21,7 @@
 #include "mozilla/Likely.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/Telemetry.h"
+#include "mozilla/TimeStamp.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/dom/Event.h"
 #include "mozilla/dom/ShadowRoot.h"
@@ -91,6 +92,7 @@
 #include "nsUnicharUtils.h"
 #include "nsXBLBinding.h"
 #include "nsXBLPrototypeBinding.h"
+#include "mozilla/Preferences.h"
 #include "prprf.h"
 #include "xpcpublic.h"
 #include "nsCSSRuleProcessor.h"
@@ -378,13 +380,13 @@ nsINode::ChildNodes()
 }
 
 void
-nsINode::GetTextContentInternal(nsAString& aTextContent)
+nsINode::GetTextContentInternal(nsAString& aTextContent, ErrorResult& aError)
 {
   SetDOMStringToNull(aTextContent);
 }
 
 nsIDocument*
-nsINode::GetCrossShadowCurrentDocInternal() const
+nsINode::GetComposedDocInternal() const
 {
   MOZ_ASSERT(HasFlag(NODE_IS_IN_SHADOW_TREE) && IsContent(),
              "Should only be caled on nodes in the shadow tree.");
@@ -1477,8 +1479,10 @@ static nsresult
 CheckForOutdatedParent(nsINode* aParent, nsINode* aNode)
 {
   if (JSObject* existingObjUnrooted = aNode->GetWrapper()) {
+    JSRuntime* runtime = JS_GetObjectRuntime(existingObjUnrooted);
+    JS::Rooted<JSObject*> existingObj(runtime, existingObjUnrooted);
+
     AutoJSContext cx;
-    JS::Rooted<JSObject*> existingObj(cx, existingObjUnrooted);
     nsIGlobalObject* global = aParent->OwnerDoc()->GetScopeObject();
     MOZ_ASSERT(global);
 
@@ -2758,3 +2762,11 @@ nsINode::GetParentElementCrossingShadowRoot() const
 
   return nullptr;
 }
+
+bool
+nsINode::HasBoxQuadsSupport(JSContext* aCx, JSObject* /* unused */)
+{
+  return xpc::AccessCheck::isChrome(js::GetContextCompartment(aCx)) ||
+         Preferences::GetBool("layout.css.getBoxQuads.enabled");
+}
+

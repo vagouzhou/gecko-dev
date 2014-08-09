@@ -44,8 +44,6 @@ Wrapper::New(JSContext *cx, JSObject *obj, JSObject *parent, const Wrapper *hand
 {
     JS_ASSERT(parent);
 
-    AutoMarkInDeadZone amd(cx->zone());
-
     RootedValue priv(cx, ObjectValue(*obj));
     mozilla::Maybe<WrapperOptions> opts;
     if (!options) {
@@ -145,7 +143,7 @@ JSObject *Wrapper::defaultProto = TaggedProto::LazyProto;
 
 extern JSObject *
 js::TransparentObjectWrapper(JSContext *cx, HandleObject existing, HandleObject obj,
-                             HandleObject parent, unsigned flags)
+                             HandleObject parent)
 {
     // Allow wrapping outer window proxies.
     JS_ASSERT(!obj->is<WrapperObject>() || obj->getClass()->ext.innerObject);
@@ -161,7 +159,7 @@ ErrorCopier::~ErrorCopier()
             cx->clearPendingException();
             ac.destroy();
             Rooted<ErrorObject*> errObj(cx, &exc.toObject().as<ErrorObject>());
-            JSObject *copyobj = js_CopyErrorObject(cx, errObj, scope);
+            JSObject *copyobj = js_CopyErrorObject(cx, errObj);
             if (copyobj)
                 cx->setPendingException(ObjectValue(*copyobj));
         }
@@ -693,7 +691,10 @@ SecurityWrapper<Base>::defineProperty(JSContext *cx, HandleObject wrapper,
 {
     if (desc.getter() || desc.setter()) {
         JSString *str = IdToString(cx, id);
-        const jschar *prop = str ? str->getCharsZ(cx) : nullptr;
+        AutoStableStringChars chars(cx);
+        const jschar *prop = nullptr;
+        if (str->ensureFlat(cx) && chars.initTwoByte(cx, str))
+            prop = chars.twoByteChars();
         JS_ReportErrorNumberUC(cx, js_GetErrorMessage, nullptr,
                                JSMSG_ACCESSOR_DEF_DENIED, prop);
         return false;
@@ -1032,8 +1033,6 @@ JS_FRIEND_API(bool)
 js::RecomputeWrappers(JSContext *cx, const CompartmentFilter &sourceFilter,
                       const CompartmentFilter &targetFilter)
 {
-    AutoMaybeTouchDeadZones agc(cx);
-
     AutoWrapperVector toRecompute(cx);
 
     for (CompartmentsIter c(cx->runtime(), SkipAtoms); !c.done(); c.next()) {

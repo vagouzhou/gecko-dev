@@ -275,6 +275,7 @@
     _(InstanceOfV)                  \
     _(CallInstanceOf)               \
     _(InterruptCheck)               \
+    _(AsmJSInterruptCheck)          \
     _(InterruptCheckImplicit)       \
     _(ProfilerStackOp)              \
     _(GetDOMProperty)               \
@@ -310,6 +311,8 @@
 # include "jit/arm/LOpcodes-arm.h"
 #elif defined(JS_CODEGEN_MIPS)
 # include "jit/mips/LOpcodes-mips.h"
+#elif defined(JS_CODEGEN_NONE)
+# include "jit/none/LOpcodes-none.h"
 #else
 # error "Unknown architecture!"
 #endif

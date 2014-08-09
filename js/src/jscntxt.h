@@ -274,10 +274,12 @@ struct ThreadSafeContext : ContextFriendFields,
     PropertyName *emptyString() { return runtime_->emptyString; }
     FreeOp *defaultFreeOp() { return runtime_->defaultFreeOp(); }
     void *runtimeAddressForJit() { return runtime_; }
+    void *runtimeAddressOfInterrupt() { return &runtime_->interrupt; }
     void *stackLimitAddress(StackKind kind) { return &runtime_->mainThread.nativeStackLimit[kind]; }
     void *stackLimitAddressForJitCode(StackKind kind);
-    size_t gcSystemPageSize() { return runtime_->gc.pageAllocator.systemPageSize(); }
+    size_t gcSystemPageSize() { return gc::SystemPageSize(); }
     bool signalHandlersInstalled() const { return runtime_->signalHandlersInstalled(); }
+    bool canUseSignalHandlers() const { return runtime_->canUseSignalHandlers(); }
     bool jitSupportsFloatingPoint() const { return runtime_->jitSupportsFloatingPoint; }
 
     // Thread local data that may be accessed freely.
@@ -486,11 +488,9 @@ struct JSContext : public js::ExclusiveContext,
 
     js::LifoAlloc &tempLifoAlloc() { return runtime()->tempLifoAlloc; }
 
-#ifdef JS_THREADSAFE
     unsigned            outstandingRequests;/* number of JS_BeginRequest calls
                                                without the corresponding
                                                JS_EndRequest. */
-#endif
 
     /* Location to stash the iteration value between JSOP_MOREITER and JSOP_ITERNEXT. */
     js::Value           iterValue;
@@ -575,14 +575,6 @@ struct JSContext : public js::ExclusiveContext,
     bool isPropagatingForcedReturn() const { return propagatingForcedReturn_; }
     void setPropagatingForcedReturn() { propagatingForcedReturn_ = true; }
     void clearPropagatingForcedReturn() { propagatingForcedReturn_ = false; }
-
-#ifdef DEBUG
-    /*
-     * Controls whether a quadratic-complexity assertion is performed during
-     * stack iteration; defaults to true.
-     */
-    bool stackIterAssertionEnabled;
-#endif
 
     /*
      * See JS_SetTrustedPrincipals in jsapi.h.
@@ -791,15 +783,6 @@ js_ReportValueErrorFlags(JSContext *cx, unsigned flags, const unsigned errorNumb
 
 extern const JSErrorFormatString js_ErrorFormatString[JSErr_Limit];
 
-char *
-js_strdup(js::ExclusiveContext *cx, const char *s);
-
-#ifdef JS_THREADSAFE
-# define JS_ASSERT_REQUEST_DEPTH(cx)  JS_ASSERT((cx)->runtime()->requestDepth >= 1)
-#else
-# define JS_ASSERT_REQUEST_DEPTH(cx)  ((void) 0)
-#endif
-
 namespace js {
 
 /*
@@ -827,7 +810,7 @@ HandleExecutionInterrupt(JSContext *cx);
 inline bool
 CheckForInterrupt(JSContext *cx)
 {
-    JS_ASSERT_REQUEST_DEPTH(cx);
+    MOZ_ASSERT(cx->runtime()->requestDepth >= 1);
     return !cx->runtime()->interrupt || InvokeInterruptCallback(cx);
 }
 
@@ -1037,7 +1020,6 @@ bool intrinsic_TypeDescrIsSizedArrayType(JSContext *cx, unsigned argc, Value *vp
 
 class AutoLockForExclusiveAccess
 {
-#ifdef JS_THREADSAFE
     JSRuntime *runtime;
 
     void init(JSRuntime *rt) {
@@ -1073,19 +1055,6 @@ class AutoLockForExclusiveAccess
             runtime->mainThreadHasExclusiveAccess = false;
         }
     }
-#else // JS_THREADSAFE
-  public:
-    AutoLockForExclusiveAccess(ExclusiveContext *cx MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
-        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-    AutoLockForExclusiveAccess(JSRuntime *rt MOZ_GUARD_OBJECT_NOTIFIER_PARAM) {
-        MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-    }
-    ~AutoLockForExclusiveAccess() {
-        // An empty destructor is needed to avoid warnings from clang about
-        // unused local variables of this type.
-    }
-#endif // JS_THREADSAFE
 
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };

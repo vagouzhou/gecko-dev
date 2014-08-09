@@ -23,6 +23,8 @@
 #include "nsIDocument.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIInterfaceRequestorUtils.h"
+#include "nsIIDNService.h"
+#include "nsNetUtil.h"
 #include "mozilla/Types.h"
 #include "mozilla/PeerIdentity.h"
 #include "mozilla/dom/ContentChild.h"
@@ -50,6 +52,13 @@
 
 #ifdef MOZ_B2G
 #include "MediaPermissionGonk.h"
+#endif
+
+#if defined(XP_MACOSX)
+#include "nsCocoaFeatures.h"
+#endif
+#if defined (XP_WIN)
+#include "mozilla/WindowsVersion.h"
 #endif
 
 // GetCurrentTime is defined in winbase.h as zero argument macro forwarding to
@@ -98,6 +107,81 @@ using dom::Sequence;
 using dom::OwningBooleanOrMediaTrackConstraints;
 using dom::SupportedAudioConstraints;
 using dom::SupportedVideoConstraints;
+
+static bool
+HostInDomain(const nsCString &aHost, const nsCString &aPattern)
+{
+  PRInt32 patternOffset = 0;
+  PRInt32 hostOffset = 0;
+
+  // Act on '*.' wildcard in the left-most position in a domain pattern.
+  if (aPattern.Length() > 2 && aPattern[0] == '*' && aPattern[1] == '.') {
+    patternOffset = 2;
+
+    // Ignore the lowest level sub-domain for the hostname.
+    hostOffset = aHost.FindChar('.') + 1;
+
+    if (hostOffset <= 1) {
+      // Reject a match between a wildcard and a TLD or '.foo' form.
+      return false;
+    }
+  }
+
+  nsDependentCString hostRoot(aHost, hostOffset);
+  return hostRoot.EqualsIgnoreCase(aPattern.BeginReading() + patternOffset);
+}
+
+static bool
+HostHasPermission(nsIURI &docURI)
+{
+  nsAdoptingCString hostName;
+  docURI.GetAsciiHost(hostName); //normalize UTF8 to ASCII equivalent
+  nsAdoptingCString domainWhiteList =
+    Preferences::GetCString("media.getusermedia.screensharing.allowed_domains");
+  domainWhiteList.StripWhitespace();
+
+  if (domainWhiteList.IsEmpty() || hostName.IsEmpty()) {
+    return false;
+  }
+
+  nsresult rv;
+  // Get UTF8 to ASCII domain name normalization service
+  nsCOMPtr<nsIIDNService> idnService
+    = do_GetService("@mozilla.org/network/idn-service;1", &rv);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return false;
+  }
+
+  uint32_t begin = 0;
+  uint32_t end = 0;
+  nsCString domainName;
+  /*
+     Test each domain name in the comma separated list
+     after converting from UTF8 to ASCII. Each domain
+     must match exactly: no wildcards are used.
+  */
+  do {
+    end = domainWhiteList.FindChar(',', begin);
+    if (end == (uint32_t)-1) {
+      // Last or only domain name in the comma separated list
+      end = domainWhiteList.Length();
+    }
+
+    rv = idnService->ConvertUTF8toACE(Substring(domainWhiteList, begin, end - begin),
+                                      domainName);
+    if (NS_SUCCEEDED(rv)) {
+      if (HostInDomain(hostName, domainName)) {
+        return true;
+      }
+    } else {
+      NS_WARNING("Failed to convert UTF-8 host to ASCII");
+    }
+
+    begin = end + 1;
+  } while (end < domainWhiteList.Length());
+
+  return false;
+}
 
 ErrorCallbackRunnable::ErrorCallbackRunnable(
   nsCOMPtr<nsIDOMGetUserMediaSuccessCallback>& aSuccess,
@@ -309,8 +393,8 @@ VideoDevice::VideoDevice(MediaEngineVideoSource* aSource)
     mHasFacingMode = true;
     mFacingMode = dom::VideoFacingModeEnum::User;
   }
-      
-      mMozMediaSource = aSource->GetMozMediaSource();//dom::MozMediaSourceEnum::Camera;
+
+  mMediaSource = aSource->GetMediaSource();
 }
 
 AudioDevice::AudioDevice(MediaEngineAudioSource* aSource)
@@ -361,24 +445,21 @@ MediaDevice::GetFacingMode(nsAString& aFacingMode)
   }
   return NS_OK;
 }
-    
+
 NS_IMETHODIMP
-MediaDevice::GetMozMediaSource(nsAString& aMozMediaSource)
+MediaDevice::GetMediaSource(nsAString& aMediaSource)
 {
-        
-    aMozMediaSource.Assign(NS_ConvertUTF8toUTF16(
-        dom::MozMediaSourceEnumValues::strings[uint32_t(mMozMediaSource)].value));
-        
-    return NS_OK;
+  if (mMediaSource == MediaSourceType::Microphone) {
+    aMediaSource.Assign(NS_LITERAL_STRING("microphone"));
+  } else if (mMediaSource == MediaSourceType::Window) { // this will go away
+    aMediaSource.Assign(NS_LITERAL_STRING("window"));
+  } else { // all the rest are shared
+    aMediaSource.Assign(NS_ConvertUTF8toUTF16(
+      dom::MediaSourceEnumValues::strings[uint32_t(mMediaSource)].value));
+  }
+  return NS_OK;
 }
-/*
-MediaEngineScreenSource*
-VideoDevice::GetSource()
-{
-  return static_cast<MediaEngineScreenSource*>(&*mSource);
-}
-*/
-    
+
 MediaEngineVideoSource*
 VideoDevice::GetSource()
 {
@@ -732,15 +813,20 @@ static bool SatisfyConstraintSet(const MediaEngineVideoSource *,
                                  const MediaTrackConstraintSet &aConstraints,
                                  nsIMediaDevice &aCandidate)
 {
+  nsString s;
   if (aConstraints.mFacingMode.WasPassed()) {
-    nsString s;
     aCandidate.GetFacingMode(s);
     if (!s.EqualsASCII(dom::VideoFacingModeEnumValues::strings[
         uint32_t(aConstraints.mFacingMode.Value())].value)) {
       return false;
     }
   }
-    // TODO: Add more video-specific constraints
+  aCandidate.GetMediaSource(s);
+  if (!s.EqualsASCII(dom::MediaSourceEnumValues::strings[
+      uint32_t(aConstraints.mMediaSource)].value)) {
+    return false;
+  }
+  // TODO: Add more video-specific constraints
   return true;
 }
 
@@ -760,7 +846,7 @@ template<class SourceType, class ConstraintsType>
 static SourceSet *
   GetSources(MediaEngine *engine,
              ConstraintsType &aConstraints,
-             void (MediaEngine::* aEnumerate)(nsTArray<nsRefPtr<SourceType> >*),
+             void (MediaEngine::* aEnumerate)(MediaSourceType, nsTArray<nsRefPtr<SourceType> >*),
              const char* media_device_name = nullptr)
 {
   ScopedDeletePtr<SourceSet> result(new SourceSet);
@@ -771,7 +857,8 @@ static SourceSet *
   SourceSet candidateSet;
   {
     nsTArray<nsRefPtr<SourceType> > sources;
-    (engine->*aEnumerate)(&sources);
+    // all MediaSourceEnums are contained in MediaSourceType
+    (engine->*aEnumerate)((MediaSourceType)((int)aConstraints.mMediaSource), &sources);
     /**
       * We're allowing multiple tabs to access the same camera for parity
       * with Chrome.  See bug 811757 for some of the issues surrounding
@@ -1036,9 +1123,8 @@ public:
     MOZ_ASSERT(mError);
     if (mConstraints.mPicture || IsOn(mConstraints.mVideo)) {
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
-      ScopedDeletePtr<SourceSet> sources (GetSources(backend, constraints,
-          &MediaEngine::EnumerateVideoDevices));
-        // XXX  What should we do for screen sharing here?  (Bug NNNNNN)
+      ScopedDeletePtr<SourceSet> sources(GetSources(backend, constraints,
+                               &MediaEngine::EnumerateVideoDevices));
 
       if (!sources->Length()) {
         Fail(NS_LITERAL_STRING("NO_DEVICES_FOUND"));
@@ -1198,22 +1284,10 @@ public:
     ScopedDeletePtr<SourceSet> final(new SourceSet);
     if (IsOn(mConstraints.mVideo)) {
       VideoTrackConstraintsN constraints(GetInvariant(mConstraints.mVideo));
-      {
-      	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateVideoDevices,
-          mLoopbackVideoDevice.get()));
-      	final->MoveElementsFrom(*s);
-      }
-      {
-      	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateScreenDevices));
-      	final->MoveElementsFrom(*s);
-      }
-      {
-      	ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
-          &MediaEngine::EnumerateApplicationDevices));
-      	final->MoveElementsFrom(*s);
-      }
+      ScopedDeletePtr<SourceSet> s(GetSources(backend, constraints,
+              &MediaEngine::EnumerateVideoDevices,
+              mLoopbackVideoDevice.get()));
+      final->MoveElementsFrom(*s);
     }
     if (IsOn(mConstraints.mAudio)) {
       AudioTrackConstraintsN constraints(GetInvariant(mConstraints.mAudio));
@@ -1222,7 +1296,7 @@ public:
           mLoopbackAudioDevice.get()));
       final->MoveElementsFrom(*s);
     }
-      
+
     NS_DispatchToMainThread(new DeviceSuccessCallbackRunnable(mWindowId,
                                                               mSuccess, mError,
                                                               final.forget()));
@@ -1485,6 +1559,23 @@ MediaManager::GetUserMedia(bool aPrivileged,
   }
 #endif
 
+  if (c.mVideo.IsMediaTrackConstraints() && !aPrivileged) {
+    auto& tc = c.mVideo.GetAsMediaTrackConstraints();
+    // only allow privileged content to set the window id
+    if (tc.mBrowserWindow.WasPassed()) {
+      tc.mBrowserWindow.Construct(-1);
+    }
+
+    if (tc.mAdvanced.WasPassed()) {
+      uint32_t length = tc.mAdvanced.Value().Length();
+      for (uint32_t i = 0; i < length; i++) {
+        if (tc.mAdvanced.Value()[i].mBrowserWindow.WasPassed()) {
+          tc.mAdvanced.Value()[i].mBrowserWindow.Construct(-1);
+        }
+      }
+    }
+  }
+
   // Pass callbacks and MediaStreamListener along to GetUserMediaRunnable.
   nsRefPtr<GetUserMediaRunnable> runnable;
   if (c.mFake) {
@@ -1495,6 +1586,35 @@ MediaManager::GetUserMedia(bool aPrivileged,
     // Stream from default device from WebRTC backend.
     runnable = new GetUserMediaRunnable(c, onSuccess.forget(),
       onError.forget(), windowID, listener, mPrefs);
+  }
+
+  nsIURI* docURI = aWindow->GetDocumentURI();
+
+  if (c.mVideo.IsMediaTrackConstraints()) {
+    auto& tc = c.mVideo.GetAsMediaTrackConstraints();
+    // deny screensharing request if support is disabled
+    if (tc.mMediaSource != dom::MediaSourceEnum::Camera) {
+      if (tc.mMediaSource == dom::MediaSourceEnum::Browser) {
+        if (!Preferences::GetBool("media.getusermedia.browser.enabled", false)) {
+          return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
+        }
+      } else if (!Preferences::GetBool("media.getusermedia.screensharing.enabled", false)) {
+        return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
+      }
+      /* Deny screensharing if the requesting document is not from a host
+       on the whitelist. */
+      // Block screen/window sharing on Mac OSX 10.6 and WinXP until proved that they work
+      if (
+#if defined(XP_MACOSX)
+          !nsCocoaFeatures::OnLionOrLater() ||
+#endif
+#if defined (XP_WIN)
+          !IsVistaOrLater() ||
+#endif
+          (!aPrivileged && !HostHasPermission(*docURI))) {
+        return runnable->Denied(NS_LITERAL_STRING("PERMISSION_DENIED"));
+      }
+    }
   }
 
 #ifdef MOZ_B2G_CAMERA
@@ -1510,13 +1630,24 @@ MediaManager::GetUserMedia(bool aPrivileged,
     return NS_OK;
   }
 #endif
+
+  bool isLoop = false;
+  nsCOMPtr<nsIURI> loopURI;
+  nsresult rv = NS_NewURI(getter_AddRefs(loopURI), "about:loopconversation");
+  NS_ENSURE_SUCCESS(rv, rv);
+  rv = docURI->EqualsExceptRef(loopURI, &isLoop);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  if (isLoop) {
+    aPrivileged = true;
+  }
+
   // XXX No full support for picture in Desktop yet (needs proper UI)
   if (aPrivileged ||
       (c.mFake && !Preferences::GetBool("media.navigator.permission.fake"))) {
     mMediaThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
   } else {
     bool isHTTPS = false;
-    nsIURI* docURI = aWindow->GetDocumentURI();
     if (docURI) {
       docURI->SchemeIs("https", &isHTTPS);
     }
@@ -1907,7 +2038,8 @@ WindowsHashToArrayFunc (const uint64_t& aId,
       for (uint32_t i = 0; i < length; ++i) {
         nsRefPtr<GetUserMediaCallbackMediaStreamListener> listener =
           aData->ElementAt(i);
-        if (listener->CapturingVideo() || listener->CapturingAudio()) {
+        if (listener->CapturingVideo() || listener->CapturingAudio() ||
+            listener->CapturingScreen() || listener->CapturingWindow()) {
           capturing = true;
           break;
         }
@@ -1938,24 +2070,29 @@ MediaManager::GetActiveMediaCaptureWindows(nsISupportsArray **aArray)
 
 NS_IMETHODIMP
 MediaManager::MediaCaptureWindowState(nsIDOMWindow* aWindow, bool* aVideo,
-                                      bool* aAudio)
+                                      bool* aAudio, bool *aScreenShare,
+                                      bool* aWindowShare)
 {
   NS_ASSERTION(NS_IsMainThread(), "Only call on main thread");
   *aVideo = false;
   *aAudio = false;
+  *aScreenShare = false;
+  *aWindowShare = false;
 
-  nsresult rv = MediaCaptureWindowStateInternal(aWindow, aVideo, aAudio);
+  nsresult rv = MediaCaptureWindowStateInternal(aWindow, aVideo, aAudio, aScreenShare, aWindowShare);
 #ifdef DEBUG
   nsCOMPtr<nsPIDOMWindow> piWin = do_QueryInterface(aWindow);
-  LOG(("%s: window %lld capturing %s %s", __FUNCTION__, piWin ? piWin->WindowID() : -1,
-       *aVideo ? "video" : "", *aAudio ? "audio" : ""));
+  LOG(("%s: window %lld capturing %s %s %s %s", __FUNCTION__, piWin ? piWin->WindowID() : -1,
+       *aVideo ? "video" : "", *aAudio ? "audio" : "",
+       *aScreenShare ? "screenshare" : "",  *aWindowShare ? "windowshare" : ""));
 #endif
   return rv;
 }
 
 nsresult
 MediaManager::MediaCaptureWindowStateInternal(nsIDOMWindow* aWindow, bool* aVideo,
-                                              bool* aAudio)
+                                              bool* aAudio, bool *aScreenShare,
+                                              bool* aWindowShare)
 {
   // We need to return the union of all streams in all innerwindows that
   // correspond to that outerwindow.
@@ -1984,8 +2121,11 @@ MediaManager::MediaCaptureWindowStateInternal(nsIDOMWindow* aWindow, bool* aVide
           if (listener->CapturingAudio()) {
             *aAudio = true;
           }
-          if (*aAudio && *aVideo) {
-            return NS_OK; // no need to continue iterating
+          if (listener->CapturingScreen()) {
+            *aScreenShare = true;
+          }
+          if (listener->CapturingWindow()) {
+            *aWindowShare = true;
           }
         }
       }
@@ -2001,10 +2141,7 @@ MediaManager::MediaCaptureWindowStateInternal(nsIDOMWindow* aWindow, bool* aVide
         docShell->GetChildAt(i, getter_AddRefs(item));
         nsCOMPtr<nsPIDOMWindow> win = item ? item->GetWindow() : nullptr;
 
-        MediaCaptureWindowStateInternal(win, aVideo, aAudio);
-        if (*aAudio && *aVideo) {
-          return NS_OK; // no need to continue iterating
-        }
+        MediaCaptureWindowStateInternal(win, aVideo, aAudio, aScreenShare, aWindowShare);
       }
     }
   }
@@ -2052,6 +2189,19 @@ GetUserMediaCallbackMediaStreamListener::NotifyFinished(MediaStreamGraph* aGraph
   mFinished = true;
   Invalidate(); // we know it's been activated
   NS_DispatchToMainThread(new GetUserMediaListenerRemove(mWindowID, this));
+}
+
+// Called from the MediaStreamGraph thread
+void
+GetUserMediaCallbackMediaStreamListener::NotifyDirectListeners(MediaStreamGraph* aGraph,
+                                                               bool aHasListeners)
+{
+  nsRefPtr<MediaOperationRunnable> runnable;
+  runnable = new MediaOperationRunnable(MEDIA_DIRECT_LISTENERS,
+                                        this, nullptr, nullptr,
+                                        mAudioSource, mVideoSource,
+                                        aHasListeners, mWindowID, nullptr);
+  mMediaThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
 }
 
 // Called from the MediaStreamGraph thread

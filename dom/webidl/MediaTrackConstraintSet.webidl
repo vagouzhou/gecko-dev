@@ -13,7 +13,9 @@ enum SupportedVideoConstraints {
     "width",
     "height",
     "frameRate",
-    "mozMediaSource",
+    "mediaSource",
+    "browserWindow",
+    "scrollWithPage"
 };
 
 enum SupportedAudioConstraints {
@@ -26,7 +28,9 @@ dictionary MediaTrackConstraintSet {
     ConstrainLongRange height;
     ConstrainDoubleRange frameRate;
     ConstrainVideoFacingMode facingMode;
-    ConstrainVideoMozMediaSource mozMediaSource;
+    ConstrainMediaSource mediaSource = "camera";
+    long long browserWindow;
+    boolean scrollWithPage;
 };
 
 // TODO: Bug 995352 can't nest unions
@@ -34,6 +38,8 @@ dictionary MediaTrackConstraintSet {
 //typedef (double or ConstrainDoubleRange) ConstrainDouble;
 
 typedef VideoFacingModeEnum ConstrainVideoFacingMode;
-typedef MozMediaSourceEnum ConstrainVideoMozMediaSource;
+typedef MediaSourceEnum ConstrainMediaSource;
+
 // TODO: Bug 767924 sequences in unions
 //typedef (VideoFacingModeEnum or sequence<VideoFacingModeEnum>) ConstrainVideoFacingMode;
+//typedef (MediaSourceEnum or sequence<MediaSourceEnum>) ConstrainMediaSource;

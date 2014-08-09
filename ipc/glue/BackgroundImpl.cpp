@@ -423,6 +423,7 @@ private:
       if (threadLocalInfo->mActor) {
         threadLocalInfo->mActor->Close();
         threadLocalInfo->mActor->AssertActorDestroyed();
+
         // Since the actor is created on the main thread it must only
         // be released on the main thread as well.
         if (!NS_IsMainThread()) {
@@ -1700,6 +1701,8 @@ ChildImpl::CloseForCurrentThread()
   if (threadLocalInfo->mActor) {
     threadLocalInfo->mActor->FlushPendingInterruptQueue();
   }
+
+  // Clearing the thread local will synchronously close the actor.
   DebugOnly<PRStatus> status = PR_SetThreadPrivate(sThreadLocalIndex, nullptr);
   MOZ_ASSERT(status == PR_SUCCESS);
 }
@@ -2008,7 +2011,9 @@ ChildImpl::ActorDestroy(ActorDestroyReason aWhy)
 {
   AssertIsOnBoundThread();
 
+  MOZ_ASSERT(!mActorDestroyed);
   mActorDestroyed = true;
+
   BackgroundChildImpl::ActorDestroy(aWhy);
 }
 

@@ -17,6 +17,7 @@
 #include "jsfriendapi.h"
 #include "js/StructuredClone.h"
 #include "mozilla/Attributes.h"
+#include "mozilla/Preferences.h"
 #include "nsJSEnvironment.h"
 #include "mozilla/XPTInterfaceInfoManager.h"
 #include "mozilla/dom/DOMException.h"
@@ -557,9 +558,10 @@ nsXPCComponents_InterfacesByID::NewResolve(nsIXPConnectWrappedNative *wrapper,
     if (38 != JS_GetStringLength(str))
         return NS_OK;
 
-    if (const jschar *name = JS_GetInternedStringChars(str)) {
+    JSAutoByteString utf8str;
+    if (utf8str.encodeUtf8(cx, str)) {
         nsID iid;
-        if (!iid.Parse(NS_ConvertUTF16toUTF8(name).get()))
+        if (!iid.Parse(utf8str.ptr()))
             return NS_OK;
 
         nsCOMPtr<nsIInterfaceInfo> info;
@@ -2363,7 +2365,7 @@ nsXPCComponents_Constructor::CallOrConstruct(nsIXPConnectWrappedNative *wrapper,
     // get the various other object pointers we need
 
     nsXPConnect* xpc = nsXPConnect::XPConnect();
-    XPCWrappedNativeScope* scope = GetObjectScope(obj);
+    XPCWrappedNativeScope* scope = ObjectScope(obj);
     nsCOMPtr<nsIXPCComponents> comp;
 
     if (!xpc || !scope || !(comp = do_QueryInterface(scope->GetComponents())))
@@ -2605,13 +2607,12 @@ nsXPCComponents_Utils::ReportError(HandleValue error, JSContext *cx)
         frame->GetLineNumber(&lineNo);
     }
 
-    const jschar *msgchars = JS_GetStringCharsZ(cx, msgstr);
-    if (!msgchars)
+    nsAutoJSString msg;
+    if (!msg.init(cx, msgstr))
         return NS_OK;
 
     nsresult rv = scripterr->InitWithWindowID(
-            nsDependentString(static_cast<const char16_t *>(msgchars)),
-            fileName, EmptyString(), lineNo, 0, 0,
+            msg, fileName, EmptyString(), lineNo, 0, 0,
             "XPConnect JavaScript", innerWindowID);
     NS_ENSURE_SUCCESS(rv, NS_OK);
 
@@ -2679,7 +2680,7 @@ nsXPCComponents_Utils::EvalInSandbox(const nsAString& source,
     }
 
     return xpc::EvalInSandbox(cx, sandbox, source, filename, lineNo,
-                              jsVersion, false, retval);
+                              jsVersion, retval);
 }
 
 NS_IMETHODIMP
@@ -2781,7 +2782,7 @@ nsXPCComponents_Utils::ImportGlobalProperties(HandleValue aPropertyList,
 {
     RootedObject global(cx, CurrentGlobalOrNull(cx));
     MOZ_ASSERT(global);
-    GlobalProperties options(false);
+    GlobalProperties options;
     NS_ENSURE_TRUE(aPropertyList.isObject(), NS_ERROR_INVALID_ARG);
     RootedObject propertyList(cx, &aPropertyList.toObject());
     NS_ENSURE_TRUE(JS_IsArrayObject(cx, propertyList), NS_ERROR_INVALID_ARG);
@@ -3007,20 +3008,6 @@ nsXPCComponents_Utils::IsProxy(HandleValue vobj, JSContext *cx, bool *rval)
     return NS_OK;
 }
 
-/* jsval evalInWindow(in string source, in jsval window); */
-NS_IMETHODIMP
-nsXPCComponents_Utils::EvalInWindow(const nsAString &source, HandleValue window,
-                                    JSContext *cx, MutableHandleValue rval)
-{
-    if (!window.isObject())
-        return NS_ERROR_INVALID_ARG;
-
-    RootedObject rwindow(cx, &window.toObject());
-    if (!xpc::EvalInWindow(cx, source, rwindow, rval))
-        return NS_ERROR_FAILURE;
-    return NS_OK;
-}
-
 /* jsval exportFunction(in jsval vfunction, in jsval vscope, in jsval voptions); */
 NS_IMETHODIMP
 nsXPCComponents_Utils::ExportFunction(HandleValue vfunction, HandleValue vscope,
@@ -3084,7 +3071,7 @@ nsXPCComponents_Utils::MakeObjectPropsNormal(HandleValue vobj, JSContext *cx)
         if (!js::IsWrapper(propobj) || !JS_ObjectIsCallable(cx, propobj))
             continue;
 
-        if (!NewFunctionForwarder(cx, id, propobj, /* doclone = */ false, &v) ||
+        if (!NewFunctionForwarder(cx, id, propobj, &v) ||
             !JS_SetPropertyById(cx, obj, id, v))
             return NS_ERROR_FAILURE;
     }
@@ -3113,7 +3100,7 @@ nsXPCComponents_Utils::IsCrossProcessWrapper(HandleValue obj, bool *out)
     if (obj.isPrimitive())
         return NS_ERROR_INVALID_ARG;
 
-    *out = jsipc::IsCPOW(js::CheckedUnwrap(&obj.toObject()));
+    *out = jsipc::IsWrappedCPOW(&obj.toObject());
     return NS_OK;
 }
 
@@ -3145,10 +3132,19 @@ nsXPCComponents_Utils::SetWantXrays(HandleValue vscope, JSContext *cx)
         return NS_ERROR_INVALID_ARG;
     JSObject *scopeObj = js::UncheckedUnwrap(&vscope.toObject());
     JSCompartment *compartment = js::GetObjectCompartment(scopeObj);
-    EnsureCompartmentPrivate(scopeObj)->wantXrays = true;
+    CompartmentPrivate::Get(scopeObj)->wantXrays = true;
     bool ok = js::RecomputeWrappers(cx, js::SingleCompartment(compartment),
                                     js::AllCompartments());
     NS_ENSURE_TRUE(ok, NS_ERROR_FAILURE);
+    return NS_OK;
+}
+
+/* jsval forcePermissiveCOWs(); */
+NS_IMETHODIMP
+nsXPCComponents_Utils::ForcePermissiveCOWs(JSContext *cx)
+{
+    CrashIfNotInAutomation();
+    CompartmentPrivate::Get(CurrentGlobalOrNull(cx))->forcePermissiveCOWs = true;
     return NS_OK;
 }
 
@@ -3159,8 +3155,9 @@ nsXPCComponents_Utils::ForcePrivilegedComponentsForScope(HandleValue vscope,
 {
     if (!vscope.isObject())
         return NS_ERROR_INVALID_ARG;
+    CrashIfNotInAutomation();
     JSObject *scopeObj = js::UncheckedUnwrap(&vscope.toObject());
-    XPCWrappedNativeScope *scope = GetObjectScope(scopeObj);
+    XPCWrappedNativeScope *scope = ObjectScope(scopeObj);
     scope->ForcePrivilegedComponents();
     return NS_OK;
 }
@@ -3173,7 +3170,7 @@ nsXPCComponents_Utils::GetComponentsForScope(HandleValue vscope, JSContext *cx,
     if (!vscope.isObject())
         return NS_ERROR_INVALID_ARG;
     JSObject *scopeObj = js::UncheckedUnwrap(&vscope.toObject());
-    XPCWrappedNativeScope *scope = GetObjectScope(scopeObj);
+    XPCWrappedNativeScope *scope = ObjectScope(scopeObj);
     RootedObject components(cx);
     if (!scope->GetComponentsJSObject(&components))
         return NS_ERROR_FAILURE;
@@ -3242,9 +3239,9 @@ nsXPCComponents_Utils::Dispatch(HandleValue runnableArg, HandleValue scope,
         return NS_OK;                                                   \
     }
 
-GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Strict, extraWarnings, setExtraWarnings)
-GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Werror, werror, setWerror)
-GENERATE_JSCONTEXTOPTION_GETTER_SETTER(Strict_mode, strictMode, setStrictMode)
+GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Strict, extraWarnings, setExtraWarnings)
+GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Werror, werror, setWerror)
+GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Strict_mode, strictMode, setStrictMode)
 GENERATE_JSRUNTIMEOPTION_GETTER_SETTER(Ion, ion, setIon)
 
 #undef GENERATE_JSCONTEXTOPTION_GETTER_SETTER
@@ -3538,6 +3535,19 @@ nsXPCComponents_Utils::GetObjectPrincipal(HandleValue val, JSContext *cx,
 
     nsCOMPtr<nsIPrincipal> prin = nsContentUtils::ObjectPrincipal(obj);
     prin.forget(result);
+    return NS_OK;
+}
+
+NS_IMETHODIMP
+nsXPCComponents_Utils::SetAddonInterposition(const nsACString &addonIdStr,
+                                             nsIAddonInterposition *interposition,
+                                             JSContext *cx)
+{
+    JSAddonId *addonId = xpc::NewAddonId(cx, addonIdStr);
+    if (!addonId)
+        return NS_ERROR_FAILURE;
+    if (!XPCWrappedNativeScope::SetAddonInterposition(addonId, interposition))
+        return NS_ERROR_FAILURE;
     return NS_OK;
 }
 

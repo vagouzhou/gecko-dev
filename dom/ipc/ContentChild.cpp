@@ -59,6 +59,8 @@
 #include "nsIMutable.h"
 #include "nsIObserverService.h"
 #include "nsIScriptSecurityManager.h"
+#include "nsScreenManagerProxy.h"
+#include "nsMemoryInfoDumper.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStyleSheetService.h"
 #include "nsXULAppAPI.h"
@@ -150,6 +152,7 @@
 #include "mozilla/dom/telephony/PTelephonyChild.h"
 #include "mozilla/dom/time/DateCacheCleaner.h"
 #include "mozilla/net/NeckoMessageUtils.h"
+#include "mozilla/RemoteSpellCheckEngineChild.h"
 
 using namespace base;
 using namespace mozilla;
@@ -168,6 +171,7 @@ using namespace mozilla::jsipc;
 #if defined(MOZ_WIDGET_GONK)
 using namespace mozilla::system;
 #endif
+using namespace mozilla::widget;
 
 #ifdef MOZ_NUWA_PROCESS
 static bool sNuwaForking = false;
@@ -192,22 +196,22 @@ public:
     NS_DECL_ISUPPORTS
 
     MemoryReportRequestChild(uint32_t aGeneration, bool aAnonymize,
-                             const nsAString& aDMDDumpIdent);
+                             const FileDescriptor& aDMDFile);
     NS_IMETHOD Run();
 private:
     virtual ~MemoryReportRequestChild();
 
     uint32_t mGeneration;
     bool     mAnonymize;
-    nsString mDMDDumpIdent;
+    FileDescriptor mDMDFile;
 };
 
 NS_IMPL_ISUPPORTS(MemoryReportRequestChild, nsIRunnable)
 
 MemoryReportRequestChild::MemoryReportRequestChild(
-    uint32_t aGeneration, bool aAnonymize, const nsAString& aDMDDumpIdent)
+    uint32_t aGeneration, bool aAnonymize, const FileDescriptor& aDMDFile)
   : mGeneration(aGeneration), mAnonymize(aAnonymize),
-    mDMDDumpIdent(aDMDDumpIdent)
+    mDMDFile(aDMDFile)
 {
     MOZ_COUNT_CTOR(MemoryReportRequestChild);
 }
@@ -561,6 +565,10 @@ ContentChild::Init(MessageLoop* aIOLoop,
     Open(aChannel, aParentHandle, aIOLoop);
     sSingleton = this;
 
+    // Make sure there's an nsAutoScriptBlocker on the stack when dispatching
+    // urgent messages.
+    GetIPCChannel()->BlockScripts();
+
 #ifdef MOZ_X11
     // Send the parent our X socket to act as a proxy reference for our X
     // resources.
@@ -692,10 +700,10 @@ PMemoryReportRequestChild*
 ContentChild::AllocPMemoryReportRequestChild(const uint32_t& aGeneration,
                                              const bool &aAnonymize,
                                              const bool &aMinimizeMemoryUsage,
-                                             const nsString& aDMDDumpIdent)
+                                             const FileDescriptor& aDMDFile)
 {
     MemoryReportRequestChild *actor =
-        new MemoryReportRequestChild(aGeneration, aAnonymize, aDMDDumpIdent);
+        new MemoryReportRequestChild(aGeneration, aAnonymize, aDMDFile);
     actor->AddRef();
     return actor;
 }
@@ -750,7 +758,7 @@ ContentChild::RecvPMemoryReportRequestConstructor(
     const uint32_t& aGeneration,
     const bool& aAnonymize,
     const bool& aMinimizeMemoryUsage,
-    const nsString& aDMDDumpIdent)
+    const FileDescriptor& aDMDFile)
 {
     MemoryReportRequestChild *actor =
         static_cast<MemoryReportRequestChild*>(aChild);
@@ -784,7 +792,7 @@ NS_IMETHODIMP MemoryReportRequestChild::Run()
         new MemoryReportsWrapper(&reports);
     nsRefPtr<MemoryReportCallback> cb = new MemoryReportCallback(process);
     mgr->GetReportsForThisProcessExtended(cb, wrappedReports, mAnonymize,
-                                          mDMDDumpIdent);
+                                          FileDescriptorToFILE(mDMDFile, "wb"));
 
     bool sent = Send__delete__(this, mGeneration, reports);
     return sent ? NS_OK : NS_ERROR_FAILURE;
@@ -914,7 +922,7 @@ ContentChild::RecvSetProcessSandbox()
   // at some point; see bug 880808.
 #if defined(MOZ_CONTENT_SANDBOX)
 #if defined(XP_LINUX)
-    SetCurrentProcessSandbox();
+    SetContentProcessSandbox();
 #elif defined(XP_WIN)
     mozilla::SandboxTarget::Instance()->StartSandbox();
 #endif
@@ -1049,6 +1057,20 @@ PBlobChild*
 ContentChild::AllocPBlobChild(const BlobConstructorParams& aParams)
 {
     return nsIContentChild::AllocPBlobChild(aParams);
+}
+
+mozilla::PRemoteSpellcheckEngineChild *
+ContentChild::AllocPRemoteSpellcheckEngineChild()
+{
+    NS_NOTREACHED("Default Constructor for PRemoteSpellcheckEngineChilf should never be called");
+    return nullptr;
+}
+
+bool
+ContentChild::DeallocPRemoteSpellcheckEngineChild(PRemoteSpellcheckEngineChild *child)
+{
+    delete child;
+    return true;
 }
 
 bool
@@ -1199,6 +1221,28 @@ ContentChild::DeallocPNeckoChild(PNeckoChild* necko)
     return true;
 }
 
+PScreenManagerChild*
+ContentChild::AllocPScreenManagerChild(uint32_t* aNumberOfScreens,
+                                       float* aSystemDefaultScale,
+                                       bool* aSuccess)
+{
+    // The ContentParent should never attempt to allocate the
+    // nsScreenManagerProxy. Instead, the nsScreenManagerProxy
+    // service is requested and instantiated via XPCOM, and the
+    // constructor of nsScreenManagerProxy sets up the IPC connection.
+    NS_NOTREACHED("Should never get here!");
+    return nullptr;
+}
+
+bool
+ContentChild::DeallocPScreenManagerChild(PScreenManagerChild* aService)
+{
+    // nsScreenManagerProxy is AddRef'd in its constructor.
+    nsScreenManagerProxy *child = static_cast<nsScreenManagerProxy*>(aService);
+    child->Release();
+    return true;
+}
+
 PExternalHelperAppChild*
 ContentChild::AllocPExternalHelperAppChild(const OptionalURIParams& uri,
                                            const nsCString& aMimeContentType,
@@ -1334,12 +1378,37 @@ bool
 ContentChild::RecvRegisterChrome(const InfallibleTArray<ChromePackage>& packages,
                                  const InfallibleTArray<ResourceMapping>& resources,
                                  const InfallibleTArray<OverrideMapping>& overrides,
-                                 const nsCString& locale)
+                                 const nsCString& locale,
+                                 const bool& reset)
 {
     nsCOMPtr<nsIChromeRegistry> registrySvc = nsChromeRegistry::GetService();
     nsChromeRegistryContent* chromeRegistry =
         static_cast<nsChromeRegistryContent*>(registrySvc.get());
-    chromeRegistry->RegisterRemoteChrome(packages, resources, overrides, locale);
+    chromeRegistry->RegisterRemoteChrome(packages, resources, overrides,
+                                         locale, reset);
+    return true;
+}
+
+bool
+ContentChild::RecvRegisterChromeItem(const ChromeRegistryItem& item)
+{
+    nsCOMPtr<nsIChromeRegistry> registrySvc = nsChromeRegistry::GetService();
+    nsChromeRegistryContent* chromeRegistry =
+        static_cast<nsChromeRegistryContent*>(registrySvc.get());
+    switch (item.type()) {
+        case ChromeRegistryItem::TChromePackage:
+            chromeRegistry->RegisterPackage(item.get_ChromePackage());
+            break;
+
+        case ChromeRegistryItem::TOverrideMapping:
+            chromeRegistry->RegisterOverride(item.get_OverrideMapping());
+            break;
+
+        default:
+            MOZ_ASSERT(false, "bad chrome item");
+            return false;
+    }
+
     return true;
 }
 
@@ -1581,8 +1650,8 @@ ContentChild::RecvActivateA11y()
 #ifdef ACCESSIBILITY
     // Start accessibility in content process if it's running in chrome
     // process.
-    nsCOMPtr<nsIAccessibilityService> accService =
-        do_GetService("@mozilla.org/accessibilityService;1");
+	nsCOMPtr<nsIAccessibilityService> accService =
+        services::GetAccessibilityService();
 #endif
     return true;
 }

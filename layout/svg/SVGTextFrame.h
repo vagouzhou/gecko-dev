@@ -319,7 +319,7 @@ public:
   virtual nsresult PaintSVG(nsRenderingContext* aContext,
                             const nsIntRect* aDirtyRect,
                             nsIFrame* aTransformRoot = nullptr) MOZ_OVERRIDE;
-  virtual nsIFrame* GetFrameForPoint(const nsPoint& aPoint) MOZ_OVERRIDE;
+  virtual nsIFrame* GetFrameForPoint(const gfxPoint& aPoint) MOZ_OVERRIDE;
   virtual void ReflowSVG() MOZ_OVERRIDE;
   virtual nsRect GetCoveredRegion() MOZ_OVERRIDE;
   virtual SVGBBox GetBBoxContribution(const Matrix& aToBBoxUserspace,
@@ -429,25 +429,13 @@ private:
    * Mutation observer used to watch for text positioning attribute changes
    * on descendent text content elements (like <tspan>s).
    */
-  class MutationObserver : public nsStubMutationObserver {
+  class MutationObserver MOZ_FINAL : public nsStubMutationObserver {
   public:
-    MutationObserver()
-      : mFrame(nullptr)
+    MutationObserver(SVGTextFrame* aFrame)
+      : mFrame(aFrame)
     {
-    }
-
-    void StartObserving(SVGTextFrame* aFrame)
-    {
-      NS_ASSERTION(!mFrame, "should not be observing yet!");
-      mFrame = aFrame;
-      aFrame->GetContent()->AddMutationObserver(this);
-    }
-
-    virtual ~MutationObserver()
-    {
-      if (mFrame) {
-        mFrame->GetContent()->RemoveMutationObserver(this);
-      }
+      MOZ_ASSERT(mFrame, "MutationObserver needs a non-null frame");
+      mFrame->GetContent()->AddMutationObserver(this);
     }
 
     // nsISupports
@@ -461,7 +449,12 @@ private:
     NS_DECL_NSIMUTATIONOBSERVER_ATTRIBUTECHANGED
 
   private:
-    SVGTextFrame* mFrame;
+    ~MutationObserver()
+    {
+      mFrame->GetContent()->RemoveMutationObserver(this);
+    }
+
+    SVGTextFrame* const mFrame;
   };
 
   /**
@@ -637,7 +630,7 @@ private:
   /**
    * The MutationObserver we have registered for the <text> element subtree.
    */
-  MutationObserver mMutationObserver;
+  nsRefPtr<MutationObserver> mMutationObserver;
 
   /**
    * Cached canvasTM value.
@@ -696,13 +689,5 @@ private:
    */
   float mLengthAdjustScaleFactor;
 };
-
-namespace mozilla {
-template<>
-struct HasDangerousPublicDestructor<SVGTextFrame::MutationObserver>
-{
-  static const bool value = true;
-};
-}
 
 #endif

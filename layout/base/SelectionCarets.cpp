@@ -150,13 +150,13 @@ SelectionCarets::HandleEvent(WidgetEvent* aEvent)
       mDragMode = START_FRAME;
       mCaretCenterToDownPointOffsetY = GetCaretYCenterPosition() - ptInCanvas.y;
       SetSelectionDirection(false);
-      SetMouseDownState(true);
+      SetSelectionDragState(true);
       return nsEventStatus_eConsumeNoDefault;
     } else if (mVisible && IsOnRect(GetEndFrameRect(), ptInCanvas, inflateSize)) {
       mDragMode = END_FRAME;
       mCaretCenterToDownPointOffsetY = GetCaretYCenterPosition() - ptInCanvas.y;
       SetSelectionDirection(true);
-      SetMouseDownState(true);
+      SetSelectionDragState(true);
       return nsEventStatus_eConsumeNoDefault;
     } else {
       mDragMode = NONE;
@@ -171,7 +171,7 @@ SelectionCarets::HandleEvent(WidgetEvent* aEvent)
     if (mDragMode != NONE) {
       // Only care about same id
       if (mActiveTouchId == nowTouchId) {
-        SetMouseDownState(false);
+        SetSelectionDragState(false);
         mDragMode = NONE;
         mActiveTouchId = -1;
       }
@@ -382,7 +382,7 @@ SelectionCarets::UpdateSelectionCarets()
   nsLayoutUtils::FirstAndLastRectCollector collector;
   nsRange::CollectClientRects(&collector, range,
                               range->GetStartParent(), range->StartOffset(),
-                              range->GetEndParent(), range->EndOffset(), true);
+                              range->GetEndParent(), range->EndOffset(), true, true);
 
   nsIFrame* canvasFrame = mPresShell->GetCanvasFrame();
   nsIFrame* rootFrame = mPresShell->GetRootFrame();
@@ -458,20 +458,38 @@ SelectionCarets::UpdateSelectionCarets()
 
   // If range select only one character, append tilt class name to it.
   bool isTilt = false;
-  if (startFrame) {
-    nsPeekOffsetStruct pos(eSelectCluster,
-                           eDirNext,
-                           startOffset,
-                           0,
-                           false,
-                           true,  //limit on scrolled views
-                           false,
-                           false);
-    startFrame->PeekOffset(&pos);
-    nsCOMPtr<nsIContent> endContent = do_QueryInterface(range->GetEndParent());
-    if (nsLayoutUtils::CompareTreePosition(pos.mResultContent, endContent) > 0 ||
-        (pos.mResultContent == endContent &&
-         pos.mContentOffset >= range->EndOffset())) {
+  if (startFrame && endFrame) {
+    // In this case <textarea>abc</textarea> and we select 'c' character,
+    // EndContent would be HTMLDivElement and mResultContent which get by
+    // calling startFrame->PeekOffset() with selecting next cluster would be
+    // TextNode. Although the position is same, nsContentUtils::ComparePoints
+    // still shows HTMLDivElement is after TextNode. So that we cannot use
+    // EndContent or StartContent to compare with result of PeekOffset().
+    // So we compare between next charater of startFrame and previous character
+    // of endFrame.
+    nsPeekOffsetStruct posNext(eSelectCluster,
+                               eDirNext,
+                               startOffset,
+                               0,
+                               false,
+                               true,  //limit on scrolled views
+                               false,
+                               false);
+
+    nsPeekOffsetStruct posPrev(eSelectCluster,
+                               eDirPrevious,
+                               endOffset,
+                               0,
+                               false,
+                               true,  //limit on scrolled views
+                               false,
+                               false);
+    startFrame->PeekOffset(&posNext);
+    endFrame->PeekOffset(&posPrev);
+
+    if (posNext.mResultContent && posPrev.mResultContent &&
+        nsContentUtils::ComparePoints(posNext.mResultContent, posNext.mContentOffset,
+                                      posPrev.mResultContent, posPrev.mContentOffset) > 0) {
       isTilt = true;
     }
   }
@@ -502,14 +520,14 @@ SelectionCarets::SelectWord()
   nsLayoutUtils::TransformPoint(canvasFrame, ptFrame, ptInFrame);
 
   nsIFrame* caretFocusFrame = GetCaretFocusFrame();
-  nsRefPtr<nsFrameSelection> fs = caretFocusFrame->GetFrameSelection();
-  fs->SetMouseDownState(true);
+  SetSelectionDragState(true);
   nsFrame* frame = static_cast<nsFrame*>(ptFrame);
   nsresult rs = frame->SelectByTypeAtPoint(mPresShell->GetPresContext(), ptInFrame,
                                            eSelectWord, eSelectWord, 0);
-  fs->SetMouseDownState(false);
+  SetSelectionDragState(false);
 
   // Clear maintain selection otherwise we cannot select less than a word
+  nsRefPtr<nsFrameSelection> fs = caretFocusFrame->GetFrameSelection();
   fs->MaintainSelection();
   return rs;
 }
@@ -591,11 +609,25 @@ SelectionCarets::DragSelection(const nsPoint &movePoint)
   // Find out which content we point to
   nsIFrame *ptFrame = nsLayoutUtils::GetFrameForPoint(canvasFrame, movePoint,
     nsLayoutUtils::IGNORE_PAINT_SUPPRESSION | nsLayoutUtils::IGNORE_CROSS_DOC);
-  NS_ENSURE_TRUE(ptFrame, nsEventStatus_eConsumeNoDefault);
+  if (!ptFrame) {
+    return nsEventStatus_eConsumeNoDefault;
+  }
+
+  nsIFrame* caretFocusFrame = GetCaretFocusFrame();
+  nsRefPtr<nsFrameSelection> fs = caretFocusFrame->GetFrameSelection();
+
+  nsresult result;
+  nsIFrame *newFrame = nullptr;
+  nsPoint newPoint;
   nsPoint ptInFrame = movePoint;
   nsLayoutUtils::TransformPoint(canvasFrame, ptFrame, ptInFrame);
+  result = fs->ConstrainFrameAndPointToAnchorSubtree(ptFrame, ptInFrame, &newFrame, newPoint);
+  if (NS_FAILED(result) || !newFrame) {
+    return nsEventStatus_eConsumeNoDefault;
+  }
+
   nsFrame::ContentOffsets offsets =
-    ptFrame->GetContentOffsetsFromPoint(ptInFrame);
+    newFrame->GetContentOffsetsFromPoint(newPoint);
   NS_ENSURE_TRUE(offsets.content, nsEventStatus_eConsumeNoDefault);
 
   nsISelection* caretSelection = GetSelection();
@@ -605,8 +637,6 @@ SelectionCarets::DragSelection(const nsPoint &movePoint)
   }
 
   nsRefPtr<nsRange> range = selection->GetRangeAt(0);
-  nsIFrame* caretFocusFrame = GetCaretFocusFrame();
-  nsRefPtr<nsFrameSelection> fs = caretFocusFrame->GetFrameSelection();
   if (!CompareRangeWithContentOffset(range, fs, offsets, mDragMode)) {
     return nsEventStatus_eConsumeNoDefault;
   }
@@ -677,14 +707,14 @@ SelectionCarets::GetCaretYCenterPosition()
 }
 
 void
-SelectionCarets::SetMouseDownState(bool aState)
+SelectionCarets::SetSelectionDragState(bool aState)
 {
   nsIFrame* caretFocusFrame = GetCaretFocusFrame();
   nsRefPtr<nsFrameSelection> fs = caretFocusFrame->GetFrameSelection();
-  if (fs->GetMouseDownState() == aState) {
+  if (fs->GetDragState() == aState) {
     return;
   }
-  fs->SetMouseDownState(aState);
+  fs->SetDragState(aState);
 
   if (aState) {
     fs->StartBatchChanges();

@@ -39,8 +39,8 @@ class PBackgroundChild;
 //
 // CloseForCurrentThread() will close the current PBackground actor.  Subsequent
 // calls to GetForCurrentThread will return null.  CloseForCurrentThread() may
-// only be called exactly once per thread.  Currently it is illegal to call this
-// before the PBackground actor has been created.
+// only be called exactly once for each thread-specific actor.  Currently it is
+// illegal to call this before the PBackground actor has been created.
 //
 // The PBackgroundChild actor and all its sub-protocol actors will be
 // automatically destroyed when its designated thread completes.

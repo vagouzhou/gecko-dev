@@ -185,7 +185,9 @@ nsListBoxBodyFrame::Init(nsIContent*       aContent,
                          nsIFrame*         aPrevInFlow)
 {
   nsBoxFrame::Init(aContent, aParent, aPrevInFlow);
-  nsIScrollableFrame* scrollFrame = nsLayoutUtils::GetScrollableFrameFor(this);
+  // Don't call nsLayoutUtils::GetScrollableFrameFor since we are not its
+  // scrollframe child yet.
+  nsIScrollableFrame* scrollFrame = do_QueryFrame(aParent);
   if (scrollFrame) {
     nsIFrame* verticalScrollbar = scrollFrame->GetScrollbarBox(true);
     nsScrollbarFrame* scrollbarFrame = do_QueryFrame(verticalScrollbar);
@@ -237,10 +239,10 @@ nsListBoxBodyFrame::AttributeChanged(int32_t aNameSpaceID,
 }
 
 /* virtual */ void
-nsListBoxBodyFrame::MarkIntrinsicWidthsDirty()
+nsListBoxBodyFrame::MarkIntrinsicISizesDirty()
 {
   mStringWidth = -1;
-  nsBoxFrame::MarkIntrinsicWidthsDirty();
+  nsBoxFrame::MarkIntrinsicISizesDirty();
 }
 
 /////////// nsBox ///////////////
@@ -641,7 +643,7 @@ nsListBoxBodyFrame::GetYPosition()
 }
 
 nscoord
-nsListBoxBodyFrame::ComputeIntrinsicWidth(nsBoxLayoutState& aBoxLayoutState)
+nsListBoxBodyFrame::ComputeIntrinsicISize(nsBoxLayoutState& aBoxLayoutState)
 {
   if (mStringWidth != -1)
     return mStringWidth;

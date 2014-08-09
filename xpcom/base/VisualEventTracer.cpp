@@ -466,25 +466,17 @@ Shutdown()
 
   RecordBatch::DeleteLog();
 
-  if (gMonitor) {
-    delete gMonitor;
-    gMonitor = nullptr;
-  }
+  delete gMonitor;
+  gMonitor = nullptr;
 
-  if (gEventFilter) {
-    delete gEventFilter;
-    gEventFilter = nullptr;
-  }
+  delete gEventFilter;
+  gEventFilter = nullptr;
 
-  if (gProfilerStart) {
-    delete gProfilerStart;
-    gProfilerStart = nullptr;
-  }
+  delete gProfilerStart;
+  gProfilerStart = nullptr;
 
-  if (gMaxBacklogTime) {
-    delete gMaxBacklogTime;
-    gMaxBacklogTime = nullptr;
-  }
+  delete gMaxBacklogTime;
+  gMaxBacklogTime = nullptr;
 #endif
 }
 
@@ -537,7 +529,7 @@ Mark(uint32_t aType, void* aItem, const char* aText, const char* aText2)
 
 // The scriptable classes
 
-class VisualEventTracerLog : public nsIVisualEventTracerLog
+class VisualEventTracerLog MOZ_FINAL: public nsIVisualEventTracerLog
 {
   NS_DECL_ISUPPORTS
   NS_DECL_NSIVISUALEVENTTRACERLOG
@@ -547,8 +539,8 @@ class VisualEventTracerLog : public nsIVisualEventTracerLog
     , mProfilerStart(*gProfilerStart)
   {
   }
-
-  virtual ~VisualEventTracerLog();
+private:
+  ~VisualEventTracerLog();
 
 protected:
   RecordBatch* mBatch;

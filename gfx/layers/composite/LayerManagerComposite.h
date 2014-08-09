@@ -74,7 +74,7 @@ class LayerManagerComposite : public LayerManager
 public:
   LayerManagerComposite(Compositor* aCompositor);
   ~LayerManagerComposite();
-  
+
   virtual void Destroy() MOZ_OVERRIDE;
 
   /**
@@ -152,6 +152,8 @@ public:
     MOZ_CRASH("Shouldn't be called for composited layer manager");
   }
 
+  virtual bool AreComponentAlphaLayersEnabled() MOZ_OVERRIDE;
+
   virtual TemporaryRef<DrawTarget>
     CreateOptimalMaskDrawTarget(const IntSize &aSize) MOZ_OVERRIDE;
 
@@ -182,8 +184,10 @@ public:
                       bool aIs3D = false);
     ~AutoAddMaskEffect();
 
+    bool Failed() const { return mFailed; }
   private:
     CompositableHost* mCompositable;
+    bool mFailed;
   };
 
   /**
@@ -250,7 +254,7 @@ private:
   static void ComputeRenderIntegrityInternal(Layer* aLayer,
                                              nsIntRegion& aScreenRegion,
                                              nsIntRegion& aLowPrecisionScreenRegion,
-                                             const gfx3DMatrix& aTransform);
+                                             const gfx::Matrix4x4& aTransform);
 
   /**
    * Render the current layer tree to the active target.
@@ -267,7 +271,7 @@ private:
   RefPtr<Compositor> mCompositor;
   nsAutoPtr<LayerProperties> mClonedLayerTreeProperties;
 
-  /** 
+  /**
    * Context target, nullptr when drawing directly to our swap chain.
    */
   RefPtr<gfx::DrawTarget> mTarget;
@@ -322,6 +326,13 @@ public:
 
   virtual Layer* GetLayer() = 0;
 
+  /**
+   * Perform a first pass over the layer tree to prepare intermediate surfaces.
+   * This allows us on to avoid framebuffer switches in the middle of our render
+   * which is inefficient. This must be called before RenderLayer.
+   */
+  virtual void Prepare(const nsIntRect& aClipRect) {}
+
   virtual void RenderLayer(const nsIntRect& aClipRect) = 0;
 
   virtual bool SetCompositableHost(CompositableHost*)
@@ -336,10 +347,11 @@ public:
 
   virtual TiledLayerComposer* GetTiledLayerComposer() { return nullptr; }
 
-
   virtual void DestroyFrontBuffer() { }
 
   void AddBlendModeEffect(EffectChain& aEffectChain);
+
+  virtual void GenEffectChain(EffectChain& aEffect) { }
 
   /**
    * The following methods are

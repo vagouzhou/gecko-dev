@@ -20,13 +20,15 @@ namespace mozilla {
  */
 class GenericFactory MOZ_FINAL : public nsIFactory
 {
+  ~GenericFactory() {}
+
 public:
   typedef Module::ConstructorProcPtr ConstructorProcPtr;
 
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSIFACTORY
 
-  GenericFactory(ConstructorProcPtr aCtor)
+  explicit GenericFactory(ConstructorProcPtr aCtor)
     : mCtor(aCtor)
   {
     NS_ASSERTION(mCtor, "GenericFactory with no constructor");

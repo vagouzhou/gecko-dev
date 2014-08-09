@@ -313,9 +313,9 @@ gfxFontconfigUtils::NewPattern(const nsTArray<nsString>& aFamilies,
 }
 
 gfxFontconfigUtils::gfxFontconfigUtils()
-    : mFontsByFamily(50)
-    , mFontsByFullname(50)
-    , mLangSupportTable(50)
+    : mFontsByFamily(32)
+    , mFontsByFullname(32)
+    , mLangSupportTable(32)
     , mLastConfig(nullptr)
 #ifdef MOZ_BUNDLED_FONTS
     , mBundledFontsInitialized(false)
@@ -380,9 +380,7 @@ struct MozLangGroupData {
 
 const MozLangGroupData MozLangGroups[] = {
     { nsGkAtoms::x_western,      "en" },
-    { nsGkAtoms::x_central_euro, "pl" },
     { nsGkAtoms::x_cyrillic,     "ru" },
-    { nsGkAtoms::x_baltic,       "lv" },
     { nsGkAtoms::x_devanagari,   "hi" },
     { nsGkAtoms::x_tamil,        "ta" },
     { nsGkAtoms::x_armn,         "hy" },

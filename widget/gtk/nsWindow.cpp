@@ -136,6 +136,9 @@ const gint kEvents = GDK_EXPOSURE_MASK | GDK_STRUCTURE_MASK |
                      GDK_VISIBILITY_NOTIFY_MASK |
                      GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK |
                      GDK_BUTTON_PRESS_MASK | GDK_BUTTON_RELEASE_MASK |
+#if GTK_CHECK_VERSION(3,4,0)
+                     GDK_SMOOTH_SCROLL_MASK |
+#endif
                      GDK_SCROLL_MASK |
                      GDK_POINTER_MOTION_MASK;
 
@@ -381,6 +384,10 @@ nsWindow::nsWindow()
 
     mTransparencyBitmapWidth  = 0;
     mTransparencyBitmapHeight = 0;
+
+#if GTK_CHECK_VERSION(3,4,0)
+    mLastScrollEventTime = GDK_CURRENT_TIME;
+#endif
 }
 
 nsWindow::~nsWindow()
@@ -3086,10 +3093,37 @@ nsWindow::OnScrollEvent(GdkEventScroll *aEvent)
     // check to see if we should rollup
     if (CheckForRollup(aEvent->x_root, aEvent->y_root, true, false))
         return;
-
+#if GTK_CHECK_VERSION(3,4,0)
+    // check for duplicate legacy scroll event, see GNOME bug 726878
+    if (mLastScrollEventTime == aEvent->time)
+        return; 
+#endif
     WidgetWheelEvent wheelEvent(true, NS_WHEEL_WHEEL, this);
     wheelEvent.deltaMode = nsIDOMWheelEvent::DOM_DELTA_LINE;
     switch (aEvent->direction) {
+#if GTK_CHECK_VERSION(3,4,0)
+    case GDK_SCROLL_SMOOTH:
+    {
+        // As of GTK 3.4, all directional scroll events are provided by
+        // the GDK_SCROLL_SMOOTH direction on XInput2 devices.
+        mLastScrollEventTime = aEvent->time;
+        // TODO - use a more appropriate scrolling unit than lines.
+        // Multiply event deltas by 3 to emulate legacy behaviour.
+        wheelEvent.deltaX = aEvent->delta_x * 3;
+        wheelEvent.deltaY = aEvent->delta_y * 3;
+        wheelEvent.mIsNoLineOrPageDelta = true;
+        // This next step manually unsets smooth scrolling for touch devices 
+        // that trigger GDK_SCROLL_SMOOTH. We use the slave device, which 
+        // represents the actual input.
+        GdkDevice *device = gdk_event_get_source_device((GdkEvent*)aEvent);
+        GdkInputSource source = gdk_device_get_source(device);
+        if (source == GDK_SOURCE_TOUCHSCREEN ||
+            source == GDK_SOURCE_TOUCHPAD) {
+            wheelEvent.scrollType = WidgetWheelEvent::SCROLL_ASYNCHRONOUSELY;
+        }
+        break;
+    }
+#endif
     case GDK_SCROLL_UP:
         wheelEvent.deltaY = wheelEvent.lineOrPageDeltaY = -3;
         break;
@@ -5848,7 +5882,7 @@ nsWindow::DispatchEventToRootAccessible(uint32_t aEventType)
     }
 
     nsCOMPtr<nsIAccessibilityService> accService =
-        do_GetService("@mozilla.org/accessibilityService;1");
+        services::GetAccessibilityService();
     if (!accService) {
         return;
     }
@@ -6177,7 +6211,7 @@ NS_IMETHODIMP
 nsWindow::BeginMoveDrag(WidgetMouseEvent* aEvent)
 {
     NS_ABORT_IF_FALSE(aEvent, "must have event");
-    NS_ABORT_IF_FALSE(aEvent->eventStructType == NS_MOUSE_EVENT,
+    NS_ABORT_IF_FALSE(aEvent->mClass == eMouseEventClass,
                       "event must have correct struct type");
 
     GdkWindow *gdk_window;
@@ -6200,7 +6234,7 @@ nsWindow::BeginResizeDrag(WidgetGUIEvent* aEvent,
 {
     NS_ENSURE_ARG_POINTER(aEvent);
 
-    if (aEvent->eventStructType != NS_MOUSE_EVENT) {
+    if (aEvent->mClass != eMouseEventClass) {
         // you can only begin a resize drag with a mouse event
         return NS_ERROR_INVALID_ARG;
     }

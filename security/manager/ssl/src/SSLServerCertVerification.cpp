@@ -105,7 +105,6 @@
 #include "nsICertOverrideService.h"
 #include "nsISiteSecurityService.h"
 #include "nsNSSComponent.h"
-#include "nsRecentBadCerts.h"
 #include "nsNSSIOLayer.h"
 #include "nsNSSShutDown.h"
 
@@ -130,6 +129,8 @@
 #ifdef PR_LOGGING
 extern PRLogModuleInfo* gPIPNSSLog;
 #endif
+
+using namespace mozilla::pkix;
 
 namespace mozilla { namespace psm {
 
@@ -325,6 +326,7 @@ DetermineCertOverrideErrors(CERTCertificate* cert, const char* hostName,
   // called if CertVerifier::VerifyCert succeeded.
   switch (defaultErrorCodeToReport) {
     case SEC_ERROR_CERT_SIGNATURE_ALGORITHM_DISABLED:
+    case SEC_ERROR_EXPIRED_ISSUER_CERTIFICATE:
     case SEC_ERROR_UNKNOWN_ISSUER:
     {
       collectedErrors = nsICertOverrideService::ERROR_UNTRUSTED;
@@ -499,19 +501,6 @@ CertErrorRunnable::CheckCertOverrides()
     }
   }
 
-  nsCOMPtr<nsIX509CertDB> certdb = do_GetService(NS_X509CERTDB_CONTRACTID);
-  nsCOMPtr<nsIRecentBadCerts> recentBadCertsService;
-  if (certdb) {
-    bool isPrivate = mProviderFlags & nsISocketProvider::NO_PERMANENT_STORAGE;
-    certdb->GetRecentBadCerts(isPrivate, getter_AddRefs(recentBadCertsService));
-  }
-
-  if (recentBadCertsService) {
-    NS_ConvertUTF8toUTF16 hostWithPortStringUTF16(hostWithPortString);
-    recentBadCertsService->AddBadCert(hostWithPortStringUTF16,
-                                      mInfoObject->SSLStatus());
-  }
-
   // pick the error code to report by priority
   PRErrorCode errorCodeToReport = mErrorCodeTrust    ? mErrorCodeTrust
                                 : mErrorCodeMismatch ? mErrorCodeMismatch
@@ -634,7 +623,8 @@ public:
                             CERTCertificate* serverCert,
                             SECItem* stapledOCSPResponse,
                             uint32_t providerFlags,
-                            PRTime time);
+                            Time time,
+                            PRTime prtime);
 private:
   NS_DECL_NSIRUNNABLE
 
@@ -645,13 +635,15 @@ private:
                                CERTCertificate* cert,
                                SECItem* stapledOCSPResponse,
                                uint32_t providerFlags,
-                               PRTime time);
+                               Time time,
+                               PRTime prtime);
   const RefPtr<SharedCertVerifier> mCertVerifier;
   const void* const mFdForLogging;
   const RefPtr<TransportSecurityInfo> mInfoObject;
-  const mozilla::pkix::ScopedCERTCertificate mCert;
+  const ScopedCERTCertificate mCert;
   const uint32_t mProviderFlags;
-  const PRTime mTime;
+  const Time mTime;
+  const PRTime mPRTime;
   const TimeStamp mJobStartTime;
   const ScopedSECItem mStapledOCSPResponse;
 };
@@ -659,13 +651,15 @@ private:
 SSLServerCertVerificationJob::SSLServerCertVerificationJob(
     const RefPtr<SharedCertVerifier>& certVerifier, const void* fdForLogging,
     TransportSecurityInfo* infoObject, CERTCertificate* cert,
-    SECItem* stapledOCSPResponse, uint32_t providerFlags, PRTime time)
+    SECItem* stapledOCSPResponse, uint32_t providerFlags,
+    Time time, PRTime prtime)
   : mCertVerifier(certVerifier)
   , mFdForLogging(fdForLogging)
   , mInfoObject(infoObject)
   , mCert(CERT_DupCertificate(cert))
   , mProviderFlags(providerFlags)
   , mTime(time)
+  , mPRTime(prtime)
   , mJobStartTime(TimeStamp::Now())
   , mStapledOCSPResponse(SECITEM_DupItem(stapledOCSPResponse))
 {
@@ -689,7 +683,6 @@ BlockServerCertChangeForSpdy(nsNSSSocketInfo* infoObject,
   // Get the existing cert. If there isn't one, then there is
   // no cert change to worry about.
   nsCOMPtr<nsIX509Cert> cert;
-  nsCOMPtr<nsIX509Cert2> cert2;
 
   RefPtr<nsSSLStatus> status(infoObject->SSLStatus());
   if (!status) {
@@ -700,10 +693,9 @@ BlockServerCertChangeForSpdy(nsNSSSocketInfo* infoObject,
   }
 
   status->GetServerCert(getter_AddRefs(cert));
-  cert2 = do_QueryInterface(cert);
-  if (!cert2) {
+  if (!cert) {
     NS_NOTREACHED("every nsSSLStatus must have a cert"
-                  "that implements nsIX509Cert2");
+                  "that implements nsIX509Cert");
     PR_SetError(SEC_ERROR_LIBRARY_FAILURE, 0);
     return SECFailure;
   }
@@ -715,9 +707,9 @@ BlockServerCertChangeForSpdy(nsNSSSocketInfo* infoObject,
                "GetNegotiatedNPN() failed during renegotiation");
 
   if (NS_SUCCEEDED(rv) && !StringBeginsWith(negotiatedNPN,
-                                            NS_LITERAL_CSTRING("spdy/")))
+                                            NS_LITERAL_CSTRING("spdy/"))) {
     return SECSuccess;
-
+  }
   // If GetNegotiatedNPN() failed we will assume spdy for safety's safe
   if (NS_FAILED(rv)) {
     PR_LOG(gPIPNSSLog, PR_LOG_DEBUG,
@@ -726,11 +718,12 @@ BlockServerCertChangeForSpdy(nsNSSSocketInfo* infoObject,
   }
 
   // Check to see if the cert has actually changed
-  ScopedCERTCertificate c(cert2->GetCert());
+  ScopedCERTCertificate c(cert->GetCert());
   NS_ASSERTION(c, "very bad and hopefully impossible state");
   bool sameCert = CERT_CompareCerts(c, serverCert);
-  if (sameCert)
+  if (sameCert) {
     return SECSuccess;
+  }
 
   // Report an error - changed cert is confirmed
   PR_LOG(gPIPNSSLog, PR_LOG_DEBUG,
@@ -742,7 +735,7 @@ BlockServerCertChangeForSpdy(nsNSSSocketInfo* infoObject,
 SECStatus
 AuthCertificate(CertVerifier& certVerifier, TransportSecurityInfo* infoObject,
                 CERTCertificate* cert, SECItem* stapledOCSPResponse,
-                uint32_t providerFlags, PRTime time)
+                uint32_t providerFlags, Time time)
 {
   MOZ_ASSERT(infoObject);
   MOZ_ASSERT(cert);
@@ -754,7 +747,7 @@ AuthCertificate(CertVerifier& certVerifier, TransportSecurityInfo* infoObject,
   bool saveIntermediates =
     !(providerFlags & nsISocketProvider::NO_PERMANENT_STORAGE);
 
-  mozilla::pkix::ScopedCERTCertList certList;
+  ScopedCERTCertList certList;
   SECOidTag evOidPolicy;
   rv = certVerifier.VerifySSLServerCert(cert, stapledOCSPResponse,
                                         time, infoObject,
@@ -817,7 +810,8 @@ SSLServerCertVerificationJob::Dispatch(
   CERTCertificate* serverCert,
   SECItem* stapledOCSPResponse,
   uint32_t providerFlags,
-  PRTime time)
+  Time time,
+  PRTime prtime)
 {
   // Runs on the socket transport thread
   if (!certVerifier || !infoObject || !serverCert) {
@@ -829,7 +823,7 @@ SSLServerCertVerificationJob::Dispatch(
   RefPtr<SSLServerCertVerificationJob> job(
     new SSLServerCertVerificationJob(certVerifier, fdForLogging, infoObject,
                                      serverCert, stapledOCSPResponse,
-                                     providerFlags, time));
+                                     providerFlags, time, prtime));
 
   nsresult nrv;
   if (!gCertVerificationThreadPool) {
@@ -903,7 +897,7 @@ SSLServerCertVerificationJob::Run()
       RefPtr<CertErrorRunnable> runnable(
           CreateCertErrorRunnable(*mCertVerifier, error, mInfoObject,
                                   mCert.get(), mFdForLogging, mProviderFlags,
-                                  mTime));
+                                  mPRTime));
       if (!runnable) {
         // CreateCertErrorRunnable set a new error code
         error = PR_GetError();
@@ -983,9 +977,8 @@ AuthCertificateHook(void* arg, PRFileDesc* fd, PRBool checkSig, PRBool isServer)
 
   socketInfo->SetFullHandshake();
 
-  // This value of "now" is used both here for OCSP stapling and later
-  // when calling CreateCertErrorRunnable.
-  PRTime now = PR_Now();
+  Time now(Now());
+  PRTime prnow(PR_Now());
 
   if (BlockServerCertChangeForSpdy(socketInfo, serverCert) != SECSuccess)
     return SECFailure;
@@ -1027,7 +1020,8 @@ AuthCertificateHook(void* arg, PRFileDesc* fd, PRBool checkSig, PRBool isServer)
     socketInfo->SetCertVerificationWaiting();
     SECStatus rv = SSLServerCertVerificationJob::Dispatch(
                      certVerifier, static_cast<const void*>(fd), socketInfo,
-                     serverCert, stapledOCSPResponse, providerFlags, now);
+                     serverCert, stapledOCSPResponse, providerFlags, now,
+                     prnow);
     return rv;
   }
 
@@ -1048,7 +1042,7 @@ AuthCertificateHook(void* arg, PRFileDesc* fd, PRBool checkSig, PRBool isServer)
     RefPtr<CertErrorRunnable> runnable(
         CreateCertErrorRunnable(*certVerifier, error, socketInfo, serverCert,
                                 static_cast<const void*>(fd), providerFlags,
-                                now));
+                                prnow));
     if (!runnable) {
       // CreateCertErrorRunnable sets a new error code when it fails
       error = PR_GetError();

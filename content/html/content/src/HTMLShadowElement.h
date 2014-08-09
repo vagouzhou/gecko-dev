@@ -16,7 +16,8 @@ class HTMLShadowElement MOZ_FINAL : public nsGenericHTMLElement,
 {
 public:
   HTMLShadowElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo);
-  virtual ~HTMLShadowElement();
+
+  NS_IMPL_FROMCONTENT_HTML_WITH_TAG(HTMLShadowElement, shadow)
 
   // nsISupports
   NS_DECL_ISUPPORTS_INHERITED
@@ -68,6 +69,8 @@ public:
   ShadowRoot* GetOlderShadowRoot() { return mProjectedShadow; }
 
 protected:
+  virtual ~HTMLShadowElement();
+
   virtual JSObject* WrapNode(JSContext *aCx) MOZ_OVERRIDE;
 
   // The ShadowRoot that will be rendered in place of this shadow insertion point.

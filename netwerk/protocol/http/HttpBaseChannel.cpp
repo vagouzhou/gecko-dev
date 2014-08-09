@@ -164,6 +164,7 @@ NS_INTERFACE_MAP_BEGIN(HttpBaseChannel)
   NS_INTERFACE_MAP_ENTRY(nsIEncodedChannel)
   NS_INTERFACE_MAP_ENTRY(nsIHttpChannel)
   NS_INTERFACE_MAP_ENTRY(nsIHttpChannelInternal)
+  NS_INTERFACE_MAP_ENTRY(nsIForcePendingChannel)
   NS_INTERFACE_MAP_ENTRY(nsIRedirectHistory)
   NS_INTERFACE_MAP_ENTRY(nsIUploadChannel)
   NS_INTERFACE_MAP_ENTRY(nsIUploadChannel2)
@@ -284,6 +285,20 @@ NS_IMETHODIMP
 HttpBaseChannel::SetOwner(nsISupports *aOwner)
 {
   mOwner = aOwner;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+HttpBaseChannel::SetLoadInfo(nsILoadInfo *aLoadInfo)
+{
+  mLoadInfo = aLoadInfo;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+HttpBaseChannel::GetLoadInfo(nsILoadInfo **aLoadInfo)
+{
+  NS_IF_ADDREF(*aLoadInfo = mLoadInfo);
   return NS_OK;
 }
 
@@ -1102,18 +1117,12 @@ HttpBaseChannel::SetRequestHeader(const nsACString& aHeader,
   LOG(("HttpBaseChannel::SetRequestHeader [this=%p header=\"%s\" value=\"%s\" merge=%u]\n",
       this, flatHeader.get(), flatValue.get(), aMerge));
 
-  // Header names are restricted to valid HTTP tokens.
-  if (!nsHttp::IsValidToken(flatHeader))
+  // Verify header names are valid HTTP tokens and header values are reasonably
+  // close to whats allowed in RFC 2616.
+  if (!nsHttp::IsValidToken(flatHeader) ||
+      !nsHttp::IsReasonableHeaderValue(flatValue)) {
     return NS_ERROR_INVALID_ARG;
-
-  // Header values MUST NOT contain line-breaks.  RFC 2616 technically
-  // permits CTL characters, including CR and LF, in header values provided
-  // they are quoted.  However, this can lead to problems if servers do not
-  // interpret quoted strings properly.  Disallowing CR and LF here seems
-  // reasonable and keeps things simple.  We also disallow a null byte.
-  if (flatValue.FindCharInSet("\r\n") != kNotFound ||
-      flatValue.Length() != strlen(flatValue.get()))
-    return NS_ERROR_INVALID_ARG;
+  }
 
   nsHttpAtom atom = nsHttp::ResolveAtom(flatHeader.get());
   if (!atom) {
@@ -1624,6 +1633,18 @@ HttpBaseChannel::ForcePending(bool aForcePending)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+HttpBaseChannel::GetLastModifiedTime(PRTime* lastModifiedTime)
+{
+  if (!mResponseHead)
+    return NS_ERROR_NOT_AVAILABLE;
+  uint32_t lastMod;
+  mResponseHead->GetLastModifiedValue(&lastMod);
+  *lastModifiedTime = lastMod;
+  return NS_OK;
+}
+
+
 //-----------------------------------------------------------------------------
 // HttpBaseChannel::nsISupportsPriority
 //-----------------------------------------------------------------------------
@@ -1885,13 +1906,6 @@ HttpBaseChannel::SetupReplacementChannel(nsIURI       *newURI,
   newChannel->SetNotificationCallbacks(mCallbacks);
   newChannel->SetLoadFlags(newLoadFlags);
 
-  // If our owner is a null principal it will have been set as a security
-  // measure, so we want to propagate it to the new channel.
-  nsCOMPtr<nsIPrincipal> ownerPrincipal = do_QueryInterface(mOwner);
-  if (ownerPrincipal && ownerPrincipal->GetIsNullPrincipal()) {
-    newChannel->SetOwner(mOwner);
-  }
-
   // Try to preserve the privacy bit if it has been overridden
   if (mPrivateBrowsingOverriden) {
     nsCOMPtr<nsIPrivateBrowsingChannel> newPBChannel =
@@ -1900,6 +1914,9 @@ HttpBaseChannel::SetupReplacementChannel(nsIURI       *newURI,
       newPBChannel->SetPrivate(mPrivateBrowsing);
     }
   }
+
+  // Propagate our loadinfo if needed.
+  newChannel->SetLoadInfo(mLoadInfo);
 
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(newChannel);
   if (!httpChannel)

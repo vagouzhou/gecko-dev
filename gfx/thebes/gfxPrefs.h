@@ -32,8 +32,8 @@
 // means that you can call
 //   bool var = gfxPrefs::LayersDump();
 // from any thread, but that you will only get the preference value of
-// "layers.dump" as it was set at the start of the session. If the value
-// was not set, the default would be false.
+// "layers.dump" as it was set at the start of the session (subject to
+// note 2 below). If the value was not set, the default would be false.
 //
 // In another example, this line in the .h:
 //   DECL_GFX_PREF(Live,"gl.msaa-level",MSAALevel,uint32_t,2);
@@ -42,7 +42,7 @@
 // from any thread, you will get the most up to date preference value of
 // "gl.msaa-level".  If the value is not set, the default would be 2.
 
-// Note that changing a preference from Live to Once is now as simple
+// Note 1: Changing a preference from Live to Once is now as simple
 // as changing the Update argument.  If your code worked before, it will
 // keep working, and behave as if the user never changes the preference.
 // Things are a bit more complicated and perhaps even dangerous when
@@ -51,9 +51,17 @@
 // values changing mid execution, and if you're using those preferences
 // in any setup and initialization, you may need to do extra work.
 
+// Note 2: Prefs can be set by using the corresponding Set method. For
+// example, if the accessor is Foo() then calling SetFoo(...) will update
+// the preference and also change the return value of subsequent Foo() calls.
+// This is true even for 'Once' prefs which otherwise do not change if the
+// pref is updated after initialization.
+
 #define DECL_GFX_PREF(Update, Pref, Name, Type, Default)                     \
 public:                                                                       \
 static Type Name() { MOZ_ASSERT(SingletonExists()); return GetSingleton().mPref##Name.mValue; } \
+static void Set##Name(Type aVal) { MOZ_ASSERT(SingletonExists()); \
+    GetSingleton().mPref##Name.Set(UpdatePolicy::Update, Get##Name##PrefName(), aVal); } \
 private:                                                                      \
 static const char* Get##Name##PrefName() { return Pref; }                     \
 static Type Get##Name##PrefDefault() { return Default; }                      \
@@ -82,6 +90,7 @@ private:
     }
     void Register(UpdatePolicy aUpdate, const char* aPreference)
     {
+      AssertMainThread();
       switch(aUpdate) {
         case UpdatePolicy::Skip:
           break;
@@ -90,6 +99,22 @@ private:
           break;
         case UpdatePolicy::Live:
           PrefAddVarCache(&mValue,aPreference, mValue);
+          break;
+        default:
+          MOZ_CRASH();
+          break;
+      }
+    }
+    void Set(UpdatePolicy aUpdate, const char* aPref, T aValue)
+    {
+      AssertMainThread();
+      PrefSet(aPref, aValue);
+      switch (aUpdate) {
+        case UpdatePolicy::Skip:
+        case UpdatePolicy::Live:
+          break;
+        case UpdatePolicy::Once:
+          mValue = PrefGet(aPref, mValue);
           break;
         default:
           MOZ_CRASH();
@@ -165,6 +190,7 @@ private:
   DECL_GFX_PREF(Live, "gfx.gralloc.fence-with-readpixels",     GrallocFenceWithReadPixels, bool, false);
   DECL_GFX_PREF(Live, "gfx.layerscope.enabled",                LayerScopeEnabled, bool, false);
   DECL_GFX_PREF(Live, "gfx.layerscope.port",                   LayerScopePort, int32_t, 23456);
+  DECL_GFX_PREF(Live, "gfx.perf-warnings.enabled",             PerfWarnings, bool, false);
   DECL_GFX_PREF(Once, "gfx.work-around-driver-bugs",           WorkAroundDriverBugs, bool, true);
 
   DECL_GFX_PREF(Live, "gfx.draw-color-bars",                   CompositorDrawColorBars, bool, false);
@@ -195,15 +221,18 @@ private:
   DECL_GFX_PREF(Live, "layers.draw-tile-borders",              DrawTileBorders, bool, false);
   DECL_GFX_PREF(Live, "layers.flash-borders",                  FlashLayerBorders, bool, false);
   DECL_GFX_PREF(Live, "layers.draw-layer-info",                DrawLayerInfo, bool, false);
-  DECL_GFX_PREF(Once, "layers.dump",                           LayersDump, bool, false);
+  DECL_GFX_PREF(Live, "layers.dump",                           LayersDump, bool, false);
   DECL_GFX_PREF(Once, "layers.enable-tiles",                   LayersTilesEnabled, bool, false);
   DECL_GFX_PREF(Once, "layers.simple-tiles",                   LayersUseSimpleTiles, bool, false);
   DECL_GFX_PREF(Once, "layers.force-per-tile-drawing",         PerTileDrawing, bool, false);
+  DECL_GFX_PREF(Once, "layers.tiled-drawtarget.enabled",       TiledDrawTargetEnabled, bool, false);
   // We allow for configurable and rectangular tile size to avoid wasting memory on devices whose
   // screen size does not align nicely to the default tile size. Although layers can be any size,
   // they are often the same size as the screen, especially for width.
   DECL_GFX_PREF(Once, "layers.tile-width",                     LayersTileWidth, int32_t, 256);
   DECL_GFX_PREF(Once, "layers.tile-height",                    LayersTileHeight, int32_t, 256);
+  DECL_GFX_PREF(Once, "layers.tile-max-pool-size",             LayersTileMaxPoolSize, uint32_t, (uint32_t)50);
+  DECL_GFX_PREF(Once, "layers.tile-shrink-pool-timeout",       LayersTileShrinkPoolTimeout, uint32_t, (uint32_t)1000);
   DECL_GFX_PREF(Once, "layers.overzealous-gralloc-unlocking",  OverzealousGrallocUnlocking, bool, false);
   DECL_GFX_PREF(Once, "layers.force-shmem-tiles",              ForceShmemTiles, bool, false);
   DECL_GFX_PREF(Live, "layers.frame-counter",                  DrawFrameCounter, bool, false);
@@ -214,6 +243,7 @@ private:
   DECL_GFX_PREF(Live, "layers.offmainthreadcomposition.frame-rate", LayersCompositionFrameRate, int32_t,-1);
   DECL_GFX_PREF(Once, "layers.offmainthreadcomposition.force-enabled", LayersOffMainThreadCompositionForceEnabled, bool, false);
   DECL_GFX_PREF(Once, "layers.offmainthreadcomposition.testing.enabled", LayersOffMainThreadCompositionTestingEnabled, bool, false);
+  DECL_GFX_PREF(Once, "layers.use-image-offscreen-surfaces",   UseImageOffscreenSurfaces, bool, false);
   DECL_GFX_PREF(Live, "layers.orientation.sync.timeout",       OrientationSyncMillis, uint32_t, (uint32_t)0);
   DECL_GFX_PREF(Once, "layers.prefer-d3d9",                    LayersPreferD3D9, bool, false);
   DECL_GFX_PREF(Once, "layers.prefer-opengl",                  LayersPreferOpenGL, bool, false);
@@ -221,6 +251,9 @@ private:
   DECL_GFX_PREF(Once, "layers.scroll-graph",                   LayersScrollGraph, bool, false);
   DECL_GFX_PREF(Once, "layers.uniformity-info",                UniformityInfo, bool, false);
 
+  DECL_GFX_PREF(Live, "layout.css.scroll-behavior.damping-ratio", ScrollBehaviorDampingRatio, float, 1.0f);
+  DECL_GFX_PREF(Live, "layout.css.scroll-behavior.enabled",    ScrollBehaviorEnabled, bool, false);
+  DECL_GFX_PREF(Live, "layout.css.scroll-behavior.spring-constant", ScrollBehaviorSpringConstant, float, 250.0f);
   DECL_GFX_PREF(Once, "layout.css.touch_action.enabled",       TouchActionEnabled, bool, false);
   DECL_GFX_PREF(Once, "layout.frame_rate",                     LayoutFrameRate, int32_t, -1);
   DECL_GFX_PREF(Live, "layout.display-list.dump",              LayoutDumpDisplayList, bool, false);
@@ -260,6 +293,12 @@ private:
   static int32_t PrefGet(const char*, int32_t);
   static uint32_t PrefGet(const char*, uint32_t);
   static float PrefGet(const char*, float);
+  static void PrefSet(const char* aPref, bool aValue);
+  static void PrefSet(const char* aPref, int32_t aValue);
+  static void PrefSet(const char* aPref, uint32_t aValue);
+  static void PrefSet(const char* aPref, float aValue);
+
+  static void AssertMainThread();
 
   gfxPrefs();
   ~gfxPrefs();

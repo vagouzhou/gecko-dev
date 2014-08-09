@@ -172,7 +172,7 @@ static void DeferredDestroyCompositor(CompositorParent* aCompositorParent,
 
 void nsBaseWidget::DestroyCompositor()
 {
-  LayerScope::DestroyServerSocket();
+  LayerScope::DeInit();
 
   if (mCompositorChild) {
     mCompositorChild->SendWillStop();
@@ -817,7 +817,7 @@ nsBaseWidget::ComputeShouldAccelerate(bool aDefault)
 
     int32_t status;
     if (NS_SUCCEEDED(gfxInfo->GetFeatureStatus(nsIGfxInfo::FEATURE_OPENGL_LAYERS, &status))) {
-      if (status == nsIGfxInfo::FEATURE_NO_INFO) {
+      if (status == nsIGfxInfo::FEATURE_STATUS_OK) {
         whitelisted = true;
       }
     }
@@ -900,12 +900,12 @@ void nsBaseWidget::CreateCompositor(int aWidth, int aHeight)
     return;
   }
 
-  // The server socket has to be created on the main thread.
-  LayerScope::CreateServerSocket();
+  // Initialize LayerScope on the main thread.
+  LayerScope::Init();
 
   mCompositorParent = NewCompositorParent(aWidth, aHeight);
   MessageChannel *parentChannel = mCompositorParent->GetIPCChannel();
-  ClientLayerManager* lm = new ClientLayerManager(this);
+  nsRefPtr<ClientLayerManager> lm = new ClientLayerManager(this);
   MessageLoop *childMessageLoop = CompositorParent::CompositorLoop();
   mCompositorChild = new CompositorChild(lm);
   mCompositorChild->Open(parentChannel, childMessageLoop, ipc::ChildSide);
@@ -928,7 +928,7 @@ void nsBaseWidget::CreateCompositor(int aWidth, int aHeight)
   if (success) {
     ShadowLayerForwarder* lf = lm->AsShadowForwarder();
     if (!lf) {
-      delete lm;
+      lm = nullptr;
       mCompositorChild = nullptr;
       return;
     }
@@ -937,7 +937,7 @@ void nsBaseWidget::CreateCompositor(int aWidth, int aHeight)
     ImageBridgeChild::IdentifyCompositorTextureHost(textureFactoryIdentifier);
     WindowUsesOMTC();
 
-    mLayerManager = lm;
+    mLayerManager = lm.forget();
     return;
   }
 

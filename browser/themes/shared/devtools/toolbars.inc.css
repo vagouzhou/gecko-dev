@@ -14,8 +14,9 @@
 .devtools-sidebar-tabs > tabs {
   -moz-appearance: none;
   padding: 0;
+  border-width: 0;
   border-bottom-width: 1px;
-  border-bottom-style: solid;
+  border-style: solid;
   height: 24px;
   line-height: 24px;
   box-sizing: border-box;
@@ -32,6 +33,9 @@
 .devtools-toolbar checkbox .checkbox-check {
   margin: 0;
   padding: 0;
+}
+.devtools-toolbar checkbox .checkbox-label-box {
+  border: none !important; /* overrides .checkbox-label-box from checkbox.css */
 }
 .devtools-toolbar checkbox .checkbox-label-box .checkbox-label {
   margin: 0 6px !important; /* overrides .checkbox-label from checkbox.css */
@@ -52,6 +56,7 @@
   border-radius: 0;
   margin: 2px 3px;
   color: inherit;
+  transition: background 0.05s ease-in-out;
 }
 
 .devtools-menulist:-moz-focusring,
@@ -172,24 +177,32 @@
 }
 
 /* Menu type buttons and checked states */
-.theme-dark .devtools-menulist[open=true],
-.theme-dark .devtools-toolbarbutton[open=true],
-.theme-dark .devtools-toolbarbutton[open=true]:hover,
-.theme-dark .devtools-toolbarbutton[open=true]:hover:active,
 .theme-dark .devtools-toolbarbutton[checked=true],
-.theme-dark .devtools-toolbarbutton[checked=true]:hover,
 .theme-dark #toolbox-buttons .devtools-toolbarbutton[text-as-image][checked] {
   background: rgba(29, 79, 115, .7); /* Select highlight blue */
   color: #f5f7fa;
 }
+
+.theme-light .devtools-toolbarbutton[checked=true],
+.theme-light #toolbox-buttons .devtools-toolbarbutton[text-as-image][checked] {
+  background: rgba(76, 158, 217, .2); /* Select highlight blue */
+}
+
+.theme-dark .devtools-menulist[open=true],
+.theme-dark .devtools-toolbarbutton[open=true],
+.theme-dark .devtools-toolbarbutton[open=true]:hover,
+.theme-dark .devtools-toolbarbutton[open=true]:hover:active,
+.theme-dark .devtools-toolbarbutton[checked=true]:hover {
+  background: rgba(29, 79, 115, .8); /* Select highlight blue */
+  color: #f5f7fa;
+}
+
 .theme-light .devtools-menulist[open=true],
 .theme-light .devtools-toolbarbutton[open=true],
 .theme-light .devtools-toolbarbutton[open=true]:hover,
 .theme-light .devtools-toolbarbutton[open=true]:hover:active,
-.theme-light .devtools-toolbarbutton[checked=true],
-.theme-light .devtools-toolbarbutton[checked=true]:hover,
-.theme-light #toolbox-buttons .devtools-toolbarbutton[text-as-image][checked] {
-  background: rgba(76, 158, 217, .2); /* Select highlight blue */
+.theme-light .devtools-toolbarbutton[checked=true]:hover {
+  background: rgba(76, 158, 217, .4); /* Select highlight blue */
 }
 
 .devtools-option-toolbarbutton {
@@ -812,9 +825,11 @@
 .theme-light .scrollbutton-up > .toolbarbutton-icon,
 .theme-light .scrollbutton-down > .toolbarbutton-icon,
 .theme-light #black-boxed-message-button .button-icon,
+.theme-light #profiling-notice-button .button-icon,
 .theme-light #canvas-debugging-empty-notice-button .button-icon,
 .theme-light #requests-menu-perf-notice-button .button-icon,
-.theme-light #requests-menu-network-summary-button .button-icon {
+.theme-light #requests-menu-network-summary-button .button-icon,
+.theme-light .event-tooltip-debugger-icon {
   filter: url(filters.svg#invert);
 }
 
@@ -823,7 +838,6 @@
 .theme-light .command-button-invertable[checked=true]:not(:active) > image,
 .theme-light .devtools-tab[icon-invertable][selected] > image,
 .theme-light .devtools-tab[icon-invertable][highlighted] > image,
-.theme-light #resume[checked] > image,
 .theme-light #record-snapshot[checked] > image,
 .theme-light #profiler-start[checked] > image {
   filter: none !important;

@@ -168,10 +168,11 @@ function startListeners() {
   addMessageListenerId("Marionette:getElementValueOfCssProperty", getElementValueOfCssProperty);
   addMessageListenerId("Marionette:submitElement", submitElement);
   addMessageListenerId("Marionette:getElementSize", getElementSize);
+  addMessageListenerId("Marionette:getElementRect", getElementRect);
   addMessageListenerId("Marionette:isElementEnabled", isElementEnabled);
   addMessageListenerId("Marionette:isElementSelected", isElementSelected);
   addMessageListenerId("Marionette:sendKeysToElement", sendKeysToElement);
-  addMessageListenerId("Marionette:getElementLocation", getElementLocation);
+  addMessageListenerId("Marionette:getElementLocation", getElementLocation); //deprecated
   addMessageListenerId("Marionette:clearElement", clearElement);
   addMessageListenerId("Marionette:switchToFrame", switchToFrame);
   addMessageListenerId("Marionette:deleteSession", deleteSession);
@@ -267,7 +268,8 @@ function deleteSession(msg) {
   removeMessageListenerId("Marionette:isElementDisplayed", isElementDisplayed);
   removeMessageListenerId("Marionette:getElementValueOfCssProperty", getElementValueOfCssProperty);
   removeMessageListenerId("Marionette:submitElement", submitElement);
-  removeMessageListenerId("Marionette:getElementSize", getElementSize);
+  removeMessageListenerId("Marionette:getElementSize", getElementSize);  //deprecated
+  removeMessageListenerId("Marionette:getElementRect", getElementRect);
   removeMessageListenerId("Marionette:isElementEnabled", isElementEnabled);
   removeMessageListenerId("Marionette:isElementSelected", isElementSelected);
   removeMessageListenerId("Marionette:sendKeysToElement", sendKeysToElement);
@@ -400,9 +402,16 @@ function createExecuteContentSandbox(aWindow, timeout) {
     }
   });
 
-  XPCOMUtils.defineLazyGetter(sandbox, 'SpecialPowers', function() {
-    return new SpecialPowers(aWindow);
-  });
+  if (aWindow.wrappedJSObject.SpecialPowers != undefined) {
+    XPCOMUtils.defineLazyGetter(sandbox, 'SpecialPowers', function() {
+      return aWindow.wrappedJSObject.SpecialPowers;
+    });
+  }
+  else {
+    XPCOMUtils.defineLazyGetter(sandbox, 'SpecialPowers', function() {
+      return new SpecialPowers(aWindow);
+    });
+  }
 
   sandbox.asyncComplete = function sandbox_asyncComplete(value, status, stack, commandId) {
     if (commandId == asyncTestCommandId) {
@@ -512,8 +521,8 @@ function executeScript(msg, directInject) {
     }
     else {
       try {
-        sandbox.__marionetteParams = elementManager.convertWrappedArguments(
-          msg.json.args, curFrame);
+        sandbox.__marionetteParams = Cu.cloneInto(elementManager.convertWrappedArguments(
+          msg.json.args, curFrame), sandbox, { wrapReflectors: true });
       }
       catch(e) {
         sendError(e.message, e.code, e.stack, asyncTestCommandId);
@@ -644,8 +653,8 @@ function executeWithCallback(msg, useFinish) {
   }
   else {
     try {
-      sandbox.__marionetteParams = elementManager.convertWrappedArguments(
-        msg.json.args, curFrame);
+      sandbox.__marionetteParams = Cu.cloneInto(elementManager.convertWrappedArguments(
+        msg.json.args, curFrame), sandbox, { wrapReflectors: true });
     }
     catch(e) {
       sendError(e.message, e.code, e.stack, asyncTestCommandId);
@@ -1520,6 +1529,25 @@ function getElementSize(msg){
     let el = elementManager.getKnownElement(msg.json.id, curFrame);
     let clientRect = el.getBoundingClientRect();
     sendResponse({value: {width: clientRect.width, height: clientRect.height}},
+                 command_id);
+  }
+  catch (e) {
+    sendError(e.message, e.code, e.stack, command_id);
+  }
+}
+
+/**
+ * Get the size of the element and return it
+ */
+function getElementRect(msg){
+  let command_id = msg.json.command_id;
+  try {
+    let el = elementManager.getKnownElement(msg.json.id, curFrame);
+    let clientRect = el.getBoundingClientRect();
+    sendResponse({value: {x: clientRect.x + curFrame.pageXOffset,
+                          y: clientRect.y  + curFrame.pageYOffset,
+                          width: clientRect.width,
+                          height: clientRect.height}},
                  command_id);
   }
   catch (e) {

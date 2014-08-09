@@ -58,15 +58,8 @@ interface BluetoothAdapter : EventTarget {
   readonly attribute boolean                discoverable;
   readonly attribute boolean                discovering;
 
-  // array of type BluetoothDevice[]
-  [GetterThrows]
-  readonly attribute any            devices;
-
-  // array of type DOMString[]
-  [GetterThrows]
-  readonly attribute any            uuids;
-
-           attribute EventHandler   ondevicefound;
+  [AvailableIn=CertifiedApps]
+  readonly attribute BluetoothPairingListener pairingReqs;
 
   // Fired when pairing process is completed
            attribute EventHandler   onpairedstatuschanged;
@@ -86,16 +79,29 @@ interface BluetoothAdapter : EventTarget {
   // Fired when attributes of BluetoothAdapter changed
            attribute EventHandler   onattributechanged;
 
-  // Promise<void>
-  [Throws]
-  Promise setName(DOMString aName);
-  // Promise<void>
-  [Throws]
-  Promise setDiscoverable(boolean aDiscoverable);
+  /**
+   * Enable/Disable a local bluetooth adapter by asynchronus methods and return
+   * its result through a Promise.
+   *
+   * Several onattributechanged events would be triggered during processing the
+   * request, and the last one would indicate adapter.state becomes
+   * enabled/disabled.
+   */
   [NewObject, Throws]
-  DOMRequest startDiscovery();
+  Promise<void> enable();
   [NewObject, Throws]
-  DOMRequest stopDiscovery();
+  Promise<void> disable();
+
+  [NewObject, Throws]
+  Promise<void> setName(DOMString aName);
+  [NewObject, Throws]
+  Promise<void> setDiscoverable(boolean aDiscoverable);
+
+  [NewObject, Throws]
+  Promise<BluetoothDiscoveryHandle> startDiscovery();
+  [NewObject, Throws]
+  Promise<void> stopDiscovery();
+
   [NewObject, Throws]
   DOMRequest pair(DOMString deviceAddress);
   [NewObject, Throws]
@@ -104,26 +110,6 @@ interface BluetoothAdapter : EventTarget {
   DOMRequest getPairedDevices();
   [NewObject, Throws]
   DOMRequest getConnectedDevices(unsigned short serviceUuid);
-  [NewObject, Throws]
-  DOMRequest setPinCode(DOMString deviceAddress, DOMString pinCode);
-  [NewObject, Throws]
-  DOMRequest setPasskey(DOMString deviceAddress, unsigned long passkey);
-  [NewObject, Throws]
-  DOMRequest setPairingConfirmation(DOMString deviceAddress, boolean confirmation);
-
-  /**
-   * Enable/Disable a local bluetooth adapter by asynchronus methods and return
-   * its result through a Promise.
-   * Several onattributechanged event would be triggered during processing the
-   * request, and the last one would indicate adapter.state becomes
-   * enabled/disabled.
-   */
-  // Promise<void>
-  [Throws]
-  Promise enable();
-  // Promise<void>
-  [Throws]
-  Promise disable();
 
   /**
    * Connect/Disconnect to a specific service of a target remote device.

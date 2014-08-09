@@ -44,6 +44,8 @@ else
 	# VC10 (2010) is 16.00.30319.01, VC10SP1 is 16.00.40219.01.
 	_MSC_VER_GE_10SP1 := $(shell expr $(_MSC_VER) \> 1600 \| \
 		$(_MSC_VER) = 1600 \& $(_CC_RELEASE) \>= 40219)
+	# VC11 (2012).
+	_MSC_VER_GE_11 := $(shell expr $(_MSC_VER) \>= 1700)
 	# VC12 (2013).
 	_MSC_VER_GE_12 := $(shell expr $(_MSC_VER) \>= 1800)
 	ifeq ($(_CC_VMAJOR),14)
@@ -194,6 +196,11 @@ ifdef USE_64
 	DEFINES += -D_AMD64_
 else
 	DEFINES += -D_X86_
+	# VS2012 defaults to -arch:SSE2. Use -arch:IA32 to avoid requiring
+	# SSE2.
+	ifeq ($(_MSC_VER_GE_11),1)
+		OS_CFLAGS += -arch:IA32
+	endif
 endif
 endif
 ifeq ($(CPU_ARCH), ALPHA)

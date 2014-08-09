@@ -32,7 +32,7 @@ private:
   typedef typename KeyClass::KeyType KeyType;
   typedef typename KeyClass::KeyTypePointer KeyTypePointer;
 
-  nsBaseHashtableET(KeyTypePointer aKey);
+  explicit nsBaseHashtableET(KeyTypePointer aKey);
   nsBaseHashtableET(nsBaseHashtableET<KeyClass, DataType>&& aToMove);
   ~nsBaseHashtableET();
 };
@@ -62,8 +62,8 @@ public:
   using nsTHashtable<EntryType>::Contains;
 
   nsBaseHashtable() {}
-  explicit nsBaseHashtable(uint32_t aInitSize)
-    : nsTHashtable<EntryType>(aInitSize)
+  explicit nsBaseHashtable(uint32_t aInitLength)
+    : nsTHashtable<EntryType>(aInitLength)
   {
   }
 

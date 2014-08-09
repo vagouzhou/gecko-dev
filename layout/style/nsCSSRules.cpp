@@ -31,7 +31,6 @@
 #include "nsStyleUtil.h"
 #include "mozilla/css/Declaration.h"
 #include "nsCSSParser.h"
-#include "nsPrintfCString.h"
 #include "nsDOMClassInfoID.h"
 #include "mozilla/dom/CSSStyleDeclarationBinding.h"
 #include "StyleRule.h"
@@ -116,6 +115,12 @@ Rule::GetParentStyleSheet(nsIDOMCSSStyleSheet** aSheet)
 
   NS_IF_ADDREF(*aSheet = GetStyleSheet());
   return NS_OK;
+}
+
+css::Rule*
+Rule::GetCSSRule()
+{
+  return this;
 }
 
 size_t
@@ -211,8 +216,9 @@ DOMCI_DATA(CSSCharsetRule, css::CharsetRule)
 namespace mozilla {
 namespace css {
 
-CharsetRule::CharsetRule(const nsAString& aEncoding)
-  : Rule(),
+CharsetRule::CharsetRule(const nsAString& aEncoding,
+                         uint32_t aLineNumber, uint32_t aColumnNumber)
+  : Rule(aLineNumber, aColumnNumber),
     mEncoding(aEncoding)
 {
 }
@@ -311,6 +317,12 @@ CharsetRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+CharsetRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 /* virtual */ size_t
 CharsetRule::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 {
@@ -325,8 +337,9 @@ CharsetRule::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 // ImportRule
 //
 
-ImportRule::ImportRule(nsMediaList* aMedia, const nsString& aURLSpec)
-  : Rule()
+ImportRule::ImportRule(nsMediaList* aMedia, const nsString& aURLSpec,
+                       uint32_t aLineNumber, uint32_t aColumnNumber)
+  : Rule(aLineNumber, aColumnNumber)
   , mURLSpec(aURLSpec)
   , mMedia(aMedia)
 {
@@ -459,6 +472,12 @@ ImportRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+ImportRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 NS_IMETHODIMP
 ImportRule::GetHref(nsAString & aHref)
 {
@@ -507,8 +526,8 @@ DOMCI_DATA(CSSImportRule, css::ImportRule)
 namespace mozilla {
 namespace css {
 
-GroupRule::GroupRule()
-  : Rule()
+GroupRule::GroupRule(uint32_t aLineNumber, uint32_t aColumnNumber)
+  : Rule(aLineNumber, aColumnNumber)
 {
 }
 
@@ -753,7 +772,8 @@ GroupRule::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 // -------------------------------------------
 // nsICSSMediaRule
 //
-MediaRule::MediaRule()
+MediaRule::MediaRule(uint32_t aLineNumber, uint32_t aColumnNumber)
+  : GroupRule(aLineNumber, aColumnNumber)
 {
 }
 
@@ -877,6 +897,12 @@ MediaRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return GroupRule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+MediaRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 // nsIDOMCSSGroupingRule methods
 NS_IMETHODIMP
 MediaRule::GetCssRules(nsIDOMCSSRuleList* *aRuleList)
@@ -973,7 +999,8 @@ DOMCI_DATA(CSSMediaRule, css::MediaRule)
 namespace mozilla {
 namespace css {
 
-DocumentRule::DocumentRule()
+DocumentRule::DocumentRule(uint32_t aLineNumber, uint32_t aColumnNumber)
+  : GroupRule(aLineNumber, aColumnNumber)
 {
 }
 
@@ -1083,6 +1110,12 @@ NS_IMETHODIMP
 DocumentRule::GetParentRule(nsIDOMCSSRule** aParentRule)
 {
   return GroupRule::GetParentRule(aParentRule);
+}
+
+css::Rule*
+DocumentRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
 }
 
 // nsIDOMCSSGroupingRule methods
@@ -1223,8 +1256,9 @@ DOMCI_DATA(CSSMozDocumentRule, css::DocumentRule)
 namespace mozilla {
 namespace css {
 
-NameSpaceRule::NameSpaceRule(nsIAtom* aPrefix, const nsString& aURLSpec)
-  : Rule(),
+NameSpaceRule::NameSpaceRule(nsIAtom* aPrefix, const nsString& aURLSpec,
+                             uint32_t aLineNumber, uint32_t aColumnNumber)
+  : Rule(aLineNumber, aColumnNumber),
     mPrefix(aPrefix),
     mURLSpec(aURLSpec)
 {
@@ -1333,6 +1367,12 @@ NameSpaceRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+NameSpaceRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 /* virtual */ size_t
 NameSpaceRule::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 {
@@ -1406,52 +1446,6 @@ AppendSerializedFontSrc(const nsCSSValue& src, nsAString & aResult)
     aResult.AppendLiteral(", ");
   }
   aResult.Truncate(aResult.Length() - 2); // remove the last comma-space
-}
-
-// print all characters with at least four hex digits
-static void
-AppendSerializedUnicodePoint(uint32_t aCode, nsACString &aBuf)
-{
-  aBuf.Append(nsPrintfCString("%04X", aCode));
-}
-
-// A unicode-range: descriptor is represented as an array of integers,
-// to be interpreted as a sequence of pairs: min max min max ...
-// It is in source order.  (Possibly it should be sorted and overlaps
-// consolidated, but right now we don't do that.)
-static void
-AppendSerializedUnicodeRange(nsCSSValue const & aValue,
-                             nsAString & aResult)
-{
-  NS_PRECONDITION(aValue.GetUnit() == eCSSUnit_Null ||
-                  aValue.GetUnit() == eCSSUnit_Array,
-                  "improper value unit for unicode-range:");
-  aResult.Truncate();
-  if (aValue.GetUnit() != eCSSUnit_Array)
-    return;
-
-  nsCSSValue::Array const & sources = *aValue.GetArrayValue();
-  nsAutoCString buf;
-
-  NS_ABORT_IF_FALSE(sources.Count() % 2 == 0,
-                    "odd number of entries in a unicode-range: array");
-
-  for (uint32_t i = 0; i < sources.Count(); i += 2) {
-    uint32_t min = sources[i].GetIntValue();
-    uint32_t max = sources[i+1].GetIntValue();
-
-    // We don't try to replicate the U+XX?? notation.
-    buf.AppendLiteral("U+");
-    AppendSerializedUnicodePoint(min, buf);
-
-    if (min != max) {
-      buf.Append('-');
-      AppendSerializedUnicodePoint(max, buf);
-    }
-    buf.AppendLiteral(", ");
-  }
-  buf.Truncate(buf.Length() - 2); // remove the last comma-space
-  CopyASCIItoUTF16(buf, aResult);
 }
 
 // Mapping from nsCSSFontDesc codes to nsCSSFontFaceStyleDecl fields.
@@ -1539,7 +1533,7 @@ nsCSSFontFaceStyleDecl::GetPropertyValue(nsCSSFontDesc aFontDescID,
     return NS_OK;
 
   case eCSSFontDesc_UnicodeRange:
-    AppendSerializedUnicodeRange(val, aResult);
+    nsStyleUtil::AppendUnicodeRange(val, aResult);
     return NS_OK;
 
   case eCSSFontDesc_UNKNOWN:
@@ -1858,6 +1852,12 @@ nsCSSFontFaceRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+nsCSSFontFaceRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 NS_IMETHODIMP
 nsCSSFontFaceRule::GetStyle(nsIDOMCSSStyleDeclaration** aStyle)
 {
@@ -2042,6 +2042,12 @@ NS_IMETHODIMP
 nsCSSFontFeatureValuesRule::GetParentRule(nsIDOMCSSRule** aParentRule)
 {
   return Rule::GetParentRule(aParentRule);
+}
+
+css::Rule*
+nsCSSFontFeatureValuesRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
 }
 
 NS_IMETHODIMP
@@ -2327,6 +2333,12 @@ nsCSSKeyframeRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+nsCSSKeyframeRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 NS_IMETHODIMP
 nsCSSKeyframeRule::GetKeyText(nsAString& aKeyText)
 {
@@ -2522,6 +2534,12 @@ NS_IMETHODIMP
 nsCSSKeyframesRule::GetParentRule(nsIDOMCSSRule** aParentRule)
 {
   return GroupRule::GetParentRule(aParentRule);
+}
+
+css::Rule*
+nsCSSKeyframesRule::GetCSSRule()
+{
+  return GroupRule::GetCSSRule();
 }
 
 NS_IMETHODIMP
@@ -2849,6 +2867,12 @@ nsCSSPageRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return Rule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+nsCSSPageRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
+}
+
 css::ImportantRule*
 nsCSSPageRule::GetImportantRule()
 {
@@ -2902,9 +2926,15 @@ nsCSSPageRule::SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const
 namespace mozilla {
 
 CSSSupportsRule::CSSSupportsRule(bool aConditionMet,
-                                 const nsString& aCondition)
-  : mUseGroup(aConditionMet),
-    mCondition(aCondition)
+                                 const nsString& aCondition,
+                                 uint32_t aLineNumber, uint32_t aColumnNumber)
+  : css::GroupRule(aLineNumber, aColumnNumber)
+  , mUseGroup(aConditionMet)
+  , mCondition(aCondition)
+{
+}
+
+CSSSupportsRule::~CSSSupportsRule()
 {
 }
 
@@ -2996,6 +3026,12 @@ CSSSupportsRule::GetParentRule(nsIDOMCSSRule** aParentRule)
   return css::GroupRule::GetParentRule(aParentRule);
 }
 
+css::Rule*
+CSSSupportsRule::GetCSSRule()
+{
+  return css::GroupRule::GetCSSRule();
+}
+
 // nsIDOMCSSGroupingRule methods
 NS_IMETHODIMP
 CSSSupportsRule::GetCssRules(nsIDOMCSSRuleList* *aRuleList)
@@ -3048,9 +3084,13 @@ DOMCI_DATA(CSSSupportsRule, mozilla::CSSSupportsRule)
 //
 
 nsCSSCounterStyleRule::nsCSSCounterStyleRule(const nsCSSCounterStyleRule& aCopy)
-  : Rule(aCopy),
-    mName(aCopy.mName)
+  : Rule(aCopy)
+  , mName(aCopy.mName)
+  , mGeneration(aCopy.mGeneration)
 {
+  for (size_t i = 0; i < ArrayLength(mValues); ++i) {
+    mValues[i] = aCopy.mValues[i];
+  }
 }
 
 nsCSSCounterStyleRule::~nsCSSCounterStyleRule()
@@ -3159,6 +3199,12 @@ NS_IMETHODIMP
 nsCSSCounterStyleRule::GetParentRule(nsIDOMCSSRule** aParentRule)
 {
   return Rule::GetParentRule(aParentRule);
+}
+
+css::Rule*
+nsCSSCounterStyleRule::GetCSSRule()
+{
+  return Rule::GetCSSRule();
 }
 
 // nsIDOMCSSCounterStyleRule methods

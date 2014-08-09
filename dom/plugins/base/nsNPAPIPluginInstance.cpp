@@ -55,6 +55,7 @@ using namespace mozilla;
 #include "GLContext.h"
 #include "TexturePoolOGL.h"
 #include "GLSharedHandleHelpers.h"
+#include "SurfaceTypes.h"
 
 using namespace mozilla::gl;
 
@@ -89,7 +90,7 @@ static bool EnsureGLContext()
   if (!sPluginContext) {
     gfxIntSize dummySize(16, 16);
     sPluginContext = GLContextProvider::CreateOffscreen(dummySize,
-                                                        GLContext::SurfaceCaps::Any());
+                                                        SurfaceCaps::Any());
   }
 
   return sPluginContext != nullptr;
@@ -1811,7 +1812,7 @@ nsNPAPIPluginInstance::CheckJavaC2PJSObjectQuirk(uint16_t paramCount,
     return;
   }
 
-  mozilla::Version version = javaVersion.get();
+  mozilla::Version version(javaVersion.get());
 
   if (version >= "1.7.0.4") {
     return;

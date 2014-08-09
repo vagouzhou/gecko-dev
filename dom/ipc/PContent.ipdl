@@ -23,6 +23,7 @@ include protocol PImageBridge;
 include protocol PIndexedDB;
 include protocol PMemoryReportRequest;
 include protocol PNecko;
+include protocol PScreenManager;
 include protocol PSharedBufferManager;
 include protocol PSms;
 include protocol PSpeechSynthesis;
@@ -30,6 +31,7 @@ include protocol PStorage;
 include protocol PTelephony;
 include protocol PTestShell;
 include protocol PJavaScript;
+include protocol PRemoteSpellcheckEngine;
 include DOMTypes;
 include JavaScriptTypes;
 include InputStreamParams;
@@ -54,6 +56,12 @@ using mozilla::dom::AudioChannelState from "AudioChannelCommon.h";
 using mozilla::dom::NativeThreadId from "mozilla/dom/TabMessageUtils.h";
 using mozilla::hal::ProcessPriority from "mozilla/HalTypes.h";
 using gfxIntSize from "nsSize.h";
+
+union ChromeRegistryItem
+{
+    ChromePackage;
+    OverrideMapping;
+};
 
 namespace mozilla {
 namespace dom {
@@ -303,12 +311,14 @@ intr protocol PContent
     manages PIndexedDB;
     manages PMemoryReportRequest;
     manages PNecko;
+    manages PScreenManager;
     manages PSms;
     manages PSpeechSynthesis;
     manages PStorage;
     manages PTelephony;
     manages PTestShell;
     manages PJavaScript;
+    manages PRemoteSpellcheckEngine;
 
 both:
     // Depending on exactly how the new browser is being created, it might be
@@ -352,7 +362,7 @@ child:
     async SetProcessSandbox();
 
     PMemoryReportRequest(uint32_t generation, bool anonymize,
-                         bool minimizeMemoryUsage, nsString DMDDumpIdent);
+                         bool minimizeMemoryUsage, FileDescriptor DMDFile);
 
     /**
      * Notify the AudioChannelService in the child processes.
@@ -377,7 +387,8 @@ child:
     PTestShell();
 
     RegisterChrome(ChromePackage[] packages, ResourceMapping[] resources,
-                   OverrideMapping[] overrides, nsCString locale);
+                   OverrideMapping[] overrides, nsCString locale, bool reset);
+    RegisterChromeItem(ChromeRegistryItem item);
 
     async SetOffline(bool offline);
 
@@ -462,6 +473,7 @@ parent:
 
     async PJavaScript();
 
+    sync PRemoteSpellcheckEngine();
     PDeviceStorageRequest(DeviceStorageParams params);
 
     PFileSystemRequest(FileSystemParams params);
@@ -473,11 +485,19 @@ parent:
 
     async GetSystemMemory(uint64_t getterId);
 
+    sync IsSecureURI(uint32_t type, URIParams uri, uint32_t flags)
+        returns (bool isSecureURI);
+
     PHal();
 
     PIndexedDB();
 
     PNecko();
+
+    rpc PScreenManager()
+        returns (uint32_t numberOfScreens,
+                 float systemDefaultScale,
+                 bool success);
 
     PSms();
 
@@ -583,7 +603,7 @@ parent:
     async AudioChannelChangedNotification();
     async AudioChannelChangeDefVolChannel(int32_t aChannel, bool aHidden);
 
-    sync DataStoreGetStores(nsString aName, Principal aPrincipal)
+    sync DataStoreGetStores(nsString aName, nsString aOwner, Principal aPrincipal)
         returns (DataStoreSetting[] dataStores);
 
     async FilePathUpdateNotify(nsString aType,

@@ -27,7 +27,6 @@ namespace layers {
 
 ContentHostBase::ContentHostBase(const TextureInfo& aTextureInfo)
   : ContentHost(aTextureInfo)
-  , mPaintWillResample(false)
   , mInitialised(false)
 {}
 
@@ -35,39 +34,17 @@ ContentHostBase::~ContentHostBase()
 {
 }
 
-struct AutoLockContentHost
-{
-  AutoLockContentHost(ContentHostBase* aHost)
-    : mHost(aHost)
-  {
-    mSucceeded = mHost->Lock();
-  }
-
-  ~AutoLockContentHost()
-  {
-    if (mSucceeded) {
-      mHost->Unlock();
-    }
-  }
-
-  bool Failed() { return !mSucceeded; }
-
-  ContentHostBase* mHost;
-  bool mSucceeded;
-};
-
 void
 ContentHostBase::Composite(EffectChain& aEffectChain,
                            float aOpacity,
                            const gfx::Matrix4x4& aTransform,
                            const Filter& aFilter,
                            const Rect& aClipRect,
-                           const nsIntRegion* aVisibleRegion,
-                           TiledLayerProperties* aLayerProperties)
+                           const nsIntRegion* aVisibleRegion)
 {
   NS_ASSERTION(aVisibleRegion, "Requires a visible region");
 
-  AutoLockContentHost lock(this);
+  AutoLockCompositableHost lock(this);
   if (lock.Failed()) {
     return;
   }
@@ -78,9 +55,8 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
   if (!source) {
     return;
   }
-  RefPtr<TexturedEffect> effect =
-    CreateTexturedEffect(source, sourceOnWhite, aFilter, true);
 
+  RefPtr<TexturedEffect> effect = GenEffect(aFilter);
   if (!effect) {
     return;
   }
@@ -229,6 +205,16 @@ ContentHostBase::Composite(EffectChain& aEffectChain,
                                    aTransform, mFlashCounter);
 }
 
+TemporaryRef<TexturedEffect>
+ContentHostBase::GenEffect(const gfx::Filter& aFilter)
+{
+  RefPtr<NewTextureSource> source = GetTextureSource();
+  RefPtr<NewTextureSource> sourceOnWhite = GetTextureSourceOnWhite();
+  if (!source) {
+    return nullptr;
+  }
+  return CreateTexturedEffect(source, sourceOnWhite, aFilter, true);
+}
 
 void
 ContentHostTexture::UseTextureHost(TextureHost* aTexture)

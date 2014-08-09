@@ -44,8 +44,11 @@ class ClientLayerManager : public LayerManager
 
 public:
   ClientLayerManager(nsIWidget* aWidget);
+
+protected:
   virtual ~ClientLayerManager();
 
+public:
   virtual ShadowLayerForwarder* AsShadowForwarder()
   {
     return mForwarder;
@@ -85,6 +88,7 @@ public:
   virtual already_AddRefed<ContainerLayer> CreateContainerLayer();
   virtual already_AddRefed<ImageLayer> CreateImageLayer();
   virtual already_AddRefed<CanvasLayer> CreateCanvasLayer();
+  virtual already_AddRefed<ReadbackLayer> CreateReadbackLayer();
   virtual already_AddRefed<ColorLayer> CreateColorLayer();
   virtual already_AddRefed<RefLayer> CreateRefLayer();
 
@@ -142,6 +146,9 @@ public:
 
   CompositorChild* GetCompositorChild();
 
+  // Disable component alpha layers with the software compositor.
+  virtual bool ShouldAvoidComponentAlphaLayers() { return !IsCompositingCheap(); }
+
   /**
    * Called for each iteration of a progressive tile update. Updates
    * aMetrics with the current scroll offset and scale being used to composite
@@ -182,6 +189,8 @@ public:
    return (GetTextureFactoryIdentifier().mSupportedBlendModes & aMixBlendModes) == aMixBlendModes;
   }
 
+  virtual bool AreComponentAlphaLayersEnabled() MOZ_OVERRIDE;
+
   // Log APZ test data for the current paint. We supply the paint sequence
   // number ourselves, and take care of calling APZTestData::StartNewPaint()
   // when a new paint is started.
@@ -195,10 +204,8 @@ public:
   // Log APZ test data for a repaint request. The sequence number must be
   // passed in from outside, and APZTestData::StartNewRepaintRequest() needs
   // to be called from the outside as well when a new repaint request is started.
-  void StartNewRepaintRequest(SequenceNumber aSequenceNumber)
-  {
-    mApzTestData.StartNewRepaintRequest(aSequenceNumber);
-  }
+  void StartNewRepaintRequest(SequenceNumber aSequenceNumber);
+
   // TODO(botond): When we start using this and write a wrapper similar to
   // nsLayoutUtils::LogTestDataForPaint(), make sure that wrapper checks
   // gfxPrefs::APZTestLoggingEnabled().
@@ -327,6 +334,7 @@ public:
   virtual void ClearCachedResources() { }
 
   virtual void RenderLayer() = 0;
+  virtual void RenderLayerWithReadback(ReadbackProcessor *aReadback) { RenderLayer(); }
 
   virtual ClientThebesLayer* AsThebes() { return nullptr; }
 

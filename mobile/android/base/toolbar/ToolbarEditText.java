@@ -5,19 +5,17 @@
 
 package org.mozilla.gecko.toolbar;
 
-import org.mozilla.gecko.R;
+import org.mozilla.gecko.AppConstants.Versions;
+import org.mozilla.gecko.CustomEditText;
+import org.mozilla.gecko.InputMethods;
 import org.mozilla.gecko.toolbar.BrowserToolbar.OnCommitListener;
 import org.mozilla.gecko.toolbar.BrowserToolbar.OnDismissListener;
 import org.mozilla.gecko.toolbar.BrowserToolbar.OnFilterListener;
-import org.mozilla.gecko.CustomEditText;
-import org.mozilla.gecko.CustomEditText.OnKeyPreImeListener;
-import org.mozilla.gecko.InputMethods;
 import org.mozilla.gecko.util.GamepadUtils;
 import org.mozilla.gecko.util.StringUtils;
 
 import android.content.Context;
 import android.graphics.Rect;
-import android.os.Build;
 import android.text.Editable;
 import android.text.NoCopySpan;
 import android.text.Selection;
@@ -29,7 +27,6 @@ import android.util.AttributeSet;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.View;
-import android.view.View.OnKeyListener;
 import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -392,9 +389,7 @@ public class ToolbarEditText extends CustomEditText
                     // Make the IME aware that we interrupted the setComposingText call,
                     // by having finishComposingText() send change notifications to the IME.
                     finishComposingText();
-                    if (Build.VERSION.SDK_INT >= 9) {
-                        setComposingRegion(composingStart, composingEnd);
-                    }
+                    setComposingRegion(composingStart, composingEnd);
                     return true;
                 }
                 return false;
@@ -549,8 +544,8 @@ public class ToolbarEditText extends CustomEditText
             }
 
             if ((keyCode == KeyEvent.KEYCODE_DEL ||
-                (Build.VERSION.SDK_INT >= 11 &&
-                    keyCode == KeyEvent.KEYCODE_FORWARD_DEL)) &&
+                (Versions.feature11Plus &&
+                 keyCode == KeyEvent.KEYCODE_FORWARD_DEL)) &&
                 removeAutocomplete(getText())) {
                 // Delete autocomplete text when backspacing or forward deleting.
                 return true;

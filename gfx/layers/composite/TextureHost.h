@@ -19,6 +19,7 @@
 #include "mozilla/layers/FenceUtils.h"  // for FenceHandle
 #include "mozilla/layers/LayersTypes.h"  // for LayerRenderState, etc
 #include "mozilla/mozalloc.h"           // for operator delete
+#include "mozilla/UniquePtr.h"          // for UniquePtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_RUNTIMEABORT
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
@@ -33,7 +34,7 @@ struct nsIntSize;
 struct nsIntRect;
 
 namespace mozilla {
-namespace gfx {
+namespace gl {
 class SurfaceStream;
 }
 namespace ipc {
@@ -148,11 +149,13 @@ public:
   {
     MOZ_COUNT_CTOR(NewTextureSource);
   }
+protected:
   virtual ~NewTextureSource()
   {
     MOZ_COUNT_DTOR(NewTextureSource);
   }
 
+public:
   /**
    * Should be overridden in order to deallocate the data that is associated
    * with the rendering backend, such as GL textures.
@@ -285,8 +288,10 @@ class TextureHost
 public:
   TextureHost(TextureFlags aFlags);
 
+protected:
   virtual ~TextureHost();
 
+public:
   /**
    * Factory method.
    */
@@ -548,8 +553,10 @@ public:
                    ISurfaceAllocator* aDeallocator,
                    TextureFlags aFlags);
 
+protected:
   ~ShmemTextureHost();
 
+public:
   virtual void DeallocateSharedData() MOZ_OVERRIDE;
 
   virtual void ForgetSharedData() MOZ_OVERRIDE;
@@ -563,7 +570,7 @@ public:
   virtual void OnShutdown() MOZ_OVERRIDE;
 
 protected:
-  mozilla::ipc::Shmem* mShmem;
+  UniquePtr<mozilla::ipc::Shmem> mShmem;
   RefPtr<ISurfaceAllocator> mDeallocator;
 };
 
@@ -580,8 +587,10 @@ public:
                     gfx::SurfaceFormat aFormat,
                     TextureFlags aFlags);
 
+protected:
   ~MemoryTextureHost();
 
+public:
   virtual void DeallocateSharedData() MOZ_OVERRIDE;
 
   virtual void ForgetSharedData() MOZ_OVERRIDE;
@@ -635,7 +644,7 @@ public:
 
 protected:
   Compositor* mCompositor;
-  gfx::SurfaceStream* mStream;
+  gl::SurfaceStream* mStream;
   RefPtr<NewTextureSource> mTextureSource;
   RefPtr<DataTextureSource> mDataTextureSource;
 };

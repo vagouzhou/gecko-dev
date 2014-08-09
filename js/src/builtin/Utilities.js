@@ -63,6 +63,7 @@ var std_Number_POSITIVE_INFINITY = Number.POSITIVE_INFINITY;
 var std_Object_create = Object.create;
 var std_Object_getOwnPropertyNames = Object.getOwnPropertyNames;
 var std_Object_hasOwnProperty = Object.prototype.hasOwnProperty;
+var std_Object_getPrototypeOf = Object.getPrototypeOf;
 var std_RegExp_test = RegExp.prototype.test;
 var std_String_fromCharCode = String.fromCharCode;
 var std_String_charCodeAt = String.prototype.charCodeAt;
@@ -141,6 +142,17 @@ function ToNumber(v) {
 function CheckObjectCoercible(v) {
     if (v === undefined || v === null)
         ThrowError(JSMSG_CANT_CONVERT_TO, ToString(v), "object");
+}
+
+/* Spec: ECMAScript Draft, 6 edition May 22, 2014, 7.1.15 */
+function ToLength(v) {
+    v = ToInteger(v);
+
+    if (v <= 0)
+        return 0;
+
+    // Math.pow(2, 53) - 1 = 0x1fffffffffffff
+    return std_Math_min(v, 0x1fffffffffffff);
 }
 
 /********** Testing code **********/

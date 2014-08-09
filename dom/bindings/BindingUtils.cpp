@@ -25,6 +25,7 @@
 #include "nsIPermissionManager.h"
 #include "nsIPrincipal.h"
 #include "nsIXPConnect.h"
+#include "nsUTF8Utils.h"
 #include "WrapperFactory.h"
 #include "xpcprivate.h"
 #include "XPCQuickStubs.h"
@@ -54,8 +55,7 @@ JSErrorFormatString ErrorFormatString[] = {
 };
 
 const JSErrorFormatString*
-GetErrorMessage(void* aUserRef, const char* aLocale,
-                const unsigned aErrorNumber)
+GetErrorMessage(void* aUserRef, const unsigned aErrorNumber)
 {
   MOZ_ASSERT(aErrorNumber < ArrayLength(ErrorFormatString));
   return &ErrorFormatString[aErrorNumber];
@@ -86,10 +86,13 @@ ThrowInvalidThis(JSContext* aCx, const JS::CallArgs& aArgs,
   MOZ_ASSERT(func);
   JS::Rooted<JSString*> funcName(aCx, JS_GetFunctionDisplayId(func));
   MOZ_ASSERT(funcName);
+  nsAutoJSString funcNameStr;
+  if (!funcNameStr.init(aCx, funcName)) {
+    return false;
+  }
   JS_ReportErrorNumberUC(aCx, GetErrorMessage, nullptr,
                          static_cast<const unsigned>(aErrorNumber),
-                         JS_GetStringCharsZ(aCx, funcName),
-                         ifaceName.get());
+                         funcNameStr.get(), ifaceName.get());
   return false;
 }
 
@@ -136,8 +139,7 @@ ErrorResult::ThrowTypeError(const dom::ErrNum errorNumber, ...)
   mResult = NS_ERROR_TYPE_ERR;
   Message* message = new Message();
   message->mErrorNumber = errorNumber;
-  uint16_t argCount =
-    dom::GetErrorMessage(nullptr, nullptr, errorNumber)->argCount;
+  uint16_t argCount = dom::GetErrorMessage(nullptr, errorNumber)->argCount;
   MOZ_ASSERT(argCount <= 10);
   argCount = std::min<uint16_t>(argCount, 10);
   while (argCount--) {
@@ -320,6 +322,13 @@ DefinePrefable(JSContext* cx, JS::Handle<JSObject*> obj,
 }
 
 bool
+DefineUnforgeableMethods(JSContext* cx, JS::Handle<JSObject*> obj,
+                         const Prefable<const JSFunctionSpec>* props)
+{
+  return DefinePrefable(cx, obj, props);
+}
+
+bool
 DefineUnforgeableAttributes(JSContext* cx, JS::Handle<JSObject*> obj,
                             const Prefable<const JSPropertySpec>* props)
 {
@@ -355,9 +364,12 @@ InterfaceObjectToString(JSContext* cx, unsigned argc, JS::Value *vp)
   const JSClass* clasp = static_cast<const JSClass*>(v.toPrivate());
 
   v = js::GetFunctionNativeReserved(callee, TOSTRING_NAME_RESERVED_SLOT);
-  JSString* jsname = static_cast<JSString*>(v.toString());
-  size_t length;
-  const jschar* name = JS_GetInternedStringCharsAndLength(jsname, &length);
+  JSString* jsname = v.toString();
+
+  nsAutoJSString name;
+  if (!name.init(cx, jsname)) {
+    return false;
+  }
 
   if (js::GetObjectJSClass(&args.thisv().toObject()) != clasp) {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr,
@@ -369,7 +381,7 @@ InterfaceObjectToString(JSContext* cx, unsigned argc, JS::Value *vp)
 
   nsString str;
   str.AppendLiteral("function ");
-  str.Append(name, length);
+  str.Append(name);
   str.AppendLiteral("() {");
   str.Append('\n');
   str.AppendLiteral("    [native code]");
@@ -903,6 +915,14 @@ GetInterfaceImpl(JSContext* aCx, nsIInterfaceRequestor* aRequestor,
 }
 
 bool
+UnforgeableValueOf(JSContext* cx, unsigned argc, JS::Value* vp)
+{
+  JS::CallArgs args = JS::CallArgsFromVp(argc, vp);
+  args.rval().set(args.thisv());
+  return true;
+}
+
+bool
 ThrowingConstructor(JSContext* cx, unsigned argc, JS::Value* vp)
 {
   return ThrowErrorMessage(cx, MSG_ILLEGAL_CONSTRUCTOR);
@@ -1046,18 +1066,91 @@ XrayResolveAttribute(JSContext* cx, JS::Handle<JSObject*> wrapper,
   return true;
 }
 
+static bool
+XrayResolveMethod(JSContext* cx, JS::Handle<JSObject*> wrapper,
+                  JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
+                  const Prefable<const JSFunctionSpec>* methods,
+                  jsid* methodIds,
+                  const JSFunctionSpec* methodSpecs,
+                  JS::MutableHandle<JSPropertyDescriptor> desc)
+{
+  const Prefable<const JSFunctionSpec>* method;
+  for (method = methods; method->specs; ++method) {
+    if (method->isEnabled(cx, obj)) {
+      // Set i to be the index into our full list of ids/specs that we're
+      // looking at now.
+      size_t i = method->specs - methodSpecs;
+      for ( ; methodIds[i] != JSID_VOID; ++i) {
+        if (id == methodIds[i]) {
+          const JSFunctionSpec& methodSpec = methodSpecs[i];
+          JSFunction *fun;
+          if (methodSpec.selfHostedName) {
+            fun = JS::GetSelfHostedFunction(cx, methodSpec.selfHostedName, id, methodSpec.nargs);
+            if (!fun) {
+              return false;
+            }
+            MOZ_ASSERT(!methodSpec.call.op, "Bad FunctionSpec declaration: non-null native");
+            MOZ_ASSERT(!methodSpec.call.info, "Bad FunctionSpec declaration: non-null jitinfo");
+          } else {
+            fun = JS_NewFunctionById(cx, methodSpec.call.op, methodSpec.nargs, 0, wrapper, id);
+            if (!fun) {
+              return false;
+            }
+            SET_JITINFO(fun, methodSpec.call.info);
+          }
+          JSObject *funobj = JS_GetFunctionObject(fun);
+          desc.value().setObject(*funobj);
+          desc.setAttributes(methodSpec.flags);
+          desc.object().set(wrapper);
+          desc.setSetter(nullptr);
+          desc.setGetter(nullptr);
+          return true;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 /* static */ bool
 XrayResolveUnforgeableProperty(JSContext* cx, JS::Handle<JSObject*> wrapper,
                                JS::Handle<JSObject*> obj, JS::Handle<jsid> id,
                                JS::MutableHandle<JSPropertyDescriptor> desc,
                                const NativeProperties* nativeProperties)
 {
-  return !nativeProperties || !nativeProperties->unforgeableAttributes ||
-         XrayResolveAttribute(cx, wrapper, obj, id,
+  if (!nativeProperties) {
+    return true;
+  }
+
+  if (nativeProperties->unforgeableAttributes) {
+    if (!XrayResolveAttribute(cx, wrapper, obj, id,
                               nativeProperties->unforgeableAttributes,
                               nativeProperties->unforgeableAttributeIds,
                               nativeProperties->unforgeableAttributeSpecs,
-                              desc);
+                              desc)) {
+      return false;
+    }
+
+    if (desc.object()) {
+      return true;
+    }
+  }
+
+  if (nativeProperties->unforgeableMethods) {
+    if (!XrayResolveMethod(cx, wrapper, obj, id,
+                           nativeProperties->unforgeableMethods,
+                           nativeProperties->unforgeableMethodIds,
+                           nativeProperties->unforgeableMethodSpecs,
+                           desc)) {
+      return false;
+    }
+
+    if (desc.object()) {
+      return true;
+    }
+  }
+
+  return true;
 }
 
 static bool
@@ -1068,51 +1161,23 @@ XrayResolveProperty(JSContext* cx, JS::Handle<JSObject*> wrapper,
 {
   const Prefable<const JSFunctionSpec>* methods;
   jsid* methodIds;
-  const JSFunctionSpec* methodsSpecs;
+  const JSFunctionSpec* methodSpecs;
   if (type == eInterface) {
     methods = nativeProperties->staticMethods;
     methodIds = nativeProperties->staticMethodIds;
-    methodsSpecs = nativeProperties->staticMethodsSpecs;
+    methodSpecs = nativeProperties->staticMethodSpecs;
   } else {
     methods = nativeProperties->methods;
     methodIds = nativeProperties->methodIds;
-    methodsSpecs = nativeProperties->methodsSpecs;
+    methodSpecs = nativeProperties->methodSpecs;
   }
   if (methods) {
-    const Prefable<const JSFunctionSpec>* method;
-    for (method = methods; method->specs; ++method) {
-      if (method->isEnabled(cx, obj)) {
-        // Set i to be the index into our full list of ids/specs that we're
-        // looking at now.
-        size_t i = method->specs - methodsSpecs;
-        for ( ; methodIds[i] != JSID_VOID; ++i) {
-          if (id == methodIds[i]) {
-            const JSFunctionSpec& methodSpec = methodsSpecs[i];
-            JSFunction *fun;
-            if (methodSpec.selfHostedName) {
-              fun = JS::GetSelfHostedFunction(cx, methodSpec.selfHostedName, id, methodSpec.nargs);
-              if (!fun) {
-                return false;
-              }
-              MOZ_ASSERT(!methodSpec.call.op, "Bad FunctionSpec declaration: non-null native");
-              MOZ_ASSERT(!methodSpec.call.info, "Bad FunctionSpec declaration: non-null jitinfo");
-            } else {
-              fun = JS_NewFunctionById(cx, methodSpec.call.op, methodSpec.nargs, 0, wrapper, id);
-              if (!fun) {
-                return false;
-              }
-              SET_JITINFO(fun, methodSpec.call.info);
-            }
-            JSObject *funobj = JS_GetFunctionObject(fun);
-            desc.value().setObject(*funobj);
-            desc.setAttributes(methodSpec.flags);
-            desc.object().set(wrapper);
-            desc.setSetter(nullptr);
-            desc.setGetter(nullptr);
-           return true;
-          }
-        }
-      }
+    if (!XrayResolveMethod(cx, wrapper, obj, id, methods, methodIds,
+                           methodSpecs, desc)) {
+      return false;
+    }
+    if (desc.object()) {
+      return true;
     }
   }
 
@@ -1276,22 +1341,23 @@ XrayDefineProperty(JSContext* cx, JS::Handle<JSObject*> wrapper,
   return handler->defineProperty(cx, wrapper, id, desc, defined);
 }
 
+template<typename SpecType>
 bool
-XrayEnumerateAttributes(JSContext* cx, JS::Handle<JSObject*> wrapper,
-                        JS::Handle<JSObject*> obj,
-                        const Prefable<const JSPropertySpec>* attributes,
-                        jsid* attributeIds, const JSPropertySpec* attributeSpecs,
-                        unsigned flags, JS::AutoIdVector& props)
+XrayEnumerateAttributesOrMethods(JSContext* cx, JS::Handle<JSObject*> wrapper,
+                                 JS::Handle<JSObject*> obj,
+                                 const Prefable<const SpecType>* list,
+                                 jsid* ids, const SpecType* specList,
+                                 unsigned flags, JS::AutoIdVector& props)
 {
-  for (; attributes->specs; ++attributes) {
-    if (attributes->isEnabled(cx, obj)) {
+  for (; list->specs; ++list) {
+    if (list->isEnabled(cx, obj)) {
       // Set i to be the index into our full list of ids/specs that we're
       // looking at now.
-      size_t i = attributes->specs - attributeSpecs;
-      for ( ; attributeIds[i] != JSID_VOID; ++i) {
+      size_t i = list->specs - specList;
+      for ( ; ids[i] != JSID_VOID; ++i) {
         if (((flags & JSITER_HIDDEN) ||
-             (attributeSpecs[i].flags & JSPROP_ENUMERATE)) &&
-            !props.append(attributeIds[i])) {
+             (specList[i].flags & JSPROP_ENUMERATE)) &&
+            !props.append(ids[i])) {
           return false;
         }
       }
@@ -1300,6 +1366,18 @@ XrayEnumerateAttributes(JSContext* cx, JS::Handle<JSObject*> wrapper,
   return true;
 }
 
+#define ENUMERATE_IF_DEFINED(fieldName) {                                     \
+  if (nativeProperties->fieldName##s &&                                       \
+      !XrayEnumerateAttributesOrMethods(cx, wrapper, obj,                     \
+                                        nativeProperties->fieldName##s,       \
+                                        nativeProperties->fieldName##Ids,     \
+                                        nativeProperties->fieldName##Specs,   \
+                                        flags, props)) {                      \
+    return false;                                                             \
+  }                                                                           \
+}
+
+
 bool
 XrayEnumerateProperties(JSContext* cx, JS::Handle<JSObject*> wrapper,
                         JS::Handle<JSObject*> obj,
@@ -1307,62 +1385,16 @@ XrayEnumerateProperties(JSContext* cx, JS::Handle<JSObject*> wrapper,
                         DOMObjectType type,
                         const NativeProperties* nativeProperties)
 {
-  const Prefable<const JSFunctionSpec>* methods;
-  jsid* methodIds;
-  const JSFunctionSpec* methodsSpecs;
-  if (type == eInterface) {
-    methods = nativeProperties->staticMethods;
-    methodIds = nativeProperties->staticMethodIds;
-    methodsSpecs = nativeProperties->staticMethodsSpecs;
+  if (type == eInstance) {
+    ENUMERATE_IF_DEFINED(unforgeableMethod);
+    ENUMERATE_IF_DEFINED(unforgeableAttribute);
+  } else if (type == eInterface) {
+    ENUMERATE_IF_DEFINED(staticMethod);
+    ENUMERATE_IF_DEFINED(staticAttribute);
   } else {
-    methods = nativeProperties->methods;
-    methodIds = nativeProperties->methodIds;
-    methodsSpecs = nativeProperties->methodsSpecs;
-  }
-  if (methods) {
-    const Prefable<const JSFunctionSpec>* method;
-    for (method = methods; method->specs; ++method) {
-      if (method->isEnabled(cx, obj)) {
-        // Set i to be the index into our full list of ids/specs that we're
-        // looking at now.
-        size_t i = method->specs - methodsSpecs;
-        for ( ; methodIds[i] != JSID_VOID; ++i) {
-          if (((flags & JSITER_HIDDEN) ||
-               (methodsSpecs[i].flags & JSPROP_ENUMERATE)) &&
-              !props.append(methodIds[i])) {
-            return false;
-          }
-        }
-      }
-    }
-  }
-
-  if (type == eInterface) {
-    if (nativeProperties->staticAttributes &&
-        !XrayEnumerateAttributes(cx, wrapper, obj,
-                                 nativeProperties->staticAttributes,
-                                 nativeProperties->staticAttributeIds,
-                                 nativeProperties->staticAttributeSpecs,
-                                 flags, props)) {
-      return false;
-    }
-  } else {
-    if (nativeProperties->attributes &&
-        !XrayEnumerateAttributes(cx, wrapper, obj,
-                                 nativeProperties->attributes,
-                                 nativeProperties->attributeIds,
-                                 nativeProperties->attributeSpecs,
-                                 flags, props)) {
-      return false;
-    }
-    if (nativeProperties->unforgeableAttributes &&
-        !XrayEnumerateAttributes(cx, wrapper, obj,
-                                 nativeProperties->unforgeableAttributes,
-                                 nativeProperties->unforgeableAttributeIds,
-                                 nativeProperties->unforgeableAttributeSpecs,
-                                 flags, props)) {
-      return false;
-    }
+    MOZ_ASSERT(type == eInterfacePrototype);
+    ENUMERATE_IF_DEFINED(method);
+    ENUMERATE_IF_DEFINED(attribute);
   }
 
   if (nativeProperties->constants) {
@@ -1383,6 +1415,8 @@ XrayEnumerateProperties(JSContext* cx, JS::Handle<JSObject*> wrapper,
 
   return true;
 }
+
+#undef ENUMERATE_IF_DEFINED
 
 bool
 XrayEnumerateNativeProperties(JSContext* cx, JS::Handle<JSObject*> wrapper,
@@ -1435,6 +1469,12 @@ XrayEnumerateProperties(JSContext* cx, JS::Handle<JSObject*> wrapper,
     if (nativePropertyHooks->mEnumerateOwnProperties &&
         !nativePropertyHooks->mEnumerateOwnProperties(cx, wrapper, obj,
                                                       props)) {
+      return false;
+    }
+
+    // Handle Unforgeable properties.
+    if (!XrayEnumerateNativeProperties(cx, wrapper, nativePropertyHooks, type,
+                                       obj, flags, props)) {
       return false;
     }
 
@@ -1568,6 +1608,29 @@ DictionaryBase::ParseJSON(JSContext* aCx,
                       aJSON.Length(), aVal);
 }
 
+bool
+DictionaryBase::StringifyToJSON(JSContext* aCx,
+                                JS::MutableHandle<JS::Value> aValue,
+                                nsAString& aJSON)
+{
+  return JS_Stringify(aCx, aValue, JS::NullPtr(), JS::NullHandleValue,
+                      AppendJSONToString, &aJSON);
+}
+
+/* static */
+bool
+DictionaryBase::AppendJSONToString(const jschar* aJSONData,
+                                   uint32_t aDataLength,
+                                   void* aString)
+{
+  nsAString* string = static_cast<nsAString*>(aString);
+  string->Append(static_cast<const char16_t*>(aJSONData),
+                 aDataLength);
+  return true;
+}
+
+
+
 static JSString*
 ConcatJSString(JSContext* cx, const char* pre, JS::Handle<JSString*> str, const char* post)
 {
@@ -1591,8 +1654,7 @@ ConcatJSString(JSContext* cx, const char* pre, JS::Handle<JSString*> str, const 
 
 bool
 NativeToString(JSContext* cx, JS::Handle<JSObject*> wrapper,
-               JS::Handle<JSObject*> obj, const char* pre,
-               const char* post,
+               JS::Handle<JSObject*> obj,
                JS::MutableHandle<JS::Value> v)
 {
   JS::Rooted<JSPropertyDescriptor> toStringDesc(cx);
@@ -1637,7 +1699,6 @@ NativeToString(JSContext* cx, JS::Handle<JSObject*> wrapper,
         JS::Rooted<JSFunction*> fun(cx, JS_GetObjectFunction(obj));
         str = JS_DecompileFunction(cx, fun, 0);
       }
-      str = ConcatJSString(cx, pre, str, post);
     }
   }
 
@@ -1898,11 +1959,10 @@ InterfaceHasInstance(JSContext* cx, JS::Handle<JSObject*> obj,
     return true;
   }
 
-  JS::Rooted<JSObject*> unwrapped(cx, js::CheckedUnwrap(instance, true));
-  if (unwrapped && jsipc::IsCPOW(unwrapped)) {
+  if (jsipc::IsWrappedCPOW(instance)) {
     bool boolp = false;
-    if (!jsipc::DOMInstanceOf(cx, unwrapped, clasp->mPrototypeID,
-                                                clasp->mDepth, &boolp)) {
+    if (!jsipc::DOMInstanceOf(cx, js::CheckedUnwrap(instance), clasp->mPrototypeID,
+                              clasp->mDepth, &boolp)) {
       return false;
     }
     *bp = boolp;
@@ -2102,10 +2162,39 @@ NonVoidByteStringToJsval(JSContext *cx, const nsACString &str,
     return true;
 }
 
+
+template<typename T> static void
+NormalizeScalarValueStringInternal(JSContext* aCx, T& aString)
+{
+  char16_t* start = aString.BeginWriting();
+  // Must use const here because we can't pass char** to UTF16CharEnumerator as
+  // it expects const char**.  Unclear why this is illegal...
+  const char16_t* nextChar = start;
+  const char16_t* end = aString.Data() + aString.Length();
+  while (nextChar < end) {
+    uint32_t enumerated = UTF16CharEnumerator::NextChar(&nextChar, end);
+    if (enumerated == UCS2_REPLACEMENT_CHAR) {
+      int32_t lastCharIndex = (nextChar - start) - 1;
+      start[lastCharIndex] = static_cast<char16_t>(enumerated);
+    }
+  }
+}
+
+void
+NormalizeScalarValueString(JSContext* aCx, nsAString& aString)
+{
+  NormalizeScalarValueStringInternal(aCx, aString);
+}
+
+void
+NormalizeScalarValueString(JSContext* aCx, binding_detail::FakeString& aString)
+{
+  NormalizeScalarValueStringInternal(aCx, aString);
+}
+
 bool
 ConvertJSValueToByteString(JSContext* cx, JS::Handle<JS::Value> v,
-                           JS::MutableHandle<JS::Value> pval, bool nullable,
-                           nsACString& result)
+                           bool nullable, nsACString& result)
 {
   JS::Rooted<JSString*> s(cx);
   if (v.isString()) {
@@ -2121,42 +2210,60 @@ ConvertJSValueToByteString(JSContext* cx, JS::Handle<JS::Value> v,
     if (!s) {
       return false;
     }
-    pval.set(JS::StringValue(s));  // Root the new string.
-  }
-
-  size_t length;
-  const jschar *chars = JS_GetStringCharsZAndLength(cx, s, &length);
-  if (!chars) {
-    return false;
   }
 
   // Conversion from Javascript string to ByteString is only valid if all
-  // characters < 256.
-  for (size_t i = 0; i < length; i++) {
-    if (chars[i] > 255) {
+  // characters < 256. This is always the case for Latin1 strings.
+  size_t length;
+  if (!js::StringHasLatin1Chars(s)) {
+    // ThrowErrorMessage can GC, so we first scan the string for bad chars
+    // and report the error outside the AutoCheckCannotGC scope.
+    bool foundBadChar = false;
+    size_t badCharIndex;
+    jschar badChar;
+    {
+      JS::AutoCheckCannotGC nogc;
+      const jschar* chars = JS_GetTwoByteStringCharsAndLength(cx, nogc, s, &length);
+      if (!chars) {
+        return false;
+      }
+
+      for (size_t i = 0; i < length; i++) {
+        if (chars[i] > 255) {
+          badCharIndex = i;
+          badChar = chars[i];
+          foundBadChar = true;
+          break;
+        }
+      }
+    }
+
+    if (foundBadChar) {
+      MOZ_ASSERT(badCharIndex < length);
+      MOZ_ASSERT(badChar > 255);
       // The largest unsigned 64 bit number (18,446,744,073,709,551,615) has
       // 20 digits, plus one more for the null terminator.
       char index[21];
       static_assert(sizeof(size_t) <= 8, "index array too small");
-      PR_snprintf(index, sizeof(index), "%d", i);
+      PR_snprintf(index, sizeof(index), "%d", badCharIndex);
       // A jschar is 16 bits long.  The biggest unsigned 16 bit
       // number (65,535) has 5 digits, plus one more for the null
       // terminator.
-      char badChar[6];
-      static_assert(sizeof(jschar) <= 2, "badChar array too small");
-      PR_snprintf(badChar, sizeof(badChar), "%d", chars[i]);
-      ThrowErrorMessage(cx, MSG_INVALID_BYTESTRING, index, badChar);
+      char badCharArray[6];
+      static_assert(sizeof(jschar) <= 2, "badCharArray too small");
+      PR_snprintf(badCharArray, sizeof(badCharArray), "%d", badChar);
+      ThrowErrorMessage(cx, MSG_INVALID_BYTESTRING, index, badCharArray);
       return false;
     }
+  } else {
+    length = js::GetStringLength(s);
   }
 
-  if (length >= UINT32_MAX) {
-    return false;
-  }
-  result.SetCapacity(length+1);
-  JS_EncodeStringToBuffer(cx, s, result.BeginWriting(), length);
-  result.BeginWriting()[length] = '\0';
+  static_assert(js::MaxStringLength < UINT32_MAX,
+                "length+1 shouldn't overflow");
+
   result.SetLength(length);
+  JS_EncodeStringToBuffer(cx, s, result.BeginWriting(), length);
 
   return true;
 }
@@ -2451,15 +2558,7 @@ ConvertExceptionToPromise(JSContext* cx,
 void
 CreateGlobalOptions<nsGlobalWindow>::TraceGlobal(JSTracer* aTrc, JSObject* aObj)
 {
-  mozilla::dom::TraceProtoAndIfaceCache(aTrc, aObj);
-
-  // We might be called from a GC during the creation of a global, before we've
-  // been able to set up the compartment private or the XPCWrappedNativeScope,
-  // so we need to null-check those.
-  xpc::CompartmentPrivate* compartmentPrivate = xpc::GetCompartmentPrivate(aObj);
-  if (compartmentPrivate && compartmentPrivate->scope) {
-    compartmentPrivate->scope->TraceSelf(aTrc);
-  }
+  xpc::TraceXPCGlobal(aTrc, aObj);
 }
 
 /* static */
@@ -2467,7 +2566,10 @@ bool
 CreateGlobalOptions<nsGlobalWindow>::PostCreateGlobal(JSContext* aCx,
                                                       JS::Handle<JSObject*> aGlobal)
 {
-  return XPCWrappedNativeScope::GetNewOrUsed(aCx, aGlobal);
+  // Invoking the XPCWrappedNativeScope constructor automatically hooks it
+  // up to the compartment of aGlobal.
+  (void) new XPCWrappedNativeScope(aCx, aGlobal);
+  return true;
 }
 
 #ifdef DEBUG

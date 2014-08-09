@@ -5,7 +5,10 @@
 
 #include "domstubs.idl"
 
-[uuid(d9539ecb-6665-452c-bae7-4e42f25d23aa)]
+interface nsIDocument;
+interface nsIURI;
+
+[uuid(cc539f1e-1ce6-4af5-bf94-195b30bde010)]
 interface nsIServiceWorkerManager : nsISupports
 {
   // Returns a Promise
@@ -14,6 +17,33 @@ interface nsIServiceWorkerManager : nsISupports
   // Returns a Promise
   nsISupports unregister(in nsIDOMWindow aWindow, in DOMString aScope);
 
+  // aTarget MUST be a ServiceWorkerContainer.
+  [noscript] void AddContainerEventListener(in nsIURI aPageURI, in nsIDOMEventTarget aTarget);
+  [noscript] void RemoveContainerEventListener(in nsIURI aPageURI, in nsIDOMEventTarget aTarget);
+
+  /**
+   * Call this to request that document `aDoc` be controlled by a ServiceWorker
+   * if a registration exists for it's scope.
+   *
+   * This MUST only be called once per document!
+   */
+  [notxpcom,nostdcall] void MaybeStartControlling(in nsIDocument aDoc);
+
+  /**
+   * Documents that have called MaybeStartControlling() should call this when
+   * they are destroyed. This function may be called multiple times, and is
+   * idempotent.
+   */
+  [notxpcom,nostdcall] void MaybeStopControlling(in nsIDocument aDoc);
+
+  // Returns a ServiceWorker
+  [noscript] nsISupports GetInstalling(in nsIDOMWindow aWindow);
+  [noscript] nsISupports GetWaiting(in nsIDOMWindow aWindow);
+  [noscript] nsISupports GetActive(in nsIDOMWindow aWindow);
+  [noscript] nsISupports GetDocumentController(in nsIDOMWindow aWindow);
+
+  // Testing
+  DOMString getScopeForUrl(in DOMString path);
 };
 
 %{ C++

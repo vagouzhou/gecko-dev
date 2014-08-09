@@ -6,11 +6,10 @@
 #include "SharedSurfaceANGLE.h"
 
 #include "GLContextEGL.h"
+#include "GLLibraryEGL.h"
 
 namespace mozilla {
 namespace gl {
-
-using namespace mozilla::gfx;
 
 SurfaceFactory_ANGLEShareHandle*
 SurfaceFactory_ANGLEShareHandle::Create(GLContext* gl,
@@ -52,18 +51,10 @@ SharedSurface_ANGLEShareHandle::UnlockProdImpl()
 {
 }
 
-
 void
 SharedSurface_ANGLEShareHandle::Fence()
 {
     mGL->fFinish();
-}
-
-bool
-SharedSurface_ANGLEShareHandle::WaitSync()
-{
-    // Since we glFinish in Fence(), we're always going to be resolved here.
-    return true;
 }
 
 static void
@@ -227,7 +218,7 @@ SharedSurface_ANGLEShareHandle::Create(GLContext* gl,
 SurfaceFactory_ANGLEShareHandle::SurfaceFactory_ANGLEShareHandle(GLContext* gl,
                                                                  GLLibraryEGL* egl,
                                                                  const SurfaceCaps& caps)
-    : SurfaceFactory_GL(gl, SharedSurfaceType::EGLSurfaceANGLE, caps)
+    : SurfaceFactory(gl, SharedSurfaceType::EGLSurfaceANGLE, caps)
     , mProdGL(gl)
     , mEGL(egl)
 {

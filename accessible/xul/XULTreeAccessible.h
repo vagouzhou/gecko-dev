@@ -20,7 +20,7 @@ namespace a11y {
  * A class the represents the XUL Tree widget.
  */
 const uint32_t kMaxTreeColumns = 100;
-const uint32_t kDefaultTreeCacheSize = 256;
+const uint32_t kDefaultTreeCacheLength = 128;
 
 /**
  * Accessible class for XUL tree element.
@@ -107,6 +107,8 @@ public:
   void TreeViewChanged(nsITreeView* aView);
 
 protected:
+  virtual ~XULTreeAccessible();
+
   /**
    * Creates tree item accessible for the given row index.
    */
@@ -190,6 +192,8 @@ public:
   virtual void RowInvalidated(int32_t aStartColIdx, int32_t aEndColIdx) = 0;
 
 protected:
+  virtual ~XULTreeItemAccessibleBase();
+
   enum { eAction_Click = 0, eAction_Expand = 1 };
 
   // Accessible
@@ -242,6 +246,7 @@ public:
   virtual void RowInvalidated(int32_t aStartColIdx, int32_t aEndColIdx);
 
 protected:
+  virtual ~XULTreeItemAccessible();
 
   // Accessible
   virtual void CacheChildren();

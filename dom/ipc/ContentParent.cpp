@@ -98,11 +98,13 @@
 #include "nsIPresShell.h"
 #include "nsIRemoteBlob.h"
 #include "nsIScriptError.h"
+#include "nsISiteSecurityService.h"
 #include "nsIStyleSheet.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIURIFixup.h"
 #include "nsIWindowWatcher.h"
 #include "nsIXULRuntime.h"
+#include "nsMemoryInfoDumper.h"
 #include "nsMemoryReporterManager.h"
 #include "nsServiceManagerUtils.h"
 #include "nsStyleSheetService.h"
@@ -112,6 +114,7 @@
 #include "PreallocatedProcessManager.h"
 #include "ProcessPriorityManager.h"
 #include "SandboxHal.h"
+#include "ScreenManagerParent.h"
 #include "StructuredCloneUtils.h"
 #include "TabParent.h"
 #include "URIUtils.h"
@@ -156,6 +159,8 @@ using namespace mozilla::system;
 
 #include "JavaScriptParent.h"
 
+#include "mozilla/RemoteSpellCheckEngineParent.h"
+
 #ifdef MOZ_B2G_FM
 #include "mozilla/dom/FMRadioParent.h"
 #endif
@@ -188,6 +193,7 @@ using namespace mozilla::ipc;
 using namespace mozilla::layers;
 using namespace mozilla::net;
 using namespace mozilla::jsipc;
+using namespace mozilla::widget;
 
 #ifdef ENABLE_TESTS
 
@@ -981,18 +987,15 @@ ContentParent::CreateBrowserOrApp(const TabContext& aContext,
         }
     }
 
+    bool reused = !!p;
+    bool tookPreallocated = false;
     if (!p) {
         p = MaybeTakePreallocatedAppProcess(manifestURL,
                                             initialPriority);
-        if (!p) {
-#ifdef MOZ_NUWA_PROCESS
-            if (Preferences::GetBool("dom.ipc.processPrelaunch.enabled",
-                                     false)) {
-                // Returning nullptr from here so the frame loader will retry
-                // later when we have a spare process.
-                return nullptr;
-            }
-#endif
+        tookPreallocated = !!p;
+        if (!tookPreallocated) {
+            // XXXkhuey Nuwa wants the frame loader to try again later, but the
+            // frame loader is really not set up to do that ...
             NS_WARNING("Unable to use pre-allocated app process");
             p = new ContentParent(ownApp,
                                   /* aOpener = */ nullptr,
@@ -1016,6 +1019,29 @@ ContentParent::CreateBrowserOrApp(const TabContext& aContext,
         p->ChildID(),
         p->IsForApp(),
         p->IsForBrowser());
+    if (!browser) {
+        // We failed to actually start the PBrowser.  This can happen if the
+        // other process has already died.
+        if (!reused) {
+            // Don't leave a broken ContentParent in the hashtable.
+            p->KillHard();
+            sAppContentParents->Remove(manifestURL);
+            p = nullptr;
+        }
+
+        // If we took the preallocated process and it was already dead, try
+        // again with a non-preallocated process.  We can be sure this won't
+        // loop forever, because the next time through there will be no
+        // preallocated process to take.
+        if (tookPreallocated) {
+          return ContentParent::CreateBrowserOrApp(aContext,
+                                                   aFrameElement,
+                                                   aOpenerContentParent);
+        }
+
+        // Otherwise just give up.
+        return nullptr;
+    }
 
     p->MaybeTakeCPUWakeLock(aFrameElement);
 
@@ -1736,7 +1762,6 @@ ContentParent::ContentParent(mozIApplication* aApp,
         ? base::PRIVILEGES_INHERIT
         : base::PRIVILEGES_DEFAULT;
     mSubprocess = new GeckoChildProcessHost(GeckoProcessType_Content, privs);
-    mSubprocess->SetSandboxEnabled(ShouldSandboxContentProcesses());
 
     IToplevelProtocol::SetTransport(mSubprocess->GetChannel());
 
@@ -1903,11 +1928,11 @@ ContentParent::InitInternal(ProcessPriority aInitialPriority,
             MOZ_ASSERT(opened);
 #endif
         }
-    }
 #ifdef MOZ_WIDGET_GONK
-    DebugOnly<bool> opened = PSharedBufferManager::Open(this);
-    MOZ_ASSERT(opened);
+        DebugOnly<bool> opened = PSharedBufferManager::Open(this);
+        MOZ_ASSERT(opened);
 #endif
+    }
 
     if (aSendRegisteredChrome) {
         nsCOMPtr<nsIChromeRegistry> registrySvc = nsChromeRegistry::GetService();
@@ -2277,6 +2302,7 @@ ContentParent::RecvAudioChannelChangeDefVolChannel(const int32_t& aChannel,
 bool
 ContentParent::RecvDataStoreGetStores(
                                     const nsString& aName,
+                                    const nsString& aOwner,
                                     const IPC::Principal& aPrincipal,
                                     InfallibleTArray<DataStoreSetting>* aValue)
 {
@@ -2285,7 +2311,7 @@ ContentParent::RecvDataStoreGetStores(
     return false;
   }
 
-  nsresult rv = service->GetDataStoresFromIPC(aName, aPrincipal, aValue);
+  nsresult rv = service->GetDataStoresFromIPC(aName, aOwner, aPrincipal, aValue);
   if (NS_WARN_IF(NS_FAILED(rv))) {
     return false;
   }
@@ -2457,9 +2483,22 @@ ContentParent::Observe(nsISupports* aSubject,
             // The pre-%n part of the string should be all ASCII, so the byte
             // offset in identOffset should be correct as a char offset.
             MOZ_ASSERT(cmsg[identOffset - 1] == '=');
+            FileDescriptor dmdFileDesc;
+#ifdef MOZ_DMD
+            FILE *dmdFile;
+            nsAutoString dmdIdent(Substring(msg, identOffset));
+            nsresult rv = nsMemoryInfoDumper::OpenDMDFile(dmdIdent, Pid(), &dmdFile);
+            if (NS_WARN_IF(NS_FAILED(rv))) {
+                // Proceed with the memory report as if DMD were disabled.
+                dmdFile = nullptr;
+            }
+            if (dmdFile) {
+                dmdFileDesc = FILEToFileDescriptor(dmdFile);
+                fclose(dmdFile);
+            }
+#endif
             unused << SendPMemoryReportRequestConstructor(
-              generation, anonymize, minimize,
-              nsString(Substring(msg, identOffset)));
+              generation, anonymize, minimize, dmdFileDesc);
         }
     }
     else if (!strcmp(aTopic, "child-gc-request")){
@@ -2659,6 +2698,20 @@ ContentParent::DeallocPBlobParent(PBlobParent* aActor)
     return true;
 }
 
+mozilla::PRemoteSpellcheckEngineParent *
+ContentParent::AllocPRemoteSpellcheckEngineParent()
+{
+    mozilla::RemoteSpellcheckEngineParent *parent = new mozilla::RemoteSpellcheckEngineParent();
+    return parent;
+}
+
+bool
+ContentParent::DeallocPRemoteSpellcheckEngineParent(PRemoteSpellcheckEngineParent *parent)
+{
+    delete parent;
+    return true;
+}
+
 void
 ContentParent::KillHard()
 {
@@ -2804,7 +2857,7 @@ PMemoryReportRequestParent*
 ContentParent::AllocPMemoryReportRequestParent(const uint32_t& aGeneration,
                                                const bool &aAnonymize,
                                                const bool &aMinimizeMemoryUsage,
-                                               const nsString &aDMDDumpIdent)
+                                               const FileDescriptor &aDMDFile)
 {
     MemoryReportRequestParent* parent = new MemoryReportRequestParent();
     return parent;
@@ -2866,6 +2919,21 @@ bool
 ContentParent::DeallocPNeckoParent(PNeckoParent* necko)
 {
     delete necko;
+    return true;
+}
+
+PScreenManagerParent*
+ContentParent::AllocPScreenManagerParent(uint32_t* aNumberOfScreens,
+                                         float* aSystemDefaultScale,
+                                         bool* aSuccess)
+{
+    return new ScreenManagerParent(aNumberOfScreens, aSystemDefaultScale, aSuccess);
+}
+
+bool
+ContentParent::DeallocPScreenManagerParent(PScreenManagerParent* aActor)
+{
+    delete aActor;
     return true;
 }
 
@@ -3173,6 +3241,23 @@ ContentParent::RecvGetSystemMemory(const uint64_t& aGetterId)
     return true;
 }
 
+bool
+ContentParent::RecvIsSecureURI(const uint32_t& type,
+                               const URIParams& uri,
+                               const uint32_t& flags,
+                               bool* isSecureURI)
+{
+    nsCOMPtr<nsISiteSecurityService> sss(do_GetService(NS_SSSERVICE_CONTRACTID));
+    if (!sss) {
+        return false;
+    }
+    nsCOMPtr<nsIURI> ourURI = DeserializeURI(uri);
+    if (!ourURI) {
+        return false;
+    }
+    nsresult rv = sss->IsSecureURI(type, ourURI, flags, isSecureURI);
+    return NS_SUCCEEDED(rv);
+}
 
 bool
 ContentParent::RecvLoadURIExternal(const URIParams& uri)
@@ -3441,7 +3526,7 @@ ContentParent::DoSendAsyncMessage(JSContext* aCx,
     if (aCpows && !GetCPOWManager()->Wrap(aCx, aCpows, &cpows)) {
         return false;
     }
-    return SendAsyncMessage(nsString(aMessage), data, cpows, aPrincipal);
+    return SendAsyncMessage(nsString(aMessage), data, cpows, Principal(aPrincipal));
 }
 
 bool
@@ -3564,16 +3649,6 @@ ContentParent::ShouldContinueFromReplyTimeout()
 }
 
 bool
-ContentParent::ShouldSandboxContentProcesses()
-{
-#ifdef MOZ_CONTENT_SANDBOX
-    return !PR_GetEnv("MOZ_DISABLE_CONTENT_SANDBOX");
-#else
-    return true;
-#endif
-}
-
-bool
 ContentParent::RecvRecordingDeviceEvents(const nsString& aRecordingStatus,
                                          const nsString& aPageURL,
                                          const bool& aIsAudio,
@@ -3671,7 +3746,7 @@ ContentParent::RecvOpenAnonymousTemporaryFile(FileDescriptor *aFD)
     if (NS_WARN_IF(NS_FAILED(rv))) {
         return false;
     }
-    *aFD = FileDescriptor::PlatformHandleType(PR_FileDesc2NativeHandle(prfd));
+    *aFD = FileDescriptor(FileDescriptor::PlatformHandleType(PR_FileDesc2NativeHandle(prfd)));
     // The FileDescriptor object owns a duplicate of the file handle; we
     // must close the original (and clean up the NSPR descriptor).
     PR_Close(prfd);

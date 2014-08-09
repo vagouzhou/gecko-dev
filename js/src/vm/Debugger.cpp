@@ -6,12 +6,15 @@
 
 #include "vm/Debugger-inl.h"
 
+#include "mozilla/DebugOnly.h"
+
 #include "jscntxt.h"
 #include "jscompartment.h"
 #include "jshashutil.h"
 #include "jsnum.h"
 #include "jsobj.h"
 #include "jswrapper.h"
+
 #include "frontend/BytecodeCompiler.h"
 #include "gc/Marking.h"
 #include "jit/BaselineJIT.h"
@@ -19,10 +22,12 @@
 #include "vm/ArgumentsObject.h"
 #include "vm/DebuggerMemory.h"
 #include "vm/WrapperObject.h"
+
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
 #include "jsopcodeinlines.h"
 #include "jsscriptinlines.h"
+
 #include "vm/ObjectImpl-inl.h"
 #include "vm/Stack-inl.h"
 
@@ -83,19 +88,6 @@ enum {
 
 /*** Utils ***************************************************************************************/
 
-static bool
-ReportMoreArgsNeeded(JSContext *cx, const char *name, unsigned required)
-{
-    JS_ASSERT(required > 0);
-    JS_ASSERT(required <= 10);
-    char s[2];
-    s[0] = '0' + (required - 1);
-    s[1] = '\0';
-    JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_MORE_ARGS_NEEDED,
-                         name, s, required == 2 ? "" : "s");
-    return false;
-}
-
 static inline bool
 EnsureFunctionHasScript(JSContext *cx, HandleFunction fun)
 {
@@ -115,14 +107,8 @@ GetOrCreateFunctionScript(JSContext *cx, HandleFunction fun)
     return fun->nonLazyScript();
 }
 
-#define REQUIRE_ARGC(name, n)                                                 \
-    JS_BEGIN_MACRO                                                            \
-        if (argc < (n))                                                       \
-            return ReportMoreArgsNeeded(cx, name, n);                         \
-    JS_END_MACRO
-
-static bool
-ReportObjectRequired(JSContext *cx)
+bool
+js::ReportObjectRequired(JSContext *cx)
 {
     JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_NOT_NONNULL_OBJECT);
     return false;
@@ -251,8 +237,7 @@ class Debugger::FrameRange
 /*** Breakpoints *********************************************************************************/
 
 BreakpointSite::BreakpointSite(JSScript *script, jsbytecode *pc)
-  : script(script), pc(pc), enabledCount(0),
-    trapHandler(nullptr), trapClosure(UndefinedValue())
+  : script(script), pc(pc), enabledCount(0)
 {
     JS_ASSERT(!script->hasBreakpointsAt(pc));
     JS_INIT_CLIST(&breakpoints);
@@ -261,17 +246,15 @@ BreakpointSite::BreakpointSite(JSScript *script, jsbytecode *pc)
 void
 BreakpointSite::recompile(FreeOp *fop)
 {
-#ifdef JS_ION
     if (script->hasBaselineScript())
         script->baselineScript()->toggleDebugTraps(script, pc);
-#endif
 }
 
 void
 BreakpointSite::inc(FreeOp *fop)
 {
     enabledCount++;
-    if (enabledCount == 1 && !trapHandler)
+    if (enabledCount == 1)
         recompile(fop);
 }
 
@@ -280,43 +263,14 @@ BreakpointSite::dec(FreeOp *fop)
 {
     JS_ASSERT(enabledCount > 0);
     enabledCount--;
-    if (enabledCount == 0 && !trapHandler)
-        recompile(fop);
-}
-
-void
-BreakpointSite::setTrap(FreeOp *fop, JSTrapHandler handler, const Value &closure)
-{
-    trapHandler = handler;
-    trapClosure = closure;
-
     if (enabledCount == 0)
         recompile(fop);
 }
 
 void
-BreakpointSite::clearTrap(FreeOp *fop, JSTrapHandler *handlerp, Value *closurep)
-{
-    if (handlerp)
-        *handlerp = trapHandler;
-    if (closurep)
-        *closurep = trapClosure;
-
-    trapHandler = nullptr;
-    trapClosure = UndefinedValue();
-    if (enabledCount == 0) {
-        if (!fop->runtime()->isHeapBusy()) {
-            /* If the GC is running then the script is being destroyed. */
-            recompile(fop);
-        }
-        destroyIfEmpty(fop);
-    }
-}
-
-void
 BreakpointSite::destroyIfEmpty(FreeOp *fop)
 {
-    if (JS_CLIST_IS_EMPTY(&breakpoints) && !trapHandler)
+    if (JS_CLIST_IS_EMPTY(&breakpoints))
         script->destroyBreakpointSite(fop, pc);
 }
 
@@ -385,7 +339,8 @@ Breakpoint::nextInSite()
 /*** Debugger hook dispatch **********************************************************************/
 
 Debugger::Debugger(JSContext *cx, JSObject *dbg)
-  : object(dbg), uncaughtExceptionHook(nullptr), enabled(true),
+  : object(dbg), uncaughtExceptionHook(nullptr), enabled(true), trackingAllocationSites(false),
+    allocationsLogLength(0), maxAllocationsLogLength(DEFAULT_MAX_ALLOCATIONS_LOG_LENGTH),
     frames(cx->runtime()), scripts(cx), sources(cx), objects(cx), environments(cx)
 {
     assertSameCompartment(cx, dbg);
@@ -398,6 +353,7 @@ Debugger::Debugger(JSContext *cx, JSObject *dbg)
 Debugger::~Debugger()
 {
     JS_ASSERT_IF(debuggees.initialized(), debuggees.empty());
+    emptyAllocationsLog();
 
     /*
      * Since the inactive state for this link is a singleton cycle, it's always
@@ -423,13 +379,6 @@ Debugger::init(JSContext *cx)
     return ok;
 }
 
-Debugger *
-Debugger::fromJSObject(JSObject *obj)
-{
-    JS_ASSERT(js::GetObjectClass(obj) == &jsclass);
-    return (Debugger *) obj->getPrivate();
-}
-
 JS_STATIC_ASSERT(unsigned(JSSLOT_DEBUGFRAME_OWNER) == unsigned(JSSLOT_DEBUGSCRIPT_OWNER));
 JS_STATIC_ASSERT(unsigned(JSSLOT_DEBUGFRAME_OWNER) == unsigned(JSSLOT_DEBUGSOURCE_OWNER));
 JS_STATIC_ASSERT(unsigned(JSSLOT_DEBUGFRAME_OWNER) == unsigned(JSSLOT_DEBUGOBJECT_OWNER));
@@ -445,6 +394,19 @@ Debugger::fromChildJSObject(JSObject *obj)
               obj->getClass() == &DebuggerEnv_class);
     JSObject *dbgobj = &obj->getReservedSlot(JSSLOT_DEBUGOBJECT_OWNER).toObject();
     return fromJSObject(dbgobj);
+}
+
+bool
+Debugger::hasMemory() const
+{
+    return object->getReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE).isObject();
+}
+
+DebuggerMemory &
+Debugger::memory() const
+{
+    JS_ASSERT(hasMemory());
+    return object->getReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE).toObject().as<DebuggerMemory>();
 }
 
 bool
@@ -665,7 +627,7 @@ Debugger::slowPathOnLeaveFrame(JSContext *cx, AbstractFramePtr frame, bool frame
         return false;
 
       default:
-        MOZ_ASSUME_UNREACHABLE("bad final trap status");
+        MOZ_CRASH("bad final trap status");
     }
 }
 
@@ -951,7 +913,7 @@ Debugger::newCompletionValue(JSContext *cx, JSTrapStatus status, Value value_,
         return true;
 
       default:
-        MOZ_ASSUME_UNREACHABLE("bad status passed to Debugger::newCompletionValue");
+        MOZ_CRASH("bad status passed to Debugger::newCompletionValue");
     }
 
     /* Common tail for JSTRAP_RETURN and JSTRAP_THROW. */
@@ -1301,12 +1263,6 @@ Debugger::onTrap(JSContext *cx, MutableHandleValue vp)
         }
     }
 
-    if (site && site->trapHandler) {
-        JSTrapStatus st = site->trapHandler(cx, script, pc, vp.address(), site->trapClosure);
-        if (st != JSTRAP_CONTINUE)
-            return st;
-    }
-
     /* By convention, return the true op to the interpreter in vp. */
     vp.setInt32(op);
     return JSTRAP_CONTINUE;
@@ -1499,6 +1455,61 @@ Debugger::slowPathOnNewGlobalObject(JSContext *cx, Handle<GlobalObject *> global
     }
     JS_ASSERT(!cx->isExceptionPending());
 }
+
+/* static */ bool
+Debugger::slowPathOnLogAllocationSite(JSContext *cx, HandleSavedFrame frame,
+                                      GlobalObject::DebuggerVector &dbgs)
+{
+    JS_ASSERT(!dbgs.empty());
+    mozilla::DebugOnly<Debugger **> begin = dbgs.begin();
+
+    for (Debugger **dbgp = dbgs.begin(); dbgp < dbgs.end(); dbgp++) {
+        // The set of debuggers had better not change while we're iterating,
+        // such that the vector gets reallocated.
+        JS_ASSERT(dbgs.begin() == begin);
+
+        if ((*dbgp)->trackingAllocationSites &&
+            (*dbgp)->enabled &&
+            !(*dbgp)->appendAllocationSite(cx, frame))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+Debugger::appendAllocationSite(JSContext *cx, HandleSavedFrame frame)
+{
+    AutoCompartment ac(cx, object);
+    RootedObject wrapped(cx, frame);
+    if (!cx->compartment()->wrap(cx, &wrapped))
+        return false;
+
+    AllocationSite *allocSite = cx->new_<AllocationSite>(wrapped);
+    if (!allocSite)
+        return false;
+
+    allocationsLog.insertBack(allocSite);
+
+    if (allocationsLogLength >= maxAllocationsLogLength) {
+        js_delete(allocationsLog.getFirst());
+    } else {
+        allocationsLogLength++;
+    }
+
+    return true;
+}
+
+void
+Debugger::emptyAllocationsLog()
+{
+    while (!allocationsLog.isEmpty())
+        js_delete(allocationsLog.getFirst());
+    allocationsLogLength = 0;
+}
+
 
 
 /*** Debugger JSObjects **************************************************************************/
@@ -1695,6 +1706,12 @@ Debugger::trace(JSTracer *trc)
         MarkObject(trc, &frameobj, "live Debugger.Frame");
     }
 
+    /*
+     * Mark every allocation site in our allocation log.
+     */
+    for (AllocationSite *s = allocationsLog.getFirst(); s; s = s->getNext())
+        MarkObject(trc, &s->frame, "allocation log SavedFrame");
+
     /* Trace the weak map from JSScript instances to Debugger.Script objects. */
     scripts.trace(trc);
 
@@ -1845,8 +1862,10 @@ Debugger::getEnabled(JSContext *cx, unsigned argc, Value *vp)
 bool
 Debugger::setEnabled(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.set enabled", 1);
     THIS_DEBUGGER(cx, argc, vp, "set enabled", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.set enabled", 1))
+        return false;
+
     bool enabled = ToBoolean(args[0]);
 
     if (enabled != dbg->enabled) {
@@ -1893,8 +1912,9 @@ bool
 Debugger::setHookImpl(JSContext *cx, unsigned argc, Value *vp, Hook which)
 {
     JS_ASSERT(which >= 0 && which < HookCount);
-    REQUIRE_ARGC("Debugger.setHook", 1);
     THIS_DEBUGGER(cx, argc, vp, "setHook", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.setHook", 1))
+        return false;
     if (args[0].isObject()) {
         if (!args[0].toObject().isCallable())
             return ReportIsNotFunction(cx, args[0], args.length() - 1);
@@ -2002,8 +2022,9 @@ Debugger::getUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp)
 bool
 Debugger::setUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.set uncaughtExceptionHook", 1);
     THIS_DEBUGGER(cx, argc, vp, "set uncaughtExceptionHook", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.set uncaughtExceptionHook", 1))
+        return false;
     if (!args[0].isNull() && (!args[0].isObject() || !args[0].toObject().isCallable())) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_ASSIGN_FUNCTION_OR_NULL,
                              "uncaughtExceptionHook");
@@ -2013,11 +2034,21 @@ Debugger::setUncaughtExceptionHook(JSContext *cx, unsigned argc, Value *vp)
     args.rval().setUndefined();
     return true;
 }
+
 bool
 Debugger::getMemory(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGGER(cx, argc, vp, "get memory", args, dbg);
-    args.rval().set(dbg->object->getReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE));
+    Value memoryValue = dbg->object->getReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE);
+
+    if (!memoryValue.isObject()) {
+        RootedObject memory(cx, DebuggerMemory::create(cx, dbg));
+        if (!memory)
+            return false;
+        memoryValue = ObjectValue(*memory);
+    }
+
+    args.rval().set(memoryValue);
     return true;
 }
 
@@ -2065,8 +2096,9 @@ Debugger::unwrapDebuggeeArgument(JSContext *cx, const Value &v)
 bool
 Debugger::addDebuggee(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.addDebuggee", 1);
     THIS_DEBUGGER(cx, argc, vp, "addDebuggee", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.addDebuggee", 1))
+        return false;
     Rooted<GlobalObject*> global(cx, dbg->unwrapDebuggeeArgument(cx, args[0]));
     if (!global)
         return false;
@@ -2093,7 +2125,7 @@ Debugger::addAllGlobalsAsDebuggees(JSContext *cx, unsigned argc, Value *vp)
         for (CompartmentsInZoneIter c(zone); !c.done(); c.next()) {
             if (c == dbg->object->compartment() || c->options().invisibleToDebugger())
                 continue;
-            c->zone()->scheduledForDestruction = false;
+            c->scheduledForDestruction = false;
             GlobalObject *global = c->maybeGlobal();
             if (global) {
                 Rooted<GlobalObject*> rg(cx, global);
@@ -2110,9 +2142,10 @@ Debugger::addAllGlobalsAsDebuggees(JSContext *cx, unsigned argc, Value *vp)
 bool
 Debugger::removeDebuggee(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.removeDebuggee", 1);
     THIS_DEBUGGER(cx, argc, vp, "removeDebuggee", args, dbg);
-    GlobalObject *global = dbg->unwrapDebuggeeArgument(cx, args[0]);
+    if (!args.requireAtLeast(cx, "Debugger.removeDebuggee", 1))
+        return false;
+    Rooted<GlobalObject *> global(cx, dbg->unwrapDebuggeeArgument(cx, args[0]));
     if (!global)
         return false;
     if (dbg->debuggees.has(global)) {
@@ -2129,7 +2162,8 @@ Debugger::removeAllDebuggees(JSContext *cx, unsigned argc, Value *vp)
     THIS_DEBUGGER(cx, argc, vp, "removeAllDebuggees", args, dbg);
 
     for (GlobalObjectSet::Enum e(dbg->debuggees); !e.empty(); e.popFront()) {
-        if (!dbg->removeDebuggeeGlobal(cx, e.front(), nullptr, &e))
+        Rooted<GlobalObject *> global(cx, e.front());
+        if (!dbg->removeDebuggeeGlobal(cx, global, nullptr, &e))
             return false;
     }
 
@@ -2140,8 +2174,9 @@ Debugger::removeAllDebuggees(JSContext *cx, unsigned argc, Value *vp)
 bool
 Debugger::hasDebuggee(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.hasDebuggee", 1);
     THIS_DEBUGGER(cx, argc, vp, "hasDebuggee", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.hasDebuggee", 1))
+        return false;
     GlobalObject *global = dbg->unwrapDebuggeeArgument(cx, args[0]);
     if (!global)
         return false;
@@ -2236,31 +2271,21 @@ Debugger::construct(JSContext *cx, unsigned argc, Value *vp)
         return false;
     for (unsigned slot = JSSLOT_DEBUG_PROTO_START; slot < JSSLOT_DEBUG_PROTO_STOP; slot++)
         obj->setReservedSlot(slot, proto->getReservedSlot(slot));
-    /* Create the Debugger.Memory instance accessible by the
-     * |Debugger.prototype.memory| getter. */
-    Value memoryProto = obj->getReservedSlot(JSSLOT_DEBUG_MEMORY_PROTO);
-    RootedObject memory(cx, NewObjectWithGivenProto(cx, &DebuggerMemory::class_,
-                                                    &memoryProto.toObject(), nullptr));
-    if (!memory)
-        return false;
-    obj->setReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE, ObjectValue(*memory));
+    obj->setReservedSlot(JSSLOT_DEBUG_MEMORY_INSTANCE, NullValue());
 
     /* Construct the underlying C++ object. */
-    Debugger *dbg = cx->new_<Debugger>(cx, obj.get());
-    if (!dbg)
+    auto dbg = cx->make_unique<Debugger>(cx, obj.get());
+    if (!dbg || !dbg->init(cx))
         return false;
-    if (!dbg->init(cx)) {
-        js_delete(dbg);
-        return false;
-    }
-    obj->setPrivate(dbg);
-    /* Now the JSObject owns the js::Debugger instance, so we needn't delete it. */
+
+    Debugger *debugger = dbg.release();
+    obj->setPrivate(debugger); // owns the released pointer
 
     /* Add the initial debuggees, if any. */
     for (unsigned i = 0; i < args.length(); i++) {
         Rooted<GlobalObject*>
             debuggee(cx, &args[i].toObject().as<ProxyObject>().private_().toObject().global());
-        if (!dbg->addDebuggeeGlobal(cx, debuggee))
+        if (!debugger->addDebuggeeGlobal(cx, debuggee))
             return false;
     }
 
@@ -2325,6 +2350,22 @@ Debugger::addDebuggeeGlobal(JSContext *cx,
     }
 
     /*
+     * If we are tracking allocation sites, we need to add the object metadata
+     * callback to this debuggee compartment.
+     */
+    bool setMetadataCallback = false;
+    if (trackingAllocationSites) {
+        if (debuggeeCompartment->hasObjectMetadataCallback()) {
+            JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr,
+                                 JSMSG_OBJECT_METADATA_CALLBACK_ALREADY_SET);
+            return false;
+        }
+
+        debuggeeCompartment->setObjectMetadataCallback(SavedStacksMetadataCallback);
+        setMetadataCallback = true;
+    }
+
+    /*
      * Each debugger-debuggee relation must be stored in up to three places.
      * JSCompartment::addDebuggee enables debug mode if needed.
      */
@@ -2347,6 +2388,11 @@ Debugger::addDebuggeeGlobal(JSContext *cx,
         JS_ASSERT(v->back() == this);
         v->popBack();
     }
+
+    /* Don't leave the object metadata hook set if we OOM'd. */
+    if (setMetadataCallback)
+        debuggeeCompartment->forgetObjectMetadataCallback();
+
     return false;
 }
 
@@ -2412,10 +2458,17 @@ Debugger::cleanupDebuggeeGlobalBeforeRemoval(FreeOp *fop, GlobalObject *global,
             bp->destroy(fop);
     }
     JS_ASSERT_IF(debuggees.empty(), !firstBreakpoint());
+
+    /*
+     * If we are tracking allocation sites, we need to remove the object
+     * metadata callback from this global's compartment.
+     */
+    if (trackingAllocationSites)
+        global->compartment()->forgetObjectMetadataCallback();
 }
 
 bool
-Debugger::removeDebuggeeGlobal(JSContext *cx, GlobalObject *global,
+Debugger::removeDebuggeeGlobal(JSContext *cx, Handle<GlobalObject *> global,
                                GlobalObjectSet::Enum *compartmentEnum,
                                GlobalObjectSet::Enum *debugEnum)
 {
@@ -2424,7 +2477,7 @@ Debugger::removeDebuggeeGlobal(JSContext *cx, GlobalObject *global,
 }
 
 bool
-Debugger::removeDebuggeeGlobal(JSContext *cx, GlobalObject *global,
+Debugger::removeDebuggeeGlobal(JSContext *cx, Handle<GlobalObject *> global,
                                AutoDebugModeInvalidation &invalidate,
                                GlobalObjectSet::Enum *compartmentEnum,
                                GlobalObjectSet::Enum *debugEnum)
@@ -2886,7 +2939,7 @@ Debugger::findAllGlobals(JSContext *cx, unsigned argc, Value *vp)
         if (c->options().invisibleToDebugger())
             continue;
 
-        c->zone()->scheduledForDestruction = false;
+        c->scheduledForDestruction = false;
 
         GlobalObject *global = c->maybeGlobal();
 
@@ -2899,7 +2952,7 @@ Debugger::findAllGlobals(JSContext *cx, unsigned argc, Value *vp)
              * marked gray by XPConnect. Since we're now exposing it to JS code,
              * we need to mark it black.
              */
-            JS::ExposeGCThingToActiveJS(global, JSTRACE_OBJECT);
+            JS::ExposeObjectToActiveJS(global);
 
             RootedValue globalValue(cx, ObjectValue(*global));
             if (!dbg->wrapDebuggeeValue(cx, &globalValue))
@@ -2916,8 +2969,9 @@ Debugger::findAllGlobals(JSContext *cx, unsigned argc, Value *vp)
 bool
 Debugger::makeGlobalObjectReference(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.makeGlobalObjectReference", 1);
     THIS_DEBUGGER(cx, argc, vp, "makeGlobalObjectReference", args, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.makeGlobalObjectReference", 1))
+        return false;
 
     Rooted<GlobalObject *> global(cx, dbg->unwrapDebuggeeArgument(cx, args[0]));
     if (!global)
@@ -3242,8 +3296,9 @@ ScriptOffset(JSContext *cx, JSScript *script, const Value &v, size_t *offsetp)
 static bool
 DebuggerScript_getOffsetLine(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Script.getOffsetLine", 1);
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "getOffsetLine", args, obj, script);
+    if (!args.requireAtLeast(cx, "Debugger.Script.getOffsetLine", 1))
+        return false;
     size_t offset;
     if (!ScriptOffset(cx, script, args[0], &offset))
         return false;
@@ -3609,7 +3664,8 @@ static bool
 DebuggerScript_getLineOffsets(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "getLineOffsets", args, obj, script);
-    REQUIRE_ARGC("Debugger.Script.getLineOffsets", 1);
+    if (!args.requireAtLeast(cx, "Debugger.Script.getLineOffsets", 1))
+        return false;
 
     /* Parse lineno argument. */
     RootedValue linenoValue(cx, args[0]);
@@ -3749,8 +3805,9 @@ Debugger::propagateForcedReturn(JSContext *cx, AbstractFramePtr frame, HandleVal
 static bool
 DebuggerScript_setBreakpoint(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Script.setBreakpoint", 2);
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "setBreakpoint", args, obj, script);
+    if (!args.requireAtLeast(cx, "Debugger.Script.setBreakpoint", 2))
+        return false;
     Debugger *dbg = Debugger::fromChildJSObject(obj);
 
     if (!dbg->observesScript(script)) {
@@ -3819,8 +3876,9 @@ DebuggerScript_getBreakpoints(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerScript_clearBreakpoint(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Script.clearBreakpoint", 1);
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "clearBreakpoint", args, obj, script);
+    if (!args.requireAtLeast(cx, "Debugger.Script.clearBreakpoint", 1))
+        return false;
     Debugger *dbg = Debugger::fromChildJSObject(obj);
 
     JSObject *handler = NonNullObject(cx, args[0]);
@@ -3845,8 +3903,9 @@ DebuggerScript_clearAllBreakpoints(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerScript_isInCatchScope(JSContext *cx, unsigned argc, Value* vp)
 {
-    REQUIRE_ARGC("Debugger.Script.isInCatchScope", 1);
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "isInCatchScope", args, obj, script);
+    if (!args.requireAtLeast(cx, "Debugger.Script.isInCatchScope", 1))
+        return false;
 
     size_t offset;
     if (!ScriptOffset(cx, script, args[0], &offset))
@@ -4652,8 +4711,9 @@ DebuggerFrame_getOnStep(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerFrame_setOnStep(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Frame.set onStep", 1);
     THIS_FRAME(cx, argc, vp, "set onStep", args, thisobj, frame);
+    if (!args.requireAtLeast(cx, "Debugger.Frame.set onStep", 1))
+        return false;
     if (!IsValidHook(args[0])) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_NOT_CALLABLE_OR_UNDEFINED);
         return false;
@@ -4690,8 +4750,9 @@ DebuggerFrame_getOnPop(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerFrame_setOnPop(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Frame.set onPop", 1);
     THIS_FRAME(cx, argc, vp, "set onPop", args, thisobj, frame);
+    if (!args.requireAtLeast(cx, "Debugger.Frame.set onPop", 1))
+        return false;
     (void) frame;  // Silence GCC warning
     if (!IsValidHook(args[0])) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, nullptr, JSMSG_NOT_CALLABLE_OR_UNDEFINED);
@@ -4891,7 +4952,8 @@ static bool
 DebuggerFrame_eval(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_FRAME_ITER(cx, argc, vp, "eval", args, thisobj, _, iter);
-    REQUIRE_ARGC("Debugger.Frame.prototype.eval", 1);
+    if (!args.requireAtLeast(cx, "Debugger.Frame.prototype.eval", 1))
+        return false;
     Debugger *dbg = Debugger::fromChildJSObject(thisobj);
     UpdateFrameIterPc(iter);
     return DebuggerGenericEval(cx, "Debugger.Frame.prototype.eval",
@@ -4903,7 +4965,8 @@ static bool
 DebuggerFrame_evalWithBindings(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_FRAME_ITER(cx, argc, vp, "evalWithBindings", args, thisobj, _, iter);
-    REQUIRE_ARGC("Debugger.Frame.prototype.evalWithBindings", 2);
+    if (!args.requireAtLeast(cx, "Debugger.Frame.prototype.evalWithBindings", 2))
+        return false;
     Debugger *dbg = Debugger::fromChildJSObject(thisobj);
     UpdateFrameIterPc(iter);
     return DebuggerGenericEval(cx, "Debugger.Frame.prototype.evalWithBindings",
@@ -5223,6 +5286,70 @@ DebuggerObject_getEnvironment(JSContext *cx, unsigned argc, Value *vp)
 }
 
 static bool
+DebuggerObject_getIsBoundFunction(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, "get isBoundFunction", args, refobj);
+
+    args.rval().setBoolean(refobj->isBoundFunction());
+    return true;
+}
+
+static bool
+DebuggerObject_getBoundTargetFunction(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "get boundFunctionTarget", args, dbg, refobj);
+
+    if (!refobj->isBoundFunction()) {
+        args.rval().setUndefined();
+        return true;
+    }
+
+    args.rval().setObject(*refobj->as<JSFunction>().getBoundFunctionTarget());
+    return dbg->wrapDebuggeeValue(cx, args.rval());
+}
+
+static bool
+DebuggerObject_getBoundThis(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "get boundThis", args, dbg, refobj);
+
+    if (!refobj->isBoundFunction()) {
+        args.rval().setUndefined();
+        return true;
+    }
+    args.rval().set(refobj->as<JSFunction>().getBoundFunctionThis());
+    return dbg->wrapDebuggeeValue(cx, args.rval());
+}
+
+static bool
+DebuggerObject_getBoundArguments(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "get boundArguments", args, dbg, refobj);
+
+    if (!refobj->isBoundFunction()) {
+        args.rval().setUndefined();
+        return true;
+    }
+
+    Rooted<JSFunction*> fun(cx, &refobj->as<JSFunction>());
+    size_t length = fun->getBoundFunctionArgumentCount();
+    AutoValueVector boundArgs(cx);
+    if (!boundArgs.resize(length))
+        return false;
+    for (size_t i = 0; i < length; i++) {
+        boundArgs[i].set(fun->getBoundFunctionArgument(i));
+        if (!dbg->wrapDebuggeeValue(cx, boundArgs[i]))
+            return false;
+    }
+
+    JSObject *aobj = NewDenseCopiedArray(cx, boundArgs.length(), boundArgs.begin());
+    if (!aobj)
+        return false;
+    args.rval().setObject(*aobj);
+    return true;
+}
+
+static bool
 DebuggerObject_getGlobal(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "get global", args, dbg, obj);
@@ -5231,6 +5358,18 @@ DebuggerObject_getGlobal(JSContext *cx, unsigned argc, Value *vp)
     if (!dbg->wrapDebuggeeValue(cx, &v))
         return false;
     args.rval().set(v);
+    return true;
+}
+
+static bool
+DebuggerObject_getAllocationSite(JSContext *cx, unsigned argc, Value *vp)
+{
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, "get allocationSite", args, obj);
+
+    RootedObject metadata(cx, obj->getMetadata());
+    if (!cx->compartment()->wrap(cx, &metadata))
+        return false;
+    args.rval().setObjectOrNull(metadata);
     return true;
 }
 
@@ -5249,7 +5388,7 @@ DebuggerObject_getOwnPropertyDescriptor(JSContext *cx, unsigned argc, Value *vp)
         Maybe<AutoCompartment> ac;
         ac.construct(cx, obj);
 
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         if (!GetOwnPropertyDescriptor(cx, obj, id, &desc))
             return false;
     }
@@ -5279,13 +5418,13 @@ DebuggerObject_getOwnPropertyDescriptor(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerObject_getOwnPropertyNames(JSContext *cx, unsigned argc, Value *vp)
 {
-    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "getOwnPropertyNames", args, dbg, obj);
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, "getOwnPropertyNames", args, obj);
 
     AutoIdVector keys(cx);
     {
         Maybe<AutoCompartment> ac;
         ac.construct(cx, obj);
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         if (!GetPropertyNames(cx, obj, JSITER_OWNONLY | JSITER_HIDDEN, &keys))
             return false;
     }
@@ -5319,7 +5458,8 @@ static bool
 DebuggerObject_defineProperty(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "defineProperty", args, dbg, obj);
-    REQUIRE_ARGC("Debugger.Object.defineProperty", 2);
+    if (!args.requireAtLeast(cx, "Debugger.Object.defineProperty", 2))
+        return false;
 
     RootedId id(cx);
     if (!ValueToId<CanGC>(cx, args[0], &id))
@@ -5340,7 +5480,7 @@ DebuggerObject_defineProperty(JSContext *cx, unsigned argc, Value *vp)
         if (!cx->compartment()->wrap(cx, &desc))
             return false;
 
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         bool dummy;
         if (!DefineProperty(cx, obj, id, desc, true, &dummy))
             return false;
@@ -5354,7 +5494,8 @@ static bool
 DebuggerObject_defineProperties(JSContext *cx, unsigned argc, Value *vp)
 {
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "defineProperties", args, dbg, obj);
-    REQUIRE_ARGC("Debugger.Object.defineProperties", 1);
+    if (!args.requireAtLeast(cx, "Debugger.Object.defineProperties", 1))
+        return false;
 
     RootedValue arg(cx, args[0]);
     RootedObject props(cx, ToObject(cx, arg));
@@ -5382,7 +5523,7 @@ DebuggerObject_defineProperties(JSContext *cx, unsigned argc, Value *vp)
                 return false;
         }
 
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         for (size_t i = 0; i < n; i++) {
             bool dummy;
             if (!DefineProperty(cx, obj, ids[i], descs[i], true, &dummy))
@@ -5401,14 +5542,14 @@ DebuggerObject_defineProperties(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerObject_deleteProperty(JSContext *cx, unsigned argc, Value *vp)
 {
-    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "deleteProperty", args, dbg, obj);
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, "deleteProperty", args, obj);
     RootedId id(cx);
     if (!ValueToId<CanGC>(cx, args.get(0), &id))
         return false;
 
     Maybe<AutoCompartment> ac;
     ac.construct(cx, obj);
-    ErrorCopier ec(ac, dbg->toJSObject());
+    ErrorCopier ec(ac);
 
     bool succeeded;
     if (!JSObject::deleteGeneric(cx, obj, id, &succeeded))
@@ -5422,11 +5563,11 @@ enum SealHelperOp { Seal, Freeze, PreventExtensions };
 static bool
 DebuggerObject_sealHelper(JSContext *cx, unsigned argc, Value *vp, SealHelperOp op, const char *name)
 {
-    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, name, args, dbg, obj);
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, name, args, obj);
 
     Maybe<AutoCompartment> ac;
     ac.construct(cx, obj);
-    ErrorCopier ec(ac, dbg->toJSObject());
+    ErrorCopier ec(ac);
     bool ok;
     if (op == Seal) {
         ok = JSObject::seal(cx, obj);
@@ -5471,11 +5612,11 @@ static bool
 DebuggerObject_isSealedHelper(JSContext *cx, unsigned argc, Value *vp, SealHelperOp op,
                               const char *name)
 {
-    THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, name, args, dbg, obj);
+    THIS_DEBUGOBJECT_REFERENT(cx, argc, vp, name, args, obj);
 
     Maybe<AutoCompartment> ac;
     ac.construct(cx, obj);
-    ErrorCopier ec(ac, dbg->toJSObject());
+    ErrorCopier ec(ac);
     bool r;
     if (op == Seal) {
         if (!JSObject::isSealed(cx, obj, &r))
@@ -5602,8 +5743,9 @@ DebuggerObject_call(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerObject_makeDebuggeeValue(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Object.prototype.makeDebuggeeValue", 1);
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "makeDebuggeeValue", args, dbg, referent);
+    if (!args.requireAtLeast(cx, "Debugger.Object.prototype.makeDebuggeeValue", 1))
+        return false;
 
     RootedValue arg0(cx, args[0]);
 
@@ -5666,8 +5808,9 @@ RequireGlobalObject(JSContext *cx, HandleValue dbgobj, HandleObject referent)
 static bool
 DebuggerObject_evalInGlobal(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Object.prototype.evalInGlobal", 1);
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "evalInGlobal", args, dbg, referent);
+    if (!args.requireAtLeast(cx, "Debugger.Object.prototype.evalInGlobal", 1))
+        return false;
     if (!RequireGlobalObject(cx, args.thisv(), referent))
         return false;
 
@@ -5679,8 +5822,9 @@ DebuggerObject_evalInGlobal(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerObject_evalInGlobalWithBindings(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Object.prototype.evalInGlobalWithBindings", 2);
     THIS_DEBUGOBJECT_OWNER_REFERENT(cx, argc, vp, "evalInGlobalWithBindings", args, dbg, referent);
+    if (!args.requireAtLeast(cx, "Debugger.Object.prototype.evalInGlobalWithBindings", 2))
+        return false;
     if (!RequireGlobalObject(cx, args.thisv(), referent))
         return false;
 
@@ -5728,7 +5872,12 @@ static const JSPropertySpec DebuggerObject_properties[] = {
     JS_PSG("parameterNames", DebuggerObject_getParameterNames, 0),
     JS_PSG("script", DebuggerObject_getScript, 0),
     JS_PSG("environment", DebuggerObject_getEnvironment, 0),
+    JS_PSG("isBoundFunction", DebuggerObject_getIsBoundFunction, 0),
+    JS_PSG("boundTargetFunction", DebuggerObject_getBoundTargetFunction, 0),
+    JS_PSG("boundThis", DebuggerObject_getBoundThis, 0),
+    JS_PSG("boundArguments", DebuggerObject_getBoundArguments, 0),
     JS_PSG("global", DebuggerObject_getGlobal, 0),
+    JS_PSG("allocationSite", DebuggerObject_getAllocationSite, 0),
     JS_PS_END
 };
 
@@ -5961,13 +6110,13 @@ DebuggerEnv_getInspectable(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerEnv_names(JSContext *cx, unsigned argc, Value *vp)
 {
-    THIS_DEBUGENV_OWNER(cx, argc, vp, "names", args, envobj, env, dbg);
+    THIS_DEBUGENV(cx, argc, vp, "names", args, envobj, env);
 
     AutoIdVector keys(cx);
     {
         Maybe<AutoCompartment> ac;
         ac.construct(cx, env);
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         if (!GetPropertyNames(cx, env, JSITER_HIDDEN, &keys))
             return false;
     }
@@ -5990,8 +6139,9 @@ DebuggerEnv_names(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerEnv_find(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Environment.find", 1);
     THIS_DEBUGENV_OWNER(cx, argc, vp, "find", args, envobj, env, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.Environment.find", 1))
+        return false;
 
     RootedId id(cx);
     if (!ValueToIdentifier(cx, args[0], &id))
@@ -6002,7 +6152,7 @@ DebuggerEnv_find(JSContext *cx, unsigned argc, Value *vp)
         ac.construct(cx, env);
 
         /* This can trigger resolve hooks. */
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
         RootedShape prop(cx);
         RootedObject pobj(cx);
         for (; env && !prop; env = env->enclosingScope()) {
@@ -6019,8 +6169,9 @@ DebuggerEnv_find(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerEnv_getVariable(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Environment.getVariable", 1);
     THIS_DEBUGENV_OWNER(cx, argc, vp, "getVariable", args, envobj, env, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.Environment.getVariable", 1))
+        return false;
 
     RootedId id(cx);
     if (!ValueToIdentifier(cx, args[0], &id))
@@ -6032,7 +6183,7 @@ DebuggerEnv_getVariable(JSContext *cx, unsigned argc, Value *vp)
         ac.construct(cx, env);
 
         /* This can trigger getters. */
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
 
         // For DebugScopeObjects, we get sentinel values for optimized out
         // slots and arguments instead of throwing (the default behavior).
@@ -6056,8 +6207,9 @@ DebuggerEnv_getVariable(JSContext *cx, unsigned argc, Value *vp)
 static bool
 DebuggerEnv_setVariable(JSContext *cx, unsigned argc, Value *vp)
 {
-    REQUIRE_ARGC("Debugger.Environment.setVariable", 2);
     THIS_DEBUGENV_OWNER(cx, argc, vp, "setVariable", args, envobj, env, dbg);
+    if (!args.requireAtLeast(cx, "Debugger.Environment.setVariable", 2))
+        return false;
 
     RootedId id(cx);
     if (!ValueToIdentifier(cx, args[0], &id))
@@ -6074,7 +6226,7 @@ DebuggerEnv_setVariable(JSContext *cx, unsigned argc, Value *vp)
             return false;
 
         /* This can trigger setters. */
-        ErrorCopier ec(ac, dbg->toJSObject());
+        ErrorCopier ec(ac);
 
         /* Make sure the environment actually has the specified binding. */
         bool has;

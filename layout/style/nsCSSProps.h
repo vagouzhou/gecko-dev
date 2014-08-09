@@ -213,6 +213,9 @@ static_assert((CSS_PROPERTY_PARSE_PROPERTY_MASK &
 // aliases.
 #define CSS_PROPERTY_ALWAYS_ENABLED_IN_CHROME_OR_CERTIFIED_APP (1<<23)
 
+// This property's unitless values are pixels.
+#define CSS_PROPERTY_NUMBERS_ARE_PIXELS           (1<<24)
+
 /**
  * Types of animatable values.
  */
@@ -563,6 +566,7 @@ public:
   static const KTableValue kAlignContentKTable[];
   static const KTableValue kAlignItemsKTable[];
   static const KTableValue kAlignSelfKTable[];
+  static const KTableValue kFlexBasisKTable[];
   static const KTableValue kFlexDirectionKTable[];
   static const KTableValue kFlexWrapKTable[];
   static const KTableValue kJustifyContentKTable[];

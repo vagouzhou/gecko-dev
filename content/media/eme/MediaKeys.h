@@ -54,13 +54,16 @@ public:
   // JavaScript: MediaKeys.createSession()
   already_AddRefed<Promise> CreateSession(const nsAString& aInitDataType,
                                           const Uint8Array& aInitData,
-                                          SessionType aSessionType);
+                                          SessionType aSessionType,
+                                          ErrorResult& aRv);
 
   // JavaScript: MediaKeys.loadSession()
-  already_AddRefed<Promise> LoadSession(const nsAString& aSessionId);
+  already_AddRefed<Promise> LoadSession(const nsAString& aSessionId,
+                                        ErrorResult& aRv);
 
   // JavaScript: MediaKeys.SetServerCertificate()
-  already_AddRefed<Promise> SetServerCertificate(const Uint8Array& aServerCertificate);
+  already_AddRefed<Promise> SetServerCertificate(const Uint8Array& aServerCertificate,
+                                                 ErrorResult& aRv);
 
   // JavaScript: MediaKeys.create()
   static
@@ -80,14 +83,14 @@ public:
   // Called once a Create() operation succeeds.
   void OnCDMCreated(PromiseId aId);
   // Called once a CreateSession or LoadSession succeeds.
-  void OnSessionActivated(PromiseId aId, const nsAString& aSessionId);
+  void OnSessionCreated(PromiseId aId, const nsAString& aSessionId);
   // Called once a session has closed.
   void OnSessionClosed(MediaKeySession* aSession);
 
   CDMProxy* GetCDMProxy() { return mProxy; }
 
   // Makes a new promise, or nullptr on failure.
-  already_AddRefed<Promise> MakePromise();
+  already_AddRefed<Promise> MakePromise(ErrorResult& aRv);
   // Stores promise in mPromises, returning an ID that can be used to retrieve
   // it later. The ID is passed to the CDM, so that it can signal specific
   // promises to be resolved.
@@ -97,6 +100,8 @@ public:
   void RejectPromise(PromiseId aId, nsresult aExceptionCode);
   // Resolves promise with "undefined".
   void ResolvePromise(PromiseId aId);
+
+  nsresult GetOrigin(nsString& aOutOrigin);
 
 private:
 
@@ -112,6 +117,7 @@ private:
   KeySessionHashMap mKeySessions;
   PromiseHashMap mPromises;
   PendingKeySessionsHashMap mPendingSessions;
+  PromiseId mCreatePromiseId;
 };
 
 } // namespace dom

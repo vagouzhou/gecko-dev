@@ -11,8 +11,15 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/loop/MozLoopService.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "hookWindowCloseForPanelClose",
-  "resource://gre/modules/MozSocialAPI.jsm");
-
+                                        "resource://gre/modules/MozSocialAPI.jsm");
+XPCOMUtils.defineLazyGetter(this, "appInfo", function() {
+  return Cc["@mozilla.org/xre/app-info;1"]
+           .getService(Ci.nsIXULAppInfo)
+           .QueryInterface(Ci.nsIXULRuntime);
+});
+XPCOMUtils.defineLazyServiceGetter(this, "clipboardHelper",
+                                         "@mozilla.org/widget/clipboardhelper;1",
+                                         "nsIClipboardHelper");
 this.EXPORTED_SYMBOLS = ["injectLoopAPI"];
 
 /**
@@ -26,6 +33,7 @@ this.EXPORTED_SYMBOLS = ["injectLoopAPI"];
 function injectLoopAPI(targetWindow) {
   let ringer;
   let ringerStopper;
+  let appVersionInfo;
 
   let api = {
     /**
@@ -33,25 +41,11 @@ function injectLoopAPI(targetWindow) {
      */
     doNotDisturb: {
       enumerable: true,
-      configurable: true,
       get: function() {
         return MozLoopService.doNotDisturb;
       },
       set: function(aFlag) {
         MozLoopService.doNotDisturb = aFlag;
-      }
-    },
-
-    /**
-     * Returns the url for the Loop server from preferences.
-     *
-     * @return {String} The Loop server url
-     */
-    serverUrl: {
-      enumerable: true,
-      configurable: true,
-      get: function() {
-        return Services.prefs.getCharPref("loop.server");
       }
     },
 
@@ -62,7 +56,6 @@ function injectLoopAPI(targetWindow) {
      */
     locale: {
       enumerable: true,
-      configurable: true,
       get: function() {
         return MozLoopService.locale;
       }
@@ -78,7 +71,6 @@ function injectLoopAPI(targetWindow) {
      */
     getStrings: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function(key) {
         return MozLoopService.getStrings(key);
@@ -98,7 +90,6 @@ function injectLoopAPI(targetWindow) {
      */
     ensureRegistered: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function(callback) {
         // We translate from a promise to a callback, as we can't pass promises from
@@ -125,7 +116,6 @@ function injectLoopAPI(targetWindow) {
      */
     noteCallUrlExpiry: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function(expiryTimeSeconds) {
         MozLoopService.noteCallUrlExpiry(expiryTimeSeconds);
@@ -143,7 +133,6 @@ function injectLoopAPI(targetWindow) {
      */
     setLoopCharPref: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function(prefName, value) {
         MozLoopService.setLoopCharPref(prefName, value);
@@ -165,7 +154,6 @@ function injectLoopAPI(targetWindow) {
      */
     getLoopCharPref: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function(prefName) {
         return MozLoopService.getLoopCharPref(prefName);
@@ -177,7 +165,6 @@ function injectLoopAPI(targetWindow) {
      */
     startAlerting: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function() {
         let chromeWindow = getChromeWindow(targetWindow);
@@ -201,7 +188,6 @@ function injectLoopAPI(targetWindow) {
      */
     stopAlerting: {
       enumerable: true,
-      configurable: true,
       writable: true,
       value: function() {
         if (ringerStopper) {
@@ -214,11 +200,81 @@ function injectLoopAPI(targetWindow) {
           ringer = null;
         }
       }
-    }
+    },
+
+    /**
+     * Performs a hawk based request to the loop server.
+     *
+     * Callback parameters:
+     *  - {Object|null} null if success. Otherwise an object:
+     *    {
+     *      code: 401,
+     *      errno: 401,
+     *      error: "Request failed",
+     *      message: "invalid token"
+     *    }
+     *  - {String} The body of the response.
+     *
+     * @param {String} path The path to make the request to.
+     * @param {String} method The request method, e.g. 'POST', 'GET'.
+     * @param {Object} payloadObj An object which is converted to JSON and
+     *                            transmitted with the request.
+     * @param {Function} callback Called when the request completes.
+     */
+    hawkRequest: {
+      enumerable: true,
+      writable: true,
+      value: function(path, method, payloadObj, callback) {
+        // XXX Should really return a DOM promise here.
+        return MozLoopService.hawkRequest(path, method, payloadObj).then((response) => {
+          callback(null, response.body);
+        }, (error) => {
+          callback(Cu.cloneInto(error, targetWindow));
+        });
+      }
+    },
+
+    /**
+     * Copies passed string onto the system clipboard.
+     *
+     * @param {String} str The string to copy
+     */
+    copyString: {
+      enumerable: true,
+      writable: true,
+      value: function(str) {
+        clipboardHelper.copyString(str);
+      }
+    },
+
+    /**
+     * Returns the app version information for use during feedback.
+     *
+     * @return {Object} An object containing:
+     *   - channel: The update channel the application is on
+     *   - version: The application version
+     *   - OS: The operating system the application is running on
+     */
+    appVersionInfo: {
+      enumerable: true,
+      get: function() {
+        if (!appVersionInfo) {
+          let defaults = Services.prefs.getDefaultBranch(null);
+
+          appVersionInfo = Cu.cloneInto({
+            channel: defaults.getCharPref("app.update.channel"),
+            version: appInfo.version,
+            OS: appInfo.OS
+          }, targetWindow);
+        }
+        return appVersionInfo;
+      }
+    },
   };
 
   let contentObj = Cu.createObjectIn(targetWindow);
   Object.defineProperties(contentObj, api);
+  Object.seal(contentObj);
   Cu.makeObjectPropsNormal(contentObj);
 
   targetWindow.navigator.wrappedJSObject.__defineGetter__("mozLoop", function() {

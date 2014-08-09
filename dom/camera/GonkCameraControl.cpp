@@ -122,7 +122,11 @@ nsGonkCameraControl::StartImpl(const Configuration* aInitialConfig)
   }
 
   OnHardwareStateChange(CameraControlListener::kHardwareOpen);
-  return StartPreviewImpl();
+  if (aInitialConfig) {
+    return StartPreviewImpl();
+  }
+
+  return NS_OK;
 }
 
 nsresult
@@ -230,15 +234,16 @@ nsGonkCameraControl::SetConfigurationInternal(const Configuration& aConfig)
         break;
     }
 
-    nsresult rv = Set(CAMERA_PARAM_RECORDINGHINT,
-                      aConfig.mMode == kVideoMode);
+    DOM_CAMERA_LOGT("%s:%d\n", __func__, __LINE__);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      return rv;
+    }
+
+    rv = Set(CAMERA_PARAM_RECORDINGHINT, aConfig.mMode == kVideoMode);
     if (NS_FAILED(rv)) {
       DOM_CAMERA_LOGE("Failed to set recording hint (0x%x)\n", rv);
     }
   }
-
-  DOM_CAMERA_LOGT("%s:%d\n", __func__, __LINE__);
-  NS_ENSURE_SUCCESS(rv, rv);
 
   mCurrentConfiguration.mMode = aConfig.mMode;
   mCurrentConfiguration.mRecorderProfile = aConfig.mRecorderProfile;
@@ -255,6 +260,11 @@ nsGonkCameraControl::SetConfigurationImpl(const Configuration& aConfig)
 {
   DOM_CAMERA_LOGT("%s:%d\n", __func__, __LINE__);
   MOZ_ASSERT(NS_GetCurrentThread() == mCameraThread);
+
+  if (aConfig.mMode == kUnspecifiedMode) {
+    DOM_CAMERA_LOGW("Can't set camera mode to 'unspecified', ignoring\n");
+    return NS_ERROR_INVALID_ARG;
+  }
 
   // Stop any currently running preview
   nsresult rv = PausePreview();
@@ -1682,6 +1692,12 @@ nsGonkCameraControl::GetRecorderProfileManagerImpl()
 }
 
 void
+nsGonkCameraControl::OnRateLimitPreview(bool aLimit)
+{
+  CameraControlImpl::OnRateLimitPreview(aLimit);
+}
+
+void
 nsGonkCameraControl::OnNewPreviewFrame(layers::TextureClient* aBuffer)
 {
   nsRefPtr<Image> frame = mImageContainer->CreateImage(ImageFormat::GRALLOC_PLANAR_YCBCR);
@@ -1741,6 +1757,12 @@ void
 OnFacesDetected(nsGonkCameraControl* gc, camera_frame_metadata_t* aMetaData)
 {
   gc->OnFacesDetected(aMetaData);
+}
+
+void
+OnRateLimitPreview(nsGonkCameraControl* gc, bool aLimit)
+{
+  gc->OnRateLimitPreview(aLimit);
 }
 
 void

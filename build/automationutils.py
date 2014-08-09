@@ -4,13 +4,17 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 from __future__ import with_statement
-import glob, logging, os, platform, shutil, subprocess, sys, tempfile, urllib2, zipfile
-import base64
-import re
-import os
-from urlparse import urlparse
+import logging
 from operator import itemgetter
+import os
+import platform
+import re
 import signal
+import subprocess
+import sys
+import tempfile
+from urlparse import urlparse
+import zipfile
 
 try:
   import mozinfo
@@ -73,12 +77,24 @@ DEBUGGER_INFO = {
     "requiresEscapedArgs": True
   },
 
+  # Visual Studio Debugger Support
+  "devenv.exe": {
+    "interactive": True,
+    "args": "-debugexe"
+  },
+
+  # Visual C++ Express Debugger Support
+  "wdexpress.exe": {
+    "interactive": True,
+    "args": "-debugexe"
+  },
+
   # valgrind doesn't explain much about leaks unless you set the
   # '--leak-check=full' flag. But there are a lot of objects that are
   # semi-deliberately leaked, so we set '--show-possibly-lost=no' to avoid
   # uninteresting output from those objects. We set '--smc-check==all-non-file'
   # and '--vex-iropt-register-updates=allregs-at-mem-access' so that valgrind
-  # deals properly with JIT'd JavaScript code.  
+  # deals properly with JIT'd JavaScript code.
   "valgrind": {
     "interactive": False,
     "args": " ".join(["--leak-check=full",
@@ -460,7 +476,10 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
   envVar = None
   dmdLibrary = None
   preloadEnvVar = None
-  if mozinfo.isUnix:
+  if 'toolkit' in mozinfo.info and mozinfo.info['toolkit'] == "gonk":
+    # Skip all of this, it's only valid for the host.
+    pass
+  elif mozinfo.isUnix:
     envVar = "LD_LIBRARY_PATH"
     env['MOZILLA_FIVE_HOME'] = xrePath
     dmdLibrary = "libdmd.so"
@@ -557,7 +576,6 @@ def environment(xrePath, env=None, crashreporter=True, debugger=False, dmdPath=N
 def dumpScreen(utilityPath):
   """dumps a screenshot of the entire screen to a directory specified by
   the MOZ_UPLOAD_DIR environment variable"""
-  import mozfile
 
   # Need to figure out which OS-dependent tool to use
   if mozinfo.isUnix:
@@ -602,29 +620,31 @@ class ShutdownLeaks(object):
     self.currentTest = None
     self.seenShutdown = False
 
-  def log(self, line):
-    if line[2:11] == "DOMWINDOW":
-      self._logWindow(line)
-    elif line[2:10] == "DOCSHELL":
-      self._logDocShell(line)
-    elif line.startswith("TEST-START"):
-      fileName = line.split(" ")[-1].strip().replace("chrome://mochitests/content/browser/", "")
+  def log(self, message):
+    if message['action'] == 'log':
+        line = message['message']
+        if line[2:11] == "DOMWINDOW":
+          self._logWindow(line)
+        elif line[2:10] == "DOCSHELL":
+          self._logDocShell(line)
+    elif message['action'] == 'test_start':
+      fileName = message['test'].replace("chrome://mochitests/content/browser/", "")
       self.currentTest = {"fileName": fileName, "windows": set(), "docShells": set()}
-    elif line.startswith("INFO TEST-END"):
+    elif message['action'] == 'test_end':
       # don't track a test if no windows or docShells leaked
       if self.currentTest and (self.currentTest["windows"] or self.currentTest["docShells"]):
         self.tests.append(self.currentTest)
       self.currentTest = None
-    elif line.startswith("INFO TEST-START | Shutdown"):
+    elif message['action'] == 'suite_end':
       self.seenShutdown = True
 
   def process(self):
     for test in self._parseLeakingTests():
       for url, count in self._zipLeakedWindows(test["leakedWindows"]):
-        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d window(s) until shutdown [url = %s]", test["fileName"], count, url)
+        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d window(s) until shutdown [url = %s]" % (test["fileName"], count, url))
 
       if test["leakedDocShells"]:
-        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d docShell(s) until shutdown", test["fileName"], len(test["leakedDocShells"]))
+        self.logger("TEST-UNEXPECTED-FAIL | %s | leaked %d docShell(s) until shutdown" % (test["fileName"], len(test["leakedDocShells"])))
 
   def _logWindow(self, line):
     created = line[:2] == "++"
@@ -633,7 +653,7 @@ class ShutdownLeaks(object):
 
     # log line has invalid format
     if not pid or not serial:
-      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>", line)
+      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
       return
 
     key = pid + "." + serial
@@ -654,7 +674,7 @@ class ShutdownLeaks(object):
 
     # log line has invalid format
     if not pid or not id:
-      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>", line)
+      self.logger("TEST-UNEXPECTED-FAIL | ShutdownLeaks | failed to parse line <%s>" % line)
       return
 
     key = pid + "." + id

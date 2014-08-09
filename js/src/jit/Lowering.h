@@ -19,6 +19,8 @@
 # include "jit/arm/Lowering-arm.h"
 #elif defined(JS_CODEGEN_MIPS)
 # include "jit/mips/Lowering-mips.h"
+#elif defined(JS_CODEGEN_NONE)
+# include "jit/none/Lowering-none.h"
 #else
 # error "Unknown architecture!"
 #endif
@@ -169,6 +171,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitForkJoinContext(MForkJoinContext *ins);
     bool visitGuardThreadExclusive(MGuardThreadExclusive *ins);
     bool visitInterruptCheck(MInterruptCheck *ins);
+    bool visitAsmJSInterruptCheck(MAsmJSInterruptCheck *ins);
     bool visitInterruptCheckPar(MInterruptCheckPar *ins);
     bool visitStoreSlot(MStoreSlot *ins);
     bool visitFilterTypeSet(MFilterTypeSet *ins);

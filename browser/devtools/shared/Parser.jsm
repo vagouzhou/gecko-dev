@@ -218,7 +218,7 @@ SyntaxTreesPool.prototype = {
         // Can't guarantee that the tree traversal logic is forever perfect :)
         // Language features may be added, in which case the recursive methods
         // need to be updated. If an exception is thrown here, file a bug.
-        DevToolsUtils.reportException("Syntax tree visitor for " + aUrl, e);
+        DevToolsUtils.reportException("Syntax tree visitor for " + this._url, e);
       }
     }
     this._cache.set(requestId, results);
@@ -450,8 +450,8 @@ let ParserHelpers = {
         loc.end.column = loc.start.column + aNode.name.length;
         return loc;
       }
-      if (parentType == "ContinueStatement") {
-        // e.g. continue label
+      if (parentType == "ContinueStatement" || parentType == "BreakStatement") {
+        // e.g. continue label; or break label;
         // The location is unavailable for the identifier node "label".
         let loc = Cu.cloneInto(parentLocation, {});
         loc.start.line = loc.end.line;

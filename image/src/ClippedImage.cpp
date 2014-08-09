@@ -3,6 +3,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <cmath>
+
 #include "gfxDrawable.h"
 #include "gfxPlatform.h"
 #include "gfxUtils.h"
@@ -13,12 +15,14 @@
 #include "Orientation.h"
 #include "SVGImageContext.h"
 
-using namespace mozilla;
-using namespace mozilla::gfx;
-using mozilla::layers::LayerManager;
-using mozilla::layers::ImageContainer;
 
 namespace mozilla {
+
+using namespace gfx;
+using layers::LayerManager;
+using layers::ImageContainer;
+using std::modf;
+
 namespace image {
 
 class ClippedImageCachedSurface
@@ -156,7 +160,7 @@ ClippedImage::ShouldClip()
   return mShouldClip.ref();
 }
 
-NS_IMPL_ISUPPORTS(ClippedImage, imgIContainer)
+NS_IMPL_ISUPPORTS_INHERITED0(ClippedImage, ImageWrapper)
 
 nsIntRect
 ClippedImage::FrameRect(uint32_t aWhichFrame)
@@ -388,19 +392,18 @@ ClippedImage::DrawSingleTile(gfxContext* aContext,
   }
 
   // Add a translation to the transform to reflect the clipping region.
-  gfxMatrix transform(aUserSpaceToImageSpace);
-  transform.Multiply(gfxMatrix().Translate(gfxPoint(mClip.x, mClip.y)));
+  gfxMatrix transform =
+    aUserSpaceToImageSpace * gfxMatrix::Translation(mClip.x, mClip.y);
 
   // "Clamp the source rectangle" to the clipping region's width and height.
   // Really, this means modifying the transform to get the results we want.
   gfxRect sourceRect = transform.Transform(aFill);
   if (sourceRect.width > mClip.width || sourceRect.height > mClip.height) {
-    gfxMatrix clampSource;
-    clampSource.Translate(gfxPoint(sourceRect.x, sourceRect.y));
+    gfxMatrix clampSource = gfxMatrix::Translation(sourceRect.TopLeft());
     clampSource.Scale(ClampFactor(sourceRect.width, mClip.width),
                       ClampFactor(sourceRect.height, mClip.height));
-    clampSource.Translate(gfxPoint(-sourceRect.x, -sourceRect.y));
-    transform.Multiply(clampSource);
+    clampSource.Translate(-sourceRect.TopLeft());
+    transform *= clampSource;
   }
 
   return InnerImage()->Draw(aContext, aFilter, transform, aFill, aSubimage,
@@ -422,6 +425,44 @@ ClippedImage::GetOrientation()
   // XXX(seth): This should not actually be here; this is just to work around a
   // what appears to be a bug in MSVC's linker.
   return InnerImage()->GetOrientation();
+}
+
+nsIntSize
+ClippedImage::OptimalImageSizeForDest(const gfxSize& aDest, uint32_t aWhichFrame,
+                                      GraphicsFilter aFilter, uint32_t aFlags)
+{
+  if (!ShouldClip()) {
+    return InnerImage()->OptimalImageSizeForDest(aDest, aWhichFrame, aFilter, aFlags);
+  }
+
+  int32_t imgWidth, imgHeight;
+  if (NS_SUCCEEDED(InnerImage()->GetWidth(&imgWidth)) &&
+      NS_SUCCEEDED(InnerImage()->GetHeight(&imgHeight))) {
+    // To avoid ugly sampling artifacts, ClippedImage needs the image size to
+    // be chosen such that the clipping region lies on pixel boundaries.
+
+    // First, we select a scale that's good for ClippedImage. An integer multiple
+    // of the size of the clipping region is always fine.
+    nsIntSize scale(ceil(aDest.width / mClip.width),
+                    ceil(aDest.height / mClip.height));
+
+    // Determine the size we'd prefer to render the inner image at, and ask the
+    // inner image what size we should actually use.
+    gfxSize desiredSize(imgWidth * scale.width, imgHeight * scale.height);
+    nsIntSize innerDesiredSize =
+      InnerImage()->OptimalImageSizeForDest(desiredSize, aWhichFrame,
+                                            aFilter, aFlags);
+
+    // To get our final result, we take the inner image's desired size and
+    // determine how large the clipped region would be at that scale. (Again, we
+    // ensure an integer multiple of the size of the clipping region.)
+    nsIntSize finalScale(ceil(double(innerDesiredSize.width) / imgWidth),
+                         ceil(double(innerDesiredSize.height) / imgHeight));
+    return mClip.Size() * finalScale;
+  } else {
+    MOZ_ASSERT(false, "If ShouldClip() led us to draw then we should never get here");
+    return InnerImage()->OptimalImageSizeForDest(aDest, aWhichFrame, aFilter, aFlags);
+  }
 }
 
 NS_IMETHODIMP_(nsIntRect)

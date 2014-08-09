@@ -11,6 +11,7 @@
 #include "Layers.h"
 #include "ContentChild.h"
 #include "IndexedDBChild.h"
+#include "TabParent.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/EventListenerManager.h"
@@ -68,7 +69,7 @@
 #include "nsWeakReference.h"
 #include "nsWindowWatcher.h"
 #include "PermissionMessageUtils.h"
-#include "PCOMContentPermissionRequestChild.h"
+#include "nsContentPermissionHelper.h"
 #include "PuppetWidget.h"
 #include "StructuredCloneUtils.h"
 #include "nsViewportInfo.h"
@@ -78,15 +79,15 @@
 #include "mozilla/gfx/Matrix.h"
 #include "UnitTransforms.h"
 #include "ClientLayerManager.h"
+#include "LayersLogging.h"
 
 #include "nsColorPickerProxy.h"
 
-#ifdef DEBUG
-#include "PCOMContentPermissionRequestChild.h"
-#endif /* DEBUG */
-
 #define BROWSER_ELEMENT_CHILD_SCRIPT \
     NS_LITERAL_STRING("chrome://global/content/BrowserElementChild.js")
+
+#define TABC_LOG(...)
+// #define TABC_LOG(...) printf_stderr("TABC: " __VA_ARGS__)
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -118,15 +119,41 @@ TabChildBase::TabChildBase()
   , mTabChildGlobal(nullptr)
   , mInnerSize(0, 0)
 {
+  mozilla::HoldJSObjects(this);
 }
 
-NS_IMPL_CYCLE_COLLECTING_ADDREF(TabChildBase)
-NS_IMPL_CYCLE_COLLECTING_RELEASE(TabChildBase)
+TabChildBase::~TabChildBase()
+{
+  mAnonymousGlobalScopes.Clear();
+  mozilla::DropJSObjects(this);
+}
+
+NS_IMPL_CYCLE_COLLECTION_CLASS(TabChildBase)
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(TabChildBase)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mTabChildGlobal)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobal)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mAnonymousGlobalScopes)
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(TabChildBase)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTabChildGlobal)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mGlobal)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(TabChildBase)
+  for (uint32_t i = 0; i < tmp->mAnonymousGlobalScopes.Length(); ++i) {
+    NS_IMPL_CYCLE_COLLECTION_TRACE_JS_MEMBER_CALLBACK(mAnonymousGlobalScopes[i])
+  }
+NS_IMPL_CYCLE_COLLECTION_TRACE_END
+
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(TabChildBase)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-NS_IMPL_CYCLE_COLLECTION(TabChildBase, mTabChildGlobal, mGlobal)
+NS_IMPL_CYCLE_COLLECTING_ADDREF(TabChildBase)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(TabChildBase)
 
 void
 TabChildBase::InitializeRootMetrics()
@@ -135,9 +162,9 @@ TabChildBase::InitializeRootMetrics()
   // be keeping, as well as putting the scroll offset back to
   // the top-left of the page.
   mLastRootMetrics.mViewport = CSSRect(CSSPoint(), kDefaultViewportSize);
-  mLastRootMetrics.mCompositionBounds = ParentLayerIntRect(
-      ParentLayerIntPoint(),
-      ViewAs<ParentLayerPixel>(mInnerSize, PixelCastJustification::ScreenToParentLayerForRoot));
+  mLastRootMetrics.mCompositionBounds = ParentLayerRect(
+      ParentLayerPoint(),
+      ParentLayerSize(ViewAs<ParentLayerPixel>(mInnerSize, PixelCastJustification::ScreenToParentLayerForRoot)));
   mLastRootMetrics.SetZoom(mLastRootMetrics.CalculateIntrinsicScale());
   mLastRootMetrics.mDevPixelsPerCSSPixel = WebWidget()->GetDefaultScale();
   // We use ScreenToLayerScale(1) below in order to turn the
@@ -148,12 +175,16 @@ TabChildBase::InitializeRootMetrics()
   // as the resolution.
   mLastRootMetrics.mResolution = mLastRootMetrics.mCumulativeResolution / LayoutDeviceToParentLayerScale(1);
   mLastRootMetrics.SetScrollOffset(CSSPoint(0, 0));
+
+  TABC_LOG("After InitializeRootMetrics, mLastRootMetrics is %s\n",
+    Stringify(mLastRootMetrics).c_str());
 }
 
 void
 TabChildBase::SetCSSViewport(const CSSSize& aSize)
 {
   mOldViewportSize = aSize;
+  TABC_LOG("Setting CSS viewport to %s\n", Stringify(aSize).c_str());
 
   if (mContentDocumentIsDisplayed) {
     nsCOMPtr<nsIDOMWindowUtils> utils(GetDOMWindowUtils());
@@ -187,11 +218,14 @@ TabChildBase::GetPageSize(nsCOMPtr<nsIDocument> aDocument, const CSSSize& aViewp
 }
 
 bool
-TabChildBase::HandlePossibleViewportChange()
+TabChildBase::HandlePossibleViewportChange(const ScreenIntSize& aOldScreenSize)
 {
   if (!IsAsyncPanZoomEnabled()) {
     return false;
   }
+
+  TABC_LOG("HandlePossibleViewportChange aOldScreenSize=%s mInnerSize=%s\n",
+    Stringify(aOldScreenSize).c_str(), Stringify(mInnerSize).c_str());
 
   nsCOMPtr<nsIDocument> document(GetDocument());
   nsCOMPtr<nsIDOMWindowUtils> utils(GetDOMWindowUtils());
@@ -223,6 +257,8 @@ TabChildBase::HandlePossibleViewportChange()
     return false;
   }
 
+  TABC_LOG("HandlePossibleViewportChange mOldViewportSize=%s viewport=%s\n",
+    Stringify(mOldViewportSize).c_str(), Stringify(viewport).c_str());
   CSSSize oldBrowserSize = mOldViewportSize;
   mLastRootMetrics.mViewport.SizeTo(viewport);
   if (oldBrowserSize == CSSSize()) {
@@ -243,18 +279,16 @@ TabChildBase::HandlePossibleViewportChange()
     return false;
   }
 
-  ScreenIntSize oldScreenSize = ViewAs<ScreenPixel>(
-      mLastRootMetrics.mCompositionBounds.Size(),
-      PixelCastJustification::ScreenToParentLayerForRoot);
+  ScreenIntSize oldScreenSize = aOldScreenSize;
   if (oldScreenSize == ScreenIntSize()) {
     oldScreenSize = mInnerSize;
   }
 
   FrameMetrics metrics(mLastRootMetrics);
   metrics.mViewport = CSSRect(CSSPoint(), viewport);
-  metrics.mCompositionBounds = ParentLayerIntRect(
-      ParentLayerIntPoint(),
-      ViewAs<ParentLayerPixel>(mInnerSize, PixelCastJustification::ScreenToParentLayerForRoot));
+  metrics.mCompositionBounds = ParentLayerRect(
+      ParentLayerPoint(),
+      ParentLayerSize(ViewAs<ParentLayerPixel>(mInnerSize, PixelCastJustification::ScreenToParentLayerForRoot)));
   metrics.SetRootCompositionSize(
       ScreenSize(mInnerSize) * ScreenToLayoutDeviceScale(1.0f) / metrics.mDevPixelsPerCSSPixel);
 
@@ -417,11 +451,6 @@ TabChildBase::UpdateFrameHandler(const FrameMetrics& aFrameMetrics)
       return true;
     }
   }
-
-  // We've recieved a message that is out of date and we want to ignore.
-  // However we can't reply without painting so we reply by painting the
-  // exact same thing as we did before.
-  mLastRootMetrics = ProcessUpdateFrame(mLastRootMetrics);
   return true;
 }
 
@@ -490,6 +519,7 @@ TabChildBase::DispatchSynthesizedMouseEvent(uint32_t aMsg, uint64_t aTime,
   event.time = aTime;
   event.button = WidgetMouseEvent::eLeftButton;
   event.inputSource = nsIDOMMouseEvent::MOZ_SOURCE_TOUCH;
+  event.ignoreRootScrollFrame = true;
   if (aMsg != NS_MOUSE_MOVE) {
     event.clickCount = 1;
   }
@@ -504,6 +534,11 @@ TabChildBase::DispatchWidgetEvent(WidgetGUIEvent& event)
   if (!event.widget)
     return nsEventStatus_eConsumeNoDefault;
 
+  if (TabParent* capturer = TabParent::GetEventCapturer()) {
+    if (capturer->TryCapture(event)) {
+      return nsEventStatus_eConsumeNoDefault;
+    }
+  }
   nsEventStatus status;
   NS_ENSURE_SUCCESS(event.widget->DispatchEvent(&event, status),
                     nsEventStatus_eConsumeNoDefault);
@@ -702,9 +737,9 @@ TabChild::TabChild(nsIContentChild* aManager, const TabContext& aContext, uint32
   , mTriedBrowserInit(false)
   , mOrientation(eScreenOrientation_PortraitPrimary)
   , mUpdateHitRegion(false)
-  , mContextMenuHandled(false)
-  , mLongTapEventHandled(false)
-  , mWaitingTouchListeners(false)
+  , mPendingTouchPreventedResponse(false)
+  , mTouchEndCancelled(false)
+  , mEndTouchIsClick(false)
   , mIgnoreKeyPressEvent(false)
   , mActiveElementManager(new ActiveElementManager())
   , mHasValidInnerSize(false)
@@ -726,7 +761,7 @@ TabChild::HandleEvent(nsIDOMEvent* aEvent)
   if (eventType.EqualsLiteral("DOMMetaAdded")) {
     // This meta data may or may not have been a meta viewport tag. If it was,
     // we should handle it immediately.
-    HandlePossibleViewportChange();
+    HandlePossibleViewportChange(mInnerSize);
   }
 
   return NS_OK;
@@ -777,7 +812,7 @@ TabChild::Observe(nsISupports *aSubject,
           InitializeRootMetrics();
           utils->SetResolution(mLastRootMetrics.mResolution.scale,
                                mLastRootMetrics.mResolution.scale);
-          HandlePossibleViewportChange();
+          HandlePossibleViewportChange(mInnerSize);
         }
       }
     }
@@ -1363,18 +1398,16 @@ TabChild::HasValidInnerSize()
   return mHasValidInnerSize;
 }
 
-#ifdef DEBUG
-PContentPermissionRequestChild*
-TabChild:: SendPContentPermissionRequestConstructor(PContentPermissionRequestChild* aActor,
-                                                    const InfallibleTArray<PermissionRequest>& aRequests,
-                                                    const IPC::Principal& aPrincipal)
+void
+TabChild::SendPendingTouchPreventedResponse(bool aPreventDefault,
+                                            const ScrollableLayerGuid& aGuid)
 {
-  PCOMContentPermissionRequestChild* child = static_cast<PCOMContentPermissionRequestChild*>(aActor);
-  PContentPermissionRequestChild* request = PBrowserChild::SendPContentPermissionRequestConstructor(aActor, aRequests, aPrincipal);
-  child->mIPCOpen = true;
-  return request;
+  if (mPendingTouchPreventedResponse) {
+    MOZ_ASSERT(aGuid == mPendingTouchPreventedGuid);
+    SendContentReceivedTouch(mPendingTouchPreventedGuid, aPreventDefault);
+    mPendingTouchPreventedResponse = false;
+  }
 }
-#endif /* DEBUG */
 
 void
 TabChild::DestroyWindow()
@@ -1699,16 +1732,13 @@ TabChild::RecvShow(const nsIntSize& size)
 }
 
 bool
-TabChild::RecvUpdateDimensions(const nsRect& rect, const nsIntSize& size, const ScreenOrientation& orientation)
+TabChild::RecvUpdateDimensions(const nsIntRect& rect, const nsIntSize& size, const ScreenOrientation& orientation)
 {
     if (!mRemoteFrame) {
         return true;
     }
 
-    mOuterRect.x = rect.x;
-    mOuterRect.y = rect.y;
-    mOuterRect.width = rect.width;
-    mOuterRect.height = rect.height;
+    mOuterRect = rect;
 
     bool initialSizing = !HasValidInnerSize()
                       && (size.width != 0 && size.height != 0);
@@ -1717,6 +1747,7 @@ TabChild::RecvUpdateDimensions(const nsRect& rect, const nsIntSize& size, const 
     }
 
     mOrientation = orientation;
+    ScreenIntSize oldScreenSize = mInnerSize;
     mInnerSize = ScreenIntSize::FromUnknownSize(
       gfx::IntSize(size.width, size.height));
     mWidget->Resize(0, 0, size.width, size.height,
@@ -1734,7 +1765,7 @@ TabChild::RecvUpdateDimensions(const nsRect& rect, const nsIntSize& size, const 
       InitializeRootMetrics();
     }
 
-    HandlePossibleViewportChange();
+    HandlePossibleViewportChange(oldScreenSize);
 
     return true;
 }
@@ -1780,6 +1811,10 @@ TabChild::RecvHandleSingleTap(const CSSPoint& aPoint, const ScrollableLayerGuid&
     return true;
   }
 
+  if (mTouchEndCancelled) {
+    return true;
+  }
+
   LayoutDevicePoint currentPoint = APZCCallbackHelper::ApplyCallbackTransform(aPoint, aGuid) * mWidget->GetDefaultScale();;
 
   MessageLoop::current()->PostDelayedTask(
@@ -1805,23 +1840,25 @@ TabChild::RecvHandleLongTap(const CSSPoint& aPoint, const ScrollableLayerGuid& a
     return true;
   }
 
-  mContextMenuHandled =
+  SendPendingTouchPreventedResponse(false, aGuid);
+
+  bool eventHandled =
       DispatchMouseEvent(NS_LITERAL_STRING("contextmenu"),
                          APZCCallbackHelper::ApplyCallbackTransform(aPoint, aGuid),
-                         2, 1, 0, false,
+                         2, 1, 0, true,
                          nsIDOMMouseEvent::MOZ_SOURCE_TOUCH);
 
   // If no one handle context menu, fire MOZLONGTAP event
-  if (!mContextMenuHandled) {
+  if (!eventHandled) {
     LayoutDevicePoint currentPoint =
       APZCCallbackHelper::ApplyCallbackTransform(aPoint, aGuid) * mWidget->GetDefaultScale();
     int time = 0;
     nsEventStatus status =
       DispatchSynthesizedMouseEvent(NS_MOUSE_MOZLONGTAP, time, currentPoint, mWidget);
-    mLongTapEventHandled = (status == nsEventStatus_eConsumeNoDefault);
+    eventHandled = (status == nsEventStatus_eConsumeNoDefault);
   }
 
-  SendContentReceivedTouch(aGuid, mContextMenuHandled || mLongTapEventHandled);
+  SendContentReceivedTouch(aGuid, eventHandled);
 
   return true;
 }
@@ -1829,16 +1866,6 @@ TabChild::RecvHandleLongTap(const CSSPoint& aPoint, const ScrollableLayerGuid& a
 bool
 TabChild::RecvHandleLongTapUp(const CSSPoint& aPoint, const ScrollableLayerGuid& aGuid)
 {
-  if (mContextMenuHandled) {
-    mContextMenuHandled = false;
-    return true;
-  }
-
-  if (mLongTapEventHandled) {
-    mLongTapEventHandled = false;
-    return true;
-  }
-
   RecvHandleSingleTap(aPoint, aGuid);
   return true;
 }
@@ -1880,7 +1907,7 @@ TabChild::RecvNotifyAPZStateChange(const ViewID& aViewId,
   }
   case APZStateChange::EndTouch:
   {
-    mActiveElementManager->HandleTouchEnd(aArg);
+    mEndTouchIsClick = aArg;
     break;
   }
   default:
@@ -2051,7 +2078,7 @@ TabChild::FireContextMenuEvent()
                                              2 /* Right button */,
                                              1 /* Click count */,
                                              0 /* Modifiers */,
-                                             false /* Ignore root scroll frame */,
+                                             true /* Ignore root scroll frame */,
                                              nsIDOMMouseEvent::MOZ_SOURCE_TOUCH);
 
   // Fire a click event if someone didn't call preventDefault() on the context
@@ -2095,34 +2122,37 @@ TabChild::RecvRealTouchEvent(const WidgetTouchEvent& aEvent,
     mActiveElementManager->SetTargetElement(localEvent.touches[0]->GetTarget());
   }
 
-  nsCOMPtr<nsPIDOMWindow> outerWindow = do_GetInterface(WebNavigation());
-  nsCOMPtr<nsPIDOMWindow> innerWindow = outerWindow ? outerWindow->GetCurrentInnerWindow() : nullptr;
-
-  if (!innerWindow || (!innerWindow->HasTouchEventListeners() &&
-                       !innerWindow->MayHaveTouchCaret())) {
-    SendContentReceivedTouch(aGuid, false);
-    return true;
-  }
-
   bool isTouchPrevented = nsIPresShell::gPreventMouseEvents ||
                           localEvent.mFlags.mMultipleActionsPrevented;
   switch (aEvent.message) {
   case NS_TOUCH_START: {
+    mTouchEndCancelled = false;
+    if (mPendingTouchPreventedResponse) {
+      // We can enter here if we get two TOUCH_STARTs in a row and didn't
+      // respond to the first one. Respond to it now.
+      SendContentReceivedTouch(mPendingTouchPreventedGuid, false);
+      mPendingTouchPreventedResponse = false;
+    }
     if (isTouchPrevented) {
       SendContentReceivedTouch(aGuid, isTouchPrevented);
     } else {
-      mWaitingTouchListeners = true;
+      mPendingTouchPreventedResponse = true;
+      mPendingTouchPreventedGuid = aGuid;
     }
     break;
   }
 
-  case NS_TOUCH_MOVE:
   case NS_TOUCH_END:
-  case NS_TOUCH_CANCEL: {
-    if (mWaitingTouchListeners) {
-      SendContentReceivedTouch(aGuid, isTouchPrevented);
-      mWaitingTouchListeners = false;
+    if (isTouchPrevented) {
+      mTouchEndCancelled = true;
+      mEndTouchIsClick = false;
     }
+    // fall through
+  case NS_TOUCH_CANCEL:
+    mActiveElementManager->HandleTouchEnd(mEndTouchIsClick);
+    // fall through
+  case NS_TOUCH_MOVE: {
+    SendPendingTouchPreventedResponse(isTouchPrevented, aGuid);
     break;
   }
 
@@ -2316,13 +2346,9 @@ TabChild::AllocPContentPermissionRequestChild(const InfallibleTArray<PermissionR
 bool
 TabChild::DeallocPContentPermissionRequestChild(PContentPermissionRequestChild* actor)
 {
-    PCOMContentPermissionRequestChild* child =
-        static_cast<PCOMContentPermissionRequestChild*>(actor);
-#ifdef DEBUG
-    child->mIPCOpen = false;
-#endif /* DEBUG */
-    child->IPDLRelease();
-    return true;
+  RemotePermissionRequest* child = static_cast<RemotePermissionRequest*>(actor);
+  child->IPDLRelease();
+  return true;
 }
 
 PFilePickerChild*
@@ -2751,11 +2777,11 @@ TabChild::DoSendBlockingMessage(JSContext* aCx,
   }
   if (aIsSync) {
     return SendSyncMessage(PromiseFlatString(aMessage), data, cpows,
-                           aPrincipal, aJSONRetVal);
+                           Principal(aPrincipal), aJSONRetVal);
   }
 
   return CallRpcMessage(PromiseFlatString(aMessage), data, cpows,
-                        aPrincipal, aJSONRetVal);
+                        Principal(aPrincipal), aJSONRetVal);
 }
 
 bool
@@ -2776,7 +2802,7 @@ TabChild::DoSendAsyncMessage(JSContext* aCx,
     }
   }
   return SendAsyncMessage(PromiseFlatString(aMessage), data, cpows,
-                          aPrincipal);
+                          Principal(aPrincipal));
 }
 
 TabChild*
@@ -2826,6 +2852,19 @@ TabChild::OnHideTooltip()
 }
 
 bool
+TabChild::RecvRequestNotifyAfterRemotePaint()
+{
+  // Get the CompositorChild instance for this content thread.
+  CompositorChild* compositor = CompositorChild::Get();
+
+  // Tell the CompositorChild that, when it gets a RemotePaintIsReady
+  // message that it should forward it us so that we can bounce it to our
+  // RenderFrameParent.
+  compositor->RequestNotifyAfterRemotePaint(this);
+  return true;
+}
+
+bool
 TabChild::RecvUIResolutionChanged()
 {
   static_cast<PuppetWidget*>(mWidget.get())->ClearBackingScaleCache();
@@ -2838,6 +2877,10 @@ TabChild::RecvUIResolutionChanged()
 
 TabChildGlobal::TabChildGlobal(TabChildBase* aTabChild)
 : mTabChild(aTabChild)
+{
+}
+
+TabChildGlobal::~TabChildGlobal()
 {
 }
 

@@ -27,6 +27,7 @@
 #include "nsMathUtils.h"
 #include "nsTArrayForwardDeclare.h"
 #include "Units.h"
+#include "mozilla/dom/AutocompleteInfoBinding.h"
 
 #if defined(XP_WIN)
 // Undefine LoadImage to prevent naming conflict with Windows.
@@ -150,7 +151,7 @@ struct EventNameMapping
   nsIAtom* mAtom;
   uint32_t mId;
   int32_t  mType;
-  uint32_t mStructType;
+  mozilla::EventClassID mEventClassID;
 };
 
 struct nsShortcutCandidate {
@@ -170,11 +171,6 @@ class nsContentUtils
 
 public:
   static nsresult Init();
-
-  /**
-   * Get a JSContext from the document's scope object.
-   */
-  static JSContext* GetContextFromDocument(nsIDocument *aDocument);
 
   static bool     IsCallerChrome();
   static bool     ThreadsafeIsCallerChrome();
@@ -476,8 +472,7 @@ public:
   /**
    * Get the ContentSecurityPolicy for a JS context.
    **/
-  static bool GetContentSecurityPolicy(JSContext* aCx,
-                                       nsIContentSecurityPolicy** aCSP);
+  static bool GetContentSecurityPolicy(nsIContentSecurityPolicy** aCSP);
 
   // Returns the subject principal. Guaranteed to return non-null. May only
   // be called when nsContentUtils is initialized.
@@ -1033,13 +1028,13 @@ public:
   static uint32_t GetEventId(nsIAtom* aName);
 
   /**
-   * Return the category for the event with the given name. The name is the
-   * event name *without* the 'on' prefix. Returns NS_EVENT if the event
-   * is not known to be in any particular category.
+   * Return the EventClassID for the event with the given name. The name is the
+   * event name *without* the 'on' prefix. Returns eBasicEventClass if the event
+   * is not known to be of any particular event class.
    *
    * @param aName the event name to look up
    */
-  static uint32_t GetEventCategory(const nsAString& aName);
+  static mozilla::EventClassID GetEventClassID(const nsAString& aName);
 
   /**
    * Return the event id and atom for the event with the given name.
@@ -1048,10 +1043,10 @@ public:
    * event doesn't match a known event name in the category.
    *
    * @param aName the event name to look up
-   * @param aEventStruct only return event id in aEventStruct category
+   * @param aEventClassID only return event id for aEventClassID
    */
   static nsIAtom* GetEventIdAndAtom(const nsAString& aName,
-                                    uint32_t aEventStruct,
+                                    mozilla::EventClassID aEventClassID,
                                     uint32_t* aEventID);
 
   /**
@@ -1519,6 +1514,13 @@ public:
   static bool IsSafeToRunScript() {
     return sScriptBlockerCount == 0;
   }
+
+  /**
+   * Call this function if !IsSafeToRunScript() and we fail to run the script
+   * (rather than using AddScriptRunner as we usually do). |aDocument| is
+   * optional as it is only used for showing the URL in the console.
+   */
+  static void WarnScriptWasIgnored(nsIDocument* aDocument);
 
   /**
    * Retrieve information about the viewport as a data structure.
@@ -1993,20 +1995,27 @@ public:
   static nsresult URIInheritsSecurityContext(nsIURI *aURI, bool *aResult);
 
   /**
-   * Set the given principal as the owner of the given channel, if
-   * needed.  aURI must be the URI of aChannel.  aPrincipal may be
-   * null.  If aSetUpForAboutBlank is true, then about:blank will get
-   * the principal set up on it. If aForceOwner is true, the owner
-   * will be set on the channel, even if the principal can be determined
-   * from the channel.
-   * The return value is whether the principal was set up as the owner
-   * of the channel.
+   * Set the given principal as the principal on the nsILoadInfo of the given
+   * channel, and tell the channel to inherit it if needed.  aPrincipal may be
+   * null, in which case this method is a no-op.
+   *
+   * If aLoadingPrincipal is not null, aURI must be the URI of aChannel.  If
+   * aInheritForAboutBlank is true, then about:blank will be told to inherit the
+   * principal. If aForceInherit is true, the channel will be told to inherit
+   * the principal no matter what, as long as the principal is not null.
+   *
+   * If aIsSandboxed is true, then aLoadingPrincipal must not be null.  In this
+   * case, the owner on the channel, if any, will be reset to null and the
+   * nsILoadInfo will say the channel should be sandboxed.
+   *
+   * The return value is whether the channel was told to inherit the principal.
    */
   static bool SetUpChannelOwner(nsIPrincipal* aLoadingPrincipal,
                                 nsIChannel* aChannel,
                                 nsIURI* aURI,
-                                bool aSetUpForAboutBlank,
-                                bool aForceOwner = false);
+                                bool aInheritForAboutBlank,
+                                bool aIsSandboxed,
+                                bool aForceInherit);
 
   static nsresult Btoa(const nsAString& aBinaryData,
                        nsAString& aAsciiBase64String);
@@ -2038,8 +2047,22 @@ public:
    *
    * @return whether aAttr was valid and can be cached.
    */
-  static AutocompleteAttrState SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
-                                                          nsAString& aResult);
+  static AutocompleteAttrState
+  SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
+                                 nsAString& aResult,
+                                 AutocompleteAttrState aCachedState =
+                                   eAutocompleteAttrState_Unknown);
+
+  /* Variation that is used to retrieve a dictionary of the parts of the
+   * autocomplete attribute.
+   *
+   * @return whether aAttr was valid and can be cached.
+   */
+  static AutocompleteAttrState
+  SerializeAutocompleteAttribute(const nsAttrValue* aAttr,
+                                 mozilla::dom::AutocompleteInfo& aInfo,
+                                 AutocompleteAttrState aCachedState =
+                                   eAutocompleteAttrState_Unknown);
 
   /**
    * This will parse aSource, to extract the value of the pseudo attribute
@@ -2149,6 +2172,37 @@ public:
    */
   static bool IsContentInsertionPoint(const nsIContent* aContent);
 
+
+  /**
+   * Returns whether the children of the provided content are
+   * nodes that are distributed to Shadow DOM insertion points.
+   */
+  static bool HasDistributedChildren(nsIContent* aContent);
+
+  /**
+   * Returns whether a given header is forbidden for an XHR or fetch
+   * request.
+   */
+  static bool IsForbiddenRequestHeader(const nsACString& aHeader);
+
+  /**
+   * Returns whether a given header is forbidden for a system XHR
+   * request.
+   */
+  static bool IsForbiddenSystemRequestHeader(const nsACString& aHeader);
+
+  /**
+   * Returns whether a given Content-Type header value is allowed
+   * for a non-CORS XHR or fetch request.
+   */
+  static bool IsAllowedNonCorsContentType(const nsACString& aHeaderValue);
+
+  /**
+   * Returns whether a given header is forbidden for an XHR or fetch
+   * response.
+   */
+  static bool IsForbiddenResponseHeader(const nsACString& aHeader);
+
 private:
   static bool InitializeEventTable();
 
@@ -2180,8 +2234,9 @@ private:
   static void* AllocClassMatchingInfo(nsINode* aRootNode,
                                       const nsString* aClasses);
 
+  // Fills in aInfo with the tokens from the supplied autocomplete attribute.
   static AutocompleteAttrState InternalSerializeAutocompleteAttribute(const nsAttrValue* aAttrVal,
-                                                                  nsAString& aResult);
+                                                                      mozilla::dom::AutocompleteInfo& aInfo);
 
   static nsIXPConnect *sXPConnect;
 
@@ -2267,7 +2322,7 @@ private:
 
 class MOZ_STACK_CLASS nsAutoScriptBlocker {
 public:
-  nsAutoScriptBlocker(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM) {
+  explicit nsAutoScriptBlocker(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM) {
     MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     nsContentUtils::AddScriptBlocker();
   }

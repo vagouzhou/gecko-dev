@@ -30,6 +30,7 @@
 #endif
 
 #include "mozilla/unused.h"
+#include "mozilla/UniquePtr.h"
 
 #include "mozilla/dom/SmsMessage.h"
 #include "mozilla/dom/mobilemessage/Constants.h"
@@ -876,7 +877,7 @@ Java_org_mozilla_gecko_gfx_NativePanZoomController_handleTouchEvent(JNIEnv* env,
     APZCTreeManager *controller = nsWindow::GetAPZCTreeManager();
     if (controller) {
         AndroidGeckoEvent* wrapper = AndroidGeckoEvent::MakeFromJavaObject(env, event);
-        const MultiTouchInput& input = wrapper->MakeMultiTouchInput(nsWindow::TopWindow());
+        MultiTouchInput input = wrapper->MakeMultiTouchInput(nsWindow::TopWindow());
         delete wrapper;
         if (input.mType >= 0) {
             controller->ReceiveInputEvent(input, nullptr);
@@ -985,18 +986,30 @@ Java_org_mozilla_gecko_ANRReporter_getNativeStack(JNIEnv* jenv, jclass)
         // Maybe profiler support is disabled?
         return nullptr;
     }
-    char *profile = profiler_get_profile();
-    while (profile && !strlen(profile)) {
+
+    // Timeout if we don't get a profiler sample after 5 seconds.
+    const PRIntervalTime timeout = PR_SecondsToInterval(5);
+    const PRIntervalTime startTime = PR_IntervalNow();
+
+    typedef struct { void operator()(void* p) { free(p); } } ProfilePtrPolicy;
+    // Pointer to a profile JSON string
+    typedef mozilla::UniquePtr<char, ProfilePtrPolicy> ProfilePtr;
+
+    ProfilePtr profile(profiler_get_profile());
+
+    while (profile && !strstr(profile.get(), "\"samples\":[{")) {
         // no sample yet?
+        if (PR_IntervalNow() - startTime >= timeout) {
+            return nullptr;
+        }
         sched_yield();
-        profile = profiler_get_profile();
+        profile = ProfilePtr(profiler_get_profile());
     }
-    jstring result = nullptr;
+
     if (profile) {
-        result = jenv->NewStringUTF(profile);
-        free(profile);
+        return jenv->NewStringUTF(profile.get());
     }
-    return result;
+    return nullptr;
 }
 
 NS_EXPORT void JNICALL

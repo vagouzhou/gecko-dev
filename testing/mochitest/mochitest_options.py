@@ -151,6 +151,13 @@ class MochitestOptions(optparse.OptionParser):
           "help": "start in the given directory's tests",
           "default": "",
         }],
+        [["--bisect-chunk"],
+        { "action": "store",
+          "type": "string",
+          "dest": "bisectChunk",
+          "help": "Specify the failing test name to find the previous tests that may be causing the failure.",
+          "default": None,
+        }],
         [["--start-at"],
         { "action": "store",
           "type": "string",
@@ -748,6 +755,8 @@ class B2GOptions(MochitestOptions):
         defaults["closeWhenDone"] = True
         defaults["testPath"] = ""
         defaults["extensionsToExclude"] = ["specialpowers"]
+        # See dependencies of bug 1038943.
+        defaults["leakThreshold"] = 4991
         self.set_defaults(**defaults)
 
     def verifyRemoteOptions(self, options):

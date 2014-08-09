@@ -896,6 +896,7 @@ nsEditor::BeginPlaceHolderTransaction(nsIAtom *aName)
   NS_PRECONDITION(mPlaceHolderBatch >= 0, "negative placeholder batch count!");
   if (!mPlaceHolderBatch)
   {
+    NotifyEditorObservers(eNotifyEditorObserversOfBefore);
     // time to turn on the batch
     BeginUpdateViewBatch();
     mPlaceHolderTxn = nullptr;
@@ -978,8 +979,10 @@ nsEditor::EndPlaceHolderTransaction()
       // notify editor observers of action but if composing, it's done by
       // text event handler.
       if (!mComposition) {
-        NotifyEditorObservers();
+        NotifyEditorObservers(eNotifyEditorObserversOfEnd);
       }
+    } else {
+      NotifyEditorObservers(eNotifyEditorObserversOfCancel);
     }
   }
   mPlaceHolderBatch--;
@@ -1854,17 +1857,35 @@ private:
   bool mIsComposing;
 };
 
-void nsEditor::NotifyEditorObservers(void)
+void
+nsEditor::NotifyEditorObservers(NotificationForEditorObservers aNotification)
 {
-  for (int32_t i = 0; i < mEditorObservers.Count(); i++) {
-    mEditorObservers[i]->EditAction();
-  }
+  switch (aNotification) {
+    case eNotifyEditorObserversOfEnd:
+      for (int32_t i = 0; i < mEditorObservers.Count(); i++) {
+        mEditorObservers[i]->EditAction();
+      }
 
-  if (!mDispatchInputEvent) {
-    return;
-  }
+      if (!mDispatchInputEvent) {
+        return;
+      }
 
-  FireInputEvent();
+      FireInputEvent();
+      break;
+    case eNotifyEditorObserversOfBefore:
+      for (int32_t i = 0; i < mEditorObservers.Count(); i++) {
+        mEditorObservers[i]->BeforeEditAction();
+      }
+      break;
+    case eNotifyEditorObserversOfCancel:
+      for (int32_t i = 0; i < mEditorObservers.Count(); i++) {
+        mEditorObservers[i]->CancelEditAction();
+      }
+      break;
+    default:
+      MOZ_CRASH("Handle all notifications here");
+      break;
+  }
 }
 
 void
@@ -2076,7 +2097,7 @@ nsEditor::EndIMEComposition()
   mComposition = nullptr;
 
   // notify editor observers of action
-  NotifyEditorObservers();
+  NotifyEditorObservers(eNotifyEditorObserversOfEnd);
 }
 
 
@@ -2302,9 +2323,6 @@ nsEditor::CloneAttributes(nsIDOMNode *aDestNode, nsIDOMNode *aSourceNode)
           }
         } else {
           // Do we ever get here?
-#if DEBUG_cmanske
-          printf("Attribute in sourceAttribute has empty value in nsEditor::CloneAttributes()\n");
-#endif
         }
       }
     }
@@ -5227,43 +5245,62 @@ nsEditor::IsAcceptableInputEvent(nsIDOMEvent* aEvent)
   // If the event is trusted, the event should always cause input.
   NS_ENSURE_TRUE(aEvent, false);
 
-  // If this is mouse event but this editor doesn't have focus, we shouldn't
-  // handle it.
-  nsCOMPtr<nsIDOMMouseEvent> mouseEvent = do_QueryInterface(aEvent);
-  if (mouseEvent) {
+  WidgetEvent* widgetEvent = aEvent->GetInternalNSEvent();
+  if (NS_WARN_IF(!widgetEvent)) {
+    return false;
+  }
+
+  // If this is dispatched by using cordinates but this editor doesn't have
+  // focus, we shouldn't handle it.
+  if (widgetEvent->IsUsingCoordinates()) {
     nsCOMPtr<nsIContent> focusedContent = GetFocusedContent();
     if (!focusedContent) {
       return false;
     }
-  } else {
-    nsAutoString eventType;
-    aEvent->GetType(eventType);
-    // If composition event or text event isn't dispatched via widget,
-    // we need to ignore them since they cannot be managed by TextComposition.
-    // E.g., the event was created by chrome JS.
-    // Note that if we allow to handle such events, editor may be confused by
-    // strange event order.
-    if (eventType.EqualsLiteral("text") ||
-        eventType.EqualsLiteral("compositionstart") ||
-        eventType.EqualsLiteral("compositionend")) {
-      WidgetGUIEvent* widgetGUIEvent =
-        aEvent->GetInternalNSEvent()->AsGUIEvent();
-      if (!widgetGUIEvent || !widgetGUIEvent->widget) {
-        return false;
-      }
-    }
   }
 
-  bool isTrusted;
-  nsresult rv = aEvent->GetIsTrusted(&isTrusted);
-  NS_ENSURE_SUCCESS(rv, false);
-  if (isTrusted) {
+  // If composition event or text event isn't dispatched via widget,
+  // we need to ignore them since they cannot be managed by TextComposition.
+  // E.g., the event was created by chrome JS.
+  // Note that if we allow to handle such events, editor may be confused by
+  // strange event order.
+  bool needsWidget = false;
+  WidgetGUIEvent* widgetGUIEvent = nullptr;
+  switch (widgetEvent->message) {
+    case NS_USER_DEFINED_EVENT:
+      // If events are not created with proper event interface, their message
+      // are initialized with NS_USER_DEFINED_EVENT.  Let's ignore such event.
+      return false;
+    case NS_TEXT_TEXT:
+      // Don't allow text events whose internal event are not
+      // WidgetTextEvent.
+      widgetGUIEvent = aEvent->GetInternalNSEvent()->AsTextEvent();
+      needsWidget = true;
+      break;
+    case NS_COMPOSITION_START:
+    case NS_COMPOSITION_END:
+    case NS_COMPOSITION_UPDATE:
+      // Don't allow composition events whose internal event are not
+      // WidgetCompositionEvent.
+      widgetGUIEvent = aEvent->GetInternalNSEvent()->AsCompositionEvent();
+      needsWidget = true;
+      break;
+    default:
+      break;
+  }
+  if (needsWidget &&
+      (!widgetGUIEvent || !widgetGUIEvent->widget)) {
+    return false;
+  }
+
+  // Accept all trusted events.
+  if (widgetEvent->mFlags.mIsTrusted) {
     return true;
   }
 
   // Ignore untrusted mouse event.
   // XXX Why are we handling other untrusted input events?
-  if (mouseEvent) {
+  if (widgetEvent->AsMouseEventBase()) {
     return false;
   }
 

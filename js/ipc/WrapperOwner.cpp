@@ -344,7 +344,7 @@ WrapperOwner::toString(JSContext *cx, HandleObject cpow, JS::CallArgs &args)
         return true;
 
     RootedString cpowResult(cx, args.rval().toString());
-    nsDependentJSString toStringResult;
+    nsAutoJSString toStringResult;
     if (!toStringResult.init(cx, cpowResult))
         return false;
 
@@ -674,6 +674,15 @@ bool
 IsCPOW(JSObject *obj)
 {
     return IsProxy(obj) && GetProxyHandler(obj) == &CPOWProxyHandler::singleton;
+}
+
+bool
+IsWrappedCPOW(JSObject *obj)
+{
+    JSObject *unwrapped = js::CheckedUnwrap(obj, true);
+    if (!unwrapped)
+        return false;
+    return IsCPOW(unwrapped);
 }
 
 nsresult

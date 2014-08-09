@@ -21,6 +21,7 @@ from collections import OrderedDict
 from mozbuild.util import (
     HierarchicalStringList,
     HierarchicalStringListWithFlagsFactory,
+    List,
     StrictOrderingOnAppendList,
     StrictOrderingOnAppendListWithFlagsFactory,
 )
@@ -50,12 +51,8 @@ class FinalTargetValue(SandboxDerivedValue, unicode):
 # Tier says for which specific tier the variable has an effect.
 # Valid tiers are:
 # - 'export'
-# - 'compile': everything in relation with compiling objects.
-# - 'binaries': everything in relation with linking objects, producing
-#      programs and libraries.
-# - 'libs': everything that is not compile or binaries and that has
+# - 'libs': everything that is not built from C/C++/ObjC source and that has
 #      traditionally been in the libs tier.
-# - 'tools'
 # A value of None means the variable has no direct effect on any tier.
 
 VARIABLES = {
@@ -69,7 +66,7 @@ VARIABLES = {
         file.
         """, 'export'),
 
-    'ANDROID_RES_DIRS': (list, list,
+    'ANDROID_RES_DIRS': (List, list,
         """Android resource directories.
 
         This variable contains a list of directories, each relative to
@@ -84,19 +81,19 @@ VARIABLES = {
         populated by calling add_android_eclipse{_library}_project().
         """, 'export'),
 
-    'SOURCES': (StrictOrderingOnAppendListWithFlagsFactory({'no_pgo': bool, 'flags': list}), list,
+    'SOURCES': (StrictOrderingOnAppendListWithFlagsFactory({'no_pgo': bool, 'flags': List}), list,
         """Source code files.
 
         This variable contains a list of source code files to compile.
         Accepts assembler, C, C++, Objective C/C++.
-        """, 'compile'),
+        """, None),
 
     'GENERATED_SOURCES': (StrictOrderingOnAppendList, list,
         """Generated source code files.
 
         This variable contains a list of generated source code files to
         compile. Accepts assembler, C, C++, Objective C/C++.
-        """, 'compile'),
+        """, None),
 
     'FILES_PER_UNIFIED_FILE': (int, int,
         """The number of source files to compile into each unified source file.
@@ -110,7 +107,7 @@ VARIABLES = {
         that can be concatenated all together and built as a single source
         file. This can help make the build faster and reduce the debug info
         size.
-        """, 'compile'),
+        """, None),
 
     'GENERATED_UNIFIED_SOURCES': (StrictOrderingOnAppendList, list,
         """Generated source code files that can be compiled together.
@@ -119,7 +116,7 @@ VARIABLES = {
         compile, that can be concatenated all together, with UNIFIED_SOURCES,
         and built as a single source file. This can help make the build faster
         and reduce the debug info size.
-        """, 'compile'),
+        """, None),
 
     'GENERATED_FILES': (StrictOrderingOnAppendList, list,
         """Generic generated files.
@@ -157,14 +154,14 @@ VARIABLES = {
            })
         """, None),
 
-    'DELAYLOAD_DLLS': (list, list,
+    'DELAYLOAD_DLLS': (List, list,
         """Delay-loaded DLLs.
 
         This variable contains a list of DLL files which the module being linked
         should load lazily.  This only has an effect when building with MSVC.
-        """, 'binaries'),
+        """, None),
 
-    'DIRS': (list, list,
+    'DIRS': (List, list,
         """Child directories to descend into looking for build frontend files.
 
         This works similarly to the ``DIRS`` variable in make files. Each str
@@ -181,10 +178,6 @@ VARIABLES = {
     'DISABLE_STL_WRAPPING': (bool, bool,
         """Disable the wrappers for STL which allow it to work with C++ exceptions
         disabled.
-        """, 'binaries'),
-
-    'EXPORT_LIBRARY': (bool, bool,
-        """Install the library to the static libraries folder.
         """, None),
 
     'EXTRA_COMPONENTS': (StrictOrderingOnAppendList, list,
@@ -194,20 +187,30 @@ VARIABLES = {
        ``$(FINAL_TARGET)/components/``.
         """, 'libs'),
 
-    'EXTRA_JS_MODULES': (StrictOrderingOnAppendList, list,
+    'EXTRA_JS_MODULES': (HierarchicalStringList, list,
         """Additional JavaScript files to distribute.
 
         This variable contains a list of files to copy into
-        ``$(FINAL_TARGET)/$(JS_MODULES_PATH)``. ``JS_MODULES_PATH`` defaults
-        to ``modules`` if left undefined.
+        ``$(FINAL_TARGET)/modules.
         """, 'libs'),
 
-    'EXTRA_PP_JS_MODULES': (StrictOrderingOnAppendList, list,
+    'EXTRA_PP_JS_MODULES': (HierarchicalStringList, list,
         """Additional JavaScript files to distribute.
 
         This variable contains a list of files to copy into
-        ``$(FINAL_TARGET)/$(JS_MODULES_PATH)``, after preprocessing.
-        ``JS_MODULES_PATH`` defaults to ``modules`` if left undefined.
+        ``$(FINAL_TARGET)/modules``, after preprocessing.
+        """, 'libs'),
+
+    'TESTING_JS_MODULES': (HierarchicalStringList, list,
+        """JavaScript modules to install in the test-only destination.
+
+        Some JavaScript modules (JSMs) are test-only and not distributed
+        with Firefox. This variable defines them.
+
+        To install modules in a subdirectory, use properties of this
+        variable to control the final destination. e.g.
+
+        ``TESTING_JS_MODULES.foo += ['module.jsm']``.
         """, 'libs'),
 
     'EXTRA_PP_COMPONENTS': (StrictOrderingOnAppendList, list,
@@ -223,14 +226,18 @@ VARIABLES = {
         This variable contains the name of a library, defined elsewhere with
         ``LIBRARY_NAME``, in which the objects of the current directory will be
         linked.
-        """, 'binaries'),
+        """, None),
 
     'CPP_UNIT_TESTS': (StrictOrderingOnAppendList, list,
-        """C++ source files for unit tests.
+        """Compile a list of C++ unit test names.
 
-        This is a list of C++ unit test sources. Entries must be files that
-        exist. These generally have ``.cpp`` extensions.
-        """, 'binaries'),
+        Each name in this variable corresponds to an executable built from the
+        corresponding source file with the same base name.
+
+        If the configuration token ``BIN_SUFFIX`` is set, its value will be
+        automatically appended to each name. If a name already ends with
+        ``BIN_SUFFIX``, the name will remain unchanged.
+        """, None),
 
     'FAIL_ON_WARNINGS': (bool, bool,
         """Whether to treat warnings as errors.
@@ -261,57 +268,72 @@ VARIABLES = {
 
         This variable contains a list of source code files to compile.
         with the host compiler.
-        """, 'compile'),
+        """, None),
 
     'IS_COMPONENT': (bool, bool,
         """Whether the library contains a binary XPCOM component manifest.
+
+        Implies FORCE_SHARED_LIB.
         """, None),
 
-    'PARALLEL_DIRS': (list, list,
-        """A parallel version of ``DIRS``.
-
-        Ideally this variable does not exist. It is provided so a transition
-        from recursive makefiles can be made. Once the build system has been
-        converted to not use Makefile's for the build frontend, this will
-        likely go away.
+    'PYTHON_UNIT_TESTS': (StrictOrderingOnAppendList, list,
+        """A list of python unit tests.
         """, None),
 
     'HOST_LIBRARY_NAME': (unicode, unicode,
         """Name of target library generated when cross compiling.
-        """, 'binaries'),
+        """, None),
 
     'JAVA_JAR_TARGETS': (dict, dict,
         """Defines Java JAR targets to be built.
 
         This variable should not be populated directly. Instead, it should
         populated by calling add_java_jar().
-        """, 'binaries'),
-
-    'JS_MODULES_PATH': (unicode, unicode,
-        """Sub-directory of ``$(FINAL_TARGET)`` to install
-        ``EXTRA_JS_MODULES``.
-
-        ``EXTRA_JS_MODULES`` files are copied to
-        ``$(FINAL_TARGET)/$(JS_MODULES_PATH)``. This variable does not
-        need to be defined if the desired destination directory is
-        ``$(FINAL_TARGET)/modules``.
-        """, None),
+        """, 'libs'),
 
     'LIBRARY_NAME': (unicode, unicode,
-        """The name of the library generated for a directory.
+        """The code name of the library generated for a directory.
 
+        By default STATIC_LIBRARY_NAME and SHARED_LIBRARY_NAME take this name.
         In ``example/components/moz.build``,::
 
            LIBRARY_NAME = 'xpcomsample'
 
         would generate ``example/components/libxpcomsample.so`` on Linux, or
         ``example/components/xpcomsample.lib`` on Windows.
-        """, 'binaries'),
+        """, None),
 
-    'LIBS': (StrictOrderingOnAppendList, list,
-        """Linker libraries and flags.
+    'SHARED_LIBRARY_NAME': (unicode, unicode,
+        """The name of the static library generated for a directory, if it needs to
+        differ from the library code name.
 
-        A list of libraries and flags to include when linking.
+        Implies FORCE_SHARED_LIB.
+        """, None),
+
+    'IS_FRAMEWORK': (bool, bool,
+        """Whether the library to build should be built as a framework on OSX.
+
+        This implies the name of the library won't be prefixed nor suffixed.
+        Implies FORCE_SHARED_LIB.
+        """, None),
+
+    'STATIC_LIBRARY_NAME': (unicode, unicode,
+        """The name of the static library generated for a directory, if it needs to
+        differ from the library code name.
+
+        Implies FORCE_STATIC_LIB.
+        """, None),
+
+    'USE_LIBS': (StrictOrderingOnAppendList, list,
+        """List of libraries to link to programs and libraries.
+        """, None),
+
+    'HOST_USE_LIBS': (StrictOrderingOnAppendList, list,
+        """List of libraries to link to host programs and libraries.
+        """, None),
+
+    'HOST_OS_LIBS': (List, list,
+        """List of system libraries for host programs and libraries.
         """, None),
 
     'LOCAL_INCLUDES': (StrictOrderingOnAppendList, list,
@@ -330,7 +352,7 @@ VARIABLES = {
         """Build sources listed in this file without VISIBILITY_FLAGS.
         """, None),
 
-    'OS_LIBS': (list, list,
+    'OS_LIBS': (List, list,
         """System link libraries.
 
         This variable contains a list of system libaries to link against.
@@ -387,11 +409,10 @@ VARIABLES = {
            RESOURCE_FILES.fonts['baz.res.in'].preprocess = True
         """, None),
 
-    'SDK_LIBRARY': (StrictOrderingOnAppendList, list,
-        """Elements of the distributed SDK.
+    'SDK_LIBRARY': (bool, bool,
+        """Whether the library built in the directory is part of the SDK.
 
-        Files on this list will be copied into ``SDK_LIB_DIR``
-        (``$DIST/sdk/lib``).
+        The library will be copied into ``SDK_LIB_DIR`` (``$DIST/sdk/lib``).
         """, None),
 
     'SIMPLE_PROGRAMS': (StrictOrderingOnAppendList, list,
@@ -403,7 +424,15 @@ VARIABLES = {
         If the configuration token ``BIN_SUFFIX`` is set, its value will be
         automatically appended to each name. If a name already ends with
         ``BIN_SUFFIX``, the name will remain unchanged.
-        """, 'binaries'),
+        """, None),
+
+    'SONAME': (unicode, unicode,
+        """The soname of the shared object currently being linked
+
+        soname is the "logical name" of a shared object, often used to provide
+        version backwards compatibility. This variable makes sense only for
+        shared objects, and is supported only on some unix platforms.
+        """, None),
 
     'HOST_SIMPLE_PROGRAMS': (StrictOrderingOnAppendList, list,
         """Compile a list of host executable names.
@@ -414,17 +443,9 @@ VARIABLES = {
         If the configuration token ``HOST_BIN_SUFFIX`` is set, its value will
         be automatically appended to each name. If a name already ends with
         ``HOST_BIN_SUFFIX``, the name will remain unchanged.
-        """, 'binaries'),
-
-    'TOOL_DIRS': (list, list,
-        """Like DIRS but for tools.
-
-        Tools are for pieces of the build system that aren't required to
-        produce a working binary (in theory). They provide things like test
-        code and utilities.
         """, None),
 
-    'TEST_DIRS': (list, list,
+    'TEST_DIRS': (List, list,
         """Like DIRS but only for directories that contain test-only code.
 
         If tests are not enabled, this variable will be ignored.
@@ -432,11 +453,6 @@ VARIABLES = {
         This variable may go away once the transition away from Makefiles is
         complete.
         """, None),
-
-    'TEST_TOOL_DIRS': (list, list,
-        """TOOL_DIRS that is only executed if tests are enabled.
-        """, None),
-
 
     'TIERS': (OrderedDict, dict,
         """Defines directories constituting the tier traversal mechanism.
@@ -495,7 +511,7 @@ VARIABLES = {
         If the configuration token ``BIN_SUFFIX`` is set, its value will be
         automatically appended to ``PROGRAM``. If ``PROGRAM`` already ends with
         ``BIN_SUFFIX``, ``PROGRAM`` will remain unchanged.
-        """, 'binaries'),
+        """, None),
 
     'HOST_PROGRAM' : (unicode, unicode,
         """Compiled host executable name.
@@ -503,7 +519,7 @@ VARIABLES = {
         If the configuration token ``HOST_BIN_SUFFIX`` is set, its value will be
         automatically appended to ``HOST_PROGRAM``. If ``HOST_PROGRAM`` already
         ends with ``HOST_BIN_SUFFIX``, ``HOST_PROGRAM`` will remain unchanged.
-        """, 'binaries'),
+        """, None),
 
     'NO_DIST_INSTALL': (bool, bool,
         """Disable installing certain files into the distribution directory.
@@ -706,43 +722,43 @@ VARIABLES = {
         """Directories containing Python packages that Sphinx documents.
         """, None),
 
-    'CFLAGS': (list, list,
+    'CFLAGS': (List, list,
         """Flags passed to the C compiler for all of the C source files
            declared in this directory.
 
            Note that the ordering of flags matters here, these flags will be
            added to the compiler's command line in the same order as they
            appear in the moz.build file.
-        """, 'binaries'),
+        """, None),
 
-    'CXXFLAGS': (list, list,
+    'CXXFLAGS': (List, list,
         """Flags passed to the C++ compiler for all of the C++ source files
            declared in this directory.
 
            Note that the ordering of flags matters here; these flags will be
            added to the compiler's command line in the same order as they
            appear in the moz.build file.
-        """, 'binaries'),
+        """, None),
 
-    'CMFLAGS': (list, list,
+    'CMFLAGS': (List, list,
         """Flags passed to the Objective-C compiler for all of the Objective-C
            source files declared in this directory.
 
            Note that the ordering of flags matters here; these flags will be
            added to the compiler's command line in the same order as they
            appear in the moz.build file.
-        """, 'binaries'),
+        """, None),
 
-    'CMMFLAGS': (list, list,
+    'CMMFLAGS': (List, list,
         """Flags passed to the Objective-C++ compiler for all of the
            Objective-C++ source files declared in this directory.
 
            Note that the ordering of flags matters here; these flags will be
            added to the compiler's command line in the same order as they
            appear in the moz.build file.
-        """, 'binaries'),
+        """, None),
 
-    'LDFLAGS': (list, list,
+    'LDFLAGS': (List, list,
         """Flags passed to the linker when linking all of the libraries and
            executables declared in this directory.
 
@@ -751,7 +767,7 @@ VARIABLES = {
            appear in the moz.build file.
         """, 'libs'),
 
-    'EXTRA_DSO_LDOPTS': (list, list,
+    'EXTRA_DSO_LDOPTS': (List, list,
         """Flags passed to the linker when linking a shared library.
 
            Note that the ordering of flags matter here, these flags will be
@@ -759,7 +775,7 @@ VARIABLES = {
            appear in the moz.build file.
         """, 'libs'),
 
-    'WIN32_EXE_LDFLAGS': (list, list,
+    'WIN32_EXE_LDFLAGS': (List, list,
         """Flags passed to the linker when linking a Windows .exe executable
            declared in this directory.
 
@@ -770,6 +786,12 @@ VARIABLES = {
            This variable only has an effect on Windows.
         """, 'libs'),
 }
+
+# Sanity check: we don't want any variable above to have a list as storage type.
+for name, (storage_type, input_types, docs, tier) in VARIABLES.items():
+    if storage_type == list:
+        raise RuntimeError('%s has a "list" storage type. Use "List" instead.'
+            % name)
 
 # The set of functions exposed to the sandbox.
 #
@@ -847,7 +869,7 @@ FUNCTIONS = {
         :py:class:`mozbuild.frontend.data.AndroidEclipseProjectData`.
         """),
 
-    'add_tier_dir': ('_add_tier_directory', (str, [str, list], bool, bool),
+    'add_tier_dir': ('_add_tier_directory', (str, [str, list], bool, bool, str),
         """Register a directory for tier traversal.
 
         This is the preferred way to populate the TIERS variable.
@@ -876,12 +898,8 @@ FUNCTIONS = {
 
            add_tier_dir('app', ['components', 'base'])
 
-        Register a directory as having static content (no dependencies)::
-
-           add_tier_dir('base', 'foo', static=True)
-
-        Register a directory as having external content (same as static
-        content, but traversed with export, libs, and tools subtiers::
+        Register a directory as having external content (no dependencies,
+        and traversed with export, libs, and tools subtiers::
 
            add_tier_dir('base', 'bar', external=True)
         """),
@@ -890,10 +908,9 @@ FUNCTIONS = {
         """Make the specified variable available to all child directories.
 
         The variable specified by the argument string is added to the
-        environment of all directories specified in the DIRS, PARALLEL_DIRS,
-        TOOL_DIRS, TEST_DIRS, and TEST_TOOL_DIRS variables. If those directories
-        themselves have child directories, the variable will be exported to all
-        of them.
+        environment of all directories specified in the DIRS and TEST_DIRS
+        variables. If those directories themselves have child directories,
+        the variable will be exported to all of them.
 
         The value used for the variable is the final value at the end of the
         moz.build file, so it is possible (but not recommended style) to place
@@ -989,4 +1006,11 @@ SPECIAL_VARIABLES = {
         - False
         - None
         """),
+}
+
+# Deprecation hints.
+DEPRECATION_HINTS = {
+    'TOOL_DIRS': 'Please use the DIRS variable instead.',
+    'TEST_TOOL_DIRS': 'Please use the TEST_DIRS variable instead.',
+    'PARALLEL_DIRS': 'Please use the DIRS variable instead.',
 }

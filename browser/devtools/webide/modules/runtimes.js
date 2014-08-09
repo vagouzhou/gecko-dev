@@ -9,14 +9,25 @@ const {Simulator} = Cu.import("resource://gre/modules/devtools/Simulator.jsm");
 const {ConnectionManager, Connection} = require("devtools/client/connection-manager");
 const {DebuggerServer} = require("resource://gre/modules/devtools/dbg-server.jsm");
 const discovery = require("devtools/toolkit/discovery/discovery");
+const promise = require("promise");
 
-const Strings = Services.strings.createBundle("chrome://webide/content/webide.properties");
+const Strings = Services.strings.createBundle("chrome://browser/locale/devtools/webide.properties");
+
+// These type strings are used for logging events to Telemetry
+let RuntimeTypes = {
+  usb: "USB",
+  wifi: "WIFI",
+  simulator: "SIMULATOR",
+  remote: "REMOTE",
+  local: "LOCAL"
+};
 
 function USBRuntime(id) {
   this.id = id;
 }
 
 USBRuntime.prototype = {
+  type: RuntimeTypes.usb,
   connect: function(connection) {
     let device = Devices.getByName(this.id);
     if (!device) {
@@ -32,7 +43,24 @@ USBRuntime.prototype = {
     return this.id;
   },
   getName: function() {
-    return this.id;
+    return this._productModel || this.id;
+  },
+  updateNameFromADB: function() {
+    if (this._productModel) {
+      return promise.resolve();
+    }
+    let device = Devices.getByName(this.id);
+    let deferred = promise.defer();
+    if (device && device.shell) {
+      device.shell("getprop ro.product.model").then(stdout => {
+        this._productModel = stdout;
+        deferred.resolve();
+      }, () => {});
+    } else {
+      this._productModel = null;
+      deferred.reject();
+    }
+    return deferred.promise;
   },
 }
 
@@ -41,6 +69,7 @@ function WiFiRuntime(deviceName) {
 }
 
 WiFiRuntime.prototype = {
+  type: RuntimeTypes.wifi,
   connect: function(connection) {
     let service = discovery.getRemoteService("devtools", this.deviceName);
     if (!service) {
@@ -64,6 +93,7 @@ function SimulatorRuntime(version) {
 }
 
 SimulatorRuntime.prototype = {
+  type: RuntimeTypes.simulator,
   connect: function(connection) {
     let port = ConnectionManager.getFreeTCPPort();
     let simulator = Simulator.getByVersion(this.version);
@@ -73,6 +103,7 @@ SimulatorRuntime.prototype = {
     return simulator.launch({port: port}).then(() => {
       connection.port = port;
       connection.keepConnecting = true;
+      connection.once(Connection.Events.DISCONNECTED, simulator.close);
       connection.connect();
     });
   },
@@ -85,6 +116,7 @@ SimulatorRuntime.prototype = {
 }
 
 let gLocalRuntime = {
+  type: RuntimeTypes.local,
   connect: function(connection) {
     if (!DebuggerServer.initialized) {
       DebuggerServer.init();
@@ -101,6 +133,7 @@ let gLocalRuntime = {
 }
 
 let gRemoteRuntime = {
+  type: RuntimeTypes.remote,
   connect: function(connection) {
     let win = Services.wm.getMostRecentWindow("devtools:webide");
     if (!win) {

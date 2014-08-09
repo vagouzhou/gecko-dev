@@ -161,7 +161,8 @@ class MozbuildObject(ProcessExecutionMixin):
         # environment. If no mozconfig is present, the config will not have
         # much defined.
         loader = MozconfigLoader(topsrcdir)
-        config = loader.read_mozconfig(mozconfig)
+        current_project = os.environ.get('MOZ_CURRENT_PROJECT')
+        config = loader.read_mozconfig(mozconfig, moz_build_app=current_project)
 
         config_topobjdir = MozbuildObject.resolve_mozconfig_topobjdir(
             topsrcdir, config)
@@ -172,12 +173,12 @@ class MozbuildObject(ProcessExecutionMixin):
         # not another one. This prevents accidental usage of the wrong objdir
         # when the current objdir is ambiguous.
         if topobjdir and config_topobjdir:
-            mozilla_dir = os.path.join(config_topobjdir, 'mozilla')
-            if not samepath(topobjdir, config_topobjdir) \
-                and (os.path.exists(mozilla_dir) and not samepath(topobjdir,
-                mozilla_dir)):
+            if current_project:
+                config_topobjdir = os.path.join(config_topobjdir, current_project)
 
-                raise ObjdirMismatchException(topobjdir, config_topobjdir)
+            _config_topobjdir = config_topobjdir
+            if not samepath(topobjdir, _config_topobjdir):
+                raise ObjdirMismatchException(topobjdir, _config_topobjdir)
 
         topobjdir = topobjdir or config_topobjdir
         if topobjdir:
@@ -233,7 +234,8 @@ class MozbuildObject(ProcessExecutionMixin):
         """
         if self._mozconfig is None:
             loader = MozconfigLoader(self.topsrcdir)
-            self._mozconfig = loader.read_mozconfig()
+            self._mozconfig = loader.read_mozconfig(
+                moz_build_app=os.environ.get('MOZ_CURRENT_PROJECT'))
 
         return self._mozconfig
 
@@ -457,7 +459,7 @@ class MozbuildObject(ProcessExecutionMixin):
             'append_env': append_env,
             'explicit_env': explicit_env,
             'log_level': logging.INFO,
-            'require_unix_environment': True,
+            'require_unix_environment': False,
             'ensure_exit_code': ensure_exit_code,
             'pass_thru': pass_thru,
 
@@ -549,12 +551,26 @@ class MachCommandBase(MozbuildObject):
         # more reliable than mozconfig when cwd is inside an objdir.
         topsrcdir = context.topdir
         topobjdir = None
+        detect_virtualenv_mozinfo = True
+        if hasattr(context, 'detect_virtualenv_mozinfo'):
+            detect_virtualenv_mozinfo = getattr(context,
+                'detect_virtualenv_mozinfo')
         try:
-            dummy = MozbuildObject.from_environment(cwd=context.cwd)
+            dummy = MozbuildObject.from_environment(cwd=context.cwd,
+                detect_virtualenv_mozinfo=detect_virtualenv_mozinfo)
             topsrcdir = dummy.topsrcdir
             topobjdir = dummy._topobjdir
         except BuildEnvironmentNotFoundException:
             pass
+        except ObjdirMismatchException as e:
+            print('Ambiguous object directory detected. We detected that '
+                'both %s and %s could be object directories. This is '
+                'typically caused by having a mozconfig pointing to a '
+                'different object directory from the current working '
+                'directory. To solve this problem, ensure you do not have a '
+                'default mozconfig in searched paths.' % (e.objdir1,
+                    e.objdir2))
+            sys.exit(1)
 
         MozbuildObject.__init__(self, topsrcdir, context.settings,
             context.log_manager, topobjdir=topobjdir)
@@ -595,6 +611,19 @@ class MachCommandConditions(object):
         if hasattr(cls, 'substs'):
             return cls.substs.get('MOZ_BUILD_APP') == 'browser'
         return False
+
+    @staticmethod
+    def is_mulet(cls):
+        """Must have a Mulet build."""
+        if hasattr(cls, 'substs'):
+            return cls.substs.get('MOZ_BUILD_APP') == 'b2g/dev'
+        return False
+
+    @staticmethod
+    def is_firefox_or_mulet(cls):
+        """Must have a Firefox or Mulet build."""
+        return (MachCommandConditions.is_firefox(cls) or
+                MachCommandConditions.is_mulet(cls))
 
     @staticmethod
     def is_b2g(cls):

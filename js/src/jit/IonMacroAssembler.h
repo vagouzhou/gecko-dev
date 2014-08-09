@@ -7,8 +7,6 @@
 #ifndef jit_IonMacroAssembler_h
 #define jit_IonMacroAssembler_h
 
-#ifdef JS_ION
-
 #include "jscompartment.h"
 
 #if defined(JS_CODEGEN_X86)
@@ -19,6 +17,8 @@
 # include "jit/arm/MacroAssembler-arm.h"
 #elif defined(JS_CODEGEN_MIPS)
 # include "jit/mips/MacroAssembler-mips.h"
+#elif defined(JS_CODEGEN_NONE)
+# include "jit/none/MacroAssembler-none.h"
 #else
 # error "Unknown architecture!"
 #endif
@@ -497,17 +497,26 @@ class MacroAssembler : public MacroAssemblerSpecific
         return extractObject(source, scratch);
     }
 
-    void PushRegsInMask(RegisterSet set);
+    void PushRegsInMask(RegisterSet set, FloatRegisterSet simdSet);
+    void PushRegsInMask(RegisterSet set) {
+        PushRegsInMask(set, FloatRegisterSet());
+    }
     void PushRegsInMask(GeneralRegisterSet set) {
         PushRegsInMask(RegisterSet(set, FloatRegisterSet()));
     }
     void PopRegsInMask(RegisterSet set) {
         PopRegsInMaskIgnore(set, RegisterSet());
     }
+    void PopRegsInMask(RegisterSet set, FloatRegisterSet simdSet) {
+        PopRegsInMaskIgnore(set, RegisterSet(), simdSet);
+    }
     void PopRegsInMask(GeneralRegisterSet set) {
         PopRegsInMask(RegisterSet(set, FloatRegisterSet()));
     }
-    void PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore);
+    void PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore, FloatRegisterSet simdSet);
+    void PopRegsInMaskIgnore(RegisterSet set, RegisterSet ignore) {
+        PopRegsInMaskIgnore(set, ignore, FloatRegisterSet());
+    }
 
     void branchIfFunctionHasNoScript(Register fun, Label *label) {
         // 16-bit loads are slow and unaligned 32-bit loads may be too so
@@ -634,10 +643,10 @@ class MacroAssembler : public MacroAssemblerSpecific
             branch32(cond, length, Imm32(key.constant()), label);
     }
 
-    void branchTestNeedsBarrier(Condition cond, Label *label) {
+    void branchTestNeedsIncrementalBarrier(Condition cond, Label *label) {
         JS_ASSERT(cond == Zero || cond == NonZero);
         CompileZone *zone = GetIonContext()->compartment->zone();
-        AbsoluteAddress needsBarrierAddr(zone->addressOfNeedsBarrier());
+        AbsoluteAddress needsBarrierAddr(zone->addressOfNeedsIncrementalBarrier());
         branchTest32(cond, needsBarrierAddr, Imm32(0x1), label);
     }
 
@@ -708,26 +717,26 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     template<typename T>
-    void loadFromTypedArray(int arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
+    void loadFromTypedArray(Scalar::Type arrayType, const T &src, AnyRegister dest, Register temp, Label *fail);
 
     template<typename T>
-    void loadFromTypedArray(int arrayType, const T &src, const ValueOperand &dest, bool allowDouble,
+    void loadFromTypedArray(Scalar::Type arrayType, const T &src, const ValueOperand &dest, bool allowDouble,
                             Register temp, Label *fail);
 
     template<typename S, typename T>
-    void storeToTypedIntArray(int arrayType, const S &value, const T &dest) {
+    void storeToTypedIntArray(Scalar::Type arrayType, const S &value, const T &dest) {
         switch (arrayType) {
-          case ScalarTypeDescr::TYPE_INT8:
-          case ScalarTypeDescr::TYPE_UINT8:
-          case ScalarTypeDescr::TYPE_UINT8_CLAMPED:
+          case Scalar::Int8:
+          case Scalar::Uint8:
+          case Scalar::Uint8Clamped:
             store8(value, dest);
             break;
-          case ScalarTypeDescr::TYPE_INT16:
-          case ScalarTypeDescr::TYPE_UINT16:
+          case Scalar::Int16:
+          case Scalar::Uint16:
             store16(value, dest);
             break;
-          case ScalarTypeDescr::TYPE_INT32:
-          case ScalarTypeDescr::TYPE_UINT32:
+          case Scalar::Int32:
+          case Scalar::Uint32:
             store32(value, dest);
             break;
           default:
@@ -735,8 +744,8 @@ class MacroAssembler : public MacroAssemblerSpecific
         }
     }
 
-    void storeToTypedFloatArray(int arrayType, FloatRegister value, const BaseIndex &dest);
-    void storeToTypedFloatArray(int arrayType, FloatRegister value, const Address &dest);
+    void storeToTypedFloatArray(Scalar::Type arrayType, FloatRegister value, const BaseIndex &dest);
+    void storeToTypedFloatArray(Scalar::Type arrayType, FloatRegister value, const Address &dest);
 
     Register extractString(const Address &address, Register scratch) {
         return extractObject(address, scratch);
@@ -792,7 +801,7 @@ class MacroAssembler : public MacroAssemblerSpecific
     bool shouldNurseryAllocate(gc::AllocKind allocKind, gc::InitialHeap initialHeap);
     void nurseryAllocate(Register result, Register slots, gc::AllocKind allocKind,
                          size_t nDynamicSlots, gc::InitialHeap initialHeap, Label *fail);
-    void freeSpanAllocate(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
+    void freeListAllocate(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
     void allocateObject(Register result, Register slots, gc::AllocKind allocKind,
                         uint32_t nDynamicSlots, gc::InitialHeap initialHeap, Label *fail);
     void allocateNonObject(Register result, Register temp, gc::AllocKind allocKind, Label *fail);
@@ -902,7 +911,7 @@ class MacroAssembler : public MacroAssemblerSpecific
         // be unset if the code never needed to push its JitCode*.
         if (hasEnteredExitFrame()) {
             exitCodePatch_.fixup(this);
-            patchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
+            PatchDataWithValueCheck(CodeLocationLabel(code, exitCodePatch_),
                                     ImmPtr(code),
                                     ImmPtr((void*)-1));
         }
@@ -1399,15 +1408,21 @@ class MacroAssembler : public MacroAssemblerSpecific
 #endif
         {}
 
-#ifdef JS_DEBUG
       public:
+#ifdef JS_DEBUG
         uint32_t initialStack;
 #endif
+        uint32_t alignmentPadding;
     };
+
+    void alignFrameForICArguments(AfterICSaveLive &aic);
+    void restoreFrameAlignmentForICArguments(AfterICSaveLive &aic);
 
     AfterICSaveLive icSaveLive(RegisterSet &liveRegs) {
         PushRegsInMask(liveRegs);
-        return AfterICSaveLive(framePushed());
+        AfterICSaveLive aic(framePushed());
+        alignFrameForICArguments(aic);
+        return aic;
     }
 
     bool icBuildOOLFakeExitFrame(void *fakeReturnAddr, AfterICSaveLive &aic) {
@@ -1415,8 +1430,19 @@ class MacroAssembler : public MacroAssemblerSpecific
     }
 
     void icRestoreLive(RegisterSet &liveRegs, AfterICSaveLive &aic) {
+        restoreFrameAlignmentForICArguments(aic);
         JS_ASSERT(framePushed() == aic.initialStack);
         PopRegsInMask(liveRegs);
+    }
+
+    void assertStackAlignment() {
+#ifdef DEBUG
+        Label ok;
+        JS_ASSERT(IsPowerOfTwo(StackAlignment));
+        branchTestPtr(Assembler::Zero, StackPointer, Imm32(StackAlignment - 1), &ok);
+        breakpoint();
+        bind(&ok);
+#endif
     }
 };
 
@@ -1490,9 +1516,14 @@ JSOpToCondition(JSOp op, bool isSigned)
     }
 }
 
+static inline size_t
+StackDecrementForCall(size_t bytesAlreadyPushed, size_t bytesToPush)
+{
+    return bytesToPush +
+           ComputeByteAlignment(bytesAlreadyPushed + bytesToPush, StackAlignment);
+}
+
 } // namespace jit
 } // namespace js
-
-#endif // JS_ION
 
 #endif /* jit_IonMacroAssembler_h */

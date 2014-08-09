@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 #include "prlog.h"
 #include "prdtoa.h"
 #include "AudioStream.h"
@@ -16,6 +17,9 @@
 #include "mozilla/Telemetry.h"
 #include "soundtouch/SoundTouch.h"
 #include "Latency.h"
+#ifdef XP_MACOSX
+#include <sys/sysctl.h>
+#endif
 
 namespace mozilla {
 
@@ -246,10 +250,10 @@ AudioStream::AudioStream()
   , mLatencyRequest(HighLatency)
   , mReadPoint(0)
   , mDumpFile(nullptr)
-  , mVolume(1.0)
   , mBytesPerFrame(0)
   , mState(INITIALIZED)
   , mNeedsStart(false)
+  , mShouldDropFrames(false)
 {
   // keep a ref in case we shut down later than nsLayoutStatics
   mLatencyLog = AsyncLatencyLogger::Get(true);
@@ -258,7 +262,8 @@ AudioStream::AudioStream()
 AudioStream::~AudioStream()
 {
   LOG(("AudioStream: delete %p, state %d", this, mState));
-  Shutdown();
+  MOZ_ASSERT(mState == SHUTDOWN && !mCubebStream,
+             "Should've called Shutdown() before deleting an AudioStream");
   if (mDumpFile) {
     fclose(mDumpFile);
   }
@@ -317,6 +322,10 @@ nsresult AudioStream::EnsureTimeStretcherInitializedUnlocked()
 
 nsresult AudioStream::SetPlaybackRate(double aPlaybackRate)
 {
+  // MUST lock since the rate transposer is used from the cubeb callback,
+  // and rate changes can cause the buffer to be reallocated
+  MonitorAutoLock mon(mMonitor);
+
   NS_ASSERTION(aPlaybackRate > 0.0,
                "Can't handle negative or null playbackrate in the AudioStream.");
   // Avoid instantiating the resampler if we are not changing the playback rate.
@@ -325,9 +334,6 @@ nsresult AudioStream::SetPlaybackRate(double aPlaybackRate)
     return NS_OK;
   }
 
-  // MUST lock since the rate transposer is used from the cubeb callback,
-  // and rate changes can cause the buffer to be reallocated
-  MonitorAutoLock mon(mMonitor);
   if (EnsureTimeStretcherInitializedUnlocked() != NS_OK) {
     return NS_ERROR_FAILURE;
   }
@@ -347,14 +353,15 @@ nsresult AudioStream::SetPlaybackRate(double aPlaybackRate)
 
 nsresult AudioStream::SetPreservesPitch(bool aPreservesPitch)
 {
+  // MUST lock since the rate transposer is used from the cubeb callback,
+  // and rate changes can cause the buffer to be reallocated
+  MonitorAutoLock mon(mMonitor);
+
   // Avoid instantiating the timestretcher instance if not needed.
   if (aPreservesPitch == mAudioClock.GetPreservesPitch()) {
     return NS_OK;
   }
 
-  // MUST lock since the rate transposer is used from the cubeb callback,
-  // and rate changes can cause the buffer to be reallocated
-  MonitorAutoLock mon(mMonitor);
   if (EnsureTimeStretcherInitializedUnlocked() != NS_OK) {
     return NS_ERROR_FAILURE;
   }
@@ -374,6 +381,7 @@ nsresult AudioStream::SetPreservesPitch(bool aPreservesPitch)
 
 int64_t AudioStream::GetWritten()
 {
+  MonitorAutoLock mon(mMonitor);
   return mWritten;
 }
 
@@ -494,8 +502,10 @@ AudioStream::Init(int32_t aNumChannels, int32_t aRate,
   params.channels = mOutChannels;
 #if defined(__ANDROID__)
 #if defined(MOZ_B2G)
+  mAudioChannel = aAudioChannel;
   params.stream_type = ConvertChannelToCubebType(aAudioChannel);
 #else
+  mAudioChannel = dom::AudioChannel::Content;
   params.stream_type = CUBEB_STREAM_TYPE_MUSIC;
 #endif
 
@@ -533,8 +543,82 @@ AudioStream::Init(int32_t aNumChannels, int32_t aRate,
   nsresult rv = OpenCubeb(params, aLatencyRequest);
   // See if we need to start() the stream, since we must do that from this
   // thread for now (cubeb API issue)
-  CheckForStart();
+  {
+    MonitorAutoLock mon(mMonitor);
+    CheckForStart();
+  }
   return rv;
+}
+
+// On certain MacBookPro, the microphone is located near the left speaker.
+// We need to pan the sound output to the right speaker if we are using the mic
+// and the built-in speaker, or we will have terrible echo.
+void AudioStream::PanOutputIfNeeded(bool aMicrophoneActive)
+{
+#ifdef XP_MACOSX
+  cubeb_device* device;
+  int rv;
+  char name[128];
+  size_t length = sizeof(name);
+  bool panCenter = false;
+
+  rv = sysctlbyname("hw.model", name, &length, NULL, 0);
+  if (rv) {
+    return;
+  }
+
+  if (!strncmp(name, "MacBookPro", 10)) {
+    if (cubeb_stream_get_current_device(mCubebStream, &device) == CUBEB_OK) {
+      // Check if we are currently outputing sound on external speakers.
+      if (!strcmp(device->output_name, "ispk")) {
+        // Pan everything to the right speaker.
+        if (aMicrophoneActive) {
+          LOG(("%p Panning audio output to the right.", this));
+          if (cubeb_stream_set_panning(mCubebStream, 1.0) != CUBEB_OK) {
+            NS_WARNING("Could not pan audio output to the right.");
+          }
+        } else {
+          panCenter = true;
+        }
+      } else {
+        panCenter = true;
+      }
+      if (panCenter) {
+        LOG(("%p Panning audio output to the center.", this));
+        if (cubeb_stream_set_panning(mCubebStream, 0.0) != CUBEB_OK) {
+          NS_WARNING("Could not pan audio output to the center.");
+        }
+      }
+      cubeb_stream_device_destroy(mCubebStream, device);
+    }
+  }
+#endif
+}
+
+void AudioStream::ResetStreamIfNeeded()
+{
+  cubeb_device * device;
+  // Only reset a device if a mic is active, and this is a low latency stream.
+  if (!mMicrophoneActive || mLatencyRequest != LowLatency) {
+    return;
+  }
+  if (cubeb_stream_get_current_device(mCubebStream, &device) == CUBEB_OK) {
+    // This a microphone that goes through the headphone plug, reset the
+    // output to prevent echo building up.
+    if (strcmp(device->input_name, "emic") == 0) {
+      LOG(("Resetting audio output"));
+      Reset();
+    }
+    cubeb_stream_device_destroy(mCubebStream, device);
+  }
+}
+
+void AudioStream::DeviceChangedCallback()
+{
+  MonitorAutoLock mon(mMonitor);
+  PanOutputIfNeeded(mMicrophoneActive);
+  mShouldDropFrames = true;
+  ResetStreamIfNeeded();
 }
 
 // This code used to live inside AudioStream::Init(), but on Mac (others?)
@@ -543,6 +627,13 @@ nsresult
 AudioStream::OpenCubeb(cubeb_stream_params &aParams,
                        LatencyRequest aLatencyRequest)
 {
+  {
+    MonitorAutoLock mon(mMonitor);
+    if (mState == AudioStream::SHUTDOWN) {
+      return NS_ERROR_FAILURE;
+    }
+  }
+
   cubeb* cubebContext = GetCubebContext();
   if (!cubebContext) {
     MonitorAutoLock mon(mMonitor);
@@ -586,12 +677,17 @@ AudioStream::OpenCubeb(cubeb_stream_params &aParams,
     }
   }
 
+  cubeb_stream_register_device_changed_callback(mCubebStream,
+                                                AudioStream::DeviceChangedCallback_s);
+
+  mState = INITIALIZED;
+
   if (!mStartTime.IsNull()) {
-		TimeDuration timeDelta = TimeStamp::Now() - mStartTime;
+    TimeDuration timeDelta = TimeStamp::Now() - mStartTime;
     LOG(("AudioStream creation time %sfirst: %u ms", mIsFirst ? "" : "not ",
-         (uint32_t) timeDelta.ToMilliseconds()));
-		Telemetry::Accumulate(mIsFirst ? Telemetry::AUDIOSTREAM_FIRST_OPEN_MS :
-                          Telemetry::AUDIOSTREAM_LATER_OPEN_MS, timeDelta.ToMilliseconds());
+          (uint32_t) timeDelta.ToMilliseconds()));
+    Telemetry::Accumulate(mIsFirst ? Telemetry::AUDIOSTREAM_FIRST_OPEN_MS :
+        Telemetry::AUDIOSTREAM_LATER_OPEN_MS, timeDelta.ToMilliseconds());
   }
 
   return NS_OK;
@@ -600,6 +696,7 @@ AudioStream::OpenCubeb(cubeb_stream_params &aParams,
 void
 AudioStream::CheckForStart()
 {
+  mMonitor.AssertCurrentThreadOwns();
   if (mState == INITIALIZED) {
     // Start the stream right away when low latency has been requested. This means
     // that the DataCallback will feed silence to cubeb, until the first frames
@@ -645,14 +742,19 @@ nsresult
 AudioStream::Write(const AudioDataValue* aBuf, uint32_t aFrames, TimeStamp *aTime)
 {
   MonitorAutoLock mon(mMonitor);
+
+  // See if we need to start() the stream, since we must do that from this thread
+  CheckForStart();
+
+  if (mShouldDropFrames) {
+    mBuffer.ContractTo(0);
+    return NS_OK;
+  }
   if (mState == ERRORED) {
     return NS_ERROR_FAILURE;
   }
   NS_ASSERTION(mState == INITIALIZED || mState == STARTED || mState == RUNNING,
     "Stream write in unexpected state.");
-
-  // See if we need to start() the stream, since we must do that from this thread
-  CheckForStart();
 
   // Downmix to Stereo.
   if (mChannels > 2 && mChannels <= 8) {
@@ -736,9 +838,21 @@ AudioStream::Available()
 void
 AudioStream::SetVolume(double aVolume)
 {
-  MonitorAutoLock mon(mMonitor);
   NS_ABORT_IF_FALSE(aVolume >= 0.0 && aVolume <= 1.0, "Invalid volume");
-  mVolume = aVolume;
+
+  if (cubeb_stream_set_volume(mCubebStream, aVolume * GetVolumeScale()) != CUBEB_OK) {
+    NS_WARNING("Could not change volume on cubeb stream.");
+  }
+}
+
+void
+AudioStream::SetMicrophoneActive(bool aActive)
+{
+  MonitorAutoLock mon(mMonitor);
+
+  mMicrophoneActive = aActive;
+
+  PanOutputIfNeeded(mMicrophoneActive);
 }
 
 void
@@ -779,9 +893,15 @@ AudioStream::StartUnlocked()
     mNeedsStart = true;
     return;
   }
-  MonitorAutoUnlock mon(mMonitor);
+
   if (mState == INITIALIZED) {
-    int r = cubeb_stream_start(mCubebStream);
+    int r;
+    {
+      MonitorAutoUnlock mon(mMonitor);
+      r = cubeb_stream_start(mCubebStream);
+
+      PanOutputIfNeeded(mMicrophoneActive);
+    }
     mState = r == CUBEB_OK ? STARTED : ERRORED;
     LOG(("AudioStream: started %p, state %s", this, mState == STARTED ? "STARTED" : "ERRORED"));
   }
@@ -828,21 +948,19 @@ AudioStream::Resume()
 void
 AudioStream::Shutdown()
 {
+  MonitorAutoLock mon(mMonitor);
   LOG(("AudioStream: Shutdown %p, state %d", this, mState));
-  {
-    MonitorAutoLock mon(mMonitor);
-    if (mState == STARTED || mState == RUNNING) {
-      MonitorAutoUnlock mon(mMonitor);
-      Pause();
-    }
-    MOZ_ASSERT(mState != STARTED && mState != RUNNING); // paranoia
-    mState = SHUTDOWN;
-  }
-  // Must not try to shut down cubeb from within the lock!  wasapi may still
-  // call our callback after Pause()/stop()!?! Bug 996162
+
   if (mCubebStream) {
+    MonitorAutoUnlock mon(mMonitor);
+    // Force stop to put the cubeb stream in a stable state before deletion.
+    cubeb_stream_stop(mCubebStream);
+    // Must not try to shut down cubeb from within the lock!  wasapi may still
+    // call our callback after Pause()/stop()!?! Bug 996162
     mCubebStream.reset();
   }
+
+  mState = SHUTDOWN;
 }
 
 int64_t
@@ -907,6 +1025,7 @@ AudioStream::IsPaused()
 void
 AudioStream::GetBufferInsertTime(int64_t &aTimeMs)
 {
+  mMonitor.AssertCurrentThreadOwns();
   if (mInserts.Length() > 0) {
     // Find the right block, but don't leave the array empty
     while (mInserts.Length() > 1 && mReadPoint >= mInserts[0].mFrames) {
@@ -924,6 +1043,7 @@ AudioStream::GetBufferInsertTime(int64_t &aTimeMs)
 long
 AudioStream::GetUnprocessed(void* aBuffer, long aFrames, int64_t &aTimeMs)
 {
+  mMonitor.AssertCurrentThreadOwns();
   uint8_t* wpos = reinterpret_cast<uint8_t*>(aBuffer);
 
   // Flush the timestretcher pipeline, if we were playing using a playback rate
@@ -955,6 +1075,7 @@ AudioStream::GetUnprocessed(void* aBuffer, long aFrames, int64_t &aTimeMs)
 long
 AudioStream::GetUnprocessedWithSilencePadding(void* aBuffer, long aFrames, int64_t& aTimeMs)
 {
+  mMonitor.AssertCurrentThreadOwns();
   uint32_t toPopBytes = FramesToBytes(aFrames);
   uint32_t available = std::min(toPopBytes, mBuffer.Length());
   uint32_t silenceOffset = toPopBytes - available;
@@ -979,6 +1100,7 @@ AudioStream::GetUnprocessedWithSilencePadding(void* aBuffer, long aFrames, int64
 long
 AudioStream::GetTimeStretched(void* aBuffer, long aFrames, int64_t &aTimeMs)
 {
+  mMonitor.AssertCurrentThreadOwns();
   long processedFrames = 0;
 
   // We need to call the non-locking version, because we already have the lock.
@@ -1017,16 +1139,67 @@ AudioStream::GetTimeStretched(void* aBuffer, long aFrames, int64_t &aTimeMs)
   return processedFrames;
 }
 
+void
+AudioStream::Reset()
+{
+
+  MOZ_ASSERT(mLatencyRequest == LowLatency, "We should only be reseting low latency streams");
+
+  mShouldDropFrames = true;
+  mNeedsStart = true;
+
+  cubeb_stream_params params;
+  params.rate = mInRate;
+  params.channels = mOutChannels;
+#if defined(__ANDROID__)
+#if defined(MOZ_B2G)
+  params.stream_type = ConvertChannelToCubebType(mAudioChannel);
+#else
+  params.stream_type = CUBEB_STREAM_TYPE_MUSIC;
+#endif
+
+  if (params.stream_type == CUBEB_STREAM_TYPE_MAX) {
+    return;
+  }
+#endif
+
+  if (AUDIO_OUTPUT_FORMAT == AUDIO_FORMAT_S16) {
+    params.format = CUBEB_SAMPLE_S16NE;
+  } else {
+    params.format = CUBEB_SAMPLE_FLOAT32NE;
+  }
+  mBytesPerFrame = sizeof(AudioDataValue) * mOutChannels;
+
+  // Size mBuffer for one second of audio.  This value is arbitrary, and was
+  // selected based on the observed behaviour of the existing AudioStream
+  // implementations.
+  uint32_t bufferLimit = FramesToBytes(mInRate);
+  NS_ABORT_IF_FALSE(bufferLimit % mBytesPerFrame == 0, "Must buffer complete frames");
+  mBuffer.Reset();
+  mBuffer.SetCapacity(bufferLimit);
+
+  // Don't block this thread to initialize a cubeb stream.
+  // When this is done, it will start callbacks from Cubeb.  Those will
+  // cause us to move from INITIALIZED to RUNNING.  Until then, we
+  // can't access any cubeb functions.
+  // Use a RefPtr to avoid leaks if Dispatch fails
+  RefPtr<AudioInitTask> init = new AudioInitTask(this, mLatencyRequest, params);
+  init->Dispatch();
+}
+
 long
 AudioStream::DataCallback(void* aBuffer, long aFrames)
 {
   MonitorAutoLock mon(mMonitor);
+  MOZ_ASSERT(mState != SHUTDOWN, "No data callback after shutdown");
   uint32_t available = std::min(static_cast<uint32_t>(FramesToBytes(aFrames)), mBuffer.Length());
   NS_ABORT_IF_FALSE(available % mBytesPerFrame == 0, "Must copy complete frames");
   AudioDataValue* output = reinterpret_cast<AudioDataValue*>(aBuffer);
   uint32_t underrunFrames = 0;
   uint32_t servicedFrames = 0;
   int64_t insertTime;
+
+  mShouldDropFrames = false;
 
   // NOTE: wasapi (others?) can call us back *after* stop()/Shutdown() (mState == SHUTDOWN)
   // Bug 996162
@@ -1078,9 +1251,6 @@ AudioStream::DataCallback(void* aBuffer, long aFrames)
     } else {
       servicedFrames = GetTimeStretched(output, aFrames, insertTime);
     }
-    float scaled_volume = float(GetVolumeScale() * mVolume);
-
-    ScaleAudioSamples(output, aFrames * mOutChannels, scaled_volume);
 
     NS_ABORT_IF_FALSE(mBuffer.Length() % mBytesPerFrame == 0, "Must copy complete frames");
 
@@ -1131,6 +1301,8 @@ void
 AudioStream::StateCallback(cubeb_state aState)
 {
   MonitorAutoLock mon(mMonitor);
+  MOZ_ASSERT(mState != SHUTDOWN, "No state callback after shutdown");
+  LOG(("AudioStream: StateCallback %p, mState=%d cubeb_state=%d", this, mState, aState));
   if (aState == CUBEB_STATE_DRAINED) {
     mState = DRAINED;
   } else if (aState == CUBEB_STATE_ERROR) {

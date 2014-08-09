@@ -62,7 +62,6 @@
 #include "libui/EventHub.h"
 #include "libui/InputReader.h"
 #include "libui/InputDispatcher.h"
-#include "cutils/properties.h"
 
 #ifdef MOZ_NUWA_PROCESS
 #include "ipc/Nuwa.h"
@@ -983,6 +982,11 @@ nsAppShell::Init()
     InitGonkMemoryPressureMonitoring();
 
     if (XRE_GetProcessType() == GeckoProcessType_Default) {
+        printf("*****************************************************************\n");
+        printf("***\n");
+        printf("*** This is stdout. Most of the useful output will be in logcat.\n");
+        printf("***\n");
+        printf("*****************************************************************\n");
 #ifdef MOZ_OMX_DECODER
         android::MediaResourceManagerService::instantiate();
 #endif
@@ -1052,9 +1056,7 @@ nsAppShell::Exit()
 void
 nsAppShell::InitInputDevices()
 {
-    char value[PROPERTY_VALUE_MAX];
-    property_get("ro.moz.devinputjack", value, "0");
-    sDevInputAudioJack = !strcmp(value, "1");
+    sDevInputAudioJack = hal::IsHeadphoneEventFromInputDev();
     sHeadphoneState = AKEY_STATE_UNKNOWN;
     sMicrophoneState = AKEY_STATE_UNKNOWN;
 

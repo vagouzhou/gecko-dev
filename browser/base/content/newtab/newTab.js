@@ -13,7 +13,6 @@ Cu.import("resource://gre/modules/PageThumbs.jsm");
 Cu.import("resource://gre/modules/BackgroundPageThumbs.jsm");
 Cu.import("resource://gre/modules/DirectoryLinksProvider.jsm");
 Cu.import("resource://gre/modules/NewTabUtils.jsm");
-Cu.import("resource://gre/modules/Promise.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Rect",
   "resource://gre/modules/Geometry.jsm");
@@ -58,6 +57,7 @@ const XUL_NAMESPACE = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only
 #include updater.js
 #include undo.js
 #include search.js
+#include customize.js
 
 // Everything is loaded. Initialize the New Tab Page.
 gPage.init();

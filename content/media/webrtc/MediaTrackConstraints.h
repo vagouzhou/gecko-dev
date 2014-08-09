@@ -42,6 +42,21 @@ public:
         }
       }
     }
+
+    // treat MediaSource special because it's always required
+    mRequired.mMediaSource = mMediaSource;
+
+    // we guarantee (int) equivalence from MediaSourceEnum ->MediaSourceType
+    // (but not the other way)
+    if (mMediaSource != dom::MediaSourceEnum::Camera && mAdvanced.WasPassed()) {
+      // iterate through advanced, forcing mediaSource to match "root"
+      auto& array = mAdvanced.Value();
+      for (uint32_t i = 0; i < array.Length(); i++) {
+        if (array[i].mMediaSource == dom::MediaSourceEnum::Camera) {
+          array[i].mMediaSource = mMediaSource;
+        }
+      }
+    }
   }
 protected:
   MediaTrackConstraintSet& Triage(const Kind kind) {
@@ -81,13 +96,18 @@ struct VideoTrackConstraintsN :
     if (mFacingMode.WasPassed()) {
       Triage(Kind::FacingMode).mFacingMode.Construct(mFacingMode.Value());
     }
-    if (mMozMediaSource.WasPassed()) {
-        Triage(Kind::MozMediaSource).mMozMediaSource.Construct(mMozMediaSource.Value());
-    }
     // Reminder: add handling for new constraints both here & SatisfyConstraintSet
     Triage(Kind::Width).mWidth = mWidth;
     Triage(Kind::Height).mHeight = mHeight;
     Triage(Kind::FrameRate).mFrameRate = mFrameRate;
+    if (mBrowserWindow.WasPassed()) {
+      Triage(Kind::BrowserWindow).mBrowserWindow.Construct(mBrowserWindow.Value());
+    }
+    if (mScrollWithPage.WasPassed()) {
+      Triage(Kind::ScrollWithPage).mScrollWithPage.Construct(mScrollWithPage.Value());
+    }
+    // treat MediaSource special because it's always required
+    mRequired.mMediaSource = mMediaSource;
   }
 };
 

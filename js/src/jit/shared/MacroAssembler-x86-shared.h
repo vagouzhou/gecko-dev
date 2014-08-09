@@ -187,14 +187,8 @@ class MacroAssemblerX86Shared : public Assembler
     void not32(Register reg) {
         notl(reg);
     }
-    void inc32(const Operand &addr) {
-        incl(addr);
-    }
     void atomic_inc32(const Operand &addr) {
         lock_incl(addr);
-    }
-    void dec32(const Operand &addr) {
-        decl(addr);
     }
     void atomic_dec32(const Operand &addr) {
         lock_decl(addr);
@@ -389,6 +383,10 @@ class MacroAssemblerX86Shared : public Assembler
     void store32(const S &src, const T &dest) {
         movl(src, Operand(dest));
     }
+    template <typename S, typename T>
+    void store32_NoSecondScratch(const S &src, const T &dest) {
+        store32(src, dest);
+    }
     void loadDouble(const Address &src, FloatRegister dest) {
         movsd(src, dest);
     }
@@ -468,6 +466,39 @@ class MacroAssemblerX86Shared : public Assembler
     void convertDoubleToFloat32(FloatRegister src, FloatRegister dest) {
         cvtsd2ss(src, dest);
     }
+
+    void loadAlignedInt32x4(const Address &src, FloatRegister dest) {
+        movdqa(Operand(src), dest);
+    }
+    void storeAlignedInt32x4(FloatRegister src, const Address &dest) {
+        movdqa(src, Operand(dest));
+    }
+    void moveAlignedInt32x4(FloatRegister src, FloatRegister dest) {
+        movdqa(src, dest);
+    }
+    void loadUnalignedInt32x4(const Address &src, FloatRegister dest) {
+        movdqu(Operand(src), dest);
+    }
+    void storeUnalignedInt32x4(FloatRegister src, const Address &dest) {
+        movdqu(src, Operand(dest));
+    }
+
+    void loadAlignedFloat32x4(const Address &src, FloatRegister dest) {
+        movaps(Operand(src), dest);
+    }
+    void storeAlignedFloat32x4(FloatRegister src, const Address &dest) {
+        movaps(src, Operand(dest));
+    }
+    void moveAlignedFloat32x4(FloatRegister src, FloatRegister dest) {
+        movaps(src, dest);
+    }
+    void loadUnalignedFloat32x4(const Address &src, FloatRegister dest) {
+        movups(Operand(src), dest);
+    }
+    void storeUnalignedFloat32x4(FloatRegister src, const Address &dest) {
+        movups(src, Operand(dest));
+    }
+
     void moveFloatAsDouble(Register src, FloatRegister dest) {
         movd(src, dest);
         cvtss2sd(dest, dest);
@@ -667,26 +698,23 @@ class MacroAssemblerX86Shared : public Assembler
     bool buildFakeExitFrame(Register scratch, uint32_t *offset);
     void callWithExitFrame(JitCode *target);
 
-    void callIon(Register callee) {
-        call(callee);
-    }
-
-    void appendCallSite(const CallSiteDesc &desc) {
-        // Add an extra sizeof(void*) to include the return address that was
-        // pushed by the call instruction (see CallSite::stackDepth).
-        enoughMemory_ &= append(CallSite(desc, currentOffset(), framePushed_ + AsmJSFrameSize));
-    }
-
     void call(const CallSiteDesc &desc, Label *label) {
         call(label);
-        appendCallSite(desc);
+        append(desc, currentOffset(), framePushed_);
     }
     void call(const CallSiteDesc &desc, Register reg) {
         call(reg);
-        appendCallSite(desc);
+        append(desc, currentOffset(), framePushed_);
     }
-    void callIonFromAsmJS(Register reg) {
-        call(CallSiteDesc::Exit(), reg);
+    void callIon(Register callee) {
+        call(callee);
+    }
+    void callIonFromAsmJS(Register callee) {
+        call(callee);
+    }
+    void call(AsmJSImmPtr target) {
+        mov(target, eax);
+        call(eax);
     }
 
     void checkStackAlignment() {

@@ -82,6 +82,7 @@ ALL_JARS = \
   gecko-browser.jar \
   gecko-mozglue.jar \
   gecko-util.jar \
+  nineoldandroids.jar \
   squareup-picasso.jar \
   sync-thirdparty.jar \
   websockets.jar \
@@ -95,6 +96,12 @@ ifdef MOZ_ANDROID_SEARCH_ACTIVITY
 extra_packages += org.mozilla.search
 ALL_JARS += search-activity.jar
 generated/org/mozilla/search/R.java: .aapt.deps ;
+endif
+
+ifdef MOZ_ANDROID_MLS_STUMBLER
+extra_packages += org.mozilla.mozstumbler
+ALL_JARS += ../stumbler/stumbler.jar
+generated/org/mozilla/mozstumbler/R.java: .aapt.deps ;
 endif
 
 include $(topsrcdir)/config/config.mk

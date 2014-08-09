@@ -60,6 +60,10 @@ const kEventConstructors = {
                                                           return new BluetoothDiscoveryStateChangedEvent(aName, aProps);
                                                        },
                                              },
+  BluetoothPairingEvent:                     { create: function (aName, aProps) {
+                                                          return new BluetoothPairingEvent(aName, aProps);
+                                                       },
+                                             },
   BluetoothStatusChangedEvent:               { create: function (aName, aProps) {
                                                           return new BluetoothStatusChangedEvent(aName, aProps);
                                                        },
@@ -247,6 +251,10 @@ const kEventConstructors = {
                                              },
   MozEmergencyCbModeEvent:                   { create: function (aName, aProps) {
                                                           return new MozEmergencyCbModeEvent(aName, aProps);
+                                                       },
+                                             },
+  MozMessageDeletedEvent:                    { create: function (aName, aProps) {
+                                                         return new MozMessageDeletedEvent(aName, aProps);
                                                        },
                                              },
   MozMmsEvent:                               { create: function (aName, aProps) {

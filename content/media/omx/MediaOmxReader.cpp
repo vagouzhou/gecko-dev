@@ -17,6 +17,7 @@
 #include "OmxDecoder.h"
 #include "MPAPI.h"
 #include "gfx2DGlue.h"
+#include "MediaStreamSource.h"
 
 #ifdef MOZ_AUDIO_OFFLOAD
 #include <stagefright/Utils.h>
@@ -66,13 +67,20 @@ nsresult MediaOmxReader::Init(MediaDecoderReader* aCloneDonor)
   return NS_OK;
 }
 
-void MediaOmxReader::Shutdown()
+void MediaOmxReader::ReleaseDecoder()
 {
-  ReleaseMediaResources();
   if (mOmxDecoder.get()) {
     mOmxDecoder->ReleaseDecoder();
   }
   mOmxDecoder.clear();
+}
+
+void MediaOmxReader::Shutdown()
+{
+  ReleaseMediaResources();
+  nsCOMPtr<nsIRunnable> event =
+    NS_NewRunnableMethod(this, &MediaOmxReader::ReleaseDecoder);
+  NS_DispatchToMainThread(event);
 }
 
 bool MediaOmxReader::IsWaitingMediaResources()
@@ -112,7 +120,7 @@ nsresult MediaOmxReader::InitOmxDecoder()
     DataSource::RegisterDefaultSniffers();
     mDecoder->GetResource()->SetReadMode(MediaCacheStream::MODE_METADATA);
 
-    sp<DataSource> dataSource = new MediaStreamSource(mDecoder->GetResource(), mDecoder);
+    sp<DataSource> dataSource = new MediaStreamSource(mDecoder->GetResource());
     dataSource->initCheck();
 
     mExtractor = MediaExtractor::Create(dataSource);
@@ -320,7 +328,7 @@ bool MediaOmxReader::DecodeVideoFrame(bool &aKeyframeSkip,
     }
 
     decoded++;
-    NS_ASSERTION(decoded <= parsed, "Expect to decode fewer frames than parsed in MediaPlugin...");
+    NS_ASSERTION(decoded <= parsed, "Expect to decode fewer frames than parsed in OMX decoder...");
 
     mVideoQueue.Push(v);
 

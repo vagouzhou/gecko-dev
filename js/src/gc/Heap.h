@@ -7,6 +7,7 @@
 #ifndef gc_Heap_h
 #define gc_Heap_h
 
+#include "mozilla/Atomics.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/PodOperations.h"
 
@@ -39,6 +40,7 @@ namespace gc {
 
 struct Arena;
 class ArenaList;
+class SortedArenaList;
 struct ArenaHeader;
 struct Chunk;
 
@@ -182,8 +184,7 @@ class FreeSpan
         first = firstArg;
         last = lastArg;
         FreeSpan *lastSpan = reinterpret_cast<FreeSpan*>(last);
-        lastSpan->first = 0;
-        lastSpan->last = 0;
+        lastSpan->initAsEmpty();
         JS_ASSERT(!isEmpty());
         checkSpan(thingSize);
     }
@@ -191,6 +192,14 @@ class FreeSpan
     bool isEmpty() const {
         checkSpan();
         return !first;
+    }
+
+    static size_t offsetOfFirst() {
+        return offsetof(FreeSpan, first);
+    }
+
+    static size_t offsetOfLast() {
+        return offsetof(FreeSpan, last);
     }
 
     // Like nextSpan(), but no checking of the following span is done.
@@ -598,7 +607,7 @@ struct Arena
     void setAsFullyUnused(AllocKind thingKind);
 
     template <typename T>
-    bool finalize(FreeOp *fop, AllocKind thingKind, size_t thingSize);
+    size_t finalize(FreeOp *fop, AllocKind thingKind, size_t thingSize);
 };
 
 static_assert(sizeof(Arena) == ArenaSize, "The hardcoded arena size must match the struct size.");
@@ -700,7 +709,12 @@ const size_t BytesPerArenaWithHeader = ArenaSize + ArenaBitmapBytes;
 const size_t ChunkDecommitBitmapBytes = ChunkSize / ArenaSize / JS_BITS_PER_BYTE;
 const size_t ChunkBytesAvailable = ChunkSize - sizeof(ChunkInfo) - ChunkDecommitBitmapBytes;
 const size_t ArenasPerChunk = ChunkBytesAvailable / BytesPerArenaWithHeader;
+
+#ifdef JS_GC_SMALL_CHUNK_SIZE
+static_assert(ArenasPerChunk == 62, "Do not accidentally change our heap's density.");
+#else
 static_assert(ArenasPerChunk == 252, "Do not accidentally change our heap's density.");
+#endif
 
 /* A chunk bitmap contains enough mark bits for all the cells in a chunk. */
 struct ChunkBitmap
@@ -829,18 +843,12 @@ struct Chunk
     ArenaHeader *allocateArena(JS::Zone *zone, AllocKind kind);
 
     void releaseArena(ArenaHeader *aheader);
-    void recycleArena(ArenaHeader *aheader, ArenaList &dest, AllocKind thingKind);
+    void recycleArena(ArenaHeader *aheader, SortedArenaList &dest, AllocKind thingKind,
+                      size_t thingsPerArena);
 
     static Chunk *allocate(JSRuntime *rt);
 
     void decommitAllArenas(JSRuntime *rt);
-
-    /* Must be called with the GC lock taken. */
-    static inline void release(JSRuntime *rt, Chunk *chunk);
-    static inline void releaseList(JSRuntime *rt, Chunk *chunkListHead);
-
-    /* Must be called with the GC lock taken. */
-    inline void prepareToBeFreed(JSRuntime *rt);
 
     /*
      * Assuming that the info.prevp points to the next field of the previous
@@ -884,6 +892,54 @@ static_assert(js::gc::ChunkLocationOffset == offsetof(Chunk, info) +
                                              offsetof(ChunkInfo, trailer) +
                                              offsetof(ChunkTrailer, location),
               "The hardcoded API location offset must match the actual offset.");
+
+/*
+ * Tracks the used sizes for owned heap data and automatically maintains the
+ * memory usage relationship between GCRuntime and Zones.
+ */
+class HeapUsage
+{
+    /*
+     * A heap usage that contains our parent's heap usage, or null if this is
+     * the top-level usage container.
+     */
+    HeapUsage *parent_;
+
+    /*
+     * The approximate number of bytes in use on the GC heap, to the nearest
+     * ArenaSize. This does not include any malloc data. It also does not
+     * include not-actively-used addresses that are still reserved at the OS
+     * level for GC usage. It is atomic because it is updated by both the main
+     * and GC helper threads.
+     */
+    mozilla::Atomic<size_t, mozilla::ReleaseAcquire> gcBytes_;
+
+  public:
+    HeapUsage(HeapUsage *parent)
+      : parent_(parent),
+        gcBytes_(0)
+    {}
+
+    size_t gcBytes() const { return gcBytes_; }
+
+    void addGCArena() {
+        gcBytes_ += ArenaSize;
+        if (parent_)
+            parent_->addGCArena();
+    }
+    void removeGCArena() {
+        MOZ_ASSERT(gcBytes_ >= ArenaSize);
+        gcBytes_ -= ArenaSize;
+        if (parent_)
+            parent_->removeGCArena();
+    }
+
+    /* Pair to adoptArenas. Adopts the attendant usage statistics. */
+    void adopt(HeapUsage &other) {
+        gcBytes_ += other.gcBytes_;
+        other.gcBytes_ = 0;
+    }
+};
 
 inline uintptr_t
 ArenaHeader::address() const
@@ -1110,7 +1166,7 @@ Cell::chunk() const
 {
     uintptr_t addr = uintptr_t(this);
     JS_ASSERT(addr % CellSize == 0);
-    addr &= ~(ChunkSize - 1);
+    addr &= ~ChunkMask;
     return reinterpret_cast<Chunk *>(addr);
 }
 

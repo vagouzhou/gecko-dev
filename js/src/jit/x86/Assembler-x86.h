@@ -47,6 +47,8 @@ static MOZ_CONSTEXPR_VAR FloatRegister ReturnFloat32Reg = xmm0;
 static MOZ_CONSTEXPR_VAR FloatRegister ScratchFloat32Reg = xmm7;
 static MOZ_CONSTEXPR_VAR FloatRegister ReturnDoubleReg = xmm0;
 static MOZ_CONSTEXPR_VAR FloatRegister ScratchDoubleReg = xmm7;
+static MOZ_CONSTEXPR_VAR FloatRegister ReturnSimdReg = xmm0;
+static MOZ_CONSTEXPR_VAR FloatRegister ScratchSimdReg = xmm7;
 
 // Avoid ebp, which is the FramePointer, which is unavailable in some modes.
 static MOZ_CONSTEXPR_VAR Register ArgumentsRectifierReg = esi;
@@ -81,9 +83,11 @@ class ABIArgGenerator
     uint32_t stackBytesConsumedSoFar() const { return stackOffset_; }
 
     // Note: these registers are all guaranteed to be different
-    static const Register NonArgReturnVolatileReg0;
-    static const Register NonArgReturnVolatileReg1;
+    static const Register NonArgReturnReg0;
+    static const Register NonArgReturnReg1;
     static const Register NonVolatileReg;
+    static const Register NonArg_VolatileReg;
+    static const Register NonReturn_VolatileReg0;
 };
 
 static MOZ_CONSTEXPR_VAR Register OsrFrameReg = edx;
@@ -113,12 +117,12 @@ static const uint32_t StackAlignment = 4;
 static const bool StackKeptAligned = false;
 static const uint32_t CodeAlignment = 8;
 
-// As an invariant across architectures, within asm.js code:
-//   $sp % StackAlignment = (AsmJSFrameSize + masm.framePushed) % StackAlignment
-// On x86, this naturally falls out of the fact that the 'call' instruction
-// pushes the return address on the stack and masm.framePushed = 0 at the first
-// instruction of the prologue.
-static const uint32_t AsmJSFrameSize = sizeof(void*);
+// This boolean indicates whether we support SIMD instructions flavoured for
+// this architecture or not. Rather than a method in the LIRGenerator, it is
+// here such that it is accessible from the entire codebase. Once full support
+// for SIMD is reached on all tier-1 platforms, this constant can be deleted.
+static const bool SupportsSimd = true;
+static const uint32_t SimdStackAlignment = 16;
 
 struct ImmTag : public Imm32
 {
@@ -267,7 +271,7 @@ class Assembler : public AssemblerX86Shared
     }
     void mov(AsmJSImmPtr imm, Register dest) {
         masm.movl_i32r(-1, dest.code());
-        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
+        append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), imm.kind()));
     }
     void mov(const Operand &src, Register dest) {
         movl(src, dest);
@@ -348,11 +352,7 @@ class Assembler : public AssemblerX86Shared
     }
     void cmpl(AsmJSAbsoluteAddress lhs, Register rhs) {
         masm.cmpl_rm_force32(rhs.code(), (void*)-1);
-        enoughMemory_ &= append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), lhs.kind()));
-    }
-    CodeOffsetLabel cmplWithPatch(Register lhs, Imm32 rhs) {
-        masm.cmpl_ir_force32(rhs.value, lhs.code());
-        return CodeOffsetLabel(masm.currentOffset());
+        append(AsmJSAbsoluteLink(CodeOffsetLabel(masm.currentOffset()), lhs.kind()));
     }
 
     void jmp(ImmPtr target, Relocation::Kind reloc = Relocation::HARDCODED) {
@@ -382,13 +382,6 @@ class Assembler : public AssemblerX86Shared
         JmpSrc src = masm.call();
         addPendingJump(src, target, Relocation::HARDCODED);
     }
-    void call(AsmJSImmPtr target) {
-        // Moving to a register is suboptimal. To fix (use a single
-        // call-immediate instruction) we'll need to distinguish a new type of
-        // relative patch to an absolute address in AsmJSAbsoluteLink.
-        mov(target, eax);
-        call(eax);
-    }
 
     // Emit a CALL or CMP (nop) instruction. ToggleCall can be used to patch
     // this instruction.
@@ -396,11 +389,11 @@ class Assembler : public AssemblerX86Shared
         CodeOffsetLabel offset(size());
         JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
         addPendingJump(src, ImmPtr(target->raw()), Relocation::JITCODE);
-        JS_ASSERT(size() - offset.offset() == ToggledCallSize());
+        JS_ASSERT(size() - offset.offset() == ToggledCallSize(nullptr));
         return offset;
     }
 
-    static size_t ToggledCallSize() {
+    static size_t ToggledCallSize(uint8_t *code) {
         // Size of a call instruction.
         return 5;
     }
@@ -548,6 +541,10 @@ class Assembler : public AssemblerX86Shared
         return CodeOffsetLabel(masm.currentOffset());
     }
 
+    void loadAsmJSActivation(Register dest) {
+        CodeOffsetLabel label = movlWithPatch(PatchedAbsoluteAddress(), dest);
+        append(AsmJSGlobalAccess(label, AsmJSActivationGlobalDataOffset));
+    }
 };
 
 // Get a register in which we plan to put a quantity that will be used as an

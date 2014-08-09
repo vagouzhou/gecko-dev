@@ -66,37 +66,35 @@ ClientCanvasLayer::Initialize(const Data& aData)
       // The screen caps are irrelevant if we're using a separate stream
       caps = aData.mHasAlpha ? SurfaceCaps::ForRGBA() : SurfaceCaps::ForRGB();
     } else {
-      caps = screen->Caps();
+      caps = screen->mCaps;
     }
     MOZ_ASSERT(caps.alpha == aData.mHasAlpha);
 
     SurfaceStreamType streamType =
         SurfaceStream::ChooseGLStreamType(SurfaceStream::OffMainThread,
                                           screen->PreserveBuffer());
-    SurfaceFactory_GL* factory = nullptr;
+    SurfaceFactory* factory = nullptr;
     if (!gfxPrefs::WebGLForceLayersReadback()) {
       switch (ClientManager()->AsShadowForwarder()->GetCompositorBackendType()) {
         case mozilla::layers::LayersBackend::LAYERS_OPENGL: {
           if (mGLContext->GetContextType() == GLContextType::EGL) {
+#ifdef MOZ_WIDGET_GONK
+            factory = new SurfaceFactory_Gralloc(mGLContext, caps, ClientManager()->AsShadowForwarder());
+#else
             bool isCrossProcess = !(XRE_GetProcessType() == GeckoProcessType_Default);
-
             if (!isCrossProcess) {
               // [Basic/OGL Layers, OMTC] WebGL layer init.
               factory = SurfaceFactory_EGLImage::Create(mGLContext, caps);
             } else {
-              // [Basic/OGL Layers, OOPC] WebGL layer init. (Out Of Process Compositing)
-#ifdef MOZ_WIDGET_GONK
-              factory = new SurfaceFactory_Gralloc(mGLContext, caps, ClientManager()->AsShadowForwarder());
-#else
               // we could do readback here maybe
               NS_NOTREACHED("isCrossProcess but not on native B2G!");
-#endif
             }
+#endif
           } else {
             // [Basic Layers, OMTC] WebGL layer init.
             // Well, this *should* work...
 #ifdef XP_MACOSX
-            factory = new SurfaceFactory_IOSurface(mGLContext, caps);
+            factory = SurfaceFactory_IOSurface::Create(mGLContext, caps);
 #else
             factory = new SurfaceFactory_GLTexture(mGLContext, nullptr, caps);
 #endif

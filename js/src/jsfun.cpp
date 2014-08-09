@@ -32,10 +32,8 @@
 #include "frontend/BytecodeCompiler.h"
 #include "frontend/TokenStream.h"
 #include "gc/Marking.h"
-#ifdef JS_ION
 #include "jit/Ion.h"
 #include "jit/JitFrameIterator.h"
-#endif
 #include "vm/Interpreter.h"
 #include "vm/Shape.h"
 #include "vm/StringBuffer.h"
@@ -98,14 +96,12 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
         if (!argsobj)
             return false;
 
-#ifdef JS_ION
         // Disabling compiling of this script in IonMonkey.
         // IonMonkey does not guarantee |f.arguments| can be
         // fully recovered, so we try to mitigate observing this behavior by
         // detecting its use early.
         JSScript *script = iter.script();
         jit::ForbidCompilation(cx, script);
-#endif
 
         vp.setObject(*argsobj);
         return true;
@@ -146,10 +142,8 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
         return true;
     }
 
-    MOZ_ASSUME_UNREACHABLE("fun_getProperty");
+    MOZ_CRASH("fun_getProperty");
 }
-
-
 
 /* NB: no sentinels at ends -- use ArrayLength to bound loops.
  * Properties censored into [[ThrowTypeError]] in strict mode. */
@@ -517,7 +511,6 @@ js::CloneFunctionAndScript(JSContext *cx, HandleObject enclosingScope, HandleFun
         return nullptr;
 
     RootedScript cloneScript(cx, clone->nonLazyScript());
-    CallNewScriptHook(cx, cloneScript, clone);
     return clone;
 }
 
@@ -669,7 +662,7 @@ CreateFunctionPrototype(JSContext *cx, JSProtoKey key)
     CompileOptions options(cx);
     options.setNoScriptRval(true)
            .setVersion(JSVERSION_DEFAULT);
-    RootedScriptSource sourceObject(cx, ScriptSourceObject::create(cx, ss, options));
+    RootedScriptSource sourceObject(cx, ScriptSourceObject::create(cx, ss));
     if (!sourceObject)
         return nullptr;
 
@@ -703,20 +696,6 @@ CreateFunctionPrototype(JSContext *cx, JSProtoKey key)
     return functionProto;
 }
 
-static bool
-FinishFunctionClassInit(JSContext *cx, JS::HandleObject ctor, JS::HandleObject proto)
-{
-    /*
-     * Notify any debuggers about the creation of the script for
-     * |Function.prototype| -- after all initialization, for simplicity.
-     */
-    RootedFunction functionProto(cx, &proto->as<JSFunction>());
-    RootedScript functionProtoScript(cx, functionProto->nonLazyScript());
-    CallNewScriptHook(cx, functionProtoScript, functionProto);
-    return true;
-}
-
-
 const Class JSFunction::class_ = {
     js_Function_str,
     JSCLASS_NEW_RESOLVE | JSCLASS_IMPLEMENTS_BARRIERS |
@@ -737,9 +716,7 @@ const Class JSFunction::class_ = {
         CreateFunctionConstructor,
         CreateFunctionPrototype,
         nullptr,
-        function_methods,
-        nullptr,
-        FinishFunctionClassInit
+        function_methods
     }
 };
 
@@ -800,7 +777,7 @@ js::FindBody(JSContext *cx, HandleFunction fun, HandleLinearString src, size_t *
     *bodyStart = ts.currentToken().pos.begin;
     if (braced)
         *bodyStart += 1;
-    RangedPtr<const jschar> end = srcChars.end();
+    mozilla::RangedPtr<const jschar> end = srcChars.end();
     if (end[-1] == '}') {
         end--;
     } else {
@@ -861,10 +838,7 @@ js::FunctionToString(JSContext *cx, HandleFunction fun, bool bodyOnly, bool lamb
         return nullptr;
     }
     if (haveSource) {
-        RootedString srcStr(cx, script->sourceData(cx));
-        if (!srcStr)
-            return nullptr;
-        Rooted<JSFlatString *> src(cx, srcStr->ensureFlat(cx));
+        Rooted<JSFlatString *> src(cx, script->sourceData(cx));
         if (!src)
             return nullptr;
 
@@ -1217,7 +1191,7 @@ JSFunction::createScriptForLazilyInterpretedFunction(JSContext *cx, HandleFuncti
     Rooted<LazyScript*> lazy(cx, fun->lazyScriptOrNull());
     if (lazy) {
         // Trigger a pre barrier on the lazy script being overwritten.
-        if (cx->zone()->needsBarrier())
+        if (cx->zone()->needsIncrementalBarrier())
             LazyScript::writeBarrierPre(lazy);
 
         // Suppress GC for now although we should be able to remove this by
@@ -1273,8 +1247,6 @@ JSFunction::createScriptForLazilyInterpretedFunction(JSContext *cx, HandleFuncti
             clonedScript->setFunction(fun);
 
             fun->setUnlazifiedScript(clonedScript);
-
-            CallNewScriptHook(cx, clonedScript, fun);
 
             if (!lazy->maybeScript())
                 lazy->initScript(clonedScript);
@@ -2019,8 +1991,6 @@ JSObject::hasIdempotentProtoChain() const
         if (!obj)
             return true;
     }
-
-    MOZ_ASSUME_UNREACHABLE("Should not get here");
 }
 
 namespace JS {

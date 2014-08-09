@@ -18,7 +18,7 @@ loop.shared.router = (function(l10n) {
   var BaseRouter = Backbone.Router.extend({
     /**
      * Active view.
-     * @type {loop.shared.views.BaseView}
+     * @type {Object}
      */
     _activeView: undefined,
 
@@ -51,12 +51,38 @@ loop.shared.router = (function(l10n) {
      *
      * @param {loop.shared.views.BaseView} view View.
      */
-    loadView : function(view) {
-      if (this._activeView) {
-        this._activeView.remove();
+    loadView: function(view) {
+      this.clearActiveView();
+      this._activeView = {type: "backbone", view: view.render().show()};
+      this.updateView(this._activeView.view.$el);
+    },
+
+    /**
+     * Renders a React component as current active view.
+     *
+     * @param {React} reactComponent React component.
+     */
+    loadReactComponent: function(reactComponent) {
+      this.clearActiveView();
+      this._activeView = {
+        type: "react",
+        view: React.renderComponent(reactComponent,
+                                    document.querySelector("#main"))
+      };
+    },
+
+    /**
+     * Clears current active view.
+     */
+    clearActiveView: function() {
+      if (!this._activeView) {
+        return;
       }
-      this._activeView = view.render().show();
-      this.updateView(this._activeView.$el);
+      if (this._activeView.type === "react") {
+        React.unmountComponentAtNode(document.querySelector("#main"));
+      } else {
+        this._activeView.view.remove();
+      }
     },
 
     /**
@@ -95,9 +121,12 @@ loop.shared.router = (function(l10n) {
       if (!options.conversation) {
         throw new Error("missing required conversation");
       }
+      if (!options.client) {
+        throw new Error("missing required client");
+      }
       this._conversation = options.conversation;
+      this._client = options.client;
 
-      this.listenTo(this._conversation, "session:ready", this._onSessionReady);
       this.listenTo(this._conversation, "session:ended", this._onSessionEnded);
       this.listenTo(this._conversation, "session:peer-hungup",
                                         this._onPeerHungup);
@@ -120,27 +149,14 @@ loop.shared.router = (function(l10n) {
     },
 
     /**
-     * Starts the call. This method should be overriden.
-     */
-    startCall: function() {},
-
-    /**
      * Ends the call. This method should be overriden.
      */
     endCall: function() {},
 
     /**
-     * Session is ready.
-     */
-    _onSessionReady: function() {
-      this.startCall();
-    },
-
-    /**
      * Session has ended. Notifies the user and ends the call.
      */
     _onSessionEnded: function() {
-      this._notifier.warnL10n("call_has_ended");
       this.endCall();
     },
 

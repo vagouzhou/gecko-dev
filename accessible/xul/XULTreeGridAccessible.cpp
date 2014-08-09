@@ -22,6 +22,10 @@
 
 using namespace mozilla::a11y;
 
+XULTreeGridAccessible::~XULTreeGridAccessible()
+{
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // XULTreeGridAccessible: nsISupports implementation
 
@@ -257,9 +261,13 @@ XULTreeGridRowAccessible::
                            Accessible* aTreeAcc, nsITreeBoxObject* aTree,
                            nsITreeView* aTreeView, int32_t aRow) :
   XULTreeItemAccessibleBase(aContent, aDoc, aTreeAcc, aTree, aTreeView, aRow),
-  mAccessibleCache(kDefaultTreeCacheSize)
+  mAccessibleCache(kDefaultTreeCacheLength)
 {
   mGenericTypes |= eTableRow;
+}
+
+XULTreeGridRowAccessible::~XULTreeGridRowAccessible()
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -448,6 +456,10 @@ XULTreeGridCellAccessible::
     mTreeView->GetCellValue(mRow, mColumn, mCachedTextEquiv);
   else
     mTreeView->GetCellText(mRow, mColumn, mCachedTextEquiv);
+}
+
+XULTreeGridCellAccessible::~XULTreeGridCellAccessible()
+{
 }
 
 ////////////////////////////////////////////////////////////////////////////////

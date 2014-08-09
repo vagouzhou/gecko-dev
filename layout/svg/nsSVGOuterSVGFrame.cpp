@@ -123,7 +123,7 @@ NS_QUERYFRAME_TAIL_INHERITING(nsSVGOuterSVGFrameBase)
 // reflowing
 
 /* virtual */ nscoord
-nsSVGOuterSVGFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
+nsSVGOuterSVGFrame::GetMinISize(nsRenderingContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_MIN_WIDTH(this, result);
@@ -134,7 +134,7 @@ nsSVGOuterSVGFrame::GetMinWidth(nsRenderingContext *aRenderingContext)
 }
 
 /* virtual */ nscoord
-nsSVGOuterSVGFrame::GetPrefWidth(nsRenderingContext *aRenderingContext)
+nsSVGOuterSVGFrame::GetPrefISize(nsRenderingContext *aRenderingContext)
 {
   nscoord result;
   DISPLAY_PREF_WIDTH(this, result);
@@ -521,20 +521,24 @@ nsDisplayOuterSVG::HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
                            HitTestState* aState, nsTArray<nsIFrame*> *aOutFrames)
 {
   nsSVGOuterSVGFrame *outerSVGFrame = static_cast<nsSVGOuterSVGFrame*>(mFrame);
-  nsRect rectAtOrigin = aRect - ToReferenceFrame();
-  nsRect thisRect(nsPoint(0,0), outerSVGFrame->GetSize());
-  if (!thisRect.Intersects(rectAtOrigin))
-    return;
 
-  nsPoint rectCenter(rectAtOrigin.x + rectAtOrigin.width / 2,
-                     rectAtOrigin.y + rectAtOrigin.height / 2);
+  nsPoint refFrameToContentBox =
+    ToReferenceFrame() + outerSVGFrame->GetContentRectRelativeToSelf().TopLeft();
+
+  nsPoint pointRelativeToContentBox =
+    nsPoint(aRect.x + aRect.width / 2, aRect.y + aRect.height / 2) -
+      refFrameToContentBox;
+
+  gfxPoint svgViewportRelativePoint =
+    gfxPoint(pointRelativeToContentBox.x, pointRelativeToContentBox.y) /
+      outerSVGFrame->PresContext()->AppUnitsPerCSSPixel();
 
   nsSVGOuterSVGAnonChildFrame *anonKid =
     static_cast<nsSVGOuterSVGAnonChildFrame*>(
       outerSVGFrame->GetFirstPrincipalChild());
-  nsIFrame* frame = nsSVGUtils::HitTestChildren(
-    anonKid, rectCenter + outerSVGFrame->GetPosition() -
-               outerSVGFrame->GetContentRect().TopLeft());
+
+  nsIFrame* frame =
+    nsSVGUtils::HitTestChildren(anonKid, svgViewportRelativePoint);
   if (frame) {
     aOutFrames->AppendElement(frame);
   }
@@ -699,7 +703,8 @@ nsSVGOuterSVGFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 
   if ((aBuilder->IsForEventDelivery() &&
        NS_SVGDisplayListHitTestingEnabled()) ||
-      NS_SVGDisplayListPaintingEnabled()) {
+      (!aBuilder->IsForEventDelivery() &&
+       NS_SVGDisplayListPaintingEnabled())) {
     nsDisplayList *contentList = aLists.Content();
     nsDisplayListSet set(contentList, contentList, contentList,
                          contentList, contentList, contentList);
@@ -823,8 +828,7 @@ gfxMatrix
 nsSVGOuterSVGFrame::GetCanvasTM(uint32_t aFor, nsIFrame* aTransformRoot)
 {
   if (!(GetStateBits() & NS_FRAME_IS_NONDISPLAY) && !aTransformRoot) {
-    if ((aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) ||
-        (aFor == FOR_HIT_TESTING && NS_SVGDisplayListHitTestingEnabled())) {
+    if (aFor == FOR_PAINTING && NS_SVGDisplayListPaintingEnabled()) {
       return nsSVGIntegrationUtils::GetCSSPxToDevPxMatrix(this);
     }
   }

@@ -14,19 +14,21 @@ import traceback
 here = os.path.abspath(os.path.dirname(__file__))
 sys.path.insert(0, here)
 
+from automationutils import processLeakLog
 from runtests import Mochitest
 from runtests import MochitestUtilsMixin
-from runtests import MochitestServer
+from runtests import MessageLogger
+from runtests import MochitestFormatter
 from mochitest_options import B2GOptions, MochitestOptions
-
 from marionette import Marionette
-
-from mozdevice import DeviceManagerADB
 from mozprofile import Profile, Preferences
-import mozlog
 import mozinfo
+from mozlog.structured.handlers import StreamHandler
+from mozlog.structured.structuredlog import StructuredLogger
 
-log = mozlog.getLogger('Mochitest')
+log = StructuredLogger('Mochitest')
+stream_handler = StreamHandler(stream=sys.stdout, formatter=MochitestFormatter())
+log.add_handler(stream_handler)
 
 class B2GMochitest(MochitestUtilsMixin):
     marionette = None
@@ -44,6 +46,9 @@ class B2GMochitest(MochitestUtilsMixin):
         self.test_script = os.path.join(here, 'b2g_start_script.js')
         self.test_script_args = [self.out_of_process]
         self.product = 'b2g'
+
+        # structured logging
+        self.message_logger = MessageLogger(logger=log)
 
         if profile_data_dir:
             self.preferences = [os.path.join(profile_data_dir, f)
@@ -69,9 +74,9 @@ class B2GMochitest(MochitestUtilsMixin):
             test_url += "?" + "&".join(self.urlOpts)
         self.test_script_args.append(test_url)
 
-    def buildTestPath(self, options):
+    def buildTestPath(self, options, testsToFilter=None):
         if options.manifestFile != 'tests.json':
-            super(B2GMochitest, self).buildTestPath(options, disabled=False)
+            super(B2GMochitest, self).buildTestPath(options, testsToFilter, disabled=False)
         return self.buildTestURL(options)
 
     def build_profile(self, options):
@@ -117,7 +122,9 @@ class B2GMochitest(MochitestUtilsMixin):
         """ Prepare, configure, run tests and cleanup """
 
         manifest = self.build_profile(options)
-        self.leak_report_file = os.path.join(options.profilePath, "runtests_leaks.log")
+
+        # configuring the message logger's buffering
+        self.message_logger.buffering = options.quiet
 
         if options.debugger or not options.autorun:
             timeout = None
@@ -132,7 +139,18 @@ class B2GMochitest(MochitestUtilsMixin):
         log.info("runtestsb2g.py | Running tests: start.")
         status = 0
         try:
+            def on_output(line):
+                messages = self.message_logger.write(line)
+                for message in messages:
+                    if message['action'] == 'test_start':
+                        self.runner.last_test = message['test']
+
+            # The logging will be handled by on_output, so we set the stream to None
+            process_args = {'processOutputLine': on_output,
+                            'stream': None}
+            self.marionette_args['process_args'] = process_args
             self.marionette_args['profile'] = self.profile
+
             self.marionette = Marionette(**self.marionette_args)
             self.runner = self.marionette.runner
             self.app_ctx = self.runner.app_ctx
@@ -141,6 +159,19 @@ class B2GMochitest(MochitestUtilsMixin):
                                              'log', 'mochitest.log')
             if not self.app_ctx.dm.dirExists(posixpath.dirname(self.remote_log)):
                 self.app_ctx.dm.mkDirs(self.remote_log)
+
+            self.leak_report_file = posixpath.join(self.app_ctx.remote_test_root,
+                                                   'log', 'runtests_leaks.log')
+
+            # We don't want to copy the host env onto the device, so pass in an
+            # empty env.
+            self.browserEnv = self.buildBrowserEnv(options, env={})
+
+            # XXXkhuey MOZ_DISABLE_NONLOCAL_CONNECTIONS is busted on b2g, so make
+            # sure we don't pass it through (bug 1039019).
+            if 'MOZ_DISABLE_NONLOCAL_CONNECTIONS' in self.browserEnv:
+                del self.browserEnv['MOZ_DISABLE_NONLOCAL_CONNECTIONS']
+            self.runner.env.update(self.browserEnv)
 
             self.startServers(options, None)
             self.buildURLOptions(options, {'MOZ_HIDE_RESULTS_TABLE': '1'})
@@ -171,9 +202,16 @@ class B2GMochitest(MochitestUtilsMixin):
                 self.marionette.execute_script(self.test_script,
                                                script_args=self.test_script_args)
             status = self.runner.wait()
+
             if status is None:
                 # the runner has timed out
                 status = 124
+
+            local_leak_file = tempfile.NamedTemporaryFile()
+            self.app_ctx.dm.getFile(self.leak_report_file, local_leak_file.name)
+            self.app_ctx.dm.removeFile(self.leak_report_file)
+
+            processLeakLog(local_leak_file.name, options.leakThreshold)
         except KeyboardInterrupt:
             log.info("runtests.py | Received keyboard interrupt.\n");
             status = -1
@@ -191,6 +229,10 @@ class B2GMochitest(MochitestUtilsMixin):
         if manifest is not None:
             self.cleanup(manifest, options)
         return status
+
+    def getGMPPluginPath(self, options):
+        # TODO: bug 1043403
+        return None
 
 
 class B2GDeviceMochitest(B2GMochitest, Mochitest):
@@ -342,6 +384,8 @@ def run_remote_mochitests(parser, options):
             pass
         retVal = 1
 
+    mochitest.message_logger.finish()
+
     sys.exit(retVal)
 
 def run_desktop_mochitests(parser, options):
@@ -367,7 +411,10 @@ def run_desktop_mochitests(parser, options):
 
     options.browserArgs += ['-marionette']
 
-    sys.exit(mochitest.runTests(options, onLaunch=mochitest.startTests))
+    retVal = mochitest.runTests(options, onLaunch=mochitest.startTests)
+    mochitest.message_logger.finish()
+
+    sys.exit(retVal)
 
 def main():
     parser = B2GOptions()

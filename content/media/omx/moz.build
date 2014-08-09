@@ -13,6 +13,7 @@ EXPORTS += [
 SOURCES += [
     'MediaOmxDecoder.cpp',
     'MediaOmxReader.cpp',
+    'MediaStreamSource.cpp',
     'OMXCodecProxy.cpp',
     'OmxDecoder.cpp',
 ]
@@ -47,9 +48,23 @@ if 'rtsp' in CONFIG['NECKO_PROTOCOLS']:
         'RtspOmxReader.cpp',
     ]
 
+if CONFIG['ANDROID_VERSION'] >= '18':
+    EXPORTS += [
+        'I420ColorConverterHelper.h',
+        'MediaCodecDecoder.h',
+        'MediaCodecProxy.h',
+        'MediaCodecReader.h',
+    ]
+    SOURCES += [
+        'I420ColorConverterHelper.cpp',
+        'MediaCodecDecoder.cpp',
+        'MediaCodecProxy.cpp',
+        'MediaCodecReader.cpp',
+    ]
+
 include('/ipc/chromium/chromium-config.mozbuild')
 
-FINAL_LIBRARY = 'gklayout'
+FINAL_LIBRARY = 'xul'
 LOCAL_INCLUDES += [
     '/content/base/src',
     '/content/html/content/src',

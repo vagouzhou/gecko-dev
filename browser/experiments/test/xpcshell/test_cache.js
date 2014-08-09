@@ -47,8 +47,6 @@ add_task(function* test_setup() {
   });
   do_register_cleanup(() => gHttpServer.stop(() => {}));
 
-  disableCertificateChecks();
-
   Services.prefs.setBoolPref(PREF_EXPERIMENTS_ENABLED, true);
   Services.prefs.setIntPref(PREF_LOGGING_LEVEL, 0);
   Services.prefs.setBoolPref(PREF_LOGGING_DUMP, true);
@@ -165,7 +163,7 @@ add_task(function* test_cache() {
   Assert.equal(list.length, 0, "Experiment list should be empty.");
   checkExperimentSerializations(experiments._experiments.values());
 
-  yield experiments.uninit();
+  yield promiseRestartManager();
   experiments = new Experiments.Experiments(gPolicy);
 
   yield experiments._run();
@@ -178,7 +176,7 @@ add_task(function* test_cache() {
   now = futureDate(startDates[0], 5 * MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.uninit();
+  yield promiseRestartManager();
   experiments = new Experiments.Experiments(gPolicy);
   yield experiments._run();
 
@@ -202,7 +200,7 @@ add_task(function* test_cache() {
   now = futureDate(now, 20 * MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.uninit();
+  yield promiseRestartManager();
   experiments = new Experiments.Experiments(gPolicy);
   yield experiments._run();
 
@@ -222,7 +220,7 @@ add_task(function* test_cache() {
   now = futureDate(startDates[1], 20 * MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.uninit();
+  yield promiseRestartManager();
   experiments = new Experiments.Experiments(gPolicy);
   yield experiments._run();
 
@@ -239,7 +237,7 @@ add_task(function* test_cache() {
   now = futureDate(now, 20 * MS_IN_ONE_DAY);
   defineNow(gPolicy, now);
 
-  yield experiments.uninit();
+  yield promiseRestartManager();
   experiments = new Experiments.Experiments(gPolicy);
   yield experiments._run();
 
@@ -254,6 +252,6 @@ add_task(function* test_cache() {
   // Cleanup.
 
   yield experiments._toggleExperimentsEnabled(false);
-  yield experiments.uninit();
+  yield promiseRestartManager();
   yield removeCacheFile();
 });

@@ -138,6 +138,7 @@ PeerConnectionImpl* PeerConnectionImpl::CreatePeerConnection()
 
 PeerConnectionMedia::PeerConnectionMedia(PeerConnectionImpl *parent)
     : mParent(parent),
+      mParentHandle(parent->GetHandle()),
       mIceCtx(nullptr),
       mDNSResolver(new mozilla::NrIceResolver()),
       mMainThread(mParent->GetMainThread()),
@@ -535,16 +536,29 @@ PeerConnectionMedia::IceStreamReady(NrIceMediaStream *aStream)
 
 
 void
-PeerConnectionMedia::DtlsConnected(TransportLayer *dtlsLayer,
-                                   TransportLayer::State state)
+PeerConnectionMedia::DtlsConnected_s(TransportLayer *dtlsLayer,
+                                     TransportLayer::State state)
 {
   dtlsLayer->SignalStateChange.disconnect(this);
 
   bool privacyRequested = false;
   // TODO (Bug 952678) set privacy mode, ask the DTLS layer about that
+  // This has to be a dispatch to a static method, we could be going away
   GetMainThread()->Dispatch(
-    WrapRunnable(mParent, &PeerConnectionImpl::SetDtlsConnected, privacyRequested),
+    WrapRunnableNM(&PeerConnectionMedia::DtlsConnected_m,
+                   mParentHandle, privacyRequested),
     NS_DISPATCH_NORMAL);
+}
+
+void
+PeerConnectionMedia::DtlsConnected_m(const std::string& aParentHandle,
+                                     bool aPrivacyRequested)
+{
+  PeerConnectionWrapper pcWrapper(aParentHandle);
+  PeerConnectionImpl* pc = pcWrapper.impl();
+  if (pc) {
+    pc->SetDtlsConnected(aPrivacyRequested);
+  }
 }
 
 void
@@ -566,32 +580,29 @@ PeerConnectionMedia::ConnectDtlsListener_s(const RefPtr<TransportFlow>& aFlow)
 {
   TransportLayer* dtls = aFlow->GetLayer(TransportLayerDtls::ID());
   if (dtls) {
-    dtls->SignalStateChange.connect(this, &PeerConnectionMedia::DtlsConnected);
+    dtls->SignalStateChange.connect(this, &PeerConnectionMedia::DtlsConnected_s);
   }
 }
 
 #ifdef MOZILLA_INTERNAL_API
 /**
- * Tells you if any local streams is isolated.  Obviously, we want all the
- * streams to be isolated equally so that they can all be sent or not.  But we
- * can't make that determination for certain, because stream principals change.
- * Therefore, we check once when we are setting a local description and that
- * determines if we flip the "privacy requested" bit on. If a stream cannot be
- * sent, then we'll be sending black/silence later; maybe this will correct
- * itself and we can send actual content.
+ * Tells you if any local streams is isolated to a specific peer identity.
+ * Obviously, we want all the streams to be isolated equally so that they can
+ * all be sent or not.  We check once when we are setting a local description
+ * and that determines if we flip the "privacy requested" bit on.  Once the bit
+ * is on, all media originating from this peer connection is isolated.
  *
- * @param scriptPrincipal the principal
- * @returns true if any stream is isolated
+ * @returns true if any stream has a peerIdentity set on it
  */
 bool
-PeerConnectionMedia::AnyLocalStreamIsolated(nsIPrincipal *scriptPrincipal) const
+PeerConnectionMedia::AnyLocalStreamHasPeerIdentity() const
 {
   ASSERT_ON_THREAD(mMainThread);
 
   for (uint32_t u = 0; u < mLocalSourceStreams.Length(); u++) {
     // check if we should be asking for a private call for this stream
     DOMMediaStream* stream = mLocalSourceStreams[u]->GetMediaStream();
-    if (!scriptPrincipal->Subsumes(stream->GetPrincipal())) {
+    if (stream->GetPeerIdentity()) {
       return true;
     }
   }
@@ -638,6 +649,46 @@ void RemoteSourceStreamInfo::UpdatePrincipal_m(nsIPrincipal* aPrincipal)
   mMediaStream->SetPrincipal(aPrincipal);
 }
 #endif // MOZILLA_INTERNAL_API
+
+bool
+PeerConnectionMedia::AnyCodecHasPluginID(uint64_t aPluginID)
+{
+  for (uint32_t i=0; i < mLocalSourceStreams.Length(); ++i) {
+    if (mLocalSourceStreams[i]->AnyCodecHasPluginID(aPluginID)) {
+      return true;
+    }
+  }
+  for (uint32_t i=0; i < mRemoteSourceStreams.Length(); ++i) {
+    if (mRemoteSourceStreams[i]->AnyCodecHasPluginID(aPluginID)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+LocalSourceStreamInfo::AnyCodecHasPluginID(uint64_t aPluginID)
+{
+  // Scan the videoConduits for this plugin ID
+  for (auto it = mPipelines.begin(); it != mPipelines.end(); ++it) {
+    if (it->second->Conduit()->CodecPluginID() == aPluginID) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool
+RemoteSourceStreamInfo::AnyCodecHasPluginID(uint64_t aPluginID)
+{
+  // Scan the videoConduits for this plugin ID
+  for (auto it = mPipelines.begin(); it != mPipelines.end(); ++it) {
+    if (it->second->Conduit()->CodecPluginID() == aPluginID) {
+      return true;
+    }
+  }
+  return false;
+}
 
 void
 LocalSourceStreamInfo::StorePipeline(
@@ -712,12 +763,13 @@ RefPtr<MediaPipeline> SourceStreamInfo::GetPipelineByLevel_m(int level) {
 bool RemoteSourceStreamInfo::SetUsingBundle_m(int aLevel, bool decision) {
   ASSERT_ON_THREAD(mParent->GetMainThread());
 
-  RefPtr<MediaPipeline> pipeline(GetPipelineByLevel_m(aLevel));
+  // Avoid adding and dropping an extra ref
+  MediaPipeline *pipeline = GetPipelineByLevel_m(aLevel);
 
   if (pipeline) {
     RUN_ON_THREAD(mParent->GetSTSThread(),
                   WrapRunnable(
-                      pipeline,
+                      RefPtr<MediaPipeline>(pipeline),
                       &MediaPipeline::SetUsingBundle_s,
                       decision
                   ),

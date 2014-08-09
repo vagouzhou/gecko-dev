@@ -79,7 +79,8 @@ struct DOMPointInit;
 } // namespace dom
 } // namespace mozilla
 
-#define NODE_FLAG_BIT(n_) (1U << (WRAPPER_CACHE_FLAGS_BITS_USED + (n_)))
+#define NODE_FLAG_BIT(n_) \
+  (nsWrapperCache::FlagsType(1U) << (WRAPPER_CACHE_FLAGS_BITS_USED + (n_)))
 
 enum {
   // This bit will be set if the node has a listener manager.
@@ -150,35 +151,33 @@ enum {
                                           NODE_HAS_EDGE_CHILD_SELECTOR |
                                           NODE_HAS_SLOW_SELECTOR_LATER_SIBLINGS,
 
-  NODE_ATTACH_BINDING_ON_POSTCREATE =     NODE_FLAG_BIT(14),
-
   // This node needs to go through frame construction to get a frame (or
   // undisplayed entry).
-  NODE_NEEDS_FRAME =                      NODE_FLAG_BIT(15),
+  NODE_NEEDS_FRAME =                      NODE_FLAG_BIT(14),
 
   // At least one descendant in the flattened tree has NODE_NEEDS_FRAME set.
   // This should be set on every node on the flattened tree path between the
   // node(s) with NODE_NEEDS_FRAME and the root content.
-  NODE_DESCENDANTS_NEED_FRAMES =          NODE_FLAG_BIT(16),
+  NODE_DESCENDANTS_NEED_FRAMES =          NODE_FLAG_BIT(15),
 
   // Set if the node has the accesskey attribute set.
-  NODE_HAS_ACCESSKEY =                    NODE_FLAG_BIT(17),
+  NODE_HAS_ACCESSKEY =                    NODE_FLAG_BIT(16),
 
   // Set if the node has right-to-left directionality
-  NODE_HAS_DIRECTION_RTL =                NODE_FLAG_BIT(18),
+  NODE_HAS_DIRECTION_RTL =                NODE_FLAG_BIT(17),
 
   // Set if the node has left-to-right directionality
-  NODE_HAS_DIRECTION_LTR =                NODE_FLAG_BIT(19),
+  NODE_HAS_DIRECTION_LTR =                NODE_FLAG_BIT(18),
 
   NODE_ALL_DIRECTION_FLAGS =              NODE_HAS_DIRECTION_LTR |
                                           NODE_HAS_DIRECTION_RTL,
 
-  NODE_CHROME_ONLY_ACCESS =               NODE_FLAG_BIT(20),
+  NODE_CHROME_ONLY_ACCESS =               NODE_FLAG_BIT(19),
 
-  NODE_IS_ROOT_OF_CHROME_ONLY_ACCESS =    NODE_FLAG_BIT(21),
+  NODE_IS_ROOT_OF_CHROME_ONLY_ACCESS =    NODE_FLAG_BIT(20),
 
   // Remaining bits are node type specific.
-  NODE_TYPE_SPECIFIC_BITS_OFFSET =        22
+  NODE_TYPE_SPECIFIC_BITS_OFFSET =        21
 };
 
 // Make sure we have space for our bits
@@ -276,8 +275,8 @@ private:
 
 // IID for the nsINode interface
 #define NS_INODE_IID \
-{ 0x77a62cd0, 0xb34f, 0x42cb, \
-  { 0x94, 0x52, 0xae, 0xb2, 0x4d, 0x93, 0x2c, 0xb4 } }
+{ 0x3bd80589, 0xa6f4, 0x4a57, \
+  { 0xab, 0x38, 0xa0, 0x5b, 0x77, 0x4c, 0x3e, 0xa8 } }
 
 /**
  * An internal interface that abstracts some DOMNode-related parts that both
@@ -338,7 +337,7 @@ public:
   friend class nsAttrAndChildArray;
 
 #ifdef MOZILLA_INTERNAL_API
-  nsINode(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
+  explicit nsINode(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : mNodeInfo(aNodeInfo),
     mParent(nullptr),
     mBoolFlags(0),
@@ -396,6 +395,12 @@ public:
   virtual bool IsNodeOfType(uint32_t aFlags) const = 0;
 
   virtual JSObject* WrapObject(JSContext *aCx) MOZ_OVERRIDE;
+
+  /**
+   * returns true if we are in priviliged code or
+   * layout.css.getBoxQuads.enabled == true.
+   */
+  static bool HasBoxQuadsSupport(JSContext* aCx, JSObject* /* unused */);
 
 protected:
   /**
@@ -510,9 +515,17 @@ public:
    *
    * @return whether this content is in a document tree
    */
-  bool IsInDoc() const
+  bool IsInUncomposedDoc() const
   {
     return GetBoolFlag(IsInDocument);
+  }
+
+  /**
+   * @deprecated
+   */
+  bool IsInDoc() const
+  {
+    return IsInUncomposedDoc();
   }
 
   /**
@@ -521,9 +534,18 @@ public:
    *
    * @return the current document
    */
+
+  nsIDocument* GetUncomposedDoc() const
+  {
+    return IsInUncomposedDoc() ? OwnerDoc() : nullptr;
+  }
+
+  /**
+   * @deprecated
+   */
   nsIDocument *GetCurrentDoc() const
   {
-    return IsInDoc() ? OwnerDoc() : nullptr;
+    return GetUncomposedDoc();
   }
 
   /**
@@ -533,10 +555,26 @@ public:
    * that is located in the root of the "tree of trees" (see Shadow DOM
    * spec) and returns the current doc for that host.
    */
+  nsIDocument* GetComposedDoc() const
+  {
+    return IsInShadowTree() ?
+      GetComposedDocInternal() : GetUncomposedDoc();
+  }
+
+  /**
+   * @deprecated
+   */
   nsIDocument* GetCrossShadowCurrentDoc() const
   {
-    return HasFlag(NODE_IS_IN_SHADOW_TREE) ?
-      GetCrossShadowCurrentDocInternal() : GetCurrentDoc();
+    return GetComposedDoc();
+  }
+
+  /**
+   * Returns true if GetComposedDoc() would return a non-null value.
+   */
+  bool IsInComposedDoc() const
+  {
+    return IsInUncomposedDoc() || (IsInShadowTree() && GetComposedDocInternal());
   }
 
   /**
@@ -954,7 +992,6 @@ public:
     NS_ASSERTION(!(aFlagsToSet & (NODE_IS_ANONYMOUS_ROOT |
                                   NODE_IS_NATIVE_ANONYMOUS_ROOT |
                                   NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE |
-                                  NODE_ATTACH_BINDING_ON_POSTCREATE |
                                   NODE_DESCENDANTS_NEED_FRAMES |
                                   NODE_NEEDS_FRAME |
                                   NODE_CHROME_ONLY_ACCESS)) ||
@@ -1018,6 +1055,11 @@ public:
   bool ChromeOnlyAccess() const
   {
     return HasFlag(NODE_IS_IN_NATIVE_ANONYMOUS_SUBTREE | NODE_CHROME_ONLY_ACCESS);
+  }
+
+  bool IsInShadowTree() const
+  {
+    return HasFlag(NODE_IS_IN_SHADOW_TREE);
   }
 
   /**
@@ -1094,9 +1136,10 @@ protected:
   }
   
 public:
-  void GetTextContent(nsAString& aTextContent)
+  void GetTextContent(nsAString& aTextContent,
+                      mozilla::ErrorResult& aError)
   {
-    GetTextContentInternal(aTextContent);
+    GetTextContentInternal(aTextContent, aError);
   }
   void SetTextContent(const nsAString& aTextContent,
                       mozilla::ErrorResult& aError)
@@ -1203,7 +1246,7 @@ public:
 
 private:
 
-  nsIDocument* GetCrossShadowCurrentDocInternal() const;
+  nsIDocument* GetComposedDocInternal() const;
 
   nsIContent* GetNextNodeImpl(const nsINode* aRoot,
                               const bool aSkipChildren) const
@@ -1525,7 +1568,7 @@ protected:
   {
     NS_ASSERTION(aSubtreeRoot, "aSubtreeRoot can never be null!");
     NS_ASSERTION(!(IsNodeOfType(eCONTENT) && IsInDoc()) &&
-                 !HasFlag(NODE_IS_IN_SHADOW_TREE), "Shouldn't be here!");
+                 !IsInShadowTree(), "Shouldn't be here!");
     mSubtreeRoot = aSubtreeRoot;
   }
 
@@ -1707,7 +1750,8 @@ protected:
     return IsEditableInternal();
   }
 
-  virtual void GetTextContentInternal(nsAString& aTextContent);
+  virtual void GetTextContentInternal(nsAString& aTextContent,
+                                      mozilla::ErrorResult& aError);
   virtual void SetTextContentInternal(const nsAString& aTextContent,
                                       mozilla::ErrorResult& aError)
   {
@@ -1990,8 +2034,9 @@ ToCanonicalSupports(nsINode* aPointer)
   } \
   NS_IMETHOD GetTextContent(nsAString& aTextContent) __VA_ARGS__ \
   { \
-    nsINode::GetTextContent(aTextContent); \
-    return NS_OK; \
+    mozilla::ErrorResult rv; \
+    nsINode::GetTextContent(aTextContent, rv); \
+    return rv.ErrorCode(); \
   } \
   NS_IMETHOD SetTextContent(const nsAString& aTextContent) __VA_ARGS__ \
   { \

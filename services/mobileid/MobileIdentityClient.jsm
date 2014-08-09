@@ -21,9 +21,8 @@ Cu.import("resource://gre/modules/Services.jsm");
 
 this.MobileIdentityClient = function(aServerUrl) {
   let serverUrl = aServerUrl || SERVER_URL;
-  let forceHttps = false;
+  let forceHttps = true;
   try {
-    // TODO: Force https in production. Bug 1021595.
     forceHttps = Services.prefs.getBoolPref(PREF_FORCE_HTTPS);
   } catch(e) {
     log.warn("Getting force HTTPS pref failed. If this was not intentional " +
@@ -55,10 +54,13 @@ this.MobileIdentityClient.prototype = {
     return this._request(REGISTER, "POST", null, {});
   },
 
-  smsMtVerify: function(aSessionToken, aMsisdn, aWantShortCode = false) {
+  smsMtVerify: function(aSessionToken, aMsisdn, aMcc, aMnc,
+                        aWantShortCode = false) {
     let credentials = this._deriveHawkCredentials(aSessionToken);
     return this._request(SMS_MT_VERIFY, "POST", credentials, {
       msisdn: aMsisdn,
+      mcc: aMcc,
+      mnc: aMnc,
       shortVerificationCode: aWantShortCode
     });
   },

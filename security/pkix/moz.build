@@ -7,10 +7,12 @@
 SOURCES += [
     'lib/pkixbind.cpp',
     'lib/pkixbuild.cpp',
+    'lib/pkixcert.cpp',
     'lib/pkixcheck.cpp',
     'lib/pkixder.cpp',
-    'lib/pkixkey.cpp',
+    'lib/pkixnss.cpp',
     'lib/pkixocsp.cpp',
+    'lib/pkixtime.cpp',
 ]
 
 LOCAL_INCLUDES += [

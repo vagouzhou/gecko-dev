@@ -7,12 +7,10 @@
 #ifndef TraceLogging_h
 #define TraceLogging_h
 
-#include "jsalloc.h"
-#ifdef JS_THREADSAFE
-# include "jslock.h"
-#endif
-
 #include "mozilla/GuardObjects.h"
+
+#include "jsalloc.h"
+#include "jslock.h"
 
 #include "js/HashTable.h"
 #include "js/TypeDecls.h"
@@ -118,6 +116,7 @@ namespace jit {
     _(Interpreter)                                    \
     _(Invalidation)                                   \
     _(IonCompilation)                                 \
+    _(IonCompilationPaused)                           \
     _(IonLinking)                                     \
     _(IonMonkey)                                      \
     _(MinorGC)                                        \
@@ -130,8 +129,10 @@ namespace jit {
     _(VM)                                             \
                                                       \
     /* Specific passes during ion compilation */      \
+    _(FoldTests)                                      \
     _(SplitCriticalEdges)                             \
     _(RenumberBlocks)                                 \
+    _(ScalarReplacement)                              \
     _(DominatorTree)                                  \
     _(PhiAnalysis)                                    \
     _(MakeLoopsContiguous)                            \
@@ -386,8 +387,7 @@ class TraceLogger
     FILE *treeFile;
     FILE *eventFile;
 
-    bool enabled;
-    uint32_t enabledTimes;
+    uint32_t enabled;
     bool failed;
     uint32_t nextTextId;
 
@@ -435,6 +435,7 @@ class TraceLogger
     bool init(uint32_t loggerId);
 
     bool enable();
+    bool enable(JSContext *cx);
     bool disable();
 
     // The createTextId functions map a unique input to a logger ID.
@@ -454,6 +455,10 @@ class TraceLogger
     void stopEvent(uint32_t id);
     void stopEvent();
 
+    static unsigned offsetOfEnabled() {
+        return offsetof(TraceLogger, enabled);
+    }
+
   private:
     void assertNoQuotes(const char *text) {
 #ifdef DEBUG
@@ -467,12 +472,10 @@ class TraceLogger
 class TraceLogging
 {
 #ifdef JS_TRACE_LOGGING
-#ifdef JS_THREADSAFE
     typedef HashMap<PRThread *,
                     TraceLogger *,
                     PointerHasher<PRThread *, 3>,
                     SystemAllocPolicy> ThreadLoggerHashMap;
-#endif // JS_THREADSAFE
     typedef Vector<TraceLogger *, 1, js::SystemAllocPolicy > MainThreadLoggers;
 
     bool initialized;
@@ -480,27 +483,21 @@ class TraceLogging
     bool enabledTextIds[TraceLogger::LAST];
     bool mainThreadEnabled;
     bool offThreadEnabled;
-#ifdef JS_THREADSAFE
     ThreadLoggerHashMap threadLoggers;
-#endif // JS_THREADSAFE
     MainThreadLoggers mainThreadLoggers;
     uint32_t loggerId;
     FILE *out;
 
   public:
     uint64_t startupTime;
-#ifdef JS_THREADSAFE
     PRLock *lock;
-#endif // JS_THREADSAFE
 
     TraceLogging();
     ~TraceLogging();
 
     TraceLogger *forMainThread(JSRuntime *runtime);
     TraceLogger *forMainThread(jit::CompileRuntime *runtime);
-#ifdef JS_THREADSAFE
     TraceLogger *forThread(PRThread *thread);
-#endif // JS_THREADSAFE
 
     bool isTextIdEnabled(uint32_t textId) {
         if (textId < TraceLogger::LAST)
@@ -535,6 +532,13 @@ inline bool TraceLoggerEnable(TraceLogger *logger) {
 #ifdef JS_TRACE_LOGGING
     if (logger)
         return logger->enable();
+#endif
+    return false;
+}
+inline bool TraceLoggerEnable(TraceLogger *logger, JSContext *cx) {
+#ifdef JS_TRACE_LOGGING
+    if (logger)
+        return logger->enable(cx);
 #endif
     return false;
 }
@@ -664,14 +668,10 @@ class AutoTraceLoggingLock
       : logging(logging)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
-#ifdef JS_THREADSAFE
         PR_Lock(logging->lock);
-#endif // JS_THREADSAFE
     }
     ~AutoTraceLoggingLock() {
-#ifdef JS_THREADSAFE
         PR_Unlock(logging->lock);
-#endif // JS_THREADSAFE
     }
   private:
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER

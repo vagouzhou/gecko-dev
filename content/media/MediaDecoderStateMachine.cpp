@@ -13,6 +13,7 @@
 #include <stdint.h>
 
 #include "MediaDecoderStateMachine.h"
+#include "MediaDecoderStateMachineScheduler.h"
 #include "AudioSink.h"
 #include "nsTArray.h"
 #include "MediaDecoder.h"
@@ -168,8 +169,11 @@ MediaDecoderStateMachine::MediaDecoderStateMachine(MediaDecoder* aDecoder,
                                                    MediaDecoderReader* aReader,
                                                    bool aRealTime) :
   mDecoder(aDecoder),
+  mScheduler(new MediaDecoderStateMachineScheduler(
+      aDecoder->GetReentrantMonitor(),
+      &MediaDecoderStateMachine::TimeoutExpired,
+      MOZ_THIS_IN_INITIALIZER_LIST(), aRealTime)),
   mState(DECODER_STATE_DECODING_METADATA),
-  mInRunningStateMachine(false),
   mSyncPointInMediaStream(-1),
   mSyncPointInDecodedStream(-1),
   mPlayDuration(0),
@@ -198,30 +202,24 @@ MediaDecoderStateMachine::MediaDecoderStateMachine(MediaDecoder* aDecoder,
   mQuickBuffering(false),
   mMinimizePreroll(false),
   mDecodeThreadWaiting(false),
-  mRealTime(aRealTime),
   mDispatchedDecodeMetadataTask(false),
   mDropAudioUntilNextDiscontinuity(false),
   mDropVideoUntilNextDiscontinuity(false),
   mDecodeToSeekTarget(false),
   mCurrentTimeBeforeSeek(0),
-  mLastFrameStatus(MediaDecoderOwner::NEXT_FRAME_UNINITIALIZED),
-  mTimerId(0)
+  mLastFrameStatus(MediaDecoderOwner::NEXT_FRAME_UNINITIALIZED)
 {
   MOZ_COUNT_CTOR(MediaDecoderStateMachine);
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
 
-  // Only enable realtime mode when "media.realtime_decoder.enabled" is true.
-  if (Preferences::GetBool("media.realtime_decoder.enabled", false) == false)
-    mRealTime = false;
-
   mAmpleVideoFrames =
     std::max<uint32_t>(Preferences::GetUint("media.video-queue.default-size", 10), 3);
 
-  mBufferingWait = mRealTime ? 0 : BUFFERING_WAIT_S;
-  mLowDataThresholdUsecs = mRealTime ? 0 : LOW_DATA_THRESHOLD_USECS;
+  mBufferingWait = mScheduler->IsRealTime() ? 0 : BUFFERING_WAIT_S;
+  mLowDataThresholdUsecs = mScheduler->IsRealTime() ? 0 : LOW_DATA_THRESHOLD_USECS;
 
-  mVideoPrerollFrames = mRealTime ? 0 : mAmpleVideoFrames / 2;
-  mAudioPrerollUsecs = mRealTime ? 0 : LOW_AUDIO_USECS * 2;
+  mVideoPrerollFrames = mScheduler->IsRealTime() ? 0 : mAmpleVideoFrames / 2;
+  mAudioPrerollUsecs = mScheduler->IsRealTime() ? 0 : LOW_AUDIO_USECS * 2;
 
 #ifdef XP_WIN
   // Ensure high precision timers are enabled on Windows, otherwise the state
@@ -241,8 +239,6 @@ MediaDecoderStateMachine::~MediaDecoderStateMachine()
                "WakeDecoder should have been revoked already");
 
   MOZ_ASSERT(!mDecodeTaskQueue, "Should be released in SHUTDOWN");
-  // No need to cancel the timer here for we've done that in SHUTDOWN.
-  MOZ_ASSERT(!mTimer, "Should be released in SHUTDOWN");
   mReader = nullptr;
 
 #ifdef XP_WIN
@@ -1063,10 +1059,6 @@ nsresult MediaDecoderStateMachine::Init(MediaDecoderStateMachine* aCloneDonor)
   RefPtr<SharedThreadPool> decodePool(GetMediaDecodeThreadPool());
   NS_ENSURE_TRUE(decodePool, NS_ERROR_FAILURE);
 
-  RefPtr<SharedThreadPool> stateMachinePool(
-    SharedThreadPool::Get(NS_LITERAL_CSTRING("Media State Machine"), 1));
-  NS_ENSURE_TRUE(stateMachinePool, NS_ERROR_FAILURE);
-
   mDecodeTaskQueue = new MediaTaskQueue(decodePool.forget());
   NS_ENSURE_TRUE(mDecodeTaskQueue, NS_ERROR_FAILURE);
 
@@ -1075,12 +1067,7 @@ nsresult MediaDecoderStateMachine::Init(MediaDecoderStateMachine* aCloneDonor)
     cloneReader = aCloneDonor->mReader;
   }
 
-  mStateMachineThreadPool = stateMachinePool;
-
-  nsresult rv;
-  mTimer = do_CreateInstance("@mozilla.org/timer;1", &rv);
-  NS_ENSURE_SUCCESS(rv, rv);
-  rv = mTimer->SetTarget(GetStateMachineThread());
+  nsresult rv = mScheduler->Init();
   NS_ENSURE_SUCCESS(rv, rv);
 
   // Note: This creates a cycle, broken in shutdown.
@@ -1342,8 +1329,8 @@ void MediaDecoderStateMachine::Shutdown()
   // Change state before issuing shutdown request to threads so those
   // threads can start exiting cleanly during the Shutdown call.
   DECODER_LOG(PR_LOG_DEBUG, "Changed state to SHUTDOWN");
-  ScheduleStateMachine();
   mState = DECODER_STATE_SHUTDOWN;
+  mScheduler->ScheduleAndShutdown();
   if (mAudioSink) {
     mAudioSink->PrepareToShutdown();
   }
@@ -1418,7 +1405,9 @@ void MediaDecoderStateMachine::Play()
 
 void MediaDecoderStateMachine::ResetPlayback()
 {
-  MOZ_ASSERT(mState == DECODER_STATE_SEEKING || mState == DECODER_STATE_SHUTDOWN);
+  MOZ_ASSERT(mState == DECODER_STATE_SEEKING ||
+             mState == DECODER_STATE_SHUTDOWN ||
+             mState == DECODER_STATE_DORMANT);
   mVideoFrameEndTime = -1;
   mAudioStartTime = -1;
   mAudioEndTime = -1;
@@ -1442,15 +1431,15 @@ void MediaDecoderStateMachine::NotifyDataArrived(const char* aBuffer,
   // faster than played, mEndTime won't reflect the end of playable data
   // since we haven't played the frame at the end of buffered data. So update
   // mEndTime here as new data is downloaded to prevent such a lag.
-  dom::TimeRanges buffered;
+  nsRefPtr<dom::TimeRanges> buffered = new dom::TimeRanges();
   if (mDecoder->IsInfinite() &&
-      NS_SUCCEEDED(mDecoder->GetBuffered(&buffered)))
+      NS_SUCCEEDED(mDecoder->GetBuffered(buffered)))
   {
     uint32_t length = 0;
-    buffered.GetLength(&length);
+    buffered->GetLength(&length);
     if (length) {
       double end = 0;
-      buffered.End(length - 1, &end);
+      buffered->End(length - 1, &end);
       ReentrantMonitorAutoEnter mon(mDecoder->GetReentrantMonitor());
       mEndTime = std::max<int64_t>(mEndTime, end * USECS_PER_S);
     }
@@ -1753,6 +1742,7 @@ MediaDecoderStateMachine::StartAudioThread()
     if (NS_FAILED(rv)) {
       DECODER_LOG(PR_LOG_WARNING, "Changed state to SHUTDOWN because audio sink initialization failed");
       mState = DECODER_STATE_SHUTDOWN;
+      mScheduler->ScheduleAndShutdown();
       return rv;
     }
 
@@ -1830,8 +1820,8 @@ MediaDecoderStateMachine::DecodeError()
   // and the HTMLMediaElement, so that our pipeline can start exiting
   // cleanly during the sync dispatch below.
   DECODER_LOG(PR_LOG_WARNING, "Decode error, changed state to SHUTDOWN due to error");
-  ScheduleStateMachine();
   mState = DECODER_STATE_SHUTDOWN;
+  mScheduler->ScheduleAndShutdown();
   mDecoder->GetReentrantMonitor().NotifyAll();
 
   // Dispatch the event to call DecodeError synchronously. This ensures
@@ -1911,7 +1901,7 @@ nsresult MediaDecoderStateMachine::DecodeMetadata()
     VideoQueue().AddPopListener(decodeTask, mDecodeTaskQueue);
   }
 
-  if (mRealTime) {
+  if (mScheduler->IsRealTime()) {
     SetStartTime(0);
     res = FinishDecodeMetadata();
     NS_ENSURE_SUCCESS(res, res);
@@ -1940,7 +1930,7 @@ MediaDecoderStateMachine::FinishDecodeMetadata()
     return NS_ERROR_FAILURE;
   }
 
-  if (!mRealTime) {
+  if (!mScheduler->IsRealTime()) {
 
     const VideoData* v = VideoQueue().PeekFront();
     const AudioData* a = AudioQueue().PeekFront();
@@ -1983,13 +1973,10 @@ MediaDecoderStateMachine::FinishDecodeMetadata()
   }
 
   // Inform the element that we've loaded the metadata and the first frame.
+  nsAutoPtr<MediaInfo> info(new MediaInfo());
+  *info = mInfo;
   nsCOMPtr<nsIRunnable> metadataLoadedEvent =
-    new AudioMetadataEventRunner(mDecoder,
-                                 mInfo.mAudio.mChannels,
-                                 mInfo.mAudio.mRate,
-                                 HasAudio(),
-                                 HasVideo(),
-                                 mMetadataTags.forget());
+    new MetadataEventRunner(mDecoder, info.forget(), mMetadataTags.forget());
   NS_DispatchToMainThread(metadataLoadedEvent, NS_DISPATCH_NORMAL);
 
   if (mState == DECODER_STATE_DECODING_METADATA) {
@@ -2177,6 +2164,9 @@ MediaDecoderStateMachine::SeekCompleted()
   // Try to decode another frame to detect if we're at the end...
   DECODER_LOG(PR_LOG_DEBUG, "Seek completed, mCurrentFrameTime=%lld", mCurrentFrameTime);
 
+  // Prevent changes in playback position before 'seeked' is fired for we
+  // expect currentTime equals seek target in 'seeked' callback.
+  mScheduler->FreezeScheduling();
   {
     ReentrantMonitorAutoExit exitMon(mDecoder->GetReentrantMonitor());
     NS_DispatchToMainThread(stopEvent, NS_DISPATCH_SYNC);
@@ -2188,6 +2178,7 @@ MediaDecoderStateMachine::SeekCompleted()
   mQuickBuffering = false;
 
   ScheduleStateMachine();
+  mScheduler->ThawScheduling();
 }
 
 // Runnable to dispose of the decoder and state machine on the main thread.
@@ -2295,8 +2286,6 @@ nsresult MediaDecoderStateMachine::RunStateMachine()
       GetStateMachineThread()->Dispatch(
         new nsDispatchDisposeEvent(mDecoder, this), NS_DISPATCH_NORMAL);
 
-      mTimer->Cancel();
-      mTimer = nullptr;
       return NS_OK;
     }
 
@@ -2592,7 +2581,7 @@ void MediaDecoderStateMachine::AdvanceFrame()
 #endif
   if (VideoQueue().GetSize() > 0) {
     VideoData* frame = VideoQueue().PeekFront();
-    while (mRealTime || clock_time >= frame->mTime) {
+    while (mScheduler->IsRealTime() || clock_time >= frame->mTime) {
       mVideoFrameEndTime = frame->GetEndTime();
       currentFrame = frame;
 #ifdef PR_LOGGING
@@ -2701,8 +2690,27 @@ nsresult
 MediaDecoderStateMachine::DropVideoUpToSeekTarget(VideoData* aSample)
 {
   nsAutoPtr<VideoData> video(aSample);
-
+  MOZ_ASSERT(video);
+  DECODER_LOG(PR_LOG_DEBUG,
+              "DropVideoUpToSeekTarget() frame [%lld, %lld] dup=%d",
+              video->mTime, video->GetEndTime(), video->mDuplicate);
   const int64_t target = mCurrentSeekTarget.mTime;
+
+  // Duplicate handling: if we're dropping frames up the seek target, we must
+  // be wary of Theora duplicate frames. They don't have an image, so if the
+  // target frame is in a run of duplicates, we won't have an image to draw
+  // after the seek. So store the last frame encountered while dropping, and
+  // copy its Image forward onto duplicate frames, so that every frame has
+  // an Image.
+  if (video->mDuplicate &&
+      mFirstVideoFrameAfterSeek &&
+      !mFirstVideoFrameAfterSeek->mDuplicate) {
+    VideoData* temp =
+      VideoData::ShallowCopyUpdateTimestampAndDuration(mFirstVideoFrameAfterSeek,
+                                                       video->mTime,
+                                                       video->mDuration);
+    video = temp;
+  }
 
   // If the frame end time is less than the seek target, we won't want
   // to display this frame after the seek, so discard it.
@@ -2932,24 +2940,13 @@ nsresult MediaDecoderStateMachine::CallRunStateMachine()
     StopAudioThread();
   }
 
-  MOZ_ASSERT(!mInRunningStateMachine, "State machine cycles must run in sequence!");
-  mTimeout = TimeStamp();
-  mInRunningStateMachine = true;
-  nsresult res = RunStateMachine();
-  mInRunningStateMachine = false;
-  return res;
+  return RunStateMachine();
 }
 
-nsresult MediaDecoderStateMachine::TimeoutExpired(int aTimerId)
+nsresult MediaDecoderStateMachine::TimeoutExpired(void* aClosure)
 {
-  ReentrantMonitorAutoEnter mon(mDecoder->GetReentrantMonitor());
-  NS_ASSERTION(OnStateMachineThread(), "Must be on state machine thread");
-  mTimer->Cancel();
-  if (mTimerId == aTimerId) {
-    return CallRunStateMachine();
-  } else {
-    return NS_OK;
-  }
+  MediaDecoderStateMachine* p = static_cast<MediaDecoderStateMachine*>(aClosure);
+  return p->CallRunStateMachine();
 }
 
 void MediaDecoderStateMachine::ScheduleStateMachineWithLockAndWakeDecoder() {
@@ -2958,75 +2955,8 @@ void MediaDecoderStateMachine::ScheduleStateMachineWithLockAndWakeDecoder() {
   DispatchVideoDecodeTaskIfNeeded();
 }
 
-class TimerEvent : public nsITimerCallback, public nsRunnable {
-  NS_DECL_THREADSAFE_ISUPPORTS
-public:
-  TimerEvent(MediaDecoderStateMachine* aStateMachine, int aTimerId)
-    : mStateMachine(aStateMachine), mTimerId(aTimerId) {}
-
-  NS_IMETHOD Run() MOZ_OVERRIDE {
-    return mStateMachine->TimeoutExpired(mTimerId);
-  }
-
-  NS_IMETHOD Notify(nsITimer* aTimer) {
-    return mStateMachine->TimeoutExpired(mTimerId);
-  }
-private:
-  ~TimerEvent() {}
-
-  const nsRefPtr<MediaDecoderStateMachine> mStateMachine;
-  int mTimerId;
-};
-
-NS_IMPL_ISUPPORTS(TimerEvent, nsITimerCallback, nsIRunnable);
-
 nsresult MediaDecoderStateMachine::ScheduleStateMachine(int64_t aUsecs) {
-  AssertCurrentThreadInMonitor();
-  NS_ABORT_IF_FALSE(GetStateMachineThread(),
-    "Must have a state machine thread to schedule");
-
-  if (mState == DECODER_STATE_SHUTDOWN) {
-    return NS_ERROR_FAILURE;
-  }
-  aUsecs = std::max<int64_t>(aUsecs, 0);
-
-  TimeStamp timeout = TimeStamp::Now() + UsecsToDuration(aUsecs);
-  if (!mTimeout.IsNull() && timeout >= mTimeout) {
-    // We've already scheduled a timer set to expire at or before this time,
-    // or have an event dispatched to run the state machine.
-    return NS_OK;
-  }
-
-  uint32_t ms = static_cast<uint32_t>((aUsecs / USECS_PER_MS) & 0xFFFFFFFF);
-  if (mRealTime && ms > 40) {
-    ms = 40;
-  }
-
-  // Don't cancel the timer here for this function will be called from
-  // different threads.
-
-  nsresult rv = NS_ERROR_FAILURE;
-  nsRefPtr<TimerEvent> event = new TimerEvent(this, mTimerId+1);
-
-  if (ms == 0) {
-    // Dispatch a runnable to the state machine thread when delay is 0.
-    // It will has less latency than dispatching a runnable to the state
-    // machine thread which will then schedule a zero-delay timer.
-    rv = GetStateMachineThread()->Dispatch(event, NS_DISPATCH_NORMAL);
-  } else if (OnStateMachineThread()) {
-    rv = mTimer->InitWithCallback(event, ms, nsITimer::TYPE_ONE_SHOT);
-  } else {
-    MOZ_ASSERT(false, "non-zero delay timer should be only scheduled in state machine thread");
-  }
-
-  if (NS_SUCCEEDED(rv)) {
-    mTimeout = timeout;
-    ++mTimerId;
-  } else {
-    NS_WARNING("Failed to schedule state machine");
-  }
-
-  return rv;
+  return mScheduler->Schedule(aUsecs);
 }
 
 bool MediaDecoderStateMachine::OnDecodeThread() const
@@ -3036,14 +2966,17 @@ bool MediaDecoderStateMachine::OnDecodeThread() const
 
 bool MediaDecoderStateMachine::OnStateMachineThread() const
 {
-  bool rv = false;
-  mStateMachineThreadPool->IsOnCurrentThread(&rv);
-  return rv;
+  return mScheduler->OnStateMachineThread();
 }
 
-nsIEventTarget* MediaDecoderStateMachine::GetStateMachineThread()
+nsIEventTarget* MediaDecoderStateMachine::GetStateMachineThread() const
 {
-  return mStateMachineThreadPool->GetEventTarget();
+  return mScheduler->GetStateMachineThread();
+}
+
+bool MediaDecoderStateMachine::IsStateMachineScheduled() const
+{
+  return mScheduler->IsScheduled();
 }
 
 void MediaDecoderStateMachine::SetPlaybackRate(double aPlaybackRate)
@@ -3098,20 +3031,14 @@ bool MediaDecoderStateMachine::IsShutdown()
 }
 
 void MediaDecoderStateMachine::QueueMetadata(int64_t aPublishTime,
-                                             int aChannels,
-                                             int aRate,
-                                             bool aHasAudio,
-                                             bool aHasVideo,
+                                             MediaInfo* aInfo,
                                              MetadataTags* aTags)
 {
   NS_ASSERTION(OnDecodeThread(), "Should be on decode thread.");
   AssertCurrentThreadInMonitor();
   TimedMetadata* metadata = new TimedMetadata;
   metadata->mPublishTime = aPublishTime;
-  metadata->mChannels = aChannels;
-  metadata->mRate = aRate;
-  metadata->mHasAudio = aHasAudio;
-  metadata->mHasVideo = aHasVideo;
+  metadata->mInfo = aInfo;
   metadata->mTags = aTags;
   mMetadataManager.QueueMetadata(metadata);
 }

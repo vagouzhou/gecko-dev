@@ -66,7 +66,7 @@ function WebConsoleActor(aConnection, aParentActor)
 
   this._prefs = {};
 
-  this.dbg = new Debugger();
+  this.dbg = this.parentActor.makeDebugger();
 
   this._netEvents = new Map();
   this._gripDepth = 0;
@@ -725,7 +725,9 @@ WebConsoleActor.prototype =
       bindObjectActor: aRequest.bindObjectActor,
       frameActor: aRequest.frameActor,
       url: aRequest.url,
+      selectedNodeActor: aRequest.selectedNodeActor,
     };
+
     let evalInfo = this.evalWithDebugger(input, evalOptions);
     let evalResult = evalInfo.result;
     let helperResult = evalInfo.helperResult;
@@ -749,10 +751,19 @@ WebConsoleActor.prototype =
       }
     }
 
+    // If a value is encountered that the debugger server doesn't support yet,
+    // the console should remain functional.
+    let resultGrip;
+    try {
+      resultGrip = this.createValueGrip(result);
+    } catch (e) {
+      errorMessage = e;
+    }
+
     return {
       from: this.actorID,
       input: input,
-      result: this.createValueGrip(result),
+      result: resultGrip,
       timestamp: timestamp,
       exception: errorGrip,
       exceptionMessage: errorMessage,
@@ -958,6 +969,10 @@ WebConsoleActor.prototype =
    *          ObjectActor.
    *        - frameActor: the FrameActor ID to use for evaluation. The given
    *        debugger frame is used for evaluation, instead of the global window.
+   *        - selectedNodeActor: the NodeActor ID of the currently selected node
+   *        in the Inspector (or null, if there is no selection). This is used
+   *        for helper functions that make reference to the currently selected
+   *        node, like $0.
    * @return object
    *         An object that holds the following properties:
    *         - dbg: the debugger where the string was evaluated.
@@ -1001,7 +1016,6 @@ WebConsoleActor.prototype =
     // If we have an object to bind to |_self|, create a Debugger.Object
     // referring to that object, belonging to dbg.
     let bindSelf = null;
-    let dbgWindow = dbg.makeGlobalObjectReference(this.evalWindow);
     if (aOptions.bindObjectActor) {
       let objActor = this.getActorByID(aOptions.bindObjectActor);
       if (objActor) {
@@ -1021,6 +1035,13 @@ WebConsoleActor.prototype =
     let bindings = helpers.sandbox;
     if (bindSelf) {
       bindings._self = bindSelf;
+    }
+
+    if (aOptions.selectedNodeActor) {
+      let actor = this.conn.getActor(aOptions.selectedNodeActor);
+      if (actor) {
+        helpers.selectedNode = actor.rawNode;
+      }
     }
 
     // Check if the Debugger.Frame or Debugger.Object for the global include
@@ -1067,6 +1088,7 @@ WebConsoleActor.prototype =
     let helperResult = helpers.helperResult;
     delete helpers.evalInput;
     delete helpers.helperResult;
+    delete helpers.selectedNode;
 
     if ($) {
       bindings.$ = $;

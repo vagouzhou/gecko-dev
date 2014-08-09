@@ -17,6 +17,7 @@
 /* loading of CSS style sheets using the network APIs */
 
 #include "mozilla/ArrayUtils.h"
+#include "mozilla/LoadInfo.h"
 #include "mozilla/MemoryReporting.h"
 
 #include "mozilla/css/Loader.h"
@@ -61,7 +62,6 @@
 
 #include "nsIChannelPolicy.h"
 #include "nsIContentSecurityPolicy.h"
-#include "nsCycleCollectionParticipant.h"
 
 #include "mozilla/dom/EncodingUtils.h"
 using mozilla::dom::EncodingUtils;
@@ -1561,12 +1561,17 @@ Loader::LoadSheet(SheetLoadData* aLoadData, StyleSheetState aSheetState)
     rv = NS_URIChainHasFlags(aLoadData->mURI,
                              nsIProtocolHandler::URI_INHERITS_SECURITY_CONTEXT,
                              &inherit);
-    if ((NS_SUCCEEDED(rv) && inherit) ||
-        (nsContentUtils::URIIsLocalFile(aLoadData->mURI) &&
-         NS_SUCCEEDED(aLoadData->mLoaderPrincipal->
-                      CheckMayLoad(aLoadData->mURI, false, false)))) {
-      channel->SetOwner(aLoadData->mLoaderPrincipal);
-    }
+    inherit =
+      ((NS_SUCCEEDED(rv) && inherit) ||
+       (nsContentUtils::URIIsLocalFile(aLoadData->mURI) &&
+        NS_SUCCEEDED(aLoadData->mLoaderPrincipal->
+                     CheckMayLoad(aLoadData->mURI, false, false))));
+    nsCOMPtr<nsILoadInfo> loadInfo =
+      new LoadInfo(aLoadData->mLoaderPrincipal,
+                   inherit ?
+                     LoadInfo::eInheritPrincipal : LoadInfo::eDontInheritPrincipal,
+                   LoadInfo::eNotSandboxed);
+    channel->SetLoadInfo(loadInfo);
   }
 
   // We don't have to hold on to the stream loader.  The ownership
@@ -2454,21 +2459,29 @@ TraverseSheet(URIPrincipalAndCORSModeHashKey*,
   return PL_DHASH_NEXT;
 }
 
-void
-Loader::TraverseCachedSheets(nsCycleCollectionTraversalCallback& cb)
-{
-  if (mSheets) {
-    mSheets->mCompleteSheets.EnumerateRead(TraverseSheet, &cb);
-  }
-}
+NS_IMPL_CYCLE_COLLECTION_CLASS(Loader)
 
-void
-Loader::UnlinkCachedSheets()
-{
-  if (mSheets) {
-    mSheets->mCompleteSheets.Clear();
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(Loader)
+  if (tmp->mSheets) {
+    tmp->mSheets->mCompleteSheets.EnumerateRead(TraverseSheet, &cb);
   }
-}
+  nsTObserverArray<nsCOMPtr<nsICSSLoaderObserver>>::ForwardIterator
+    it(tmp->mObservers);
+  while (it.HasMore()) {
+    ImplCycleCollectionTraverse(cb, it.GetNext(),
+                                "mozilla::css::Loader.mObservers");
+  }
+NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
+
+NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(Loader)
+  if (tmp->mSheets) {
+    tmp->mSheets->mCompleteSheets.Clear();
+  }
+  tmp->mObservers.Clear();
+NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTION_ROOT_NATIVE(Loader, AddRef)
+NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(Loader, Release)
 
 struct SheetMemoryCounter {
   size_t size;

@@ -6,7 +6,7 @@
 #include "MmsMessage.h"
 #include "MobileMessageThread.h"
 #include "MobileMessageService.h"
-#include "SmsSegmentInfo.h"
+#include "DeletedMessageInfo.h"
 
 namespace mozilla {
 namespace dom {
@@ -101,18 +101,6 @@ MobileMessageService::CreateMmsMessage(int32_t aId,
 }
 
 NS_IMETHODIMP
-MobileMessageService::CreateSmsSegmentInfo(int32_t aSegments,
-                                           int32_t aCharsPerSegment,
-                                           int32_t aCharsAvailableInLastSegment,
-                                           nsIDOMMozSmsSegmentInfo** aSegmentInfo)
-{
-  nsCOMPtr<nsIDOMMozSmsSegmentInfo> info =
-      new SmsSegmentInfo(aSegments, aCharsPerSegment, aCharsAvailableInLastSegment);
-  info.forget(aSegmentInfo);
-  return NS_OK;
-}
-
-NS_IMETHODIMP
 MobileMessageService::CreateThread(uint64_t aId,
                                    JS::Handle<JS::Value> aParticipants,
                                    uint64_t aTimestamp,
@@ -132,6 +120,20 @@ MobileMessageService::CreateThread(uint64_t aId,
                                      aLastMessageType,
                                      aCx,
                                      aThread);
+}
+
+NS_IMETHODIMP
+MobileMessageService::CreateDeletedMessageInfo(int32_t* aMessageIds,
+                                               uint32_t aMsgCount,
+                                               uint64_t* aThreadIds,
+                                               uint32_t  aThreadCount,
+                                               nsIDeletedMessageInfo** aDeletedInfo)
+{
+  return DeletedMessageInfo::Create(aMessageIds,
+                                    aMsgCount,
+                                    aThreadIds,
+                                    aThreadCount,
+                                    aDeletedInfo);
 }
 
 } // namespace mobilemessage

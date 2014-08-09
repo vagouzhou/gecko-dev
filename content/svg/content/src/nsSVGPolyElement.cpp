@@ -29,6 +29,10 @@ nsSVGPolyElement::nsSVGPolyElement(already_AddRefed<mozilla::dom::NodeInfo>& aNo
 {
 }
 
+nsSVGPolyElement::~nsSVGPolyElement()
+{
+}
+
 already_AddRefed<DOMSVGPointList>
 nsSVGPolyElement::Points()
 {
@@ -132,7 +136,7 @@ nsSVGPolyElement::ConstructPath(gfxContext *aCtx)
 }
 
 TemporaryRef<Path>
-nsSVGPolyElement::BuildPath()
+nsSVGPolyElement::BuildPath(PathBuilder* aBuilder)
 {
   const SVGPointList &points = mPoints.GetAnimValue();
 
@@ -140,7 +144,7 @@ nsSVGPolyElement::BuildPath()
     return nullptr;
   }
 
-  RefPtr<PathBuilder> pathBuilder = CreatePathBuilder();
+  RefPtr<PathBuilder> pathBuilder = aBuilder ? aBuilder : CreatePathBuilder();
 
   pathBuilder->MoveTo(points[0]);
   for (uint32_t i = 1; i < points.Length(); ++i) {

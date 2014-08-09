@@ -14,6 +14,7 @@ describe("loop.shared.models", function() {
 
   beforeEach(function() {
     sandbox = sinon.sandbox.create();
+    sandbox.useFakeTimers();
     fakeXHR = sandbox.useFakeXMLHttpRequest();
     requests = [];
     // https://github.com/cjohansen/Sinon.JS/issues/393
@@ -46,108 +47,104 @@ describe("loop.shared.models", function() {
     describe("#initialize", function() {
       it("should require a sdk option", function() {
         expect(function() {
-          new sharedModels.ConversationModel();
+          new sharedModels.ConversationModel({}, {});
         }).to.Throw(Error, /missing required sdk/);
+      });
+
+      it("should accept a pendingCallTimeout option", function() {
+        expect(new sharedModels.ConversationModel({}, {
+          sdk: {},
+          pendingCallTimeout: 1000
+        }).pendingCallTimeout).eql(1000);
       });
     });
 
     describe("constructed", function() {
-      var conversation, reqCallInfoStub, reqCallsInfoStub, fakeBaseServerUrl;
+      var conversation, fakeClient, fakeBaseServerUrl,
+          requestCallInfoStub, requestCallsInfoStub;
 
       beforeEach(function() {
-        conversation = new sharedModels.ConversationModel({}, {sdk: fakeSDK});
+        conversation = new sharedModels.ConversationModel({}, {
+          sdk: fakeSDK,
+          pendingCallTimeout: 1000
+        });
         conversation.set("loopToken", "fakeToken");
         fakeBaseServerUrl = "http://fakeBaseServerUrl";
-        reqCallInfoStub = sandbox.stub(loop.shared.Client.prototype,
-          "requestCallInfo");
-        reqCallsInfoStub = sandbox.stub(loop.shared.Client.prototype,
-          "requestCallsInfo");
+        fakeClient = {
+          requestCallInfo: sandbox.stub(),
+          requestCallsInfo: sandbox.stub()
+        };
+        requestCallInfoStub = fakeClient.requestCallInfo;
+        requestCallsInfoStub = fakeClient.requestCallsInfo;
       });
 
-      describe("#initiate", function() {
-        it("call requestCallInfo on the client for outgoing calls",
-          function() {
-            conversation.initiate({
-              baseServerUrl: fakeBaseServerUrl,
-              outgoing: true
-            });
-
-            sinon.assert.calledOnce(reqCallInfoStub);
-            sinon.assert.calledWith(reqCallInfoStub, "fakeToken");
-          });
-
-        it("should not call requestCallsInfo on the client for outgoing calls",
-          function() {
-            conversation.initiate({
-              baseServerUrl: fakeBaseServerUrl,
-              outgoing: true
-            });
-
-            sinon.assert.notCalled(reqCallsInfoStub);
-          });
-
-        it("call requestCallsInfo on the client for incoming calls",
-          function() {
-            conversation.initiate({
-              baseServerUrl: fakeBaseServerUrl,
-              outgoing: false
-            });
-
-            sinon.assert.calledOnce(reqCallsInfoStub);
-            sinon.assert.calledWith(reqCallsInfoStub);
-          });
-
-        it("should not call requestCallInfo on the client for incoming calls",
-          function() {
-            conversation.initiate({
-              baseServerUrl: fakeBaseServerUrl,
-              outgoing: false
-            });
-
-            sinon.assert.notCalled(reqCallInfoStub);
-          });
-
-        it("should update conversation session information from server data",
-          function() {
-            sandbox.stub(conversation, "setReady");
-            reqCallInfoStub.callsArgWith(1, null, fakeSessionData);
-
-            conversation.initiate({
-              baseServerUrl: fakeBaseServerUrl,
-              outgoing: true
-            });
-
-            sinon.assert.calledOnce(conversation.setReady);
-            sinon.assert.calledWith(conversation.setReady, fakeSessionData);
-          });
-
-        it("should trigger a `session:error` on failure", function(done) {
-          reqCallInfoStub.callsArgWith(1,
-            new Error("failed: HTTP 400 Bad Request; fake"));
-
-          conversation.on("session:error", function(err) {
-            expect(err.message).to.match(/failed: HTTP 400 Bad Request; fake/);
+      describe("#incoming", function() {
+        it("should trigger a `call:incoming` event", function(done) {
+          conversation.once("call:incoming", function() {
             done();
-          }).initiate({
-            baseServerUrl: fakeBaseServerUrl,
-            outgoing: true
           });
+
+          conversation.incoming();
         });
       });
 
-      describe("#setReady", function() {
+      describe("#setupOutgoingCall", function() {
+        it("should trigger a `call:outgoing:setup` event", function(done) {
+          conversation.once("call:outgoing:setup", function() {
+            done();
+          });
+
+          conversation.setupOutgoingCall();
+        });
+      });
+
+      describe("#outgoing", function() {
+        beforeEach(function() {
+          sandbox.stub(conversation, "endSession");
+          sandbox.stub(conversation, "setSessionData");
+        });
+
+        it("should save the sessionData", function() {
+          conversation.outgoing(fakeSessionData);
+
+          sinon.assert.calledOnce(conversation.setSessionData);
+        });
+
+        it("should trigger a `call:outgoing` event", function(done) {
+          conversation.once("call:outgoing", function() {
+            done();
+          });
+
+          conversation.outgoing();
+        });
+
+        it("should end the session on outgoing call timeout", function() {
+          conversation.outgoing();
+
+          sandbox.clock.tick(1001);
+
+          sinon.assert.calledOnce(conversation.endSession);
+        });
+
+        it("should trigger a `timeout` event on outgoing call timeout",
+          function(done) {
+            conversation.once("timeout", function() {
+              done();
+            });
+
+            conversation.outgoing();
+
+            sandbox.clock.tick(1001);
+          });
+      });
+
+      describe("#setSessionData", function() {
         it("should update conversation session information", function() {
-          conversation.setReady(fakeSessionData);
+          conversation.setSessionData(fakeSessionData);
 
           expect(conversation.get("sessionId")).eql("sessionId");
           expect(conversation.get("sessionToken")).eql("sessionToken");
           expect(conversation.get("apiKey")).eql("apiKey");
-        });
-
-        it("should trigger a `session:ready` event", function(done) {
-          conversation.on("session:ready", function() {
-            done();
-          }).setReady(fakeSessionData);
         });
       });
 
@@ -155,8 +152,11 @@ describe("loop.shared.models", function() {
         var model;
 
         beforeEach(function() {
+          sandbox.stub(sharedModels.ConversationModel.prototype,
+                       "_clearPendingCallTimer");
           model = new sharedModels.ConversationModel(fakeSessionData, {
-            sdk: fakeSDK
+            sdk: fakeSDK,
+            pendingCallTimeout: 1000
           });
           model.startSession();
         });
@@ -176,16 +176,16 @@ describe("loop.shared.models", function() {
                         sinon.match.func);
         });
 
-        it("should set ongoing to true when no error is called back",
+        it("should set connected to true when no error is called back",
             function() {
               fakeSession.connect = function(key, token, cb) {
                 cb(null);
               };
-              sinon.stub(model, "set");
+              sandbox.stub(model, "set");
 
               model.startSession();
 
-              sinon.assert.calledWith(model.set, "ongoing", true);
+              sinon.assert.calledWith(model.set, "connected", true);
             });
 
         it("should trigger session:connected when no error is called back",
@@ -209,7 +209,7 @@ describe("loop.shared.models", function() {
                   error: true
                 });
               };
-              sinon.stub(model, "endSession");
+              sandbox.stub(model, "endSession");
 
               model.startSession();
 
@@ -233,6 +233,17 @@ describe("loop.shared.models", function() {
                           "session:connection-error", sinon.match.object);
             });
 
+          it("should set the connected attr to true on connection completed",
+            function() {
+              fakeSession.connect = function(key, token, cb) {
+                cb();
+              };
+
+              model.startSession();
+
+              expect(model.get("connected")).eql(true);
+            });
+
           it("should trigger a session:ended event on sessionDisconnected",
             function(done) {
               model.once("session:ended", function(){ done(); });
@@ -240,15 +251,31 @@ describe("loop.shared.models", function() {
               fakeSession.trigger("sessionDisconnected", {reason: "ko"});
             });
 
-          it("should set the ongoing attribute to false on sessionDisconnected",
-            function(done) {
-              model.once("session:ended", function() {
-                expect(model.get("ongoing")).eql(false);
-                done();
-              });
-
+          it("should set the connected attribute to false on sessionDisconnected",
+            function() {
               fakeSession.trigger("sessionDisconnected", {reason: "ko"});
+
+              expect(model.get("connected")).eql(false);
             });
+
+          it("should set the ongoing attribute to false on sessionDisconnected",
+            function() {
+              fakeSession.trigger("sessionDisconnected", {reason: "ko"});
+
+              expect(model.get("ongoing")).eql(false);
+            });
+
+          it("should clear a pending timer on session:ended", function() {
+            model.trigger("session:ended");
+
+            sinon.assert.calledOnce(model._clearPendingCallTimer);
+          });
+
+          it("should clear a pending timer on session:error", function() {
+            model.trigger("session:error");
+
+            sinon.assert.calledOnce(model._clearPendingCallTimer);
+          });
 
           describe("connectionDestroyed event received", function() {
             var fakeEvent = {reason: "ko", connection: {connectionId: 42}};
@@ -298,7 +325,8 @@ describe("loop.shared.models", function() {
 
         beforeEach(function() {
           model = new sharedModels.ConversationModel(fakeSessionData, {
-            sdk: fakeSDK
+            sdk: fakeSDK,
+            pendingCallTimeout: 1000
           });
           model.startSession();
         });
@@ -307,6 +335,12 @@ describe("loop.shared.models", function() {
           model.endSession();
 
           sinon.assert.calledOnce(fakeSession.disconnect);
+        });
+
+        it("should set the connected attribute to false", function() {
+          model.endSession();
+
+          expect(model.get("connected")).eql(false);
         });
 
         it("should set the ongoing attribute to false", function() {

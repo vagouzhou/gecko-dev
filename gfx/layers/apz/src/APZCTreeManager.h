@@ -10,10 +10,10 @@
 #include "FrameMetrics.h"               // for FrameMetrics, etc
 #include "Units.h"                      // for CSSPoint, CSSRect, etc
 #include "gfxPoint.h"                   // for gfxPoint
-#include "gfx3DMatrix.h"                // for gfx3DMatrix
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT_HELPER2
 #include "mozilla/EventForwards.h"      // for WidgetInputEvent, nsEventStatus
 #include "mozilla/Monitor.h"            // for Monitor
+#include "mozilla/gfx/Matrix.h"         // for Matrix4x4
 #include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsISupportsImpl.h"            // for MOZ_COUNT_CTOR, etc
@@ -21,7 +21,7 @@
 #include "nsTArrayForwardDeclare.h"     // for nsTArray, nsTArray_Impl, etc
 #include "mozilla/gfx/Logging.h"        // for gfx::TreeLog
 
-class gfx3DMatrix;
+class nsIntRegion;
 
 namespace mozilla {
 class InputData;
@@ -122,11 +122,35 @@ public:
    * based on what type of input it is. For example, a PinchGestureEvent will
    * cause scaling. This should only be called externally to this class.
    *
-   * @param aEvent input event object, will not be modified
+   * This function transforms |aEvent| to have its coordinates in DOM space.
+   * This is so that the event can be passed through the DOM and content can
+   * handle them. The event may need to be converted to a WidgetInputEvent
+   * by the caller if it wants to do this.
+   *
+   * The following values may be returned by this function:
+   * nsEventStatus_eConsumeNoDefault is returned to indicate the
+   *   caller should discard the event with extreme prejudice.
+   *   Currently this is only returned if the APZ determines that
+   *   something is in overscroll and the event should be ignored entirely.
+   *   There may be other scenarios where this return code might be used in
+   *   the future.
+   * nsEventStatus_eIgnore is returned to indicate that the APZ code didn't
+   *   use this event. This might be because it was directed at a point on
+   *   the screen where there was no APZ, or because the thing the user was
+   *   trying to do was not allowed. (For example, attempting to pan a
+   *   non-pannable document).
+   * nsEventStatus_eConsumeDoDefault is returned to indicate that the APZ
+   *   code may have used this event to do some user-visible thing. Note that
+   *   in some cases CONSUMED is returned even if the event was NOT used. This
+   *   is because we cannot always know at the time of event delivery whether
+   *   the event will be used or not. So we err on the side of sending
+   *   CONSUMED when we are uncertain.
+   *
+   * @param aEvent input event object; is modified in-place
    * @param aOutTargetGuid returns the guid of the apzc this event was
    * delivered to. May be null.
    */
-  nsEventStatus ReceiveInputEvent(const InputData& aEvent,
+  nsEventStatus ReceiveInputEvent(InputData& aEvent,
                                   ScrollableLayerGuid* aOutTargetGuid);
 
   /**
@@ -144,6 +168,7 @@ public:
    * @param aEvent input event object; is modified in-place
    * @param aOutTargetGuid returns the guid of the apzc this event was
    * delivered to. May be null.
+   * @return See documentation for other ReceiveInputEvent above.
    */
   nsEventStatus ReceiveInputEvent(WidgetInputEvent& aEvent,
                                   ScrollableLayerGuid* aOutTargetGuid);
@@ -288,6 +313,8 @@ public:
   bool HandOffFling(AsyncPanZoomController* aApzc, ScreenPoint aVelocity);
 
   bool FlushRepaintsForOverscrollHandoffChain();
+  bool CancelAnimationsForOverscrollHandoffChain();
+  void SnapBackOverscrolledApzc(AsyncPanZoomController* aStart);
 
   /**
    * Determine whether |aApzc|, or any APZC along its overscroll handoff chain,
@@ -319,8 +346,8 @@ public:
   already_AddRefed<AsyncPanZoomController> GetTargetAPZC(const ScrollableLayerGuid& aGuid);
   already_AddRefed<AsyncPanZoomController> GetTargetAPZC(const ScreenPoint& aPoint,
                                                          bool* aOutInOverscrolledApzc);
-  void GetInputTransforms(AsyncPanZoomController *aApzc, gfx3DMatrix& aTransformToApzcOut,
-                          gfx3DMatrix& aTransformToGeckoOut);
+  void GetInputTransforms(AsyncPanZoomController *aApzc, gfx::Matrix4x4& aTransformToApzcOut,
+                          gfx::Matrix4x4& aTransformToGeckoOut);
 private:
   /* Helpers */
   AsyncPanZoomController* FindTargetAPZC(AsyncPanZoomController* aApzc, FrameMetrics::ViewID aScrollId);
@@ -350,13 +377,14 @@ private:
    */
   AsyncPanZoomController* UpdatePanZoomControllerTree(CompositorParent* aCompositor,
                                                       Layer* aLayer, uint64_t aLayersId,
-                                                      gfx3DMatrix aTransform,
+                                                      gfx::Matrix4x4 aTransform,
                                                       AsyncPanZoomController* aParent,
                                                       AsyncPanZoomController* aNextSibling,
                                                       bool aIsFirstPaint,
                                                       uint64_t aOriginatingLayersId,
                                                       const APZPaintLogHelper& aPaintLogger,
-                                                      nsTArray< nsRefPtr<AsyncPanZoomController> >* aApzcsToDestroy);
+                                                      nsTArray< nsRefPtr<AsyncPanZoomController> >* aApzcsToDestroy,
+                                                      const nsIntRegion& aObscured);
 
 private:
   /* Whenever walking or mutating the tree rooted at mRootApzc, mTreeLock must be held.
@@ -392,7 +420,7 @@ private:
    * but for some operations we need to use the initial transform.
    * Meaningless if mApzcForInputBlock is nullptr.
    */
-  gfx3DMatrix mCachedTransformToApzcForInputBlock;
+  gfx::Matrix4x4 mCachedTransformToApzcForInputBlock;
   /* The chain of APZCs that will handle pans for the current touch input
    * block, in the order in which they will be scrolled. When one APZC has
    * been scrolled as far as it can, any overscroll will be handed off to

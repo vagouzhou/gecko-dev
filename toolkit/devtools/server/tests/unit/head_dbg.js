@@ -99,7 +99,8 @@ let listener = {
     }
 
     // Make sure we exit all nested event loops so that the test can finish.
-    while (DebuggerServer.xpcInspector.eventLoopNestLevel > 0) {
+    while (DebuggerServer.xpcInspector
+           && DebuggerServer.xpcInspector.eventLoopNestLevel > 0) {
       DebuggerServer.xpcInspector.exitNestedEventLoop();
     }
 
@@ -178,7 +179,10 @@ function attachTestThread(aClient, aTitle, aCallback) {
     function onAttach(aResponse, aThreadClient) {
       aCallback(aResponse, aTabClient, aThreadClient);
     }
-    aTabClient.attachThread({ useSourceMaps: true }, onAttach);
+    aTabClient.attachThread({
+      useSourceMaps: true,
+      autoBlackBox: true
+    }, onAttach);
   });
 }
 
@@ -505,6 +509,17 @@ function setBreakpoint(threadClient, breakpointOptions) {
 function resume(threadClient) {
   dumpn("Resuming.");
   return rdpRequest(threadClient, threadClient.resume);
+}
+
+/**
+ * Interrupt JS execution for the specified thread.
+ *
+ * @param ThreadClient threadClient
+ * @returns Promise
+ */
+function interrupt(threadClient) {
+  dumpn("Interrupting.");
+  return rdpRequest(threadClient, threadClient.interrupt);
 }
 
 /**

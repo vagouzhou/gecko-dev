@@ -14,8 +14,8 @@
 #include "jsinfer.h"
 #include "jstypes.h"
 
-#include "assembler/jit/ExecutableAllocator.h"
 #include "gc/Heap.h"
+#include "jit/ExecutableAllocator.h"
 #include "jit/IonOptimizationLevels.h"
 #include "jit/IonTypes.h"
 
@@ -557,7 +557,8 @@ struct IonScript
     void copySafepoints(const SafepointWriter *writer);
     void copyCallTargetEntries(JSScript **callTargets);
     void copyPatchableBackedges(JSContext *cx, JitCode *code,
-                                PatchableBackedgeInfo *backedges);
+                                PatchableBackedgeInfo *backedges,
+                                MacroAssembler &masm);
 
     bool invalidated() const {
         return refcount_ != 0;

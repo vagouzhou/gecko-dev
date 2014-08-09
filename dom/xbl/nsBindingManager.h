@@ -30,6 +30,7 @@ class nsXBLBinding;
 template<class E> class nsRefPtr;
 typedef nsTArray<nsRefPtr<nsXBLBinding> > nsBindingList;
 class nsIPrincipal;
+class nsITimer;
 
 namespace mozilla {
 class CSSStyleSheet;
@@ -46,7 +47,7 @@ public:
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTINSERTED
   NS_DECL_NSIMUTATIONOBSERVER_CONTENTREMOVED
 
-  nsBindingManager(nsIDocument* aDocument);
+  explicit nsBindingManager(nsIDocument* aDocument);
 
   nsXBLBinding* GetBindingWithContent(nsIContent* aContent);
 
@@ -161,6 +162,9 @@ protected:
 
   // Post an event to process the attached queue.
   void PostProcessAttachedQueueEvent();
+
+  // Call PostProcessAttachedQueueEvent() on a timer.
+  static void PostPAQEventCallback(nsITimer* aTimer, void* aClosure);
 
 // MEMBER VARIABLES
 protected:

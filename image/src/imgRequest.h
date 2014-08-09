@@ -50,7 +50,7 @@ class imgRequest : public nsIStreamListener,
 
 public:
   typedef mozilla::image::ImageURL ImageURL;
-  imgRequest(imgLoader* aLoader);
+  explicit imgRequest(imgLoader* aLoader);
 
   NS_DECL_THREADSAFE_ISUPPORTS
 
@@ -135,6 +135,8 @@ public:
 
   // OK to use on any thread.
   nsresult GetURI(ImageURL **aURI);
+
+  nsresult GetImageErrorCode(void);
 
 private:
   friend class imgCacheEntry;
@@ -242,6 +244,8 @@ private:
   // The CORS mode (defined in imgIRequest) this image was loaded with. By
   // default, imgIRequest::CORS_NONE.
   int32_t mCORSMode;
+
+  nsresult mImageErrorCode;
 
   // Sometimes consumers want to do things before the image is ready. Let them,
   // and apply the action when the image becomes available.

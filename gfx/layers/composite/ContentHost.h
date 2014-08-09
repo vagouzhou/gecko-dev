@@ -64,12 +64,16 @@ public:
                             const nsIntRegion& aOldValidRegionBack,
                             nsIntRegion* aUpdatedRegionBack) = 0;
 
-  virtual void SetPaintWillResample(bool aResample) { }
+  virtual void SetPaintWillResample(bool aResample) { mPaintWillResample = aResample; }
+  bool PaintWillResample() { return mPaintWillResample; }
 
 protected:
   ContentHost(const TextureInfo& aTextureInfo)
     : CompositableHost(aTextureInfo)
+    , mPaintWillResample(false)
   {}
+
+  bool mPaintWillResample;
 };
 
 /**
@@ -97,16 +101,12 @@ public:
                          const gfx::Matrix4x4& aTransform,
                          const gfx::Filter& aFilter,
                          const gfx::Rect& aClipRect,
-                         const nsIntRegion* aVisibleRegion = nullptr,
-                         TiledLayerProperties* aLayerProperties = nullptr);
-
-  virtual void SetPaintWillResample(bool aResample) { mPaintWillResample = aResample; }
-
-  virtual bool Lock() = 0;
-  virtual void Unlock() = 0;
+                         const nsIntRegion* aVisibleRegion = nullptr);
 
   virtual NewTextureSource* GetTextureSource() = 0;
   virtual NewTextureSource* GetTextureSourceOnWhite() = 0;
+
+  virtual TemporaryRef<TexturedEffect> GenEffect(const gfx::Filter& aFilter) MOZ_OVERRIDE;
 
 protected:
   virtual nsIntPoint GetOriginOffset()
@@ -114,11 +114,9 @@ protected:
     return mBufferRect.TopLeft() - mBufferRotation;
   }
 
-  bool PaintWillResample() { return mPaintWillResample; }
 
   nsIntRect mBufferRect;
   nsIntPoint mBufferRotation;
-  bool mPaintWillResample;
   bool mInitialised;
 };
 
@@ -150,7 +148,7 @@ public:
   virtual void UseComponentAlphaTextures(TextureHost* aTextureOnBlack,
                                          TextureHost* aTextureOnWhite) MOZ_OVERRIDE;
 
-  virtual bool Lock() {
+  virtual bool Lock() MOZ_OVERRIDE {
     MOZ_ASSERT(!mLocked);
     if (!mTextureHost) {
       return false;
@@ -166,7 +164,7 @@ public:
     mLocked = true;
     return true;
   }
-  virtual void Unlock() {
+  virtual void Unlock() MOZ_OVERRIDE {
     MOZ_ASSERT(mLocked);
     mTextureHost->Unlock();
     if (mTextureHostOnWhite) {
@@ -175,11 +173,11 @@ public:
     mLocked = false;
   }
 
-  virtual NewTextureSource* GetTextureSource() {
+  virtual NewTextureSource* GetTextureSource() MOZ_OVERRIDE {
     MOZ_ASSERT(mLocked);
     return mTextureHost->GetTextureSources();
   }
-  virtual NewTextureSource* GetTextureSourceOnWhite() {
+  virtual NewTextureSource* GetTextureSourceOnWhite() MOZ_OVERRIDE {
     MOZ_ASSERT(mLocked);
     if (mTextureHostOnWhite) {
       return mTextureHostOnWhite->GetTextureSources();
@@ -281,20 +279,20 @@ public:
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix) MOZ_OVERRIDE;
 
-  virtual bool Lock() {
+  virtual bool Lock() MOZ_OVERRIDE {
     MOZ_ASSERT(!mLocked);
     ProcessTextureUpdates();
     mLocked = true;
     return true;
   }
 
-  virtual void Unlock() {
+  virtual void Unlock() MOZ_OVERRIDE {
     MOZ_ASSERT(mLocked);
     mLocked = false;
   }
 
-  virtual NewTextureSource* GetTextureSource();
-  virtual NewTextureSource* GetTextureSourceOnWhite();
+  virtual NewTextureSource* GetTextureSource() MOZ_OVERRIDE;
+  virtual NewTextureSource* GetTextureSourceOnWhite() MOZ_OVERRIDE;
 
 private:
 

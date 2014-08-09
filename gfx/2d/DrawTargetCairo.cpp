@@ -130,7 +130,9 @@ static cairo_user_data_key_t surfaceDataKey;
 void
 ReleaseData(void* aData)
 {
-  static_cast<DataSourceSurface*>(aData)->Release();
+  DataSourceSurface *data = static_cast<DataSourceSurface*>(aData);
+  data->Unmap();
+  data->Release();
 }
 
 cairo_surface_t*
@@ -195,12 +197,17 @@ GetCairoSurfaceForSourceSurface(SourceSurface *aSurface, bool aExistingOnly = fa
     return nullptr;
   }
 
+  DataSourceSurface::MappedSurface map;
+  if (!data->Map(DataSourceSurface::READ, &map)) {
+    return nullptr;
+  }
+
   cairo_surface_t* surf =
-    cairo_image_surface_create_for_data(data->GetData(),
+    cairo_image_surface_create_for_data(map.mData,
                                         GfxFormatToCairoFormat(data->GetFormat()),
                                         data->GetSize().width,
                                         data->GetSize().height,
-                                        data->Stride());
+                                        map.mStride);
 
   // In certain scenarios, requesting larger than 8k image fails.  Bug 803568
   // covers the details of how to run into it, but the full detailed
@@ -212,18 +219,22 @@ GetCairoSurfaceForSourceSurface(SourceSurface *aSurface, bool aExistingOnly = fa
       // a new surface with a stride that cairo chooses. No need to
       // set user data since we're not dependent on the original
       // data.
-      return CopyToImageSurface(data->GetData(),
-                                data->GetSize(),
-                                data->Stride(),
-                                data->GetFormat());
+      cairo_surface_t* result =
+        CopyToImageSurface(map.mData,
+                           data->GetSize(),
+                           map.mStride,
+                           data->GetFormat());
+      data->Unmap();
+      return result;
     }
+    data->Unmap();
     return nullptr;
   }
 
   cairo_surface_set_user_data(surf,
- 				                      &surfaceDataKey,
- 				                      data.forget().drop(),
- 				                      ReleaseData);
+                              &surfaceDataKey,
+                              data.forget().drop(),
+                              ReleaseData);
   return surf;
 }
 
@@ -690,8 +701,14 @@ DrawTargetCairo::DrawPattern(const Pattern& aPattern,
   AutoClearDeviceOffset clear(aPattern);
 
   cairo_pattern_t* pat = GfxPatternToCairoPattern(aPattern, aOptions.mAlpha);
-  if (!pat)
+  if (!pat) {
     return;
+  }
+  if (cairo_pattern_status(pat)) {
+    cairo_pattern_destroy(pat);
+    gfxWarning() << "Invalid pattern";
+    return;
+  }
 
   cairo_set_source(mContext, pat);
 
@@ -754,6 +771,11 @@ DrawTargetCairo::CopySurfaceInternal(cairo_surface_t* aSurface,
                                      const IntRect &aSource,
                                      const IntPoint &aDest)
 {
+  if (cairo_surface_status(aSurface)) {
+    gfxWarning() << "Invalid surface";
+    return;
+  }
+
   cairo_identity_matrix(mContext);
 
   cairo_set_source_surface(mContext, aSurface, aDest.x - aSource.x, aDest.y - aSource.y);
@@ -953,12 +975,20 @@ DrawTargetCairo::Mask(const Pattern &aSource,
   cairo_set_antialias(mContext, GfxAntialiasToCairoAntialias(aOptions.mAntialiasMode));
 
   cairo_pattern_t* source = GfxPatternToCairoPattern(aSource, aOptions.mAlpha);
-  if (!source)
+  if (!source) {
     return;
+  }
 
   cairo_pattern_t* mask = GfxPatternToCairoPattern(aMask, aOptions.mAlpha);
   if (!mask) {
     cairo_pattern_destroy(source);
+    return;
+  }
+
+  if (cairo_pattern_status(source) || cairo_pattern_status(mask)) {
+    cairo_pattern_destroy(source);
+    cairo_pattern_destroy(mask);
+    gfxWarning() << "Invalid pattern";
     return;
   }
 
@@ -986,8 +1016,15 @@ DrawTargetCairo::MaskSurface(const Pattern &aSource,
   cairo_set_antialias(mContext, GfxAntialiasToCairoAntialias(aOptions.mAntialiasMode));
 
   cairo_pattern_t* pat = GfxPatternToCairoPattern(aSource, aOptions.mAlpha);
-  if (!pat)
+  if (!pat) {
     return;
+  }
+
+  if (cairo_pattern_status(pat)) {
+    cairo_pattern_destroy(pat);
+    gfxWarning() << "Invalid pattern";
+    return;
+  }
 
   cairo_set_source(mContext, pat);
 
@@ -1386,7 +1423,8 @@ cairo_t*
 BorrowedCairoContext::BorrowCairoContextFromDrawTarget(DrawTarget* aDT)
 {
   if (aDT->GetBackendType() != BackendType::CAIRO ||
-      aDT->IsDualDrawTarget()) {
+      aDT->IsDualDrawTarget() ||
+      aDT->IsTiledDrawTarget()) {
     return nullptr;
   }
   DrawTargetCairo* cairoDT = static_cast<DrawTargetCairo*>(aDT);
@@ -1408,7 +1446,8 @@ BorrowedCairoContext::ReturnCairoContextToDrawTarget(DrawTarget* aDT,
                                                      cairo_t* aCairo)
 {
   if (aDT->GetBackendType() != BackendType::CAIRO ||
-      aDT->IsDualDrawTarget()) {
+      aDT->IsDualDrawTarget() ||
+      aDT->IsTiledDrawTarget()) {
     return;
   }
   DrawTargetCairo* cairoDT = static_cast<DrawTargetCairo*>(aDT);

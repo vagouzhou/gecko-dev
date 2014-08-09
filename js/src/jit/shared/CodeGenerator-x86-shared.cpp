@@ -28,6 +28,8 @@ using mozilla::FloorLog2;
 using mozilla::NegativeInfinity;
 using mozilla::SpecificNaN;
 
+using JS::GenericNaN;
+
 namespace js {
 namespace jit {
 
@@ -48,32 +50,14 @@ CodeGeneratorX86Shared::generatePrologue()
 }
 
 bool
-CodeGeneratorX86Shared::generateAsmJSPrologue(Label *stackOverflowLabel)
-{
-    JS_ASSERT(gen->compilingAsmJS());
-
-    // The asm.js over-recursed handler wants to be able to assume that SP
-    // points to the return address, so perform the check before pushing
-    // frameDepth.
-    if (!omitOverRecursedCheck()) {
-        masm.branchPtr(Assembler::AboveOrEqual,
-                       AsmJSAbsoluteAddress(AsmJSImm_StackLimit),
-                       StackPointer,
-                       stackOverflowLabel);
-    }
-
-    // Note that this automatically sets MacroAssembler::framePushed().
-    masm.reserveStack(frameSize());
-    return true;
-}
-
-bool
 CodeGeneratorX86Shared::generateEpilogue()
 {
+    JS_ASSERT(!gen->compilingAsmJS());
+
     masm.bind(&returnLabel_);
 
 #ifdef JS_TRACE_LOGGING
-    if (!gen->compilingAsmJS() && gen->info().executionMode() == SequentialExecution) {
+    if (gen->info().executionMode() == SequentialExecution) {
         if (!emitTracelogStopEvent(TraceLogger::IonMonkey))
             return false;
         if (!emitTracelogScriptStop())
@@ -340,6 +324,22 @@ CodeGeneratorX86Shared::visitAsmJSPassStackArg(LAsmJSPassStackArg *ins)
         else
             masm.storeDouble(ToFloatRegister(ins->arg()), dst);
     }
+    return true;
+}
+
+bool
+CodeGeneratorX86Shared::visitOutOfLineLoadTypedArrayOutOfBounds(OutOfLineLoadTypedArrayOutOfBounds *ool)
+{
+    if (ool->dest().isFloat()) {
+        if (ool->isFloat32Load())
+            masm.loadConstantFloat32(float(GenericNaN()), ool->dest().fpu());
+        else
+            masm.loadConstantDouble(GenericNaN(), ool->dest().fpu());
+    } else {
+        Register destReg = ool->dest().gpr();
+        masm.mov(ImmWord(0), destReg);
+    }
+    masm.jmp(ool->rejoin());
     return true;
 }
 
@@ -2006,7 +2006,7 @@ CodeGeneratorX86Shared::generateInvalidateEpilogue()
     // Ensure that there is enough space in the buffer for the OsiPoint
     // patching to occur. Otherwise, we could overwrite the invalidation
     // epilogue.
-    for (size_t i = 0; i < sizeof(void *); i+= Assembler::nopSize())
+    for (size_t i = 0; i < sizeof(void *); i += Assembler::NopSize())
         masm.nop();
 
     masm.bind(&invalidate_);
@@ -2071,7 +2071,6 @@ CodeGeneratorX86Shared::visitForkJoinGetSlice(LForkJoinGetSlice *ins)
 JitCode *
 JitRuntime::generateForkJoinGetSliceStub(JSContext *cx)
 {
-#ifdef JS_THREADSAFE
     MacroAssembler masm(cx);
 
     // We need two fixed temps. We need to fix eax for cmpxchg, and edx for
@@ -2130,6 +2129,8 @@ JitRuntime::generateForkJoinGetSliceStub(JSContext *cx)
 
     // It's not technically correct to test whether work-stealing is turned on
     // only during stub-generation time, but it's a DEBUG only thing.
+    //
+    // If stealing is off, stealWork falls through to noMoreWork.
     if (cx->runtime()->threadPool.workStealing()) {
         Label stealWorkLoopHead;
         masm.bind(&stealWorkLoopHead);
@@ -2197,6 +2198,8 @@ JitRuntime::generateForkJoinGetSliceStub(JSContext *cx)
 #endif
         // Copies lower 16 bits only.
         masm.movzwl(output, output);
+    } else {
+        masm.jump(&noMoreWork);
     }
 
     // If we successfully got a slice, decrement pool->pendingSlices_ and
@@ -2220,9 +2223,6 @@ JitRuntime::generateForkJoinGetSliceStub(JSContext *cx)
 #endif
 
     return code;
-#else
-    return nullptr;
-#endif // JS_THREADSAFE
 }
 
 } // namespace jit

@@ -17,8 +17,6 @@
 #include "nsAutoPtr.h"                  // for nsRefPtr
 #include "nsTArrayForwardDeclare.h"     // for InfallibleTArray
 
-class gfx3DMatrix;
-
 namespace mozilla {
 
 namespace ipc {
@@ -50,8 +48,11 @@ public:
                          ShadowLayersManager* aLayersManager,
                          uint64_t aId,
                          ProcessId aOtherProcess);
+
+protected:
   ~LayerTransactionParent();
 
+public:
   void Destroy();
 
   LayerManagerComposite* layer_manager() const { return mLayerManager; }
@@ -103,6 +104,7 @@ protected:
                           const bool& isFirstPaint,
                           const bool& scheduleComposite,
                           const uint32_t& paintSequenceNumber,
+                          const bool& isRepeatTransaction,
                           EditReplyArray* reply) MOZ_OVERRIDE;
 
   virtual bool RecvUpdateNoSwap(const EditArray& cset,
@@ -110,7 +112,8 @@ protected:
                                 const TargetConfig& targetConfig,
                                 const bool& isFirstPaint,
                                 const bool& scheduleComposite,
-                                const uint32_t& paintSequenceNumber) MOZ_OVERRIDE;
+                                const uint32_t& paintSequenceNumber,
+                                const bool& isRepeatTransaction) MOZ_OVERRIDE;
 
   virtual bool RecvClearCachedResources() MOZ_OVERRIDE;
   virtual bool RecvForceComposite() MOZ_OVERRIDE;

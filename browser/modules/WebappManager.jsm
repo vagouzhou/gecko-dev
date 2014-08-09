@@ -66,7 +66,9 @@ this.WebappManager = {
       }
     } else if (aMessage.name == "Webapps:Install:Return:OK" &&
                !data.isPackage) {
-      let manifest = new ManifestHelper(data.app.manifest, data.app.origin);
+      let manifest = new ManifestHelper(data.app.manifest,
+                                        data.app.origin,
+                                        data.app.manifestURL);
       if (!manifest.appcache_path) {
         this.installations[manifestURL].resolve();
       }
@@ -134,51 +136,46 @@ this.WebappManager = {
 
         let manifestURL = aData.app.manifestURL;
 
-        let cleanup = () => {
+        let nativeApp = new NativeApp(aData.app, jsonManifest,
+                                      aData.app.categories);
+
+        this.installations[manifestURL] = Promise.defer();
+        this.installations[manifestURL].promise.then(() => {
+          notifyInstallSuccess(aData.app, nativeApp, bundle);
+        }, (error) => {
+          Cu.reportError("Error installing webapp: " + error);
+        }).then(() => {
           popupProgressContent.removeChild(progressMeter);
           delete this.installations[manifestURL];
           if (Object.getOwnPropertyNames(this.installations).length == 0) {
             notification.remove();
           }
-        };
-
-        this.installations[manifestURL] = Promise.defer();
-        this.installations[manifestURL].promise.then(null, (error) => {
-          Cu.reportError("Error installing webapp: " + error);
-          cleanup();
         });
 
-        let nativeApp = new NativeApp(aData.app, jsonManifest,
-                                      aData.app.categories);
         let localDir;
         try {
           localDir = nativeApp.createProfile();
         } catch (ex) {
-          Cu.reportError("Error installing webapp: " + ex);
           DOMApplicationRegistry.denyInstall(aData);
-          cleanup();
           return;
         }
 
         DOMApplicationRegistry.confirmInstall(aData, localDir,
-          (aManifest, aZipPath) => Task.spawn((function*() {
+          Task.async(function*(aApp, aManifest, aZipPath) {
             try {
-              yield nativeApp.install(aManifest, aZipPath);
-              yield this.installations[manifestURL].promise;
-              notifyInstallSuccess(aData.app, nativeApp, bundle);
+              yield nativeApp.install(aApp, aManifest, aZipPath);
             } catch (ex) {
               Cu.reportError("Error installing webapp: " + ex);
-              // TODO: Notify user that the installation has failed
-            } finally {
-              cleanup();
+              throw ex;
             }
-          }).bind(this))
+          })
         );
       }
     };
 
     let requestingURI = chromeWin.makeURI(aData.from);
-    let manifest = new ManifestHelper(jsonManifest, aData.app.origin);
+    let app = aData.app;
+    let manifest = new ManifestHelper(jsonManifest, app.origin, app.manifestURL);
 
     let host;
     try {

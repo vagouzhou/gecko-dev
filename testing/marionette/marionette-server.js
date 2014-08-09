@@ -23,6 +23,9 @@ loader.loadSubScript("chrome://marionette/content/EventUtils.js", utils);
 loader.loadSubScript("chrome://marionette/content/ChromeUtils.js", utils);
 loader.loadSubScript("chrome://marionette/content/atoms.js", utils);
 
+// SpecialPowers requires insecure automation-only features that we put behind a pref.
+Services.prefs.setBoolPref('security.turn_off_all_security_so_that_viruses_can_take_over_this_computer',
+                           true);
 let specialpowers = {};
 loader.loadSubScript("chrome://specialpowers/content/SpecialPowersObserver.js",
                      specialpowers);
@@ -1335,6 +1338,17 @@ MarionetteServerConnection.prototype = {
       if (aRequest.parameters.element != undefined) {
         if (this.curBrowser.elementManager.seenItems[aRequest.parameters.element]) {
           let wantedFrame = this.curBrowser.elementManager.getKnownElement(aRequest.parameters.element, curWindow); //HTMLIFrameElement
+          // Deal with an embedded xul:browser case
+          if (wantedFrame.tagName == "xul:browser") {
+            curWindow = wantedFrame.contentWindow;
+            this.curFrame = curWindow;
+            if (aRequest.parameters.focus) {
+              this.curFrame.focus();
+            }
+            checkTimer.initWithCallback(checkLoad.bind(this), 100, Ci.nsITimer.TYPE_ONE_SHOT);
+            return;
+          }
+          // else, assume iframe
           let frames = curWindow.document.getElementsByTagName("iframe");
           let numFrames = frames.length;
           for (let i = 0; i < numFrames; i++) {
@@ -1874,6 +1888,29 @@ MarionetteServerConnection.prototype = {
     }
     else {
       this.sendAsync("getElementSize",
+                     { id:aRequest.parameters.id },
+                     command_id);
+    }
+  },
+
+  getElementRect: function MDA_getElementRect(aRequest) {
+    let command_id = this.command_id = this.getCommandId();
+    if (this.context == "chrome") {
+      try {
+        let el = this.curBrowser.elementManager.getKnownElement(
+            aRequest.parameters.id, this.getCurrentWindow());
+        let clientRect = el.getBoundingClientRect();
+        this.sendResponse({x: clientRect.x + this.getCurrentWindow().pageXOffset,
+                           y: clientRect.y + this.getCurrentWindow().pageYOffset,
+                           width: clientRect.width, height: clientRect.height},
+                           command_id);
+      }
+      catch (e) {
+        this.sendError(e.message, e.code, e.stack, command_id);
+      }
+    }
+    else {
+      this.sendAsync("getElementRect",
                      { id:aRequest.parameters.id },
                      command_id);
     }
@@ -2467,11 +2504,12 @@ MarionetteServerConnection.prototype.requestTypes = {
   "isElementDisplayed": MarionetteServerConnection.prototype.isElementDisplayed,
   "getElementValueOfCssProperty": MarionetteServerConnection.prototype.getElementValueOfCssProperty,
   "submitElement": MarionetteServerConnection.prototype.submitElement,
-  "getElementSize": MarionetteServerConnection.prototype.getElementSize,
+  "getElementSize": MarionetteServerConnection.prototype.getElementSize,  //deprecated
+  "getElementRect": MarionetteServerConnection.prototype.getElementRect,
   "isElementEnabled": MarionetteServerConnection.prototype.isElementEnabled,
   "isElementSelected": MarionetteServerConnection.prototype.isElementSelected,
   "sendKeysToElement": MarionetteServerConnection.prototype.sendKeysToElement,
-  "getElementLocation": MarionetteServerConnection.prototype.getElementLocation,
+  "getElementLocation": MarionetteServerConnection.prototype.getElementLocation,  // deprecated
   "getElementPosition": MarionetteServerConnection.prototype.getElementLocation,  // deprecated
   "clearElement": MarionetteServerConnection.prototype.clearElement,
   "getTitle": MarionetteServerConnection.prototype.getTitle,
@@ -2551,7 +2589,13 @@ BrowserObj.prototype = {
   setBrowser: function BO_setBrowser(win) {
     switch (appName) {
       case "Firefox":
-        this.browser = win.gBrowser;
+        if (this.window.location.href.indexOf("chrome://b2g") == -1) {
+          this.browser = win.gBrowser;
+        }
+        else {
+          // this is Mulet
+          appName = "B2G";
+        }
         break;
       case "Fennec":
         this.browser = win.BrowserApp;

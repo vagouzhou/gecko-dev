@@ -45,6 +45,11 @@ typedef CallbackObjectHolder<PositionErrorCallback, nsIDOMGeoPositionErrorCallba
 }
 }
 
+struct CachedPositionAndAccuracy {
+  nsCOMPtr<nsIDOMGeoPosition> position;
+  bool isHighAccuracy;
+};
+
 /**
  * Singleton that manages the geolocation provider
  */
@@ -73,7 +78,7 @@ public:
   void RemoveLocator(mozilla::dom::Geolocation* locator);
 
   void SetCachedPosition(nsIDOMGeoPosition* aPosition);
-  nsIDOMGeoPosition* GetCachedPosition();
+  CachedPositionAndAccuracy GetCachedPosition();
 
   // Find and startup a geolocation device (gps, nmea, etc.)
   nsresult StartDevice(nsIPrincipal* aPrincipal);
@@ -106,7 +111,7 @@ private:
   nsTArray<mozilla::dom::Geolocation*> mGeolocators;
 
   // This is the last geo position that we have seen.
-  nsCOMPtr<nsIDOMGeoPosition> mLastPosition;
+  CachedPositionAndAccuracy mLastPosition;
 
   // Current state of requests for higher accuracy
   bool mHigherAccuracy;
@@ -139,9 +144,6 @@ public:
 
   int32_t WatchPosition(PositionCallback& aCallback, PositionErrorCallback* aErrorCallback, const PositionOptions& aOptions, ErrorResult& aRv);
   void GetCurrentPosition(PositionCallback& aCallback, PositionErrorCallback* aErrorCallback, const PositionOptions& aOptions, ErrorResult& aRv);
-
-  void SetCachedPosition(Position* aPosition);
-  Position* GetCachedPosition();
 
   // Returns true if any of the callbacks are repeating
   bool HasActiveCallbacks();
@@ -200,9 +202,6 @@ private:
 
   // owning back pointer.
   nsRefPtr<nsGeolocationService> mService;
-
-  // cached Position wrapper
-  nsRefPtr<Position> mCachedPosition;
 
   // Watch ID
   uint32_t mLastWatchId;

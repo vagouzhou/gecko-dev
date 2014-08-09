@@ -23,6 +23,7 @@
 #include "webrtc/video_engine/vie_capturer.h"
 #include "webrtc/video_engine/vie_defines.h"
 #include "webrtc/video_engine/desktop_capture_impl.h"
+#include "webrtc/video_engine/browser_capture_impl.h"
 
 namespace webrtc {
 
@@ -63,8 +64,9 @@ int ViEInputManager::NumberOfCaptureDevices() {
   WEBRTC_TRACE(webrtc::kTraceInfo, webrtc::kTraceVideo, ViEId(engine_id_), "%s",
                __FUNCTION__);
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
+  capture_device_info_->Refresh();
   return capture_device_info_->NumberOfDevices();
 }
 
@@ -76,7 +78,7 @@ int ViEInputManager::GetDeviceName(uint32_t device_number,
   WEBRTC_TRACE(webrtc::kTraceInfo, webrtc::kTraceVideo, ViEId(engine_id_),
                "%s(device_number: %d)", __FUNCTION__, device_number);
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   return capture_device_info_->GetDeviceName(device_number, device_nameUTF8,
                                              device_name_length,
@@ -89,7 +91,7 @@ int ViEInputManager::NumberOfCaptureCapabilities(
   WEBRTC_TRACE(webrtc::kTraceInfo, webrtc::kTraceVideo, ViEId(engine_id_), "%s",
                __FUNCTION__);
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   return capture_device_info_->NumberOfCapabilities(device_unique_idUTF8);
 }
@@ -102,7 +104,7 @@ int ViEInputManager::GetCaptureCapability(
                "%s(device_unique_idUTF8: %s, device_capability_number: %d)",
                __FUNCTION__, device_unique_idUTF8, device_capability_number);
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   VideoCaptureCapability module_capability;
   int result = capture_device_info_->GetCapability(device_unique_idUTF8,
@@ -128,7 +130,7 @@ int ViEInputManager::GetOrientation(const char* device_unique_idUTF8,
                "%s(device_unique_idUTF8: %s,)", __FUNCTION__,
                device_unique_idUTF8);
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   VideoCaptureRotation module_orientation;
   int result = capture_device_info_->GetOrientation(device_unique_idUTF8,
@@ -158,7 +160,7 @@ int ViEInputManager::DisplayCaptureSettingsDialogBox(
     uint32_t positionX,
     uint32_t positionY) {
   CriticalSectionScoped cs(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   return capture_device_info_->DisplayCaptureSettingsDialogBox(
            device_unique_idUTF8, dialog_titleUTF8, parent_window, positionX,
@@ -194,7 +196,7 @@ int ViEInputManager::CreateCaptureDevice(
   // Make sure the device name is valid.
   bool found_device = false;
   CriticalSectionScoped cs_devinfo(device_info_cs_.get());
-    GetDeviceInfo();
+  GetDeviceInfo();
   assert(capture_device_info_);
   for (uint32_t device_index = 0;
        device_index < capture_device_info_->NumberOfDevices(); ++device_index) {
@@ -412,23 +414,33 @@ ViECapturer* ViEInputManager::ViECapturePtr(int capture_id) const {
 
   return static_cast<ViECapturer*>(ViEFrameProvider(capture_id));
 }
-VideoCaptureModule::DeviceInfo* ViEInputManager::GetDeviceInfo(){
-    //vagouzhou@gmail.com>> to create different DeviceInfo by _config;
-    bool bUseVideoDeviceInfo = true;
-    bool bUseAppDeviceInfo = false;
-    if(config_.Get<CaptureDeviceType>().isScreenDevice){
-        bUseVideoDeviceInfo = false;
-        bUseAppDeviceInfo = config_.Get<CaptureDeviceType>().isApplication;
+
+// Create different DeviceInfo by _config;
+VideoCaptureModule::DeviceInfo* ViEInputManager::GetDeviceInfo() {
+  CaptureDeviceType type = config_.Get<CaptureDeviceInfo>().type;
+
+  if (capture_device_info_ == NULL) {
+    switch (type) {
+      case CaptureDeviceType::Screen:
+      case CaptureDeviceType::Application:
+      case CaptureDeviceType::Window:
+#if !defined(ANDROID)
+        capture_device_info_ = DesktopCaptureImpl::CreateDeviceInfo(ViEModuleId(engine_id_),
+                                                                    type);
+#endif
+        break;
+      case CaptureDeviceType::Browser:
+        capture_device_info_ = BrowserDeviceInfoImpl::CreateDeviceInfo();
+        break;
+      case CaptureDeviceType::Camera:
+        capture_device_info_ = VideoCaptureFactory::CreateDeviceInfo(ViEModuleId(engine_id_));
+        break;
+      default:
+        // Don't try to build anything for unknown/unsupported types
+        break;
     }
-    if (capture_device_info_ == NULL){
-        if(bUseVideoDeviceInfo){
-            capture_device_info_ = VideoCaptureFactory::CreateDeviceInfo(ViEModuleId(engine_id_));
-        }
-        else {
-            capture_device_info_ = DesktopCaptureImpl::CreateDeviceInfo(ViEModuleId(engine_id_),bUseAppDeviceInfo);
-        }
-    }
-    return capture_device_info_;
+  }
+  return capture_device_info_;
 }
 ViEInputManagerScoped::ViEInputManagerScoped(
     const ViEInputManager& vie_input_manager)

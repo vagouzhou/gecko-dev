@@ -16,11 +16,12 @@
 #include "GeckoProfiler.h"              // for profiler_set_frame_number, etc
 #include "ImageLayerComposite.h"        // for ImageLayerComposite
 #include "Layers.h"                     // for Layer, ContainerLayer, etc
+#include "LayerScope.h"                 // for LayerScope Tool
+#include "protobuf/LayerScopePacket.pb.h" // for protobuf (LayerScope)
 #include "ThebesLayerComposite.h"       // for ThebesLayerComposite
 #include "TiledLayerBuffer.h"           // for TiledLayerComposer
 #include "Units.h"                      // for ScreenIntRect
 #include "gfx2DGlue.h"                  // for ToMatrix4x4
-#include "gfx3DMatrix.h"                // for gfx3DMatrix
 #include "gfxPrefs.h"                   // for gfxPrefs
 #ifdef XP_MACOSX
 #include "gfxPlatformMac.h"
@@ -143,6 +144,13 @@ LayerManagerComposite::UpdateRenderBounds(const nsIntRect& aRect)
   mRenderBounds = aRect;
 }
 
+bool
+LayerManagerComposite::AreComponentAlphaLayersEnabled()
+{
+  return Compositor::GetBackend() != LayersBackend::LAYERS_BASIC &&
+         LayerManager::AreComponentAlphaLayersEnabled();
+}
+
 void
 LayerManagerComposite::BeginTransaction()
 {
@@ -247,6 +255,9 @@ LayerManagerComposite::EndTransaction(DrawThebesLayerCallback aCallback,
 
     Render();
     mGeometryChanged = false;
+  } else {
+    // Modified layer tree
+    mGeometryChanged = true;
   }
 
   mCompositor->ClearTargetContext();
@@ -410,12 +421,26 @@ LayerManagerComposite::Render()
     return;
   }
 
+  /** Our more efficient but less powerful alter ego, if one is available. */
+  nsRefPtr<Composer2D> composer2D = mCompositor->GetWidget()->GetComposer2D();
+
+  // Set LayerScope begin/end frame
+  LayerScopeAutoFrame frame(PR_Now());
+
+  // Dump to console
   if (gfxPrefs::LayersDump()) {
     this->Dump();
   }
 
-  /** Our more efficient but less powerful alter ego, if one is available. */
-  nsRefPtr<Composer2D> composer2D = mCompositor->GetWidget()->GetComposer2D();
+  // Dump to LayerScope Viewer
+  if (LayerScope::CheckSendable()) {
+    // Create a LayersPacket, dump Layers into it and transfer the
+    // packet('s ownership) to LayerScope.
+    auto packet = MakeUnique<layerscope::Packet>();
+    layerscope::LayersPacket* layersPacket = packet->mutable_layers();
+    this->Dump(layersPacket);
+    LayerScope::SendLayerDump(Move(packet));
+  }
 
   if (!mTarget && composer2D && composer2D->TryRender(mRoot, mWorldMatrix, mGeometryChanged)) {
     if (mFPS) {
@@ -425,6 +450,8 @@ LayerManagerComposite::Render()
       }
     }
     mCompositor->EndFrameForExternalComposition(mWorldMatrix);
+    // Reset the invalid region as compositing is done
+    mInvalidRegion.SetEmpty();
     return;
   }
 
@@ -475,6 +502,7 @@ LayerManagerComposite::Render()
                                                                actualBounds.height));
 
   // Render our layers.
+  RootLayer()->Prepare(clipRect);
   RootLayer()->RenderLayer(clipRect);
 
   if (!mRegionToClear.IsEmpty()) {
@@ -535,7 +563,7 @@ LayerManagerComposite::WorldTransformRect(nsIntRect& aRect)
 static void
 SubtractTransformedRegion(nsIntRegion& aRegion,
                           const nsIntRegion& aRegionToSubtract,
-                          const gfx3DMatrix& aTransform)
+                          const Matrix4x4& aTransform)
 {
   if (aRegionToSubtract.IsEmpty()) {
     return;
@@ -545,7 +573,7 @@ SubtractTransformedRegion(nsIntRegion& aRegion,
   // subtract it from the screen region.
   nsIntRegionRectIterator it(aRegionToSubtract);
   while (const nsIntRect* rect = it.Next()) {
-    gfxRect incompleteRect = aTransform.TransformBounds(gfxRect(*rect));
+    Rect incompleteRect = aTransform.TransformBounds(ToRect(*rect));
     aRegion.Sub(aRegion, nsIntRect(incompleteRect.x,
                                    incompleteRect.y,
                                    incompleteRect.width,
@@ -557,7 +585,7 @@ SubtractTransformedRegion(nsIntRegion& aRegion,
 LayerManagerComposite::ComputeRenderIntegrityInternal(Layer* aLayer,
                                                       nsIntRegion& aScreenRegion,
                                                       nsIntRegion& aLowPrecisionScreenRegion,
-                                                      const gfx3DMatrix& aTransform)
+                                                      const Matrix4x4& aTransform)
 {
   if (aLayer->GetOpacity() <= 0.f ||
       (aScreenRegion.IsEmpty() && aLowPrecisionScreenRegion.IsEmpty())) {
@@ -568,10 +596,10 @@ LayerManagerComposite::ComputeRenderIntegrityInternal(Layer* aLayer,
   ContainerLayer* container = aLayer->AsContainerLayer();
   if (container) {
     // Accumulate the transform of intermediate surfaces
-    gfx3DMatrix transform = aTransform;
+    Matrix4x4 transform = aTransform;
     if (container->UseIntermediateSurface()) {
-      gfx::To3DMatrix(aLayer->GetEffectiveTransform(), transform);
-      transform.PreMultiply(aTransform);
+      transform = aLayer->GetEffectiveTransform();
+      transform = aTransform * transform;
     }
     for (Layer* child = aLayer->GetFirstChild(); child;
          child = child->GetNextSibling()) {
@@ -592,9 +620,8 @@ LayerManagerComposite::ComputeRenderIntegrityInternal(Layer* aLayer,
 
   if (!incompleteRegion.IsEmpty()) {
     // Calculate the transform to get between screen and layer space
-    gfx3DMatrix transformToScreen;
-    To3DMatrix(aLayer->GetEffectiveTransform(), transformToScreen);
-    transformToScreen.PreMultiply(aTransform);
+    Matrix4x4 transformToScreen = aLayer->GetEffectiveTransform();
+    transformToScreen = aTransform * transformToScreen;
 
     SubtractTransformedRegion(aScreenRegion, incompleteRegion, transformToScreen);
 
@@ -622,14 +649,12 @@ LayerManagerComposite::ComputeRenderIntegrityInternal(Layer* aLayer,
 #ifdef MOZ_ANDROID_OMTC
 static float
 GetDisplayportCoverage(const CSSRect& aDisplayPort,
-                       const gfx3DMatrix& aTransformToScreen,
+                       const Matrix4x4& aTransformToScreen,
                        const nsIntRect& aScreenRect)
 {
-  gfxRect transformedDisplayport =
-    aTransformToScreen.TransformBounds(gfxRect(aDisplayPort.x,
-                                               aDisplayPort.y,
-                                               aDisplayPort.width,
-                                               aDisplayPort.height));
+  Rect transformedDisplayport =
+    aTransformToScreen.TransformBounds(aDisplayPort.ToUnknownRect());
+
   transformedDisplayport.RoundOut();
   nsIntRect displayport = nsIntRect(transformedDisplayport.x,
                                     transformedDisplayport.y,
@@ -655,10 +680,11 @@ LayerManagerComposite::ComputeRenderIntegrity()
   }
 
   const FrameMetrics& rootMetrics = root->AsContainerLayer()->GetFrameMetrics();
-  nsIntRect screenRect(rootMetrics.mCompositionBounds.x,
-                       rootMetrics.mCompositionBounds.y,
-                       rootMetrics.mCompositionBounds.width,
-                       rootMetrics.mCompositionBounds.height);
+  ParentLayerIntRect bounds = RoundedToInt(rootMetrics.mCompositionBounds);
+  nsIntRect screenRect(bounds.x,
+                       bounds.y,
+                       bounds.width,
+                       bounds.height);
 
   float lowPrecisionMultiplier = 1.0f;
   float highPrecisionMultiplier = 1.0f;
@@ -671,16 +697,15 @@ LayerManagerComposite::ComputeRenderIntegrity()
     // This is derived from the code in
     // AsyncCompositionManager::TransformScrollableLayer
     const FrameMetrics& metrics = primaryScrollable->AsContainerLayer()->GetFrameMetrics();
-    gfx3DMatrix transform;
-    gfx::To3DMatrix(primaryScrollable->GetEffectiveTransform(), transform);
+    Matrix4x4 transform = primaryScrollable->GetEffectiveTransform();
     transform.ScalePost(metrics.mResolution.scale, metrics.mResolution.scale, 1);
 
     // Clip the screen rect to the document bounds
-    gfxRect documentBounds =
-      transform.TransformBounds(gfxRect(metrics.mScrollableRect.x - metrics.GetScrollOffset().x,
-                                        metrics.mScrollableRect.y - metrics.GetScrollOffset().y,
-                                        metrics.mScrollableRect.width,
-                                        metrics.mScrollableRect.height));
+    Rect documentBounds =
+      transform.TransformBounds(Rect(metrics.mScrollableRect.x - metrics.GetScrollOffset().x,
+                                     metrics.mScrollableRect.y - metrics.GetScrollOffset().y,
+                                     metrics.mScrollableRect.width,
+                                     metrics.mScrollableRect.height));
     documentBounds.RoundOut();
     screenRect = screenRect.Intersect(nsIntRect(documentBounds.x, documentBounds.y,
                                                 documentBounds.width, documentBounds.height));
@@ -719,7 +744,7 @@ LayerManagerComposite::ComputeRenderIntegrity()
 
   nsIntRegion screenRegion(screenRect);
   nsIntRegion lowPrecisionScreenRegion(screenRect);
-  gfx3DMatrix transform;
+  Matrix4x4 transform;
   ComputeRenderIntegrityInternal(root, screenRegion,
                                  lowPrecisionScreenRegion, transform);
 
@@ -803,7 +828,7 @@ LayerManagerComposite::CreateRefLayerComposite()
 LayerManagerComposite::AutoAddMaskEffect::AutoAddMaskEffect(Layer* aMaskLayer,
                                                             EffectChain& aEffects,
                                                             bool aIs3D)
-  : mCompositable(nullptr)
+  : mCompositable(nullptr), mFailed(false)
 {
   if (!aMaskLayer) {
     return;
@@ -812,11 +837,13 @@ LayerManagerComposite::AutoAddMaskEffect::AutoAddMaskEffect(Layer* aMaskLayer,
   mCompositable = ToLayerComposite(aMaskLayer)->GetCompositableHost();
   if (!mCompositable) {
     NS_WARNING("Mask layer with no compositable host");
+    mFailed = true;
     return;
   }
 
   if (!mCompositable->AddMaskEffect(aEffects, aMaskLayer->GetEffectiveTransform(), aIs3D)) {
     mCompositable = nullptr;
+    mFailed = true;
   }
 }
 

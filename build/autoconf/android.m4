@@ -221,7 +221,7 @@ if test "$OS_TARGET" = "Android" -a -z "$gonkdir"; then
 
     AC_SUBST(ANDROID_CPU_ARCH)
 
-    if test -z "$STLPORT_CPPFLAGS$STLPORT_LDFLAGS$STLPORT_LIBS"; then
+    if test -z "$STLPORT_CPPFLAGS$STLPORT_LIBS"; then
         if test -n "$MOZ_ANDROID_LIBSTDCXX" ; then
             if test -e "$android_ndk/sources/cxx-stl/gnu-libstdc++/$android_gnu_compiler_version/libs/$ANDROID_CPU_ARCH/libgnustl_static.a"; then
                 # android-ndk-r8b
@@ -381,11 +381,14 @@ case "$target" in
         AC_SUBST(ANDROID_MEDIAROUTER_RES)
     fi
 
-    MOZ_PATH_PROG(ZIPALIGN, zipalign, :, [$ANDROID_TOOLS])
-    MOZ_PATH_PROG(DX, dx, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(AAPT, aapt, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(AIDL, aidl, :, [$ANDROID_BUILD_TOOLS])
-    MOZ_PATH_PROG(ADB, adb, :, [$ANDROID_PLATFORM_TOOLS])
+    dnl Google has a history of moving the Android tools around.  We don't
+    dnl care where they are, so let's try to find them anywhere we can.
+    ALL_ANDROID_TOOLS_PATHS="$ANDROID_TOOLS:$ANDROID_BUILD_TOOLS:$ANDROID_PLATFORM_TOOLS"
+    MOZ_PATH_PROG(ZIPALIGN, zipalign, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(DX, dx, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(AAPT, aapt, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(AIDL, aidl, :, [$ALL_ANDROID_TOOLS_PATHS])
+    MOZ_PATH_PROG(ADB, adb, :, [$ALL_ANDROID_TOOLS_PATHS])
 
     if test -z "$ZIPALIGN" -o "$ZIPALIGN" = ":"; then
       AC_MSG_ERROR([The program zipalign was not found.  Use --with-android-sdk={android-sdk-dir}.])
@@ -404,5 +407,31 @@ case "$target" in
     fi
     ;;
 esac
+
+MOZ_ARG_WITH_STRING(android-min-sdk,
+[  --with-android-min-sdk=[VER]     Impose a minimum Firefox for Android SDK version],
+[ MOZ_ANDROID_MIN_SDK_VERSION=$withval ])
+
+MOZ_ARG_WITH_STRING(android-max-sdk,
+[  --with-android-max-sdk=[VER]     Impose a maximum Firefox for Android SDK version],
+[ MOZ_ANDROID_MAX_SDK_VERSION=$withval ])
+
+if test -n "$MOZ_ANDROID_MIN_SDK_VERSION"; then
+    if test -n "$MOZ_ANDROID_MAX_SDK_VERSION"; then
+        if test $MOZ_ANDROID_MAX_SDK_VERSION -lt $MOZ_ANDROID_MIN_SDK_VERSION ; then
+            AC_MSG_ERROR([--with-android-max-sdk must be at least the value of --with-android-min-sdk.])
+        fi
+    fi
+
+    if test $MOZ_ANDROID_MIN_SDK_VERSION -gt $ANDROID_TARGET_SDK ; then
+        AC_MSG_ERROR([--with-android-min-sdk is expected to be less than $ANDROID_TARGET_SDK])
+    fi
+
+    AC_DEFINE_UNQUOTED(MOZ_ANDROID_MIN_SDK_VERSION, $MOZ_ANDROID_MIN_SDK_VERSION)
+fi
+
+if test -n "$MOZ_ANDROID_MAX_SDK_VERSION"; then
+    AC_DEFINE_UNQUOTED(MOZ_ANDROID_MAX_SDK_VERSION, $MOZ_ANDROID_MAX_SDK_VERSION)
+fi
 
 ])

@@ -248,7 +248,7 @@ class AssemblerX86Shared : public AssemblerShared
         MOZ_ASSUME_UNREACHABLE("Unknown double condition");
     }
 
-    static void staticAsserts() {
+    static void StaticAsserts() {
         // DoubleConditionBits should not interfere with x86 condition codes.
         JS_STATIC_ASSERT(!((Equal | NotEqual | Above | AboveOrEqual | Below |
                             BelowOrEqual | Parity | NoParity) & DoubleConditionBits));
@@ -282,7 +282,7 @@ class AssemblerX86Shared : public AssemblerShared
 
     void executableCopy(void *buffer);
     void processCodeLabels(uint8_t *rawCode);
-    static int32_t extractCodeLabelOffset(uint8_t *code) {
+    static int32_t ExtractCodeLabelOffset(uint8_t *code) {
         return *(uintptr_t *)code;
     }
     void copyJumpRelocationTable(uint8_t *dest);
@@ -402,15 +402,68 @@ class AssemblerX86Shared : public AssemblerShared
         masm.xchgl_rr(src.code(), dest.code());
     }
 
-    // Eventually movapd and movaps should be overloaded to support loads and
+    // Eventually movapd should be overloaded to support loads and
     // stores too.
     void movapd(FloatRegister src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movapd_rr(src.code(), dest.code());
     }
+
     void movaps(FloatRegister src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         masm.movaps_rr(src.code(), dest.code());
+    }
+    void movaps(const Operand &src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
+        switch (src.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movaps_mr(src.disp(), src.base(), dest.code());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movaps_mr(src.disp(), src.base(), src.index(), src.scale(), dest.code());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
+    void movaps(FloatRegister src, const Operand &dest) {
+        JS_ASSERT(HasSSE2());
+        switch (dest.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movaps_rm(src.code(), dest.disp(), dest.base());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movaps_rm(src.code(), dest.disp(), dest.base(), dest.index(), dest.scale());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
+    void movups(const Operand &src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
+        switch (src.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movups_mr(src.disp(), src.base(), dest.code());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movups_mr(src.disp(), src.base(), src.index(), src.scale(), dest.code());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
+    void movups(FloatRegister src, const Operand &dest) {
+        JS_ASSERT(HasSSE2());
+        switch (dest.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movups_rm(src.code(), dest.disp(), dest.base());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movups_rm(src.code(), dest.disp(), dest.base(), dest.index(), dest.scale());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
     }
 
     // movsd and movss are only provided in load/store form since the
@@ -440,6 +493,32 @@ class AssemblerX86Shared : public AssemblerShared
     void movss(FloatRegister src, const BaseIndex &dest) {
         masm.movss_rm(src.code(), dest.offset, dest.base.code(), dest.index.code(), dest.scale);
     }
+    void movdqu(const Operand &src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
+        switch (src.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movdqu_mr(src.disp(), src.base(), dest.code());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movdqu_mr(src.disp(), src.base(), src.index(), src.scale(), dest.code());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
+    void movdqu(FloatRegister src, const Operand &dest) {
+        JS_ASSERT(HasSSE2());
+        switch (dest.kind()) {
+          case Operand::MEM_REG_DISP:
+            masm.movdqu_rm(src.code(), dest.disp(), dest.base());
+            break;
+          case Operand::MEM_SCALE:
+            masm.movdqu_rm(src.code(), dest.disp(), dest.base(), dest.index(), dest.scale());
+            break;
+          default:
+            MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
+        }
+    }
     void movdqa(const Operand &src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
         switch (src.kind()) {
@@ -465,6 +544,10 @@ class AssemblerX86Shared : public AssemblerShared
           default:
             MOZ_ASSUME_UNREACHABLE("unexpected operand kind");
         }
+    }
+    void movdqa(FloatRegister src, FloatRegister dest) {
+        JS_ASSERT(HasSSE2());
+        masm.movdqa_rr(src.code(), dest.code());
     }
     void cvtss2sd(FloatRegister src, FloatRegister dest) {
         JS_ASSERT(HasSSE2());
@@ -653,6 +736,7 @@ class AssemblerX86Shared : public AssemblerShared
 
   public:
     void nop() { masm.nop(); }
+    void twoByteNop() { masm.twoByteNop(); }
     void j(Condition cond, Label *label) { jSrc(cond, label); }
     void jmp(Label *label) { jmpSrc(label); }
     void j(Condition cond, RepatchLabel *label) { jSrc(cond, label); }
@@ -860,6 +944,10 @@ class AssemblerX86Shared : public AssemblerShared
     }
     void cmpl(const Operand &op, ImmPtr imm) {
         cmpl(op, ImmWord(uintptr_t(imm.value)));
+    }
+    CodeOffsetLabel cmplWithPatch(Register lhs, Imm32 rhs) {
+        masm.cmpl_ir_force32(rhs.value, lhs.code());
+        return CodeOffsetLabel(masm.currentOffset());
     }
     void cmpw(Register lhs, Register rhs) {
         masm.cmpw_rr(lhs.code(), rhs.code());
@@ -1225,6 +1313,9 @@ class AssemblerX86Shared : public AssemblerShared
     }
     void pop(Register src) {
         masm.pop_r(src.code());
+    }
+    void pop(const Address &src) {
+        masm.pop_m(src.offset, src.base.code());
     }
 
     void pushFlags() {
@@ -1640,46 +1731,46 @@ class AssemblerX86Shared : public AssemblerShared
 
     // Patching.
 
-    static size_t patchWrite_NearCallSize() {
+    static size_t PatchWrite_NearCallSize() {
         return 5;
     }
-    static uintptr_t getPointer(uint8_t *instPtr) {
+    static uintptr_t GetPointer(uint8_t *instPtr) {
         uintptr_t *ptr = ((uintptr_t *) instPtr) - 1;
         return *ptr;
     }
     // Write a relative call at the start location |dataLabel|.
     // Note that this DOES NOT patch data that comes before |label|.
-    static void patchWrite_NearCall(CodeLocationLabel startLabel, CodeLocationLabel target) {
+    static void PatchWrite_NearCall(CodeLocationLabel startLabel, CodeLocationLabel target) {
         uint8_t *start = startLabel.raw();
         *start = 0xE8;
-        ptrdiff_t offset = target - startLabel - patchWrite_NearCallSize();
+        ptrdiff_t offset = target - startLabel - PatchWrite_NearCallSize();
         JS_ASSERT(int32_t(offset) == offset);
         *((int32_t *) (start + 1)) = offset;
     }
 
-    static void patchWrite_Imm32(CodeLocationLabel dataLabel, Imm32 toWrite) {
+    static void PatchWrite_Imm32(CodeLocationLabel dataLabel, Imm32 toWrite) {
         *((int32_t *) dataLabel.raw() - 1) = toWrite.value;
     }
 
-    static void patchDataWithValueCheck(CodeLocationLabel data, PatchedImmPtr newData,
+    static void PatchDataWithValueCheck(CodeLocationLabel data, PatchedImmPtr newData,
                                         PatchedImmPtr expectedData) {
         // The pointer given is a pointer to *after* the data.
         uintptr_t *ptr = ((uintptr_t *) data.raw()) - 1;
         JS_ASSERT(*ptr == (uintptr_t)expectedData.value);
         *ptr = (uintptr_t)newData.value;
     }
-    static void patchDataWithValueCheck(CodeLocationLabel data, ImmPtr newData, ImmPtr expectedData) {
-        patchDataWithValueCheck(data, PatchedImmPtr(newData.value), PatchedImmPtr(expectedData.value));
+    static void PatchDataWithValueCheck(CodeLocationLabel data, ImmPtr newData, ImmPtr expectedData) {
+        PatchDataWithValueCheck(data, PatchedImmPtr(newData.value), PatchedImmPtr(expectedData.value));
     }
 
-    static void patchInstructionImmediate(uint8_t *code, PatchedImmPtr imm) {
+    static void PatchInstructionImmediate(uint8_t *code, PatchedImmPtr imm) {
         MOZ_ASSUME_UNREACHABLE("Unused.");
     }
 
-    static uint32_t nopSize() {
+    static uint32_t NopSize() {
         return 1;
     }
-    static uint8_t *nextInstruction(uint8_t *cur, uint32_t *count) {
+    static uint8_t *NextInstruction(uint8_t *cur, uint32_t *count) {
         MOZ_ASSUME_UNREACHABLE("nextInstruction NYI on x86");
     }
 

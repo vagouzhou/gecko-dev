@@ -59,7 +59,8 @@ this.PermissionsInstaller = {
   installPermissions: function installPermissions(aApp, aIsReinstall, aOnError,
                                                   aIsSystemUpdate) {
     try {
-      let newManifest = new ManifestHelper(aApp.manifest, aApp.origin);
+      let newManifest =
+        new ManifestHelper(aApp.manifest, aApp.origin, aApp.manifestURL);
       if (!newManifest.permissions && !aIsReinstall) {
         return;
       }
@@ -167,7 +168,7 @@ this.PermissionsInstaller = {
             // If it's not a system update, then we should keep the prompt
             // permissions that have been granted or denied previously.
             permValue =
-              PermissionSettingsModule.getPermission(permName,
+              PermissionSettingsModule.getPermission(expandedPermNames[idx],
                                                      aApp.manifestURL,
                                                      aApp.origin,
                                                      false);

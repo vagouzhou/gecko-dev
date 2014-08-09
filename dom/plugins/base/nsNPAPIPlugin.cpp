@@ -1303,10 +1303,10 @@ _utf8fromidentifier(NPIdentifier id)
   }
 
   JSString *str = NPIdentifierToString(id);
+  nsAutoString autoStr;
+  AssignJSFlatString(autoStr, JS_ASSERT_STRING_IS_FLAT(str));
 
-  return
-    ToNewUTF8String(nsDependentString(::JS_GetInternedStringChars(str),
-                                      ::JS_GetStringLength(str)));
+  return ToNewUTF8String(autoStr);
 }
 
 int32_t
@@ -1483,8 +1483,8 @@ _evaluate(NPP npp, NPObject* npobj, NPString *script, NPVariant *result)
     return false;
   }
 
-  AutoSafeJSContext cx;
-  JSAutoCompartment ac(cx, win->FastGetGlobalJSObject());
+  dom::AutoEntryScript aes(win);
+  JSContext* cx = aes.cx();
 
   JS::Rooted<JSObject*> obj(cx, nsNPObjWrapper::GetNewOrUsed(npp, cx, npobj));
 

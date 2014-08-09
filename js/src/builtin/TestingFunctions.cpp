@@ -7,7 +7,7 @@
 #include "builtin/TestingFunctions.h"
 
 #include "mozilla/Move.h"
-#include "mozilla/Scoped.h"
+#include "mozilla/UniquePtr.h"
 
 #include "jsapi.h"
 #include "jscntxt.h"
@@ -19,8 +19,8 @@
 #endif
 #include "jswrapper.h"
 
-#include "jit/AsmJS.h"
-#include "jit/AsmJSLink.h"
+#include "asmjs/AsmJSLink.h"
+#include "asmjs/AsmJSValidate.h"
 #include "js/HashTable.h"
 #include "js/StructuredClone.h"
 #include "js/UbiNode.h"
@@ -41,7 +41,7 @@ using namespace JS;
 
 using mozilla::ArrayLength;
 using mozilla::Move;
-using mozilla::ScopedFreePtr;
+using mozilla::UniquePtr;
 
 // If fuzzingSafe is set, remove functionality that could cause problems with
 // fuzzers. Set this via the environment variable MOZ_FUZZING_SAFE.
@@ -121,14 +121,6 @@ GetBuildConfiguration(JSContext *cx, unsigned argc, jsval *vp)
     value = BooleanValue(false);
 #endif
     if (!JS_SetProperty(cx, info, "has-gczeal", value))
-        return false;
-
-#ifdef JS_THREADSAFE
-    value = BooleanValue(true);
-#else
-    value = BooleanValue(false);
-#endif
-    if (!JS_SetProperty(cx, info, "threadsafe", value))
         return false;
 
 #ifdef JS_MORE_DETERMINISTIC
@@ -247,7 +239,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
     }
 
 #ifndef JS_MORE_DETERMINISTIC
-    size_t preBytes = cx->runtime()->gc.bytes;
+    size_t preBytes = cx->runtime()->gc.usage.gcBytes();
 #endif
 
     if (compartment)
@@ -259,7 +251,7 @@ GC(JSContext *cx, unsigned argc, jsval *vp)
     char buf[256] = { '\0' };
 #ifndef JS_MORE_DETERMINISTIC
     JS_snprintf(buf, sizeof(buf), "before %lu, after %lu\n",
-                (unsigned long)preBytes, (unsigned long)cx->runtime()->gc.bytes);
+                (unsigned long)preBytes, (unsigned long)cx->runtime()->gc.usage.gcBytes());
 #endif
     JSString *str = JS_NewStringCopyZ(cx, buf);
     if (!str)
@@ -291,7 +283,9 @@ static const struct ParamPair {
     {"gcBytes",             JSGC_BYTES},
     {"gcNumber",            JSGC_NUMBER},
     {"sliceTimeBudget",     JSGC_SLICE_TIME_BUDGET},
-    {"markStackLimit",      JSGC_MARK_STACK_LIMIT}
+    {"markStackLimit",      JSGC_MARK_STACK_LIMIT},
+    {"minEmptyChunkCount",  JSGC_MIN_EMPTY_CHUNK_COUNT},
+    {"maxEmptyChunkCount",  JSGC_MAX_EMPTY_CHUNK_COUNT}
 };
 
 // Keep this in sync with above params.
@@ -588,7 +582,7 @@ GCState(JSContext *cx, unsigned argc, jsval *vp)
     else if (globalState == gc::SWEEP)
         state = "sweep";
     else
-        MOZ_ASSUME_UNREACHABLE("Unobserveable global GC state");
+        MOZ_CRASH("Unobserveable global GC state");
 
     JSString *str = JS_NewStringCopyZ(cx, state);
     if (!str)
@@ -880,10 +874,25 @@ static bool
 SaveStack(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
+
+    unsigned maxFrameCount = 0;
+    if (args.length() >= 1) {
+        double d;
+        if (!ToNumber(cx, args[0], &d))
+            return false;
+        if (d < 0) {
+            js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
+                                     JSDVG_SEARCH_STACK, args[0], JS::NullPtr(),
+                                     "not a valid maximum frame count", NULL);
+            return false;
+        }
+        maxFrameCount = d;
+    }
+
     Rooted<JSObject*> stack(cx);
-    if (!JS::CaptureCurrentStack(cx, &stack))
+    if (!JS::CaptureCurrentStack(cx, &stack, maxFrameCount))
         return false;
-    args.rval().setObject(*stack);
+    args.rval().setObjectOrNull(stack);
     return true;
 }
 
@@ -1098,7 +1107,7 @@ static bool
 EnableOsiPointRegisterChecks(JSContext *, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-#if defined(JS_ION) && defined(CHECK_OSIPOINT_REGISTERS)
+#ifdef CHECK_OSIPOINT_REGISTERS
     jit::js_JitOptions.checkOsiPointRegisters = true;
 #endif
     args.rval().setUndefined();
@@ -1316,9 +1325,7 @@ static bool
 SetIonCheckGraphCoherency(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-#ifdef JS_ION
     jit::js_JitOptions.checkGraphConsistency = ToBoolean(args.get(0));
-#endif
     args.rval().setUndefined();
     return true;
 }
@@ -1588,11 +1595,10 @@ static bool
 HelperThreadCount(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
-#ifdef JS_THREADSAFE
-    args.rval().setInt32(HelperThreadState().threadCount);
-#else
-    args.rval().setInt32(0);
-#endif
+    if (CanUseExtraThreads())
+        args.rval().setInt32(HelperThreadState().threadCount);
+    else
+        args.rval().setInt32(0);
     return true;
 }
 
@@ -1610,7 +1616,7 @@ EnableTraceLogger(JSContext *cx, unsigned argc, jsval *vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
     TraceLogger *logger = TraceLoggerForMainThread(cx->runtime());
-    args.rval().setBoolean(TraceLoggerEnable(logger));
+    args.rval().setBoolean(TraceLoggerEnable(logger, cx));
 
     return true;
 }
@@ -1663,20 +1669,22 @@ ReportLargeAllocationFailure(JSContext *cx, unsigned argc, jsval *vp)
 
 namespace heaptools {
 
+typedef UniquePtr<jschar[], JS::FreePolicy> EdgeName;
+
 // An edge to a node from its predecessor in a path through the graph.
 class BackEdge {
     // The node from which this edge starts.
     JS::ubi::Node predecessor_;
 
-    // The name of this edge. We own this storage.
-    ScopedFreePtr<jschar> name_;
+    // The name of this edge.
+    EdgeName name_;
 
   public:
     BackEdge() : name_(nullptr) { }
-    // Construct an initialized back edge. Take ownership of |name|.
-    BackEdge(JS::ubi::Node predecessor, jschar *name)
-        : predecessor_(predecessor), name_(name) { }
-    BackEdge(BackEdge &&rhs) : predecessor_(rhs.predecessor_), name_(rhs.name_.forget()) { }
+    // Construct an initialized back edge, taking ownership of |name|.
+    BackEdge(JS::ubi::Node predecessor, EdgeName name)
+        : predecessor_(predecessor), name_(Move(name)) { }
+    BackEdge(BackEdge &&rhs) : predecessor_(rhs.predecessor_), name_(Move(rhs.name_)) { }
     BackEdge &operator=(BackEdge &&rhs) {
         MOZ_ASSERT(&rhs != this);
         this->~BackEdge();
@@ -1684,7 +1692,7 @@ class BackEdge {
         return *this;
     }
 
-    jschar *forgetName() { return name_.forget(); }
+    EdgeName forgetName() { return Move(name_); }
     JS::ubi::Node predecessor() const { return predecessor_; }
 
   private:
@@ -1699,7 +1707,7 @@ struct FindPathHandler {
     typedef JS::ubi::BreadthFirst<FindPathHandler> Traversal;
 
     FindPathHandler(JS::ubi::Node start, JS::ubi::Node target,
-                    AutoValueVector &nodes, Vector<ScopedFreePtr<jschar> > &edges)
+                    AutoValueVector &nodes, Vector<EdgeName> &edges)
       : start(start), target(target), foundPath(false),
         nodes(nodes), edges(edges) { }
 
@@ -1714,10 +1722,10 @@ struct FindPathHandler {
 
         // Record how we reached this node. This is the last edge on a
         // shortest path to this node.
-        jschar *edgeName = js_strdup(traversal.cx, edge.name);
+        EdgeName edgeName = DuplicateString(traversal.cx, edge.name);
         if (!edgeName)
             return false;
-        *backEdge = mozilla::Move(BackEdge(origin, edgeName));
+        *backEdge = mozilla::Move(BackEdge(origin, Move(edgeName)));
 
         // Have we reached our final target node?
         if (edge.referent == target) {
@@ -1767,7 +1775,7 @@ struct FindPathHandler {
     // - edges[0] is the name of the edge from nodes[0] to the target.
     // - The last node, nodes[n-1], is the start node.
     AutoValueVector &nodes;
-    Vector<ScopedFreePtr<jschar> > &edges;
+    Vector<EdgeName> &edges;
 };
 
 } // namespace heaptools
@@ -1782,26 +1790,25 @@ FindPath(JSContext *cx, unsigned argc, jsval *vp)
         return false;
     }
 
-    // We don't ToString non-objects given as 'start' or 'target'. We can't
-    // see edges to non-string primitive values, and it doesn't make much
-    // sense to ask for paths to or from a freshly allocated string, so
-    // if a non-string primitive appears here it's probably a mistake.
-    if (!args[0].isObject() && !args[0].isString()) {
+    // We don't ToString non-objects given as 'start' or 'target', because this
+    // test is all about object identity, and ToString doesn't preserve that.
+    // Non-GCThing endpoints don't make much sense.
+    if (!args[0].isObject() && !args[0].isString() && !args[0].isSymbol()) {
         js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
                                  JSDVG_SEARCH_STACK, args[0], JS::NullPtr(),
-                                 "neither an object nor a string", NULL);
+                                 "not an object, string, or symbol", NULL);
         return false;
     }
 
-    if (!args[1].isObject() && !args[1].isString()) {
+    if (!args[1].isObject() && !args[1].isString() && !args[1].isSymbol()) {
         js_ReportValueErrorFlags(cx, JSREPORT_ERROR, JSMSG_UNEXPECTED_TYPE,
                                  JSDVG_SEARCH_STACK, args[0], JS::NullPtr(),
-                                 "neither an object nor a string", NULL);
+                                 "not an object, string, or symbol", NULL);
         return false;
     }
 
     AutoValueVector nodes(cx);
-    Vector<ScopedFreePtr<jschar> > edges(cx);
+    Vector<heaptools::EdgeName> edges(cx);
 
     {
         // We can't tolerate the GC moving things around while we're searching
@@ -1829,10 +1836,13 @@ FindPath(JSContext *cx, unsigned argc, jsval *vp)
     // Construct a JavaScript array describing the path from the start to the
     // target. Each element has the form:
     //
-    //   { node: <object or string>, edge: <string describing outgoing edge from node> }
+    //   {
+    //     node: <object or string or symbol>,
+    //     edge: <string describing outgoing edge from node>
+    //   }
     //
-    // or, if the node is some internal thing, that isn't a proper
-    // JavaScript value:
+    // or, if the node is some internal thing that isn't a proper JavaScript
+    // value:
     //
     //   { node: undefined, edge: <string> }
     size_t length = nodes.length();
@@ -1853,19 +1863,61 @@ FindPath(JSContext *cx, unsigned argc, jsval *vp)
                                JSPROP_ENUMERATE, nullptr, nullptr))
             return false;
 
-        RootedString edge(cx, NewString<CanGC>(cx, edges[i].get(), js_strlen(edges[i])));
-        if (!edge)
+        heaptools::EdgeName edgeName = Move(edges[i]);
+
+        RootedString edgeStr(cx, NewString<CanGC>(cx, edgeName.get(), js_strlen(edgeName.get())));
+        if (!edgeStr)
             return false;
-        edges[i].forget();
-        RootedValue edgeString(cx, StringValue(edge));
-        if (!JS_DefineProperty(cx, obj, "edge", edgeString,
-                               JSPROP_ENUMERATE, nullptr, nullptr))
+        edgeName.release(); // edgeStr acquired ownership
+
+        if (!JS_DefineProperty(cx, obj, "edge", edgeStr, JSPROP_ENUMERATE, nullptr, nullptr))
             return false;
 
         result->setDenseElement(length - i - 1, ObjectValue(*obj));
     }
 
     args.rval().setObject(*result);
+    return true;
+}
+
+static bool
+EvalReturningScope(JSContext *cx, unsigned argc, jsval *vp)
+{
+    CallArgs args = CallArgsFromVp(argc, vp);
+
+    RootedString str(cx);
+    if (!JS_ConvertArguments(cx, args, "S", str.address()))
+        return false;
+
+    AutoStableStringChars strChars(cx);
+    if (!strChars.initTwoByte(cx, str))
+        return false;
+
+    mozilla::Range<const jschar> chars = strChars.twoByteRange();
+    size_t srclen = chars.length();
+    const jschar *src = chars.start().get();
+
+    JS::AutoFilename filename;
+    unsigned lineno;
+
+    DescribeScriptedCaller(cx, &filename, &lineno);
+
+    JS::CompileOptions options(cx);
+    options.setFileAndLine(filename.get(), lineno);
+    options.setNoScriptRval(true);
+    options.setCompileAndGo(false);
+
+    JS::SourceBufferHolder srcBuf(src, srclen, JS::SourceBufferHolder::NoOwnership);
+    RootedScript script(cx);
+    if (!JS::Compile(cx, JS::NullPtr(), options, srcBuf, &script))
+        return false;
+
+    RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+    RootedObject scope(cx);
+    if (!js::ExecuteInGlobalAndReturnScope(cx, global, script, &scope))
+        return false;
+
+    args.rval().setObject(*scope);
     return true;
 }
 
@@ -2167,6 +2219,10 @@ static const JSFunctionSpecWithHelp TestingFunctions[] = {
 "dumpObject()",
 "  Dump an internal representation of an object."),
 #endif
+
+    JS_FN_HELP("evalReturningScope", EvalReturningScope, 1, 0,
+"evalReturningScope(scriptStr)",
+"  Evaluate the script in a new scope and return the scope."),
 
     JS_FS_HELP_END
 };

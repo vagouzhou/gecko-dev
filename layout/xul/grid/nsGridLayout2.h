@@ -33,7 +33,7 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
 
   NS_IMETHOD Layout(nsIFrame* aBox, nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
-  virtual void IntrinsicWidthsDirty(nsIFrame* aBox, nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
+  virtual void IntrinsicISizesDirty(nsIFrame* aBox, nsBoxLayoutState& aBoxLayoutState) MOZ_OVERRIDE;
 
   virtual nsGridRowGroupLayout* CastToRowGroupLayout() MOZ_OVERRIDE { return nullptr; }
   virtual nsGridLayout2* CastToGridLayout() MOZ_OVERRIDE { return this; }
@@ -66,6 +66,7 @@ public:
 protected:
 
   nsGridLayout2(nsIPresShell* aShell);
+  virtual ~nsGridLayout2();
   nsGrid mGrid;
 
 private:
