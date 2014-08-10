@@ -99,7 +99,7 @@ int32_t DesktopDeviceInfoX11::RefreshApplicationList() {
 					//application name
 					std::string strAppName="";
 					window_util_x11.GetWindowTitle(app_window, &strAppName);
-					pDesktopApplication->setProcessAppName(strAppName.c_str());
+					pDesktopApplication->setDeviceName(strAppName.c_str());
 
 					//setUniqueIdName
 					std::ostringstream s;

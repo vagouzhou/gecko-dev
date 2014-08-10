@@ -86,7 +86,7 @@ int32_t DesktopDeviceInfoMac::RefreshApplicationList() {
 					NSRunningApplication *ra = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
 					if(ra){
 						[ra executableURL] ;
-						pDesktopApplication->setProcessAppName([ra.localizedName UTF8String]);
+						pDesktopApplication->setDeviceName([ra.localizedName UTF8String]);
 						pDesktopApplication->setProcessPathName([[ra.executableURL absoluteString] UTF8String]);
 						std::ostringstream s;
 						s<<pid;

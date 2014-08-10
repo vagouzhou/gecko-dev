@@ -55,18 +55,20 @@ namespace webrtc
                   char* productUniqueIdUTF8,
                                         uint32_t productUniqueIdUTF8Length){
 
-        DesktopDisplayDevice desktopDisplayDevice;
+  DesktopDisplay desktopDisplay;
         if(desktop_device_info_->getDesktopDisplayDeviceInfo(deviceNumber,desktopDisplayDevice)==0){
             
             const char * deviceName = desktopDisplayDevice.getDeivceName();
             if(deviceNameLength>0 && deviceNameUTF8 && deviceName){
                 memset(deviceNameUTF8,0,deviceNameLength);
+                                                       desktopDisplay) == 0) {
+    const char *deviceName = desktopDisplay.getDeviceName();
                 memcpy(deviceNameUTF8,
                        deviceName,
                        strlen(deviceName));
             }
             
-            const char * deviceUniqueId = desktopDisplayDevice.getUniqueIdName();
+    const char *deviceUniqueId = desktopDisplay.getUniqueIdName();
             if(deviceUniqueIdUTF8Length>0 && deviceUniqueIdUTF8 && deviceUniqueId){
                 memset(deviceUniqueIdUTF8,0,deviceUniqueIdUTF8Length);
                 memcpy(deviceUniqueIdUTF8,
@@ -143,7 +145,7 @@ namespace webrtc
         DesktopApplication desktopApplication;
         if(desktop_device_info_->getApplicationInfo(deviceNumber,desktopApplication)==0){
             
-            const char * deviceName = desktopApplication.getProcessAppName();
+    const char *deviceName = desktopApplication.getDeviceName();
             if(deviceNameLength>0 && deviceNameUTF8 && deviceName){
                 memset(deviceNameUTF8,0,deviceNameLength);
                 memcpy(deviceNameUTF8,
@@ -213,6 +215,10 @@ VideoCaptureModule* DesktopCaptureImpl::Create(const int32_t id,const char* uniq
     }
 
     return capture;
+  DesktopWindow desktopWindow;
+                                          desktopWindow) == 0) {
+    const char *deviceName = desktopWindow.getDeviceName();
+    const char *deviceUniqueId = desktopWindow.getUniqueIdName();
 }
 VideoCaptureModule::DeviceInfo* DesktopCaptureImpl::CreateDeviceInfo(const int32_t id,const bool bIsApp){
     if(bIsApp){

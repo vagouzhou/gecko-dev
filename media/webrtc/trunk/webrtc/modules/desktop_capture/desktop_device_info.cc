@@ -17,13 +17,11 @@ namespace webrtc{
 	memcpy(buffer, value, nBufLen - 1);
 	buffer[nBufLen - 1] = '\0';
 	*member = buffer;
-    DesktopDisplayDevice::DesktopDisplayDevice(){
-	screenId_ = kInvalidScreenId;
+DesktopDevice::DesktopDevice() {
 	deviceUniqueIdUTF8_ = NULL;
 	deviceNameUTF8_ = NULL;
     }
-    DesktopDisplayDevice::~DesktopDisplayDevice(){
-	screenId_ = kInvalidScreenId;
+DesktopDevice::~DesktopDevice() {
         
 	if (deviceUniqueIdUTF8_){
 		delete [] deviceUniqueIdUTF8_;
@@ -36,14 +34,10 @@ namespace webrtc{
 	deviceNameUTF8_ = NULL;
     }
     void DesktopDisplayDevice::setScreenId(const ScreenId screenId)
-    {
-	screenId_ = screenId;
-    }
+void DesktopDevice::setDeviceName(const char *deviceNameUTF8) {
     void DesktopDisplayDevice::setDeivceName(const char* deviceNameUTF8)
     {
         if(deviceNameUTF8==NULL) return;
-        
-        if(deviceNameUTF8_){
 	SetStringMember(&deviceNameUTF8_, deviceNameUTF8);
             deviceNameUTF8_ = NULL;
         }
@@ -51,26 +45,22 @@ namespace webrtc{
         deviceNameUTF8_ = new char[nBufLen];
         memset(deviceNameUTF8_,0,nBufLen);
         
-        memcpy(deviceNameUTF8_,deviceNameUTF8,strlen(deviceNameUTF8));
+void DesktopDevice::setUniqueIdName(const char *deviceUniqueIdUTF8) {
 	SetStringMember(&deviceUniqueIdUTF8_, deviceUniqueIdUTF8);
     }
     void DesktopDisplayDevice::setUniqueIdName(const char* deviceUniqueIdUTF8)
     {
         if(deviceUniqueIdUTF8==NULL) return;
         
-        if(deviceUniqueIdUTF8_){
-	return screenId_;
+const char *DesktopDevice::getDeviceName() {
             deviceUniqueIdUTF8_ = NULL;
-        }
         int nBufLen = strlen(deviceUniqueIdUTF8)+1;
         deviceUniqueIdUTF8_ = new char[nBufLen];
         memset(deviceUniqueIdUTF8_,0,nBufLen);
-        
-        memcpy(deviceUniqueIdUTF8_,deviceUniqueIdUTF8,strlen(deviceUniqueIdUTF8));
 	return deviceNameUTF8_;
     }
     
-    ScreenId    DesktopDisplayDevice::getScreenId()
+const char *DesktopDevice::getUniqueIdName() {
     {
         return screenId_;
     }
@@ -83,26 +73,35 @@ namespace webrtc{
 	return deviceUniqueIdUTF8_;
     }
     DesktopDisplayDevice& DesktopDisplayDevice::operator= (DesktopDisplayDevice& other)
-    {
-	screenId_ = other.getScreenId();
+DesktopDevice& DesktopDevice::operator= (DesktopDevice& other) {
 	setUniqueIdName(other.getUniqueIdName());
 	setDeviceName(other.getDeviceName());
         
 	return *this;
     }
     
-    //================================================
-    //
-    DesktopApplication::DesktopApplication()
-    {
-	processId_ =0;
+DesktopDisplay& DesktopDisplay::operator= (DesktopDisplay& other){
+	DesktopDevice::operator = (other);
+	screenId_ = other.getScreenId();
+
+	return *this;
+}
+
+DesktopWindow& DesktopWindow::operator= (DesktopWindow& other){
+	DesktopDevice::operator = (other);
+	windowId_ = other.getWindowId();
+
+	return *this;
+}
+	processId_ = kNullProcessId;
 	processPathNameUTF8_= NULL;
-	applicationNameUTF8_= NULL;
-	processUniqueIdUTF8_= NULL;
     }
     DesktopApplication::~DesktopApplication()
     {
         
+	if(processPathNameUTF8_) 
+		delete processPathNameUTF8_;
+	processPathNameUTF8_ = NULL;
     }
     void DesktopApplication::setProcessId(const ProcessId processId){
 	processId_ = processId;
@@ -121,8 +120,6 @@ namespace webrtc{
         memcpy(processPathNameUTF8_,appPathNameUTF8,strlen(appPathNameUTF8));
     }
 
-    void DesktopApplication::setUniqueIdName(const char* appUniqueIdUTF8){
-	SetStringMember(&processUniqueIdUTF8_, appUniqueIdUTF8);
         
         if(processPathNameUTF8_){
             delete []processPathNameUTF8_;
@@ -133,10 +130,6 @@ namespace webrtc{
         memset(processUniqueIdUTF8_,0,nBufLen);
         
         memcpy(processUniqueIdUTF8_,appUniqueIdUTF8,strlen(appUniqueIdUTF8));
-    }
-
-    void DesktopApplication::setProcessAppName(const char* appNameUTF8){
-	SetStringMember(&applicationNameUTF8_, appNameUTF8);
         
         if(applicationNameUTF8_){
             delete []applicationNameUTF8_;
@@ -147,8 +140,6 @@ namespace webrtc{
         memset(applicationNameUTF8_,0,nBufLen);
         
         memcpy(applicationNameUTF8_,appNameUTF8,strlen(appNameUTF8));
-    }
-
     
     ProcessId DesktopApplication::getProcessId(){
 	return processId_;
@@ -158,17 +149,10 @@ namespace webrtc{
 	return processPathNameUTF8_;
     }
     char*  DesktopApplication::getUniqueIdName(){
-	return processUniqueIdUTF8_;
-    }
-    char*  DesktopApplication::getProcessAppName(){
-	return applicationNameUTF8_;
-    }
-    DesktopApplication& DesktopApplication::operator= (DesktopApplication& other)
     {
+	DesktopDevice::operator = (other);
 	processId_ = other.getProcessId();
 	setProcessPathName(other.getProcessPathName());
-	setUniqueIdName(other.getUniqueIdName());
-	setProcessAppName(other.getProcessAppName());
         
 	return *this;
     }
@@ -204,15 +188,15 @@ int32_t DesktopDeviceInfoImpl::Refresh() {
 	RefreshScreenList();
 	RefreshApplicationList();
 	return 0;
-				DesktopDisplayDevice & desktopDisplayDevice) {
+				DesktopDisplay & desktopDisplayDevice) {
 
 	if(nIndex < 0 || nIndex >= desktop_display_list_.size()) {
 		return -1;
 	}
         
-	std::map<intptr_t,DesktopDisplayDevice*>::iterator iter = desktop_display_list_.begin();
+	std::map<intptr_t,DesktopDisplay*>::iterator iter = desktop_display_list_.begin();
 	std::advance (iter, nIndex);
-	DesktopDisplayDevice * pDesktopDisplayDevice = iter->second;
+	DesktopDisplay * pDesktopDisplayDevice = iter->second;
 	if(pDesktopDisplayDevice) {
 		desktopDisplayDevice = (*pDesktopDisplayDevice);
 	}
@@ -223,13 +207,14 @@ int32_t DesktopDeviceInfoImpl::Refresh() {
     int32_t DesktopDeviceInfoImpl::getApplicationCount()
 	RefreshWindowList();
 	return desktop_window_list_.size();
-	DesktopDisplayDevice &windowDevice) {
+
+	DesktopWindow &windowDevice) {
 	if (nIndex < 0 || nIndex >= desktop_window_list_.size()) {
 		return -1;
 	}
-	std::map<intptr_t, DesktopDisplayDevice *>::iterator itr = desktop_window_list_.begin();
+	std::map<intptr_t, DesktopWindow *>::iterator itr = desktop_window_list_.begin();
 	std::advance(itr, nIndex);
-	DesktopDisplayDevice * pWindow = itr->second;
+	DesktopWindow * pWindow = itr->second;
 	if (!pWindow) {
 		return -1;
 	}
@@ -263,9 +248,9 @@ void DesktopDeviceInfoImpl::CleanUp(){
 }
 
 void DesktopDeviceInfoImpl::CleanUpWindowList(){
-	std::map<intptr_t, DesktopDisplayDevice *>::iterator iterWindow;
+	std::map<intptr_t, DesktopWindow*>::iterator iterWindow;
 	for (iterWindow = desktop_window_list_.begin(); iterWindow != desktop_window_list_.end(); iterWindow++) {
-		DesktopDisplayDevice * pWindow = iterWindow->second;
+		DesktopWindow * pWindow = iterWindow->second;
 		delete pWindow;
 		iterWindow->second = NULL;
 	}
@@ -273,9 +258,9 @@ void DesktopDeviceInfoImpl::CleanUpWindowList(){
 }
 
 void DesktopDeviceInfoImpl::CleanUpScreenList(){
-	std::map<intptr_t,DesktopDisplayDevice*>::iterator iterDevice;
+	std::map<intptr_t,DesktopDisplay*>::iterator iterDevice;
 	for (iterDevice=desktop_display_list_.begin(); iterDevice!=desktop_display_list_.end(); iterDevice++){
-		DesktopDisplayDevice * pDesktopDisplayDevice = iterDevice->second;
+		DesktopDisplay * pDesktopDisplayDevice = iterDevice->second;
 		delete pDesktopDisplayDevice;
 		iterDevice->second = NULL;
 	}
@@ -307,17 +292,17 @@ int32_t DesktopDeviceInfoImpl::RefreshWindowList() {
 	if (pWinCap && pWinCap->GetWindowList(&list)) {
 		WindowCapturer::WindowList::iterator itr;
 		for (itr = list.begin(); itr != list.end(); itr++) {
-			DesktopDisplayDevice *pWinDevice = new DesktopDisplayDevice;
+			DesktopWindow *pWinDevice = new DesktopWindow;
 			if (!pWinDevice) {
 				continue;
 			}
 			WindowId windowId = itr->id;
-			pWinDevice->setScreenId(windowId);
+			pWinDevice->setWindowId(windowId);
 			pWinDevice->setDeviceName(itr->title.c_str());
 			std::ostringstream s;
 			s<<windowId;
 			pWinDevice->setUniqueIdName(s.str().c_str());
-			desktop_window_list_[pWinDevice->getScreenId()] = pWinDevice;
+			desktop_window_list_[pWinDevice->getWindowId()] = pWinDevice;
 		}
 	}
 	return 0;
@@ -325,7 +310,7 @@ int32_t DesktopDeviceInfoImpl::RefreshScreenList(){
 	CleanUpScreenList();
 	//List all Windows
 #if !defined(MULTI_MONITOR_SCREENSHARE)
-	DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
+	DesktopDisplay *pDesktopDeviceInfo = new DesktopDisplay;
 	if (pDesktopDeviceInfo) {
 		ScreenId screenId = webrtc::kFullDesktopScreenId;
 		pDesktopDeviceInfo->setScreenId(screenId);
