@@ -30,14 +30,12 @@ static inline void SetStringMember(char **member, const char *value) {
 	*member = buffer;
 }
 
-DesktopDisplayDevice::DesktopDisplayDevice() {
-	screenId_ = kInvalidScreenId;
+DesktopDevice::DesktopDevice() {
 	deviceUniqueIdUTF8_ = NULL;
 	deviceNameUTF8_ = NULL;
 }
 
-DesktopDisplayDevice::~DesktopDisplayDevice() {
-	screenId_ = kInvalidScreenId;
+DesktopDevice::~DesktopDevice() {
 
 	if (deviceUniqueIdUTF8_){
 		delete [] deviceUniqueIdUTF8_;
@@ -51,47 +49,52 @@ DesktopDisplayDevice::~DesktopDisplayDevice() {
 	deviceNameUTF8_ = NULL;
 }
 
-void DesktopDisplayDevice::setScreenId(const ScreenId screenId) {
-	screenId_ = screenId;
-}
-
-void DesktopDisplayDevice::setDeviceName(const char *deviceNameUTF8) {
+void DesktopDevice::setDeviceName(const char *deviceNameUTF8) {
 	SetStringMember(&deviceNameUTF8_, deviceNameUTF8);
 }
 
-void DesktopDisplayDevice::setUniqueIdName(const char *deviceUniqueIdUTF8) {
+void DesktopDevice::setUniqueIdName(const char *deviceUniqueIdUTF8) {
 	SetStringMember(&deviceUniqueIdUTF8_, deviceUniqueIdUTF8);
 }
 
-ScreenId DesktopDisplayDevice::getScreenId() {
-	return screenId_;
-}
-
-const char *DesktopDisplayDevice::getDeviceName() {
+const char *DesktopDevice::getDeviceName() {
 	return deviceNameUTF8_;
 }
 
-const char *DesktopDisplayDevice::getUniqueIdName() {
+const char *DesktopDevice::getUniqueIdName() {
 	return deviceUniqueIdUTF8_;
 }
 
-DesktopDisplayDevice& DesktopDisplayDevice::operator= (DesktopDisplayDevice& other) {
-	screenId_ = other.getScreenId();
+DesktopDevice& DesktopDevice::operator= (DesktopDevice& other) {
 	setUniqueIdName(other.getUniqueIdName());
 	setDeviceName(other.getDeviceName());
 
 	return *this;
 }
 
+DesktopDisplay& DesktopDisplay::operator= (DesktopDisplay& other){
+	DesktopDevice::operator = (other);
+	screenId_ = other.getScreenId();
+
+	return *this;
+}
+
+DesktopWindow& DesktopWindow::operator= (DesktopWindow& other){
+	DesktopDevice::operator = (other);
+	windowId_ = other.getWindowId();
+
+	return *this;
+}
 
 DesktopApplication::DesktopApplication() {
-	processId_ =0;
+	processId_ = kNullProcessId;
 	processPathNameUTF8_= NULL;
-	applicationNameUTF8_= NULL;
-	processUniqueIdUTF8_= NULL;
 }
 
 DesktopApplication::~DesktopApplication() {
+	if(processPathNameUTF8_) 
+		delete processPathNameUTF8_;
+	processPathNameUTF8_ = NULL;
 }
 
 void DesktopApplication::setProcessId(const ProcessId processId) {
@@ -102,14 +105,6 @@ void DesktopApplication::setProcessPathName(const char *appPathNameUTF8) {
 	SetStringMember(&processPathNameUTF8_, appPathNameUTF8);
 }
 
-void DesktopApplication::setUniqueIdName(const char *appUniqueIdUTF8) {
-	SetStringMember(&processUniqueIdUTF8_, appUniqueIdUTF8);
-}
-
-void DesktopApplication::setProcessAppName(const char *appNameUTF8) {
-	SetStringMember(&applicationNameUTF8_, appNameUTF8);
-}
-
 ProcessId DesktopApplication::getProcessId() {
 	return processId_;
 }
@@ -118,19 +113,10 @@ const char *DesktopApplication::getProcessPathName() {
 	return processPathNameUTF8_;
 }
 
-const char *DesktopApplication::getUniqueIdName() {
-	return processUniqueIdUTF8_;
-}
-
-const char *DesktopApplication::getProcessAppName() {
-	return applicationNameUTF8_;
-}
-
 DesktopApplication& DesktopApplication::operator= (DesktopApplication& other) {
+	DesktopDevice::operator = (other);
 	processId_ = other.getProcessId();
 	setProcessPathName(other.getProcessPathName());
-	setUniqueIdName(other.getUniqueIdName());
-	setProcessAppName(other.getProcessAppName());
 
 	return *this;
 }
@@ -160,15 +146,15 @@ int32_t DesktopDeviceInfoImpl::Refresh() {
 }
 
 int32_t DesktopDeviceInfoImpl::getDesktopDisplayDeviceInfo(int32_t nIndex,
-				DesktopDisplayDevice & desktopDisplayDevice) {
+				DesktopDisplay & desktopDisplayDevice) {
 
 	if(nIndex < 0 || nIndex >= desktop_display_list_.size()) {
 		return -1;
 	}
 
-	std::map<intptr_t,DesktopDisplayDevice*>::iterator iter = desktop_display_list_.begin();
+	std::map<intptr_t,DesktopDisplay*>::iterator iter = desktop_display_list_.begin();
 	std::advance (iter, nIndex);
-	DesktopDisplayDevice * pDesktopDisplayDevice = iter->second;
+	DesktopDisplay * pDesktopDisplayDevice = iter->second;
 	if(pDesktopDisplayDevice) {
 		desktopDisplayDevice = (*pDesktopDisplayDevice);
 	}
@@ -180,15 +166,16 @@ int32_t DesktopDeviceInfoImpl::getWindowCount() {
 	RefreshWindowList();
 	return desktop_window_list_.size();
 }
+
 int32_t DesktopDeviceInfoImpl::getWindowInfo(int32_t nIndex,
-	DesktopDisplayDevice &windowDevice) {
+	DesktopWindow &windowDevice) {
 	if (nIndex < 0 || nIndex >= desktop_window_list_.size()) {
 		return -1;
 	}
 
-	std::map<intptr_t, DesktopDisplayDevice *>::iterator itr = desktop_window_list_.begin();
+	std::map<intptr_t, DesktopWindow *>::iterator itr = desktop_window_list_.begin();
 	std::advance(itr, nIndex);
-	DesktopDisplayDevice * pWindow = itr->second;
+	DesktopWindow * pWindow = itr->second;
 	if (!pWindow) {
 		return -1;
 	}
@@ -224,9 +211,9 @@ void DesktopDeviceInfoImpl::CleanUp(){
 }
 
 void DesktopDeviceInfoImpl::CleanUpWindowList(){
-	std::map<intptr_t, DesktopDisplayDevice *>::iterator iterWindow;
+	std::map<intptr_t, DesktopWindow*>::iterator iterWindow;
 	for (iterWindow = desktop_window_list_.begin(); iterWindow != desktop_window_list_.end(); iterWindow++) {
-		DesktopDisplayDevice * pWindow = iterWindow->second;
+		DesktopWindow * pWindow = iterWindow->second;
 		delete pWindow;
 		iterWindow->second = NULL;
 	}
@@ -234,9 +221,9 @@ void DesktopDeviceInfoImpl::CleanUpWindowList(){
 }
 
 void DesktopDeviceInfoImpl::CleanUpScreenList(){
-	std::map<intptr_t,DesktopDisplayDevice*>::iterator iterDevice;
+	std::map<intptr_t,DesktopDisplay*>::iterator iterDevice;
 	for (iterDevice=desktop_display_list_.begin(); iterDevice!=desktop_display_list_.end(); iterDevice++){
-		DesktopDisplayDevice * pDesktopDisplayDevice = iterDevice->second;
+		DesktopDisplay * pDesktopDisplayDevice = iterDevice->second;
 		delete pDesktopDisplayDevice;
 		iterDevice->second = NULL;
 	}
@@ -267,18 +254,18 @@ int32_t DesktopDeviceInfoImpl::RefreshWindowList() {
 	if (pWinCap && pWinCap->GetWindowList(&list)) {
 		WindowCapturer::WindowList::iterator itr;
 		for (itr = list.begin(); itr != list.end(); itr++) {
-			DesktopDisplayDevice *pWinDevice = new DesktopDisplayDevice;
+			DesktopWindow *pWinDevice = new DesktopWindow;
 			if (!pWinDevice) {
 				continue;
 			}
 			WindowId windowId = itr->id;
-			pWinDevice->setScreenId(windowId);
+			pWinDevice->setWindowId(windowId);
 			pWinDevice->setDeviceName(itr->title.c_str());
 
 			std::ostringstream s;
 			s<<windowId;
 			pWinDevice->setUniqueIdName(s.str().c_str());
-			desktop_window_list_[pWinDevice->getScreenId()] = pWinDevice;
+			desktop_window_list_[pWinDevice->getWindowId()] = pWinDevice;
 		}
 	}
 
@@ -290,7 +277,7 @@ int32_t DesktopDeviceInfoImpl::RefreshScreenList(){
 
 	//List all Windows
 #if !defined(MULTI_MONITOR_SCREENSHARE)
-	DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
+	DesktopDisplay *pDesktopDeviceInfo = new DesktopDisplay;
 	if (pDesktopDeviceInfo) {
 		ScreenId screenId = webrtc::kFullDesktopScreenId;
 		pDesktopDeviceInfo->setScreenId(screenId);

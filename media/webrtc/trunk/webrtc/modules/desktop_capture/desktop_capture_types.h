@@ -39,7 +39,7 @@ const ScreenId kInvalidScreenId = -2;
 
 
 typedef intptr_t ProcessId;
-const ProcessId DesktopProcessId = 0;
+const ProcessId kNullProcessId = 0;
 
 }  // namespace webrtc
 

@@ -10,51 +10,68 @@
 
 namespace webrtc {
 
-class DesktopDisplayDevice {
+class DesktopDevice {
 public:
-	DesktopDisplayDevice();
-	~DesktopDisplayDevice();
+	DesktopDevice();
+	~DesktopDevice();
 
-	void setScreenId(const ScreenId screenId);
 	void setDeviceName(const char *deviceNameUTF8);
 	void setUniqueIdName(const char *deviceUniqueIdUTF8);
 
-	ScreenId getScreenId();
 	const char *getDeviceName();
 	const char *getUniqueIdName();
 
-	DesktopDisplayDevice& operator= (DesktopDisplayDevice& other);
+	DesktopDevice& operator= (DesktopDevice& other);
 
 protected:
-	ScreenId screenId_;
 	char* deviceNameUTF8_;
 	char* deviceUniqueIdUTF8_;
 };
 
-typedef std::map<intptr_t,DesktopDisplayDevice*> DesktopDisplayDeviceList;
+class DesktopDisplay : public DesktopDevice{
+public:
+	DesktopDisplay():screenId_(kInvalidScreenId){}
+	~DesktopDisplay(){}
 
-class DesktopApplication {
+	void setScreenId(const ScreenId screenId){ screenId_=screenId; }
+	ScreenId getScreenId(){ return screenId_; }
+
+	DesktopDisplay& operator= (DesktopDisplay& other);
+
+protected:
+	ScreenId screenId_;
+};
+typedef std::map<intptr_t,DesktopDisplay*> DesktopDisplayList;
+
+class DesktopWindow : public DesktopDevice{
+public:
+	DesktopWindow():windowId_(kNullWindowId){}
+	~DesktopWindow(){}
+	void setWindowId(const WindowId windowId){ windowId_ = windowId; };
+	WindowId getWindowId(){ return windowId_; }
+
+	DesktopWindow& operator= (DesktopWindow& other);
+protected:
+	WindowId windowId_;
+};
+typedef std::map<intptr_t,DesktopWindow*> DesktopWindowList;
+
+class DesktopApplication : public DesktopDevice{
 public:
 	DesktopApplication();
 	~DesktopApplication();
 
 	void setProcessId(const ProcessId processId);
 	void setProcessPathName(const char *appPathNameUTF8);
-	void setUniqueIdName(const char *appUniqueIdUTF8);
-	void setProcessAppName(const char *appNameUTF8);
 
 	ProcessId getProcessId();
 	const char *getProcessPathName();
-	const char *getUniqueIdName();
-	const char *getProcessAppName();
 
 	DesktopApplication& operator= (DesktopApplication& other);
 
 protected:
 	ProcessId processId_;
 	char* processPathNameUTF8_;
-	char* applicationNameUTF8_;
-	char* processUniqueIdUTF8_;
 };
 
 typedef std::map<intptr_t,DesktopApplication*> DesktopApplicationList;
@@ -67,10 +84,10 @@ public:
 	virtual int32_t Refresh() = 0;
 	virtual int32_t getDisplayDeviceCount() = 0;
 	virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,
-		DesktopDisplayDevice & desktopDisplayDevice) = 0;
+		DesktopDisplay & desktopDisplayDevice) = 0;
 	virtual int32_t getWindowCount() = 0;
 	virtual int32_t getWindowInfo(int32_t nindex,
-		DesktopDisplayDevice &windowDevice) = 0;
+		DesktopWindow &windowDevice) = 0;
 	virtual int32_t getApplicationCount() = 0;
 	virtual int32_t getApplicationInfo(int32_t nIndex,
 		DesktopApplication & desktopApplication) = 0;
@@ -85,10 +102,10 @@ public:
 	virtual int32_t Refresh();
 	virtual int32_t getDisplayDeviceCount();
 	virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,
-		DesktopDisplayDevice & desktopDisplayDevice);
+		DesktopDisplay & desktopDisplayDevice);
 	virtual int32_t getWindowCount();
 	virtual int32_t getWindowInfo(int32_t nindex,
-		DesktopDisplayDevice &windowDevice);
+		DesktopWindow &windowDevice);
 	virtual int32_t getApplicationCount();
 	virtual int32_t getApplicationInfo(int32_t nIndex,
 		DesktopApplication & desktopApplication);
@@ -104,11 +121,9 @@ protected:
 	void CleanUpScreenList();
 	void CleanUpApplicationList();
 protected:
-	DesktopDisplayDeviceList desktop_display_list_;
-	DesktopDisplayDeviceList desktop_window_list_;
+	DesktopDisplayList desktop_display_list_;
+	DesktopWindowList desktop_window_list_;
 	DesktopApplicationList desktop_application_list_;
-
-	
 };
 };
 

@@ -98,9 +98,9 @@ int32_t DesktopDeviceInfoWin::RefreshApplicationList() {
 				WCHAR szWndTitle[_MAX_PATH]={0};
 				::GetWindowText(hWnd,szWndTitle,MAX_PATH);
 				if(lstrlen(szWndTitle)<=0)
-					pDesktopApplication->setProcessAppName(Utf16ToUtf8(szFilePathName).c_str());
+					pDesktopApplication->setDeviceName(Utf16ToUtf8(szFilePathName).c_str());
 				else
-					pDesktopApplication->setProcessAppName(Utf16ToUtf8(szWndTitle).c_str());
+					pDesktopApplication->setDeviceName(Utf16ToUtf8(szWndTitle).c_str());
 
 				//setUniqueIdName
 				std::ostringstream s;
