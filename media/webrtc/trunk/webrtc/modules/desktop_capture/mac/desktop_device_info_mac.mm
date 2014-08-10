@@ -22,7 +22,7 @@ namespace webrtc {
         
     }
     int32_t DesktopDeviceInfoMac::Refresh()
-int32_t DesktopDeviceInfoX11::RefreshApplicationList() {
+int32_t DesktopDeviceInfoMac::RefreshApplicationList() {
         //Clean up sources first
         CleanUp();
         
