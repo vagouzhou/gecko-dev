@@ -32,7 +32,6 @@ DesktopDeviceInfoNull::~DesktopDeviceInfoNull() {
 
 int32_t
 DesktopDeviceInfoNull::Init() {
-  initializeWindowList();
   return 0;
 }
 

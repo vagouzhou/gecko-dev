@@ -24,92 +24,71 @@ DesktopDeviceInfoMac::DesktopDeviceInfoMac() {
 DesktopDeviceInfoMac::~DesktopDeviceInfoMac() {
 }
 
-#if !defined(MULTI_MONITOR_SCREENSHARE)
-int32_t DesktopDeviceInfoMac::MultiMonitorScreenshare()
-{
-  DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
-  if (pDesktopDeviceInfo) {
-    pDesktopDeviceInfo->setScreenId(0);
-    pDesktopDeviceInfo->setDeviceName("Primary Monitor");
-    pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#1");
-
-    desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
-  }
-  return 0;
-}
-#endif
-
-int32_t DesktopDeviceInfoMac::Refresh() {
-    //Clean up sources first
-    CleanUp();
-
-#if !defined(MULTI_MONITOR_SCREENSHARE)
-  MultiMonitorScreenshare();
-#endif
-
-  RefreshWindowList();
+int32_t DesktopDeviceInfoX11::RefreshApplicationList() {
+	//Clean up sources first
+	CleanUpApplicationList();
     
-    //List all running applicatones exclude background process.
-    Str255 buffer;
+	//List all running applicatones exclude background process.
+	Str255 buffer;
     
-    ProcessInfoRec InfoRec;
-    InfoRec.processInfoLength = sizeof(ProcessInfoRec);
-    InfoRec.processName = buffer;   	// set the buffer
-#ifdef __LP64__
-    FSRef theFsSpec;
-    InfoRec.processAppRef = &theFsSpec;
-#else
-    FSSpec 	theFsSpec;
-    InfoRec.processAppSpec = &theFsSpec;
-#endif
+	ProcessInfoRec InfoRec;
+	InfoRec.processInfoLength = sizeof(ProcessInfoRec);
+	InfoRec.processName = buffer;   	// set the buffer
+	#ifdef __LP64__
+	FSRef theFsSpec;
+	InfoRec.processAppRef = &theFsSpec;
+	#else
+	FSSpec 	theFsSpec;
+	InfoRec.processAppSpec = &theFsSpec;
+	#endif
     
-    ProcessSerialNumber psn = {0,kNoProcess};
-    while(::GetNextProcess(&psn) == noErr)
-    {
-        if(::GetProcessInformation(&psn, &InfoRec) == noErr)
-        {
-#ifdef __LP64__
-            bool java = false;
-            CFStringRef name = NULL;
-            LSCopyDisplayNameForRef(&theFsSpec, &name);
-            if(name)
-            {
-                java = (CFStringCompare(name, CFSTR("\pjava"), 0) == kCFCompareEqualTo);
-                CFRelease(name);
-            }
-#else
-            bool java = (PLstrcmp(theFsSpec.name , "\pjava") == 0);
-#endif
-            if( (InfoRec.processType == OSType('APPL')) // || (InfoRec.processType == OSType('FNDR'))
-               || (InfoRec.processType == OSType('APPC')) || (InfoRec.processType == OSType('APPD'))
-               || (InfoRec.processType == OSType('dfil')) || (InfoRec.processType == OSType('cdev'))
-               || (InfoRec.processType == OSType('BNDL')) || java )
-            {
-                if(InfoRec.processMode & modeOnlyBackground)
-                    continue;
+	ProcessSerialNumber psn = {0,kNoProcess};
+	while(::GetNextProcess(&psn) == noErr)
+	{
+		if(::GetProcessInformation(&psn, &InfoRec) == noErr)
+		{
+	#ifdef __LP64__
+			bool java = false;
+			CFStringRef name = NULL;
+			LSCopyDisplayNameForRef(&theFsSpec, &name);
+			if(name)
+			{
+				java = (CFStringCompare(name, CFSTR("\pjava"), 0) == kCFCompareEqualTo);
+				CFRelease(name);
+			}
+	#else
+			bool java = (PLstrcmp(theFsSpec.name , "\pjava") == 0);
+	#endif
+			if( (InfoRec.processType == OSType('APPL')) // || (InfoRec.processType == OSType('FNDR'))
+				|| (InfoRec.processType == OSType('APPC')) || (InfoRec.processType == OSType('APPD'))
+				|| (InfoRec.processType == OSType('dfil')) || (InfoRec.processType == OSType('cdev'))
+				|| (InfoRec.processType == OSType('BNDL')) || java )
+			{
+				if(InfoRec.processMode & modeOnlyBackground)
+					continue;
                 
-                pid_t pid = 0;
-                GetProcessPID(&psn,&pid);
+				pid_t pid = 0;
+				GetProcessPID(&psn,&pid);
                 
-                DesktopApplication *pDesktopApplication = new DesktopApplication;
-                if(pDesktopApplication){
-                    pDesktopApplication->setProcessId(pid);
-                    NSRunningApplication *ra = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-                    if(ra){
-                        [ra executableURL] ;
-                        pDesktopApplication->setProcessAppName([ra.localizedName UTF8String]);
-                        pDesktopApplication->setProcessPathName([[ra.executableURL absoluteString] UTF8String]);
-                        std::ostringstream s;
-                        s<<pid;
-                        pDesktopApplication->setUniqueIdName(s.str().c_str());
+				DesktopApplication *pDesktopApplication = new DesktopApplication;
+				if(pDesktopApplication){
+					pDesktopApplication->setProcessId(pid);
+					NSRunningApplication *ra = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+					if(ra){
+						[ra executableURL] ;
+						pDesktopApplication->setProcessAppName([ra.localizedName UTF8String]);
+						pDesktopApplication->setProcessPathName([[ra.executableURL absoluteString] UTF8String]);
+						std::ostringstream s;
+						s<<pid;
+						pDesktopApplication->setUniqueIdName(s.str().c_str());
                         
-                        desktop_application_list_[pDesktopApplication->getProcessId()] = pDesktopApplication;
-                    }
-                }
-            }
+						desktop_application_list_[pDesktopApplication->getProcessId()] = pDesktopApplication;
+					}
+				}
+			}
             
-        }
-    }
+		}
+	}
 
   return 0;
 }

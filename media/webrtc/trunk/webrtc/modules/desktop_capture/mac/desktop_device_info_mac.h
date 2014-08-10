@@ -15,13 +15,8 @@ public:
   DesktopDeviceInfoMac();
   ~DesktopDeviceInfoMac();
 
-  //DesktopDeviceInfo Interfaces
-  virtual int32_t Refresh();
-
-private:
-#if !defined(MULTI_MONITOR_SCREENSHARE)
-  int32_t MultiMonitorScreenshare();
-#endif
+  //DesktopDeviceInfoImpl Interfaces
+  virtual int32_t RefreshApplicationList();
 };
 
 }// namespace webrtc
