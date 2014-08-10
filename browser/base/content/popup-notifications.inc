@@ -31,7 +31,7 @@
         <description id="webRTC-all-windows-shared" hidden="true">&getUserMedia.allWindowsShared.message;</description>
       </popupnotificationcontent>
 
-<popupnotificationcontent id="webRTC-selectApplication" orient="vertical">
+    <popupnotificationcontent id="webRTC-selectApplication" orient="vertical" hidden="true">
         <separator class="thin"/>
         <label value="&getUserMedia.selectApplication.label;"
                accesskey="&getUserMedia.selectApplication.accesskey;"

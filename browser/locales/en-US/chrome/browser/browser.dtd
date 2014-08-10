@@ -709,7 +709,7 @@ just addresses the organization to follow, e.g. "This site is run by " -->
 
 <!ENTITY getUserMedia.selectCamera.label "Camera to share:">
 <!ENTITY getUserMedia.selectCamera.accesskey "C">
-<!ENTITY getUserMedia.selectWindowOrScreen.label "Window or screen to share:">
+<!ENTITY getUserMedia.selectWindowOrScreen.label "Window ,Application or screen to share:">
 <!ENTITY getUserMedia.selectWindowOrScreen.accesskey "W">
 <!ENTITY getUserMedia.selectApplication.label "Application to share:">
 <!ENTITY getUserMedia.selectApplication.accesskey "A">
