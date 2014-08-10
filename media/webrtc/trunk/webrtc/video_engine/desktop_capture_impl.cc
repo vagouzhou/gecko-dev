@@ -257,13 +257,14 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,const bool bIsApp){
         ScreenCapturer *pScreenCapturer = ScreenCapturer::Create();
         if(pScreenCapturer==nullptr) return -1;
         
-        ScreenId screenid = atoi(uniqueId);//webrtc::kFullDesktopScreenId;//uniqueId
+    ScreenId screenid = atoi(uniqueId);//webrtc::kFullDesktopScreenId;
         pScreenCapturer->SelectScreen(screenid);        
         pScreenCapturer->SetMouseShapeObserver(this);
         
         //desktop_capturer_.reset(pScreenCapturer);
         MouseCursorMonitor * pMouseCursorMonitor =MouseCursorMonitor::CreateForScreen(webrtc::DesktopCaptureOptions::CreateDefault(), screenid);
         desktop_capturer_cursor_composer_.reset(new DesktopAndCursorComposer(pScreenCapturer,pMouseCursorMonitor));
+    WindowId winId = atoi(uniqueId);;
     }
     //desktop_capturer_->Start(this);
     return 0;
