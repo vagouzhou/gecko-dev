@@ -10,10 +10,9 @@ namespace webrtc {
         DesktopDeviceInfoX11();
         ~DesktopDeviceInfoX11();
         
-        //DesktopDeviceInfo Interfaces
-        virtual int32_t Refresh();
+  //DesktopDeviceInfoImpl Interfaces
+  virtual int32_t RefreshApplicationList();
     protected:
-
     };
 }// namespace webrtc
 #endif //WEBRTC_MODULES_DESKTOP_CAPTURE_X11_DEVICE_INFO_H_

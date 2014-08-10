@@ -29,32 +29,32 @@ namespace webrtc {
 namespace {
 
 class AppCapturerMac : public AppCapturer {
- public:
-  AppCapturerMac();
-  virtual ~AppCapturerMac();
+public:
+    AppCapturerMac();
+    virtual ~AppCapturerMac();
 
-	// AppCapturer interface.
-	virtual bool GetAppList(AppList* apps);
-	virtual bool SelectApp(ProcessId processId);
-	virtual bool BringAppToFront();
+    // AppCapturer interface.
+    virtual bool GetAppList(AppList* apps) OVERRIDE;
+    virtual bool SelectApp(ProcessId processId) OVERRIDE;
+    virtual bool BringAppToFront() OVERRIDE;
 
-	// DesktopCapturer interface.
-	virtual void Start(Callback* callback) OVERRIDE;
-	virtual void Capture(const DesktopRegion& region) OVERRIDE;
+    // DesktopCapturer interface.
+    virtual void Start(Callback* callback) OVERRIDE;
+    virtual void Capture(const DesktopRegion& region) OVERRIDE;
 protected:
     
 private:
-	Callback* callback_;
-	ProcessId process_id_;
+    Callback* callback_;
+    ProcessId process_id_;
     CGSConnection curCaptureConnection;
     
-	DISALLOW_COPY_AND_ASSIGN(AppCapturerMac);
+    DISALLOW_COPY_AND_ASSIGN(AppCapturerMac);
 };
 
 AppCapturerMac::AppCapturerMac()
-    : callback_(NULL),
-      process_id_(0) ,
-        curCaptureConnection(0){
+: callback_(NULL),
+process_id_(0) ,
+curCaptureConnection(0){
 }
 
 AppCapturerMac::~AppCapturerMac() {
@@ -63,7 +63,7 @@ AppCapturerMac::~AppCapturerMac() {
 // AppCapturer interface.
 bool AppCapturerMac::GetAppList(AppList* apps){
     //TBD, we should has centrelized application , display source enumerate ,not implement it in capturer, it is useless
-	return true;
+    return true;
 }
 bool AppCapturerMac::SelectApp(ProcessId processId){
     
@@ -76,19 +76,19 @@ bool AppCapturerMac::SelectApp(ProcessId processId){
     GetProcessForPID(process_id_,&curCaptureProcessSerialNumber);
     CGSGetConnectionIDForPSN(defaultConnection_, &curCaptureProcessSerialNumber, &curCaptureConnection);
     
-	return true;
+    return true;
 }
 
 bool AppCapturerMac::BringAppToFront() {
-	return true;
+    return true;
 }
 
 // DesktopCapturer interface.
 void AppCapturerMac::Start(Callback* callback) {
-  assert(!callback_);
-  assert(callback);
+    assert(!callback_);
+    assert(callback);
 
-  callback_ = callback;
+    callback_ = callback;
 }
 void AppCapturerMac::Capture(const DesktopRegion& region) {
     
@@ -100,10 +100,10 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
     
     //Enumerate all windows
     CGSConnection defaultConnection_ = _CGSDefaultConnection();
-	int windowCount;
-	CGSGetOnScreenWindowCount(defaultConnection_, 0, &windowCount);
-	int* windowList = new int[windowCount];
-	CGSGetOnScreenWindowList(defaultConnection_, 0, windowCount, windowList, &windowCount);
+    int windowCount;
+    CGSGetOnScreenWindowCount(defaultConnection_, 0, &windowCount);
+    int* windowList = new int[windowCount];
+    CGSGetOnScreenWindowList(defaultConnection_, 0, windowCount, windowList, &windowCount);
 	
 	
     //Filter out windows not belong to current selected process
@@ -113,20 +113,20 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
     #define CaptureWindowID CGWindowID
 #endif
     
-	CaptureWindowID* captureWindowList = new CaptureWindowID[windowCount];
+    CaptureWindowID* captureWindowList = new CaptureWindowID[windowCount];
     memset(captureWindowList,0,sizeof(CaptureWindowID)*(windowCount));
-	int captureWindowListCount = 0;
+    int captureWindowListCount = 0;
     int i = 0;
-	for(i = 0; i <windowCount; i++ ) //from back to front
-	{
+    for(i = 0; i <windowCount; i++ ) //from back to front
+    {
         CGSConnection winConnection = 0;
-		CGSGetWindowOwner(defaultConnection_,windowList[i],&winConnection);
+        CGSGetWindowOwner(defaultConnection_,windowList[i],&winConnection);
         
-		if(winConnection == curCaptureConnection)
+        if(winConnection == curCaptureConnection)
         {
             captureWindowList[captureWindowListCount++] = windowList[i];
         }
-	}
+    }
     
     //Check windows list is not empty.
     if(captureWindowListCount<=0){
@@ -141,20 +141,20 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
 
     //Capture all windows of selected process.
     CFArrayRef windowIDsArray = CFArrayCreate(kCFAllocatorDefault,
-                                              (const void**)captureWindowList,
-                                              captureWindowListCount,
-                                              NULL);
-	CGImageRef app_image = CGWindowListCreateImageFromArray(rectCapturedDisplay,
+                                                (const void**)captureWindowList,
+                                                captureWindowListCount,
+                                                NULL);
+    CGImageRef app_image = CGWindowListCreateImageFromArray(rectCapturedDisplay,
                                                             windowIDsArray,
                                                             kCGWindowImageDefault);
-	CFRelease (windowIDsArray);
+    CFRelease (windowIDsArray);
     delete []windowList;
     delete []captureWindowList;
 
     
     //Debug for capture raw data
     /*
-    {
+        {
         static int iFile =0;
         if(iFile>=200)iFile = 0;
         NSString *filePathName = [NSString stringWithFormat:@"/tmp/gecko/%d_dump.png", ++iFile];
@@ -164,8 +164,8 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
         
         CGImageDestinationFinalize(destination);
         CFRelease(destination);
-    }
-     */
+        }
+        */
     
     //Wrapper raw data into DesktopFrame
     if (!app_image) {
@@ -192,7 +192,7 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
     const uint8_t* src_data = CFDataGetBytePtr(cf_data);
     for (int y = 0; y < height; ++y) {
         memcpy(frame->data() + frame->stride() * y, src_data + src_stride * y,
-               DesktopFrame::kBytesPerPixel * width);
+                DesktopFrame::kBytesPerPixel * width);
     }
     
     CFRelease(cf_data);
@@ -206,7 +206,7 @@ void AppCapturerMac::Capture(const DesktopRegion& region) {
 
 // static
 AppCapturer* AppCapturer::Create(const DesktopCaptureOptions& options) {
-  return new AppCapturerMac();
+    return new AppCapturerMac();
 }
 
 }  // namespace webrtc

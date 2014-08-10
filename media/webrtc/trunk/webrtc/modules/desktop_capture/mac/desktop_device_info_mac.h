@@ -10,9 +10,8 @@ namespace webrtc {
         DesktopDeviceInfoMac();
         ~DesktopDeviceInfoMac();
         
-        //DesktopDeviceInfo Interfaces
-        virtual int32_t Refresh();
-    protected:
+  //DesktopDeviceInfoImpl Interfaces
+  virtual int32_t RefreshApplicationList();
     };
 }// namespace webrtc
 #endif //WEBRTC_MODULES_DESKTOP_CAPTURE_MAC_DEVICE_INFO_H_

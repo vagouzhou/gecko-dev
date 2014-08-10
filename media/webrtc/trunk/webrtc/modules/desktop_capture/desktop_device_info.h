@@ -1,3 +1,5 @@
+* License, v. 2.0. If a copy of the MPL was not distributed with this file,
+* You can obtain one at http://mozilla.org/MPL/2.0/. */
 #ifndef WEBRTC_MODULES_DESKTOP_CAPTURE_DEVICE_INFO_H_
 #define WEBRTC_MODULES_DESKTOP_CAPTURE_DEVICE_INFO_H_
 
@@ -9,87 +11,105 @@ namespace webrtc {
     //
     class DesktopDisplayDevice{
         public:
-            DesktopDisplayDevice();
-            ~DesktopDisplayDevice();
+	DesktopDisplayDevice();
+	~DesktopDisplayDevice();
         
-            void setScreenId(const ScreenId screenId);
-            void setDeivceName(const char* deviceNameUTF8);
-            void setUniqueIdName(const char* deviceUniqueIdUTF8);
+	void setScreenId(const ScreenId screenId);
+	void setDeviceName(const char *deviceNameUTF8);
+	void setUniqueIdName(const char *deviceUniqueIdUTF8);
         
-            ScreenId    getScreenId();
-            char*   getDeivceName();
-            char*   getUniqueIdName();
+	ScreenId getScreenId();
+	const char *getDeviceName();
+	const char *getUniqueIdName();
 
-            DesktopDisplayDevice& operator= (DesktopDisplayDevice& other);
+	DesktopDisplayDevice& operator= (DesktopDisplayDevice& other);
         protected:
-            ScreenId screenId_;
-            char* deviceNameUTF8_;
-            char* deviceUniqueIdUTF8_;
+	ScreenId screenId_;
+	char* deviceNameUTF8_;
+	char* deviceUniqueIdUTF8_;
     };
     typedef std::map<intptr_t,DesktopDisplayDevice*> DesktopDisplayDeviceList;
     
     class DesktopApplication{
         public:
-            DesktopApplication();
-            ~DesktopApplication();
+	DesktopApplication();
+	~DesktopApplication();
         
-            void setProcessId(const ProcessId processId);
-            void setProcessPathName(const char* appPathNameUTF8);
-            void setUniqueIdName(const char* appUniqueIdUTF8);
-            void setProcessAppName(const char* appNameUTF8);
+	void setProcessId(const ProcessId processId);
+	void setProcessPathName(const char *appPathNameUTF8);
+	void setUniqueIdName(const char *appUniqueIdUTF8);
+	void setProcessAppName(const char *appNameUTF8);
         
-            ProcessId getProcessId();
-            char*  getProcessPathName();
-            char*  getUniqueIdName();
-            char*  getProcessAppName();
+	ProcessId getProcessId();
+	const char *getProcessPathName();
+	const char *getUniqueIdName();
+	const char *getProcessAppName();
         
-            DesktopApplication& operator= (DesktopApplication& other);
+	DesktopApplication& operator= (DesktopApplication& other);
         
         protected:
-            ProcessId processId_;
-            char* processPathNameUTF8_;
-            char* applicationNameUTF8_;
-            char* processUniqueIdUTF8_;
+	ProcessId processId_;
+	char* processPathNameUTF8_;
+	char* applicationNameUTF8_;
+	char* processUniqueIdUTF8_;
     };
     typedef std::map<intptr_t,DesktopApplication*> DesktopApplicationList;
     //================================================
     //
     class DesktopDeviceInfo{
     public:
-        virtual ~DesktopDeviceInfo(){};
+	virtual ~DesktopDeviceInfo() {};
         
         //
-        virtual int32_t Init() = 0;
-        virtual int32_t Refresh() = 0;
+	virtual int32_t Init() = 0;
+	virtual int32_t Refresh() = 0;
         
         //
-        virtual int32_t getDisplayDeviceCount()=0;
-        virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice)=0;
-        
-        //
-        virtual int32_t getApplicationCount()=0;
-        virtual int32_t getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication)=0;
+	virtual int32_t getDisplayDeviceCount() = 0;
+	virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,
+		DesktopDisplayDevice & desktopDisplayDevice) = 0;
+	virtual int32_t getWindowCount() = 0;
+	virtual int32_t getWindowInfo(int32_t nindex,
+		DesktopDisplayDevice &windowDevice) = 0;
+	virtual int32_t getApplicationCount() = 0;
+	virtual int32_t getApplicationInfo(int32_t nIndex,
+		DesktopApplication & desktopApplication) = 0;
     };
     
     //================================================
     //
     class DesktopDeviceInfoImpl : public DesktopDeviceInfo{
     public:
-        DesktopDeviceInfoImpl();
-        ~DesktopDeviceInfoImpl();
+	DesktopDeviceInfoImpl();
+	~DesktopDeviceInfoImpl();
+
+	virtual int32_t Init();
+	virtual int32_t Refresh();
+	virtual int32_t getDisplayDeviceCount();
+	virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,
+		DesktopDisplayDevice & desktopDisplayDevice);
+	virtual int32_t getWindowCount();
+	virtual int32_t getWindowInfo(int32_t nindex,
+		DesktopDisplayDevice &windowDevice);
+	virtual int32_t getApplicationCount();
+	virtual int32_t getApplicationInfo(int32_t nIndex,
+		DesktopApplication & desktopApplication);
         
-        virtual int32_t Init();
-        virtual int32_t getDisplayDeviceCount();
-        virtual int32_t getDesktopDisplayDeviceInfo(int32_t nIndex,DesktopDisplayDevice & desktopDisplayDevice);
-        virtual int32_t getApplicationCount();
-        virtual int32_t getApplicationInfo(int32_t nIndex,DesktopApplication & desktopApplication);
-        
-        static DesktopDeviceInfo * Create();
+	static DesktopDeviceInfo * Create();
     protected:
-        void CleanUp();
+	virtual int32_t RefreshWindowList();
+	virtual int32_t RefreshScreenList();
+	virtual int32_t RefreshApplicationList();
+
+	void CleanUp();
+	void CleanUpWindowList();
+	void CleanUpScreenList();
+	void CleanUpApplicationList();
     protected:
-        DesktopDisplayDeviceList desktop_display_list_;
-        DesktopApplicationList desktop_application_list_;
+	DesktopDisplayDeviceList desktop_display_list_;
+	DesktopDisplayDeviceList desktop_window_list_;
+	DesktopApplicationList desktop_application_list_;
+	
     };
 };
 

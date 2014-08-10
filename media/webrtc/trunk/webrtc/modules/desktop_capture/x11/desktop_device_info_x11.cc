@@ -1,4 +1,12 @@
+* License, v. 2.0. If a copy of the MPL was not distributed with this file,
+* You can obtain one at http://mozilla.org/MPL/2.0/. */
 #include "webrtc/modules/desktop_capture/x11/desktop_device_info_x11.h"
+#include "webrtc/modules/desktop_capture/x11/x_error_trap.h"
+#include "webrtc/modules/desktop_capture/x11/x_server_pixel_buffer.h"
+#include "webrtc/system_wrappers/interface/logging.h"
+#include "webrtc/system_wrappers/interface/scoped_ptr.h"
+#include "webrtc/system_wrappers/interface/scoped_refptr.h"
+#include "webrtc/modules/desktop_capture/x11/shared_x_util.h"
 
 #include "webrtc/modules/desktop_capture/x11/x_error_trap.h"
 #include "webrtc/modules/desktop_capture/x11/x_server_pixel_buffer.h"
@@ -11,12 +19,12 @@ namespace webrtc{
 #define MULTI_MONITOR_NO_SUPPORT 1
     DesktopDeviceInfo * DesktopDeviceInfoImpl::Create()
     {
-        DesktopDeviceInfoX11 * pDesktopDeviceInfo = new DesktopDeviceInfoX11();
-        if(pDesktopDeviceInfo && pDesktopDeviceInfo->Init()!=0){
-            delete pDesktopDeviceInfo;
-            pDesktopDeviceInfo = NULL;
-        }
-        return pDesktopDeviceInfo;
+	DesktopDeviceInfoX11 * pDesktopDeviceInfo = new DesktopDeviceInfoX11();
+	if (pDesktopDeviceInfo && pDesktopDeviceInfo->Init() != 0){
+		delete pDesktopDeviceInfo;
+		pDesktopDeviceInfo = NULL;
+	}
+	return pDesktopDeviceInfo;
     }
     DesktopDeviceInfoX11::DesktopDeviceInfoX11()
     {
@@ -27,105 +35,87 @@ namespace webrtc{
         
     }
     
-    int32_t DesktopDeviceInfoX11::Refresh()
-    {
+int32_t DesktopDeviceInfoX11::RefreshApplicationList() {
         //Clean up sources first
         CleanUp();
         
         //List display
 #ifdef MULTI_MONITOR_NO_SUPPORT
         
-        DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
-        if(pDesktopDeviceInfo){
-            pDesktopDeviceInfo->setScreenId(kFullDesktopScreenId);
-            pDesktopDeviceInfo->setDeivceName("All Monitors");
-            
             std::ostringstream sUniqueIdName;
             sUniqueIdName<<kFullDesktopScreenId;
             pDesktopDeviceInfo->setUniqueIdName(sUniqueIdName.str().c_str());
-            desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
-        }
-#else
-        /*
-         int nCountScreen = 0;
-         
-         for(int i=0;i<nCountScreen;i++){
-         DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
-         if(pDesktopDeviceInfo){
+	//Clean up sources first
+	CleanUpApplicationList();
          pDesktopDeviceInfo->setScreenId(0);
          pDesktopDeviceInfo->setDeivceName("Monitor Name: XXX");
          pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#x");
-         
-         desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
-         }
          }
          */
-#endif
-        
-        //List all running applicatones exclude background process.
 
-        scoped_refptr<SharedXDisplay> SharedDisplay = SharedXDisplay::CreateDefault();
-          XErrorTrap error_trap(SharedDisplay->display());
+	//List all running applications exclude background process.
+	scoped_refptr<SharedXDisplay> SharedDisplay = SharedXDisplay::CreateDefault();
+	XErrorTrap error_trap(SharedDisplay->display());
 
-          WindowUtilX11 window_util_x11(SharedDisplay);
-          int num_screens = XScreenCount(SharedDisplay->display());
-          for (int screen = 0; screen < num_screens; ++screen) {
-            ::Window root_window = XRootWindow(SharedDisplay->display(), screen);
-            ::Window parent;
-            ::Window *children;
-            unsigned int num_children;
-            int status = XQueryTree(SharedDisplay->display(), root_window, &root_window, &parent,
-                                    &children, &num_children);
-            if (status == 0) {
-              LOG(LS_ERROR) << "Failed to query for child windows for screen "
-                            << screen;
-              continue;
-            }
+	WindowUtilX11 window_util_x11(SharedDisplay);
+	int num_screens = XScreenCount(SharedDisplay->display());
+	for (int screen = 0; screen < num_screens; ++screen) {
+		::Window root_window = XRootWindow(SharedDisplay->display(), screen);
+		::Window parent;
+		::Window *children;
+		unsigned int num_children;
+		int status = XQueryTree(SharedDisplay->display(), root_window, &root_window, &parent,
+			&children, &num_children);
+		if (status == 0) {
+			LOG(LS_ERROR) << "Failed to query for child windows for screen "
+				<< screen;
+			continue;
+		}
 
-            for (unsigned int i = 0; i < num_children; ++i) {
-              ::Window app_window =window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);//window_util_x11.GetClientWindow(children[i]);//
+		for (unsigned int i = 0; i < num_children; ++i) {
+			::Window app_window =window_util_x11.GetApplicationWindow(children[num_children - 1 - i]);//window_util_x11.GetClientWindow(children[i]);//
 
-              if (!app_window
-            		  || window_util_x11.IsDesktopElement(app_window)
-            		  || window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
-            	  continue;
+			if (!app_window
+				|| window_util_x11.IsDesktopElement(app_window)
+				|| window_util_x11.GetWindowStatus(app_window) == WithdrawnState )
+				continue;
 
-              //what application want to filter out ?
+			//what application want to filter out ?
 
-              //
+			//
 
-				unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
-				if(processId!=0){
-						//Add one application
-						DesktopApplication *pDesktopApplication = new DesktopApplication;
-						if(pDesktopApplication){
-						//process id
-						pDesktopApplication->setProcessId(processId);
+			unsigned int processId = window_util_x11.GetWindowProcessID(app_window);
+			if(processId!=0){
+				//Add one application
+				DesktopApplication *pDesktopApplication = new DesktopApplication;
+				if(pDesktopApplication){
+					//process id
+					pDesktopApplication->setProcessId(processId);
 
-						//process path name
-						char szFilePathName[256]={0};
-						pDesktopApplication->setProcessPathName(szFilePathName);
+					//process path name
+					char szFilePathName[256]={0};
+					pDesktopApplication->setProcessPathName(szFilePathName);
 
-						//application name
-						std::string strAppName="";
-						window_util_x11.GetWindowTitle(app_window, &strAppName);
-						pDesktopApplication->setProcessAppName(strAppName.c_str());
+					//application name
+					std::string strAppName="";
+					window_util_x11.GetWindowTitle(app_window, &strAppName);
+					pDesktopApplication->setProcessAppName(strAppName.c_str());
 
-						//setUniqueIdName
-						std::ostringstream s;
-						s<<processId;
-						pDesktopApplication->setUniqueIdName(s.str().c_str());
-						desktop_application_list_[processId] = pDesktopApplication;
-					}
+					//setUniqueIdName
+					std::ostringstream s;
+					s<<processId;
+					pDesktopApplication->setUniqueIdName(s.str().c_str());
+					desktop_application_list_[processId] = pDesktopApplication;
 				}
+			}
 
-            }
+		}
 
-            if (children)
-              XFree(children);
-          }
+		if (children)
+			XFree(children);
+	}
 
-        return 0;
+	return 0;
         
     }
     
