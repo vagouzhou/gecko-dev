@@ -384,7 +384,7 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,
       return -1;
     }
 
-    ScreenId screenid = webrtc::kFullDesktopScreenId;
+    ScreenId screenid = atoi(uniqueId);//webrtc::kFullDesktopScreenId;
     pScreenCapturer->SelectScreen(screenid);
     pScreenCapturer->SetMouseShapeObserver(this);
 
@@ -396,15 +396,7 @@ int32_t DesktopCaptureImpl::Init(const char* uniqueId,
       return -1;
     }
 
-    std::string idStr(uniqueId);
-    const std::string prefix("\\win\\");
-    if (idStr.substr(0, prefix.size()) != prefix) {
-      delete pWindowCapturer;
-      // invalid id
-      return -1;
-    }
-    WindowId winId;
-    winId = atoi(idStr.substr(prefix.size()).c_str());
+    WindowId winId = atoi(uniqueId);;
     pWindowCapturer->SelectWindow(winId);
 
     MouseCursorMonitor * pMouseCursorMonitor = MouseCursorMonitor::CreateForWindow(webrtc::DesktopCaptureOptions::CreateDefault(), winId);

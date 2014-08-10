@@ -255,7 +255,7 @@ void DesktopDeviceInfoImpl::CleanUpApplicationList(){
 /*vagouzhou@gmail.com >> we need refactoring it 
 should not get windows list from capturer.
 should refactoring it by moving logic of GetWindowList from capturer to desktop_device_info_xplatform.
-then capturer use the independent device info. 
+then capturer use the device_info, not device_info use capturer. 
 RefreshWindowList & RefreshScreenList will be as RefreshApplicationList.implement it in the desktop_device_info_xplatform
 */
 int32_t DesktopDeviceInfoImpl::RefreshWindowList() {
@@ -271,17 +271,13 @@ int32_t DesktopDeviceInfoImpl::RefreshWindowList() {
 			if (!pWinDevice) {
 				continue;
 			}
-
-			pWinDevice->setScreenId(itr->id);
+			WindowId windowId = itr->id;
+			pWinDevice->setScreenId(windowId);
 			pWinDevice->setDeviceName(itr->title.c_str());
 
-			char idStr[64];
-#if XP_WIN
-			_snprintf_s(idStr, sizeof(idStr), sizeof(idStr) - 1, "\\win\\%ld", pWinDevice->getScreenId());
-#else
-			snprintf(idStr, BUFSIZ, "\\win\\%ld", pWinDevice->getScreenId());
-#endif
-			pWinDevice->setUniqueIdName(idStr);
+			std::ostringstream s;
+			s<<windowId;
+			pWinDevice->setUniqueIdName(s.str().c_str());
 			desktop_window_list_[pWinDevice->getScreenId()] = pWinDevice;
 		}
 	}
@@ -296,9 +292,12 @@ int32_t DesktopDeviceInfoImpl::RefreshScreenList(){
 #if !defined(MULTI_MONITOR_SCREENSHARE)
 	DesktopDisplayDevice *pDesktopDeviceInfo = new DesktopDisplayDevice;
 	if (pDesktopDeviceInfo) {
-		pDesktopDeviceInfo->setScreenId(0);
-		pDesktopDeviceInfo->setDeviceName("Primary Monitor");
-		pDesktopDeviceInfo->setUniqueIdName("\\screen\\monitor#1");
+		ScreenId screenId = webrtc::kFullDesktopScreenId;
+		pDesktopDeviceInfo->setScreenId(screenId);
+		pDesktopDeviceInfo->setDeviceName("Entire Screen");
+		std::ostringstream s;
+		s<<screenId;
+		pDesktopDeviceInfo->setUniqueIdName(s.str().c_str());
 
 		desktop_display_list_[pDesktopDeviceInfo->getScreenId()] = pDesktopDeviceInfo;
 	}
@@ -306,6 +305,7 @@ int32_t DesktopDeviceInfoImpl::RefreshScreenList(){
 	return 0;
 }
 int32_t DesktopDeviceInfoImpl::RefreshApplicationList(){
+	//implement in desktop_device_info_xplatform
 	return 0;
 }
 
