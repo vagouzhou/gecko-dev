@@ -24,7 +24,7 @@ DesktopDeviceInfoMac::DesktopDeviceInfoMac() {
 DesktopDeviceInfoMac::~DesktopDeviceInfoMac() {
 }
 
-int32_t DesktopDeviceInfoX11::RefreshApplicationList() {
+int32_t DesktopDeviceInfoMac::RefreshApplicationList() {
 	//Clean up sources first
 	CleanUpApplicationList();
     
