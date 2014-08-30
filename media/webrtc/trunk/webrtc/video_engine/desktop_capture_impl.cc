@@ -354,6 +354,8 @@ DesktopCaptureImpl::DesktopCaptureImpl(const int32_t id)
       delta_ntp_internal_ms_(
           Clock::GetRealTimeClock()->CurrentNtpInMilliseconds() -
           TickTime::MillisecondTimestamp()),
+						 terminate_(false),
+						 time_event_(*EventWrapper::Create()),
     capturer_thread_(*ThreadWrapper::CreateThread(Run,this,kHighPriority,"ScreenCaptureThread")){
     _requestedCapability.width = kDefaultWidth;
     _requestedCapability.height = kDefaultHeight;
@@ -364,9 +366,11 @@ DesktopCaptureImpl::DesktopCaptureImpl(const int32_t id)
 }
 
 DesktopCaptureImpl::~DesktopCaptureImpl()
-{
+	terminate_ = true;
+	time_event_.Set();
     capturer_thread_.Stop();
     delete &capturer_thread_;
+  delete &time_event_;
     
     DeRegisterCaptureDataCallback();
     DeRegisterCaptureCallback();
@@ -709,13 +713,27 @@ SharedMemory* DesktopCaptureImpl::CreateSharedMemory(size_t size)
 }
     
 void DesktopCaptureImpl::process()
-{
-    //
+#if defined(WIN32)
+	//should be in GUI thread on windows platform. 
+	//It is better solution to make system_wrapper ThreadWindows::Run to support GUI thread
+	MSG msg;
+	PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE);
+	PostThreadMessage(GetCurrentThreadId(),WM_NULL,0,0);
+	while(!terminate_){
+		if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)){
+			TranslateMessage(&msg);
+			DispatchMessage(&msg);
+		}
+#endif
+  time_event_.Wait(50);
     DesktopRect desktop_rect;
     DesktopRegion desktop_region;
     
     //desktop_capturer_->Capture(DesktopRegion());
     desktop_capturer_cursor_composer_->Capture(DesktopRegion());
+#if defined(WIN32)
+	}
+#endif
 }
     
 void DesktopCaptureImpl::OnCursorShapeChanged(MouseCursorShape* cursor_shape)
